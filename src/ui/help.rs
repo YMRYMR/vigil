@@ -1,4 +1,4 @@
-//! Help tab — static reference documentation.
+//! Help tab - static reference documentation with a cleaner operator-console layout.
 
 use crate::ui::theme;
 use egui::RichText;
@@ -8,234 +8,217 @@ pub fn show(ui: &mut egui::Ui) {
     egui::ScrollArea::vertical()
         .id_salt("help_scroll")
         .show(ui, |ui| {
-            ui.add_space(12.0);
+            ui.add_space(18.0);
+            hero(ui);
+            ui.add_space(16.0);
 
-            // ── What Vigil does ───────────────────────────────────────────────
-            section(ui, "What Vigil Does");
-            body(
-                ui,
-                "Vigil monitors every active TCP/UDP connection on this machine in real time \
-                 (using the Windows ETW kernel session when available, or polling the OS \
-                 every few seconds as a fallback).\n\n\
-                 Each connection is scored for suspicious characteristics. \
-                 Connections that reach or exceed the alert threshold are highlighted \
-                 in amber or red and trigger a desktop notification.",
-            );
+            ui.columns(2, |cols| {
+                card(&mut cols[0], "What Vigil does", |ui| {
+                    body(
+                        ui,
+                        "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.",
+                    );
+                });
 
-            // ── Score table ───────────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "How the Score Is Calculated");
-            body(
-                ui,
-                "Scores accumulate — a single connection may hit multiple rules. \
-                 For example, PowerShell launched by Word connecting to port 4444 from \
-                 AppData scores 4+3+3+5+2 = 17 (display is capped at the threshold):",
-            );
+                card(&mut cols[1], "How scoring works", |ui| {
+                    body(
+                        ui,
+                        "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.",
+                    );
+                    ui.add_space(6.0);
+                    score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
+                    score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection");
+                    score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, or recent file-drop");
+                    score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, or DGA-like hostname");
+                    score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
+                    score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
+                });
+            });
 
-            ui.add_space(4.0);
-            score_row(ui, "+5", theme::DANGER, "Connection to known malware/C2 port (4444, 1337, 31337, etc.)");
-            score_row(ui, "+4", theme::WARN, "System binary making a network connection (living-off-the-land): cmd, powershell, certutil, mshta, wmic, etc.");
-            score_row(ui, "+3", theme::WARN, "No executable path found (possible process injection or hollowing)");
-            score_row(ui, "+3", theme::WARN, "Executable running from a suspicious directory (Temp, AppData\\Roaming, Downloads, etc.)");
-            score_row(ui, "+3", theme::WARN, "Suspicious parent process: Office/PDF app spawning a shell, WMI spawning scripts, etc.");
-            score_row(ui, "+3", theme::WARN, "Beaconing pattern detected — regular timing signature of a C2 callback (30+ s of samples needed)");
-            score_row(ui, "+2", theme::TEXT2, "Unrecognised process (not in trusted list) — stacks with the unsigned binary penalty below");
-            score_row(ui, "+2", theme::TEXT2, "Unsigned binary — no publisher information (stacks with Unrecognised)");
-            score_row(ui, "+2", theme::TEXT2, "DNS query (port 53) from a non-DNS process — possible DNS tunneling / exfiltration");
-            score_row(ui, "+2", theme::TEXT2, "Observed before user login — flagged with a red \u{201C}PL\u{201D} badge in the Time column; classic rootkit / dropper signal");
-            score_row(ui, "+3", theme::WARN,  "IP reputation hit — remote matched a user-supplied blocklist (badge: REP)");
-            score_row(ui, "+3", theme::WARN,  "Executable was just dropped into Temp/AppData/Downloads right before connecting (badge: DRP) — classic dropper pattern");
-            score_row(ui, "+2", theme::TEXT2, "Connection to an unexpected country (requires `allowed_countries` to be set in config)");
-            score_row(ui, "+2", theme::TEXT2, "Long-lived connection from an untrusted process, held open past `long_lived_secs` (badge: LL, default 1 h)");
-            score_row(ui, "+2", theme::TEXT2, "Reverse-DNS hostname looks DGA-generated (high Shannon entropy; badge: DGA)");
-            score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
+            ui.add_space(2.0);
 
-            // ── Inspector fields ──────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Inspector Fields");
+            ui.columns(2, |cols| {
+                card(&mut cols[0], "Operator workflow", |ui| {
+                    field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
+                    field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
+                    field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
+                    field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                });
 
-            field_row(ui, "Publisher", "Company name from the executable's version info (Windows only). Empty for system processes or binaries with no version resource.");
-            field_row(ui, "Parent", "Name and PID of the process that spawned this one. PowerShell launched by Office is suspicious.");
-            field_row(ui, "Service", "Windows service name, if the process is registered as a service. Helps identify svchost.exe sub-services.");
-            field_row(ui, "Status", "TCP connection state: ESTABLISHED (active data link), LISTEN (bound, waiting), SYN_SENT (connection in progress), CLOSE_WAIT / TIME_WAIT (closing).");
+                card(&mut cols[1], "Persistence signals", |ui| {
+                    body(
+                        ui,
+                        "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
+                    );
+                });
+            });
 
-            // ── Process tree ──────────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Process Tree (Inspector)");
-            body(
-                ui,
-                "When you select a connection, the inspector shows the full process ancestry \
-                 — not just the immediate parent, but every ancestor up to the system root. \
-                 This is critical for detecting macro-based malware: a Word document that \
-                 spawns cmd.exe that spawns PowerShell will show the full chain \
-                 Word \u{2192} cmd \u{2192} PowerShell, making the attack path immediately obvious.",
-            );
+            ui.add_space(2.0);
 
-            // ── Action buttons ────────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Inspector Actions");
+            ui.columns(2, |cols| {
+                card(&mut cols[0], "Telemetry and reputation", |ui| {
+                    body(
+                        ui,
+                        "Offline enrichment is optional. Point the config at MaxMind GeoLite2 databases for country and ASN lookups, add blocklists for reputation hits, and enable reverse DNS only if you accept that the OS resolver may observe the lookups.",
+                    );
+                    ui.add_space(6.0);
+                    bullet(
+                        ui,
+                        "geoip_city_db / geoip_asn_db",
+                        "MaxMind files that add country and ASN metadata.",
+                    );
+                    bullet(
+                        ui,
+                        "allowed_countries",
+                        "Restrict normal destinations to known-good countries.",
+                    );
+                    bullet(
+                        ui,
+                        "blocklist_paths",
+                        "Plain-text IP or CIDR lists for offline reputation hits.",
+                    );
+                    bullet(
+                        ui,
+                        "fswatch_enabled",
+                        "Correlate fresh file drops with new connections.",
+                    );
+                    bullet(
+                        ui,
+                        "reverse_dns_enabled",
+                        "Off by default because it leaks inspection activity.",
+                    );
+                });
 
-            field_row(ui, "Trust", "Add the process to the trusted list. The process will no longer generate +2 (unrecognised) or +1 (unusual port) alerts. Takes effect immediately; saved to vigil.json.");
-            field_row(ui, "Open Location", "Open the folder containing the executable in Explorer.");
-            field_row(ui, "Kill Process", "Terminate the process immediately. A confirmation prompt appears first. Does not affect child processes.");
+                card(&mut cols[1], "UI tips", |ui| {
+                    bullet(
+                        ui,
+                        "Activity",
+                        "Use the filter to narrow process cards by name, host, status, or reason text.",
+                    );
+                    bullet(
+                        ui,
+                        "Alerts",
+                        "Alerts are the high-signal cards; the stacked connections show the traffic behind the score.",
+                    );
+                    bullet(
+                        ui,
+                        "Settings",
+                        "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                    );
+                    bullet(
+                        ui,
+                        "Keyboard",
+                        "The app is built for mouse-first triage, but the controls are intentionally compact and predictable.",
+                    );
+                });
+            });
 
-            // ── svchost note ──────────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Note on svchost.exe");
-            body(
-                ui,
-                "svchost.exe hosts many Windows services. When it appears in the Activity \
-                 list, check the Service column to identify which service owns the connection. \
-                 Common legitimate services: wuauserv (Windows Update), BITS, winmgmt, Dnscache.",
-            );
-
-            // ── Tips ──────────────────────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Tips");
-            tip(ui, "Run Vigil as Administrator to activate ETW mode — connections appear in under 100 ms instead of up to 5 seconds.");
-            tip(ui, "Adjust the alert threshold (Settings \u{2192} Detection) between 1 (extremely sensitive — every unrecognised process alerts) and 10 (only the most severe combinations trigger alerts). A value of 3\u{2013}5 is a good balance for most users.");
-            tip(ui, "Add your own internal tools to the Trusted Processes list so they don't generate +2 alerts.");
-            tip(ui, "vigil.json lives next to the executable. Back it up to preserve your trusted-processes customisations.");
-
-            // ── Registry persistence watcher ──────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Registry Persistence Watcher (Windows)");
-            body(
-                ui,
-                "Vigil polls the four standard Windows autorun keys every 30 seconds \
-                 and raises a high-severity alert when a new entry appears:\n\n\
-                 \u{00a0}\u{00a0}\u{2022} HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\
-                 \u{00a0}\u{00a0}\u{2022} HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\
-                 \u{00a0}\u{00a0}\u{2022} HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\
-                 \u{00a0}\u{00a0}\u{2022} HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\n\
-                 These are the most heavily abused persistence locations — malware \
-                 writes itself here so it survives a reboot.  Existing entries at \
-                 start-up are baselined silently; only **new** entries raise an alert.",
-            );
-
-            // ── Running before login ──────────────────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Running Before Login (all platforms)");
-            body(
-                ui,
-                "Vigil can install itself as a boot-time service/daemon so it \
-                 monitors network connections even before a user logs in. \
-                 Connections captured before login get a +2 score bump and a red \
-                 \u{201C}PL\u{201D} badge in the Time column — the first user to log \
-                 in sees the backlog in the Alerts tab (subject to the 200-row cap).\n\n\
-                 Install from an elevated shell:\n\n\
-                 \u{00a0}\u{00a0}Windows (Admin CMD):  vigil.exe --install-service\n\
-                 \u{00a0}\u{00a0}macOS   (root):       sudo vigil --install-service\n\
-                 \u{00a0}\u{00a0}Linux   (root):       sudo vigil --install-service\n\n\
-                 Uninstall with  --uninstall-service.  The service runs the monitor \
-                 only — tray icon and UI still require a logged-in desktop session.",
-            );
-
-            // ── Reputation & Telemetry (Phase 10) ─────────────────────────────
-            ui.add_space(8.0);
-            section(ui, "Reputation, Geolocation & Telemetry");
-            body(
-                ui,
-                "Vigil enriches each connection with offline reputation data when you \
-                 configure the relevant fields in vigil.json:\n\n\
-                 \u{00a0}\u{00a0}\u{2022} geoip_city_db / geoip_asn_db — path to MaxMind \
-                 GeoLite2-City and GeoLite2-ASN .mmdb files (download free from MaxMind). \
-                 Adds country code, ASN number, and AS organisation to each connection.\n\
-                 \u{00a0}\u{00a0}\u{2022} allowed_countries — list of ISO country codes \
-                 (e.g. [\"US\",\"GB\"]). Connections to anywhere else score +2.\n\
-                 \u{00a0}\u{00a0}\u{2022} blocklist_paths — paths to plain-text IP blocklists \
-                 (one IP or CIDR per line, `#` for comments). Hits score +3 and get a REP \
-                 badge.\n\
-                 \u{00a0}\u{00a0}\u{2022} fswatch_enabled — watches Temp, AppData, and \
-                 Downloads for new .exe/.dll drops; a connection from a freshly-dropped \
-                 file within fswatch_window_secs scores +3 (DRP badge).\n\
-                 \u{00a0}\u{00a0}\u{2022} long_lived_secs — threshold for the +2 long-lived \
-                 bonus on untrusted processes (LL badge, default 3600 s).\n\
-                 \u{00a0}\u{00a0}\u{2022} reverse_dns_enabled — off by default (leaks which \
-                 IPs Vigil is inspecting to the OS resolver). When on, remote IPs are \
-                 reverse-resolved and high-entropy hostnames earn a +2 DGA bonus.\n\n\
-                 All of these are additive: a connection can accumulate REP + DRP + LL + \
-                 DGA in the same row.",
-            );
-
-            // ── Version ───────────────────────────────────────────────────────
             ui.add_space(16.0);
             ui.separator();
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             ui.label(
                 RichText::new(format!("Vigil v{}", env!("CARGO_PKG_VERSION")))
                     .color(theme::TEXT3)
                     .size(10.5),
             );
-            ui.add_space(16.0);
+            ui.add_space(10.0);
         });
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+fn hero(ui: &mut egui::Ui) {
+    egui::Frame::NONE
+        .fill(theme::SURFACE2)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT_BG))
+        .corner_radius(14.0)
+        .inner_margin(egui::Margin::symmetric(18, 18))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new("Operator Help")
+                        .color(theme::TEXT)
+                        .size(20.0)
+                        .strong(),
+                );
+                ui.add_space(6.0);
+                chip(ui, "Real-time monitoring");
+                chip(ui, "Offline enrichment");
+                chip(ui, "High-signal triage");
+            });
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(
+                    "A quick operational guide: what Vigil watches, how the score is built, and where the important controls live.",
+                )
+                .color(theme::TEXT2)
+                .size(12.0),
+            );
+        });
+}
 
-fn section(ui: &mut egui::Ui, title: &str) {
+fn card(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::NONE
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).color(theme::TEXT).size(13.5).strong());
+            ui.add_space(10.0);
+            f(ui);
+        });
+    ui.add_space(14.0);
+}
+
+fn chip(ui: &mut egui::Ui, text: &str) {
     ui.label(
-        RichText::new(title)
-            .color(theme::TEXT)
-            .size(13.0)
+        RichText::new(format!(" {text} "))
+            .color(theme::ACCENT)
+            .background_color(theme::ACCENT_BG)
+            .size(10.5)
             .strong(),
     );
-    ui.add_space(3.0);
 }
 
 fn body(ui: &mut egui::Ui, text: &str) {
-    ui.add(
-        egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.5)).wrap(),
-    );
+    ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.7)).wrap());
+}
+
+fn bullet(ui: &mut egui::Ui, key: &str, text: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("▸").color(theme::ACCENT).size(11.0));
+        ui.add_space(2.0);
+        ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong());
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.0)).wrap());
+    });
+    ui.add_space(4.0);
 }
 
 fn score_row(ui: &mut egui::Ui, points: &str, color: egui::Color32, description: &str) {
     ui.horizontal(|ui| {
         ui.add_sized(
-            [28.0, 18.0],
+            [34.0, 18.0],
             egui::Label::new(
                 RichText::new(points)
                     .color(color)
                     .monospace()
-                    .size(11.5)
+                    .size(11.7)
                     .strong(),
             ),
         );
         ui.add_space(4.0);
-        ui.add(
-            egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.0))
-                .wrap(),
-        );
+        ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap());
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
 }
 
 fn field_row(ui: &mut egui::Ui, field: &str, description: &str) {
     ui.horizontal(|ui| {
         ui.add_sized(
-            [80.0, 18.0],
-            egui::Label::new(
-                RichText::new(field)
-                    .color(theme::TEXT)
-                    .size(11.5)
-                    .strong(),
-            ),
+            [96.0, 18.0],
+            egui::Label::new(RichText::new(field).color(theme::TEXT).size(11.7).strong()),
         );
-        ui.add(
-            egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.0))
-                .wrap(),
-        );
+        ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap());
     });
-    ui.add_space(3.0);
-}
-
-fn tip(ui: &mut egui::Ui, text: &str) {
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("\u{25b8}").color(theme::ACCENT).size(11.0));
-        ui.add_space(2.0);
-        ui.add(
-            egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.0)).wrap(),
-        );
-    });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
 }

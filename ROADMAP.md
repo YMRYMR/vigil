@@ -115,31 +115,33 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 - [x] `src/ui/mod.rs` — `VigilApp` implementing `eframe::App` (`fn ui` in eframe 0.34)
       - Drains `broadcast::Receiver<ConnEvent>` via `try_recv` loop each frame
       - `VecDeque<ConnInfo>` for activity (cap 500) and alerts (cap 200)
-      - `selected_activity/alert: Option<usize>` (index into VecDeque)
+      - process-first `selected_activity/alert: Option<ProcessSelection>`
       - `active_tab: Tab` enum, `unseen_alerts: usize`, `paused: bool`, `kill_confirm: bool`
 - [x] `src/ui/theme.rs` — 11 colour constants; `apply()` sets egui Visuals + text styles
 - [x] `src/ui/tab_bar.rs` — `Tab` enum + `tab_bar()` widget; ACCENT 2 px underline on active
 
 ### 5b — Activity + Alerts tables ✅
 - [x] `src/ui/activity.rs` — `egui_extras::TableBuilder`: Time · Process · Remote · Status · Score
-      Score-coloured process name; monospace remote addr; click any cell to select row
+      Process-grouped cards with stacked connections; click process header for the
+      full process summary, or a child row for a specific connection
 - [x] `src/ui/alerts.rs` — columns: Time · Process · Score · Remote · Reasons
       Empty-state placeholder; DANGER/WARN text colour on process column
 
 ### 5c — Inspector panel ✅
-- [x] `src/ui/inspector.rs` — `show(ui, info, kill_confirm) -> Option<Action>`
-      Placeholder when nothing selected; score badge + kv rows + reasons when selected
-      Actions: Trust / Open Location / Kill (with kill-confirm dialogue)
+- [x] `src/ui/inspector.rs` — `show(ui, selection, kill_confirm) -> Option<Action>`
+      Process-first summary with score badge, combined reasons, and optional
+      selected-connection details; Trust / Open Location / Kill actions
+      are disabled for unresolved or location-less rows, with kill-confirm dialogue
 
 ### 5d — Settings panel ✅
-- [x] `src/ui/settings.rs` — `SettingsDraft` buffers edits until Save is clicked
+- [x] `src/ui/settings.rs` — `SettingsDraft` auto-saves on change
       Sliders: alert_threshold 1–10, poll_interval_secs 2–60
       Checkboxes: log_all_connections, autostart
-      Trusted processes list with inline Add/Remove; "Settings saved." transient msg
+      Trusted processes grid with inline Add/Remove and shipped-default reset
 
 ### 5e — Help panel ✅
-- [x] `src/ui/help.rs` — static scrollable content: What Vigil does, score table,
-      inspector field explanations, action button explanations, svchost note, tips, version
+- [x] `src/ui/help.rs` — polished operator-help layout: what Vigil does, score table,
+      process-first inspector explanation, action gating, tips, and version
 
 ### 5f — Wire everything ✅
 - [x] Status pill ("● Monitoring" green / "○ Paused" muted) in header
@@ -254,10 +256,10 @@ zero rough edges before seeking public adoption.
 - [x] **Tray left-click = open UI** — `with_menu_on_left_click(false)` + event polling;
       right-click still shows the context menu
 - [x] **Window size/position persistence** — `persist_window: true` in `NativeOptions`
-- [x] **Responsive settings layout** — centred content capped at 700 px; adapts to any
-      window width from narrow to maximised
-- [x] **Trusted processes as filterable grid** — `TableBuilder` with filter bar
-      (shown when >4 entries), per-row Remove button, correct removal under filter
+- [x] **Responsive settings layout** — full-width settings canvas with auto-save and
+      compact trusted-process rows
+- [x] **Trusted processes as filterable grid** — filter bar, per-row Remove button,
+      shipped-default reset, correct removal under filter
 
 ### Code quality
 - [x] All `eprintln!` / `println!` replaced with `tracing::` calls — zero console output

@@ -27,19 +27,18 @@ use std::time::Instant;
 // ── What counts as "executable-like" ──────────────────────────────────────────
 
 const INTERESTING_EXTS: &[&str] = &[
-    "exe", "dll", "scr", "com",           // Windows PE
-    "bat", "cmd", "ps1", "vbs", "js", "wsf", "hta",  // scripts
-    "msi", "msix",                        // installers
-    "jar",                                // cross-platform Java
-    "sh", "py",                           // Unix scripts
-    "dylib", "so",                        // Unix shared libs
-    "app",                                // macOS bundles (rare for droppers but…)
+    "exe", "dll", "scr", "com", // Windows PE
+    "bat", "cmd", "ps1", "vbs", "js", "wsf", "hta", // scripts
+    "msi", "msix", // installers
+    "jar",  // cross-platform Java
+    "sh", "py", // Unix scripts
+    "dylib", "so",  // Unix shared libs
+    "app", // macOS bundles (rare for droppers but…)
 ];
 
 fn is_interesting(path: &Path) -> bool {
     match path.extension().and_then(|e| e.to_str()) {
-        Some(ext) => INTERESTING_EXTS.iter()
-            .any(|i| ext.eq_ignore_ascii_case(i)),
+        Some(ext) => INTERESTING_EXTS.iter().any(|i| ext.eq_ignore_ascii_case(i)),
         None => false,
     }
 }
@@ -56,7 +55,7 @@ fn watched_dirs() -> Vec<PathBuf> {
         out.push(lad.join("Temp"));
     }
     if let Some(appd) = std::env::var_os("APPDATA").map(PathBuf::from) {
-        out.push(appd);  // %APPDATA% == Roaming
+        out.push(appd); // %APPDATA% == Roaming
     }
 
     // USERPROFILE\Downloads on Windows; $HOME/Downloads on Unix.
@@ -75,7 +74,8 @@ fn watched_dirs() -> Vec<PathBuf> {
     }
 
     // Dedup + filter to existing dirs only
-    out.sort(); out.dedup();
+    out.sort();
+    out.dedup();
     out.retain(|p| p.is_dir());
     out
 }
@@ -100,8 +100,12 @@ fn canon(p: &str) -> String {
 }
 
 fn record_drop(path: &Path) {
-    if !is_interesting(path) { return; }
-    let Some(s) = path.to_str() else { return; };
+    if !is_interesting(path) {
+        return;
+    }
+    let Some(s) = path.to_str() else {
+        return;
+    };
     let map = DROPPED.get_or_init(DashMap::new);
     map.insert(canon(s), Instant::now());
 
@@ -118,7 +122,11 @@ pub fn dropped_within(exe_path: &str, window: std::time::Duration) -> Option<std
     let map = DROPPED.get()?;
     let entry = map.get(&canon(exe_path))?;
     let age = Instant::now().saturating_duration_since(*entry);
-    if age <= window { Some(age) } else { None }
+    if age <= window {
+        Some(age)
+    } else {
+        None
+    }
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
@@ -156,20 +164,26 @@ pub fn start() {
         return;
     }
 
-    tracing::info!("fswatch: watching {watching} director{}",
-        if watching == 1 { "y" } else { "ies" });
+    tracing::info!(
+        "fswatch: watching {watching} director{}",
+        if watching == 1 { "y" } else { "ies" }
+    );
 
     // Leak so the watcher lives for the process lifetime.
     Box::leak(Box::new(watcher));
 }
 
 fn handle(res: notify::Result<Event>) {
-    let Ok(ev) = res else { return; };
+    let Ok(ev) = res else {
+        return;
+    };
     let is_drop = matches!(
         ev.kind,
         EventKind::Create(_) | EventKind::Modify(notify::event::ModifyKind::Data(_))
     );
-    if !is_drop { return; }
+    if !is_drop {
+        return;
+    }
     for p in &ev.paths {
         record_drop(p);
     }

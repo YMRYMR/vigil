@@ -8,7 +8,7 @@
 //!
 //! # Commands
 //! The caller forwards `TrayCmd` values over a `std::sync::mpsc` channel:
-//! - `Alert(ConnInfo)` — display a notification, switch icon to ⚠
+//! - `Alert(Box<ConnInfo>)` — display a notification, switch icon to ⚠
 //! - `ResetOk`         — switch icon back to the normal ● state
 //!
 //! `show_window` is an `Arc<AtomicBool>` set to `true` when the user clicks
@@ -27,9 +27,10 @@ use tray_icon::{
 };
 
 /// Commands sent from the monitor / UI to the tray thread.
+#[allow(clippy::large_enum_variant)]
 pub enum TrayCmd {
     /// A new threat alert — show a notification and update the icon.
-    Alert(ConnInfo),
+    Alert(Box<ConnInfo>),
     /// Return the icon to the normal "monitoring" state.
     ResetOk,
 }
@@ -37,35 +38,34 @@ pub enum TrayCmd {
 // ── Icon generation ───────────────────────────────────────────────────────────
 
 fn make_circle_icon(r: u8, g: u8, b: u8) -> tray_icon::Icon {
-    const SIZE:   u32 = 32;
+    const SIZE: u32 = 32;
     const CENTER: f32 = 15.5;
     const RADIUS: f32 = 13.0;
-    const INNER:  f32 = 11.0;
+    const INNER: f32 = 11.0;
 
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
     for y in 0..SIZE {
         for x in 0..SIZE {
-            let dx  = x as f32 - CENTER;
-            let dy  = y as f32 - CENTER;
-            let d   = (dx * dx + dy * dy).sqrt();
+            let dx = x as f32 - CENTER;
+            let dy = y as f32 - CENTER;
+            let d = (dx * dx + dy * dy).sqrt();
             let idx = ((y * SIZE + x) * 4) as usize;
             if d <= RADIUS {
                 let boost = if d <= INNER { 40u8 } else { 0u8 };
-                rgba[idx]     = r.saturating_add(boost);
+                rgba[idx] = r.saturating_add(boost);
                 rgba[idx + 1] = g.saturating_add(boost);
                 rgba[idx + 2] = b.saturating_add(boost);
                 rgba[idx + 3] = 255;
             }
         }
     }
-    tray_icon::Icon::from_rgba(rgba, SIZE, SIZE)
-        .expect("hardcoded icon dimensions are valid")
+    tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("hardcoded icon dimensions are valid")
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
 struct TrayIcons {
-    ok:    tray_icon::Icon,
+    ok: tray_icon::Icon,
     alert: tray_icon::Icon,
 }
 
@@ -73,25 +73,25 @@ struct TrayIcons {
 ///
 /// - `cmd_rx`      — receives `TrayCmd` messages from the UI/monitor
 /// - `show_window` — set to `true` when "Open Vigil" is clicked (menu or
-///                   notification click); cleared by the UI each frame
+///   notification click); cleared by the UI each frame
 /// - `log_dir`     — path opened when "Open Logs Folder" is clicked
 /// - `pending_nav` — filled with the clicked `ConnInfo` so the UI can navigate
 pub fn run(
-    cmd_rx:      Receiver<TrayCmd>,
+    cmd_rx: Receiver<TrayCmd>,
     show_window: Arc<AtomicBool>,
-    log_dir:     PathBuf,
+    log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
     let icons = TrayIcons {
-        ok:    make_circle_icon(0x22, 0xC5, 0x5E),
+        ok: make_circle_icon(0x22, 0xC5, 0x5E),
         alert: make_circle_icon(0xF5, 0x9E, 0x0B),
     };
 
     // ── Context menu ──────────────────────────────────────────────────────────
-    let menu      = Menu::new();
-    let open_item = MenuItem::new("Open Vigil",       true, None);
+    let menu = Menu::new();
+    let open_item = MenuItem::new("Open Vigil", true, None);
     let logs_item = MenuItem::new("Open Logs Folder", true, None);
-    let quit_item = MenuItem::new("Quit",              true, None);
+    let quit_item = MenuItem::new("Quit", true, None);
     let _ = menu.append_items(&[
         &open_item,
         &logs_item,
@@ -113,20 +113,31 @@ pub fn run(
         .build()
         .expect("Failed to create tray icon");
 
-    event_loop(tray, icons, cmd_rx, quit_id, open_id, logs_id, log_dir, show_window, pending_nav);
+    event_loop(
+        tray,
+        icons,
+        cmd_rx,
+        quit_id,
+        open_id,
+        logs_id,
+        log_dir,
+        show_window,
+        pending_nav,
+    );
 }
 
 // ── Platform event loops ──────────────────────────────────────────────────────
 
 #[cfg(windows)]
+#[allow(clippy::too_many_arguments)]
 fn event_loop(
-    tray:        TrayIcon,
-    icons:       TrayIcons,
-    cmd_rx:      Receiver<TrayCmd>,
-    quit_id:     tray_icon::menu::MenuId,
-    open_id:     tray_icon::menu::MenuId,
-    logs_id:     tray_icon::menu::MenuId,
-    log_dir:     PathBuf,
+    tray: TrayIcon,
+    icons: TrayIcons,
+    cmd_rx: Receiver<TrayCmd>,
+    quit_id: tray_icon::menu::MenuId,
+    open_id: tray_icon::menu::MenuId,
+    logs_id: tray_icon::menu::MenuId,
+    log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
@@ -134,14 +145,16 @@ fn event_loop(
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
     };
 
-    let mut msg      = MSG::default();
+    let mut msg = MSG::default();
     let mut in_alert = false;
 
     loop {
         // Drain Win32 messages without blocking.
         unsafe {
             while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
-                if msg.message == 0x0012 { return; } // WM_QUIT
+                if msg.message == 0x0012 {
+                    return;
+                } // WM_QUIT
                 let _ = TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -150,7 +163,12 @@ fn event_loop(
         // ── Tray icon click events ────────────────────────────────────────────
         // Left-click → open window directly (menu_on_left_click is false).
         while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = ev
+            {
                 show_window.store(true, Ordering::Relaxed);
             }
         }
@@ -192,14 +210,15 @@ fn event_loop(
 }
 
 #[cfg(not(windows))]
+#[allow(clippy::too_many_arguments)]
 fn event_loop(
-    _tray:       TrayIcon,
-    _icons:      TrayIcons,
-    cmd_rx:      Receiver<TrayCmd>,
-    _quit_id:    tray_icon::menu::MenuId,
-    _open_id:    tray_icon::menu::MenuId,
-    _logs_id:    tray_icon::menu::MenuId,
-    _log_dir:    PathBuf,
+    _tray: TrayIcon,
+    _icons: TrayIcons,
+    cmd_rx: Receiver<TrayCmd>,
+    _quit_id: tray_icon::menu::MenuId,
+    _open_id: tray_icon::menu::MenuId,
+    _logs_id: tray_icon::menu::MenuId,
+    _log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {

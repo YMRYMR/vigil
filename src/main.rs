@@ -116,7 +116,8 @@ fn main() {
         tracing::info!(
             "Phase 10: geoip={}, blocklists={} ({} entries), fswatch={}, revdns={}",
             geoip::is_loaded(),
-            n_lists, n_entries,
+            n_lists,
+            n_entries,
             c.fswatch_enabled,
             c.reverse_dns_enabled,
         );
@@ -148,13 +149,13 @@ fn main() {
     //                 when the user clicks a notification; cleared by VigilApp.
     // `pending_nav`:  filled with the ConnInfo from a clicked notification so
     //                 the UI can switch to Alerts and select the right row.
-    let show_window  = Arc::new(AtomicBool::new(false));
+    let show_window = Arc::new(AtomicBool::new(false));
     let show_window_tray = show_window.clone();
 
     let pending_nav: Arc<std::sync::Mutex<Option<crate::types::ConnInfo>>> =
         Arc::new(std::sync::Mutex::new(None));
     let pending_nav_tray = pending_nav.clone();
-    let pending_nav_ui   = pending_nav.clone();
+    let pending_nav_ui = pending_nav.clone();
 
     let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<tray::TrayCmd>(64);
 

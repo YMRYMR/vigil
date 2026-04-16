@@ -19,8 +19,8 @@ notification, and a full GUI — the moment something looks wrong.
   left-click opens the UI, right-click shows the menu
 - **Clickable notifications** — clicking a desktop alert opens Vigil and
   navigates directly to the triggering connection
-- **Full GUI** — sortable/filterable Activity and Alerts tables, Inspector
-  panel (trust, kill, open file location), Settings, Help
+- **Full GUI** — process-grouped Activity and Alerts views, a process-first
+  Inspector, auto-save Settings, and a polished Help screen
 - **Rolling daily log** at `<install-dir>/logs/vigil.YYYY-MM-DD`
 - **Autostart at login** enabled on first run (configurable in Settings)
 
@@ -144,9 +144,17 @@ editable in-app via the **Settings** tab:
 
 Vigil ships with a curated list of common trusted processes (browsers,
 Windows system services, antivirus, communication apps, etc.) so you get
-useful alerts out of the box without tuning.  You can add or remove entries
-in the **Settings → Trusted Processes** table, or click **Trust** in the
-Inspector panel while a connection is selected.
+useful alerts out of the box without tuning. On first run that list is
+written into `vigil.json` as the starting config, and any later edits you
+make in-app persist immediately. You can add or remove entries in the
+**Settings → Trusted Processes** grid, or click **Trust** in the Inspector
+panel while a real process with a known executable location is selected.
+The Settings tab also includes a `Reset shipped defaults` button if you want
+to restore the bundled list.
+
+The Inspector disables `Trust` and `Open Loc` when the executable location is
+unknown, and disables `Kill` for unresolved PID placeholder rows like
+`<11540>`.
 
 ---
 

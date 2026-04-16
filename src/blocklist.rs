@@ -31,7 +31,7 @@ struct Blocklist {
     /// File stem shown in alerts (e.g. "abuseipdb").
     name: String,
     /// Exact-match IPs (fast path).
-    ips:  std::collections::HashSet<IpAddr>,
+    ips: std::collections::HashSet<IpAddr>,
     /// CIDR networks (linear scan; usually small).
     nets: Vec<IpNetwork>,
 }
@@ -46,7 +46,8 @@ impl Blocklist {
             }
         };
 
-        let name = path.file_stem()
+        let name = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("blocklist")
             .to_string();
@@ -58,29 +59,36 @@ impl Blocklist {
             let line = match raw_line.find('#') {
                 Some(i) => &raw_line[..i],
                 None => raw_line,
-            }.trim();
-            if line.is_empty() { continue; }
+            }
+            .trim();
+            if line.is_empty() {
+                continue;
+            }
 
             if line.contains('/') {
                 match line.parse::<IpNetwork>() {
                     Ok(n) => nets.push(n),
-                    Err(e) => tracing::warn!(
-                        "{}:{}: bad CIDR '{line}': {e}", path.display(), lineno + 1
-                    ),
+                    Err(e) => {
+                        tracing::warn!("{}:{}: bad CIDR '{line}': {e}", path.display(), lineno + 1)
+                    }
                 }
             } else {
                 match line.parse::<IpAddr>() {
-                    Ok(a) => { ips.insert(a); }
-                    Err(e) => tracing::warn!(
-                        "{}:{}: bad IP '{line}': {e}", path.display(), lineno + 1
-                    ),
+                    Ok(a) => {
+                        ips.insert(a);
+                    }
+                    Err(e) => {
+                        tracing::warn!("{}:{}: bad IP '{line}': {e}", path.display(), lineno + 1)
+                    }
                 }
             }
         }
 
         tracing::info!(
             "loaded blocklist '{name}': {} IPs, {} CIDRs from {}",
-            ips.len(), nets.len(), path.display()
+            ips.len(),
+            nets.len(),
+            path.display()
         );
         Some(Self { name, ips, nets })
     }

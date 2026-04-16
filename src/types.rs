@@ -12,22 +12,22 @@ pub struct ConnInfo {
     pub timestamp: String,
 
     // ── Process ──────────────────────────────────────────────────────────────
-    pub proc_name:    String,   // e.g. "chrome.exe"
-    pub pid:          u32,
-    pub proc_path:    String,   // empty if unavailable
-    pub proc_user:    String,   // empty if unavailable
-    pub parent_name:  String,
-    pub parent_pid:   u32,
-    pub service_name: String,   // Windows service name, if any
-    pub publisher:    String,   // PE CompanyName, Windows only
+    pub proc_name: String, // e.g. "chrome.exe"
+    pub pid: u32,
+    pub proc_path: String, // empty if unavailable
+    pub proc_user: String, // empty if unavailable
+    pub parent_name: String,
+    pub parent_pid: u32,
+    pub service_name: String, // Windows service name, if any
+    pub publisher: String,    // PE CompanyName, Windows only
 
     // ── Network ──────────────────────────────────────────────────────────────
-    pub local_addr:  String,    // "ip:port"
-    pub remote_addr: String,    // "ip:port" or "LISTEN"
-    pub status:      String,    // ESTABLISHED | LISTEN | SYN_SENT | …
+    pub local_addr: String,  // "ip:port"
+    pub remote_addr: String, // "ip:port" or "LISTEN"
+    pub status: String,      // ESTABLISHED | LISTEN | SYN_SENT | …
 
     // ── Score ─────────────────────────────────────────────────────────────────
-    pub score:   u8,
+    pub score: u8,
     pub reasons: Vec<String>,
 
     // ── Ancestry ─────────────────────────────────────────────────────────────
@@ -79,6 +79,7 @@ pub struct ConnInfo {
 // ── Events sent monitor → UI ──────────────────────────────────────────────────
 
 /// Sent over the broadcast channel each time the monitor sees something new.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum ConnEvent {
     /// score < alert_threshold (or log_all_connections is true and score == 0)
@@ -87,8 +88,8 @@ pub enum ConnEvent {
     Alert(ConnInfo),
     /// A previously-known connection has disappeared.
     Closed {
-        pid:    u32,
-        local:  String,
+        pid: u32,
+        local: String,
         remote: String,
     },
 }
@@ -96,17 +97,19 @@ pub enum ConnEvent {
 // ── Tray state ────────────────────────────────────────────────────────────────
 
 /// Drives the tray icon colour and tooltip.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum TrayState {
     #[default]
-    Ok,       // green  — monitoring, no unseen alerts
-    Alert,    // amber  — unseen alerts present
-    Stopped,  // grey   — monitoring paused
+    Ok, // green  — monitoring, no unseen alerts
+    Alert,   // amber  — unseen alerts present
+    Stopped, // grey   — monitoring paused
 }
 
 // ── Control messages UI → monitor ─────────────────────────────────────────────
 
 /// Sent from the UI (or tray) to the monitor's control channel.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum MonitorCmd {
     Stop,

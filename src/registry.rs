@@ -29,17 +29,37 @@ pub mod win {
     /// are silently skipped.
     fn snapshot() -> HashMap<(String, String), String> {
         let mut map = HashMap::new();
-        read_run_key(&mut map, "HKCU\\Run",     HKEY_CURRENT_USER,  r"Software\Microsoft\Windows\CurrentVersion\Run");
-        read_run_key(&mut map, "HKLM\\Run",     HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run");
-        read_run_key(&mut map, "HKCU\\RunOnce", HKEY_CURRENT_USER,  r"Software\Microsoft\Windows\CurrentVersion\RunOnce");
-        read_run_key(&mut map, "HKLM\\RunOnce", HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\RunOnce");
+        read_run_key(
+            &mut map,
+            "HKCU\\Run",
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        );
+        read_run_key(
+            &mut map,
+            "HKLM\\Run",
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+        );
+        read_run_key(
+            &mut map,
+            "HKCU\\RunOnce",
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+        );
+        read_run_key(
+            &mut map,
+            "HKLM\\RunOnce",
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\RunOnce",
+        );
         map
     }
 
     fn read_run_key(
         map: &mut HashMap<(String, String), String>,
-        label:  &str,
-        hive:   winreg::HKEY,
+        label: &str,
+        hive: winreg::HKEY,
         subkey: &str,
     ) {
         let key = match RegKey::predef(hive).open_subkey(subkey) {
@@ -95,30 +115,30 @@ pub mod win {
                     tracing::warn!("{}", reason);
 
                     let info = ConnInfo {
-                        timestamp:      Local::now().format("%H:%M:%S").to_string(),
-                        proc_name:      format!("[Registry] {}", name),
-                        pid:            0,
-                        proc_path:      data.clone(),
-                        proc_user:      String::new(),
-                        parent_name:    label.clone(),
-                        parent_pid:     0,
+                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        proc_name: format!("[Registry] {}", name),
+                        pid: 0,
+                        proc_path: data.clone(),
+                        proc_user: String::new(),
+                        parent_name: label.clone(),
+                        parent_pid: 0,
                         ancestor_chain: vec![],
-                        service_name:   String::new(),
-                        publisher:      String::new(),
-                        local_addr:     label.clone(),
-                        remote_addr:    "REGISTRY".to_string(),
-                        status:         "AUTORUN".to_string(),
-                        score:          alert_threshold.max(8),
-                        reasons:        vec![reason],
-                        pre_login:      crate::session::is_pre_login(),
-                        hostname:       None,
-                        country:        None,
-                        asn:            None,
-                        asn_org:        None,
+                        service_name: String::new(),
+                        publisher: String::new(),
+                        local_addr: label.clone(),
+                        remote_addr: "REGISTRY".to_string(),
+                        status: "AUTORUN".to_string(),
+                        score: alert_threshold.max(8),
+                        reasons: vec![reason],
+                        pre_login: crate::session::is_pre_login(),
+                        hostname: None,
+                        country: None,
+                        asn: None,
+                        asn_org: None,
                         reputation_hit: None,
                         recently_dropped: false,
-                        long_lived:     false,
-                        dga_like:       false,
+                        long_lived: false,
+                        dga_like: false,
                     };
 
                     let _ = tx.send(ConnEvent::Alert(info));

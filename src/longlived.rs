@@ -18,7 +18,9 @@ pub struct LongLivedTracker {
 }
 
 impl LongLivedTracker {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Record the first-seen time for `(pid, remote_ip)` if not already known.
     /// Returns the `Duration` since first-seen.
@@ -39,7 +41,10 @@ impl LongLivedTracker {
         self.seen.retain(|(pid, ip), _| keep(*pid, ip));
     }
 
-    pub fn len(&self) -> usize { self.seen.len() }
+    #[allow(dead_code)]
+    pub fn len(&self) -> usize {
+        self.seen.len()
+    }
 }
 
 #[cfg(test)]

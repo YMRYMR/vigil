@@ -28,6 +28,7 @@ pub struct GeoInfo {
 }
 
 impl GeoInfo {
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.country.is_none() && self.asn.is_none() && self.asn_org.is_none()
     }
@@ -39,13 +40,13 @@ impl GeoInfo {
 /// when the backing data is `Vec<u8>`).
 pub struct GeoEngine {
     city: Option<Reader<Vec<u8>>>,
-    asn:  Option<Reader<Vec<u8>>>,
+    asn: Option<Reader<Vec<u8>>>,
 }
 
 impl GeoEngine {
     pub fn load(city_path: &str, asn_path: &str) -> Self {
         let city = open(city_path, "city");
-        let asn  = open(asn_path,  "asn");
+        let asn = open(asn_path, "asn");
         Self { city, asn }
     }
 
@@ -67,7 +68,8 @@ impl GeoEngine {
 
         if let Some(r) = &self.city {
             if let Ok(rec) = r.lookup::<geoip2::City>(addr) {
-                info.country = rec.country
+                info.country = rec
+                    .country
                     .and_then(|c| c.iso_code)
                     .map(|s| s.to_uppercase());
             }
@@ -105,8 +107,12 @@ fn open(path: &str, label: &str) -> Option<Reader<Vec<u8>>> {
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
-            v4.is_loopback() || v4.is_private() || v4.is_link_local()
-                || v4.is_broadcast() || v4.is_unspecified() || v4.is_documentation()
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_documentation()
         }
         IpAddr::V6(v6) => {
             v6.is_loopback() || v6.is_unspecified()
@@ -139,5 +145,10 @@ pub fn lookup(ip: &str) -> GeoInfo {
 }
 
 pub fn is_loaded() -> bool {
-    ENGINE.read().unwrap().as_ref().map(|e| e.is_loaded()).unwrap_or(false)
+    ENGINE
+        .read()
+        .unwrap()
+        .as_ref()
+        .map(|e| e.is_loaded())
+        .unwrap_or(false)
 }

@@ -46,9 +46,9 @@ mod win {
     use windows::core::{PCWSTR, PWSTR};
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, ERROR_SUCCESS};
     use windows::Win32::System::Diagnostics::Etw::{
-        CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW,
-        CONTROLTRACE_HANDLE, EVENT_RECORD, EVENT_TRACE_CONTROL,
-        EVENT_TRACE_FLAG, EVENT_TRACE_LOGFILEW, EVENT_TRACE_PROPERTIES,
+        CloseTrace, ControlTraceW, OpenTraceW, ProcessTrace, StartTraceW, CONTROLTRACE_HANDLE,
+        EVENT_RECORD, EVENT_TRACE_CONTROL, EVENT_TRACE_FLAG, EVENT_TRACE_LOGFILEW,
+        EVENT_TRACE_PROPERTIES,
     };
 
     // ── Win32 constants ────────────────────────────────────────────────────────
@@ -119,8 +119,7 @@ mod win {
     /// Returns `false` on hard failures (no admin, etc.).
     unsafe fn ensure_session() -> bool {
         let name = session_name_wide();
-        let props_size =
-            std::mem::size_of::<EVENT_TRACE_PROPERTIES>() + name.len() * 2;
+        let props_size = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() + name.len() * 2;
         let mut buf = vec![0u8; props_size];
         fill_props(&mut buf, props_size, &name);
 
@@ -164,13 +163,12 @@ mod win {
         (*p).Wnode.Guid = SYSTEM_TRACE_GUID;
         (*p).LogFileMode = EVENT_TRACE_REAL_TIME_MODE;
         (*p).EnableFlags = TCPIP_FLAG;
-        (*p).LoggerNameOffset =
-            std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
+        (*p).LoggerNameOffset = std::mem::size_of::<EVENT_TRACE_PROPERTIES>() as u32;
 
         // Write the session name into the bytes immediately following the struct.
-        let dst =
-            buf.as_mut_ptr().add(std::mem::size_of::<EVENT_TRACE_PROPERTIES>())
-                as *mut u16;
+        let dst = buf
+            .as_mut_ptr()
+            .add(std::mem::size_of::<EVENT_TRACE_PROPERTIES>()) as *mut u16;
         std::ptr::copy_nonoverlapping(name.as_ptr(), dst, name.len());
     }
 
@@ -179,8 +177,10 @@ mod win {
     fn etw_thread() {
         let mut name = session_name_wide();
 
-        let mut log_file = EVENT_TRACE_LOGFILEW::default();
-        log_file.LoggerName = PWSTR(name.as_mut_ptr());
+        let mut log_file = EVENT_TRACE_LOGFILEW {
+            LoggerName: PWSTR(name.as_mut_ptr()),
+            ..EVENT_TRACE_LOGFILEW::default()
+        };
 
         unsafe {
             // Anonymous union fields require an unsafe block.
@@ -230,10 +230,7 @@ mod win {
             return;
         }
 
-        let data = std::slice::from_raw_parts(
-            ev.UserData as *const u8,
-            ev.UserDataLength as usize,
-        );
+        let data = std::slice::from_raw_parts(ev.UserData as *const u8, ev.UserDataLength as usize);
 
         let pid = u32::from_le_bytes([data[0], data[1], data[2], data[3]]);
         // Network byte order → individual octets → Ipv4Addr::new (no swap needed).

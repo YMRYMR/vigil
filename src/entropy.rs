@@ -35,7 +35,9 @@ pub fn shannon_entropy(s: &str) -> f32 {
     }
     let mut h = 0.0f32;
     for &c in counts.iter() {
-        if c == 0 { continue; }
+        if c == 0 {
+            continue;
+        }
         let p = c as f32 / len;
         h -= p * p.log2();
     }
@@ -45,7 +47,11 @@ pub fn shannon_entropy(s: &str) -> f32 {
 /// Returns `true` when the leftmost label of `hostname` has entropy ≥ `threshold`.
 /// Short labels (< 7 chars) and labels containing no letters return `false`.
 pub fn is_dga_like(hostname: &str, threshold: f32) -> bool {
-    let label = hostname.split('.').next().unwrap_or("").to_ascii_lowercase();
+    let label = hostname
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     if label.len() < 7 {
         return false;
     }

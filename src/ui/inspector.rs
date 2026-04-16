@@ -1,15 +1,14 @@
 //! Right-side inspector panel.
 //!
-//! Shows full detail for the currently-selected connection.
-//! Returns an `Action` if the user clicked a button.
+//! The inspector is process-first. A process summary is always shown; when the
+//! user clicks a specific stacked connection row, the selected connection is
+//! shown underneath the process summary.
 
-use crate::types::ConnInfo;
-use crate::ui::theme;
+use crate::ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection};
 use egui::{RichText, Ui};
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 
-/// Returned when the user presses one of the inspector action buttons.
 #[derive(Debug)]
 pub enum Action {
     Trust,
@@ -19,17 +18,15 @@ pub enum Action {
     KillCancelled,
 }
 
-// ── Public entry points ───────────────────────────────────────────────────────
+// ── Public entry point ────────────────────────────────────────────────────────
 
-/// Show the inspector panel.
-///
-/// `kill_confirm` — when `true`, the kill-confirmation UI is shown instead of
-/// the normal action buttons.
-///
-/// Returns `Some(Action)` if the user triggered an action, `None` otherwise.
-pub fn show(ui: &mut Ui, info: Option<&ConnInfo>, kill_confirm: bool) -> Option<Action> {
-    match info {
-        Some(info) => show_detail(ui, info, kill_confirm),
+pub fn show(
+    ui: &mut Ui,
+    selection: Option<&ProcessSelection>,
+    kill_confirm: bool,
+) -> Option<Action> {
+    match selection {
+        Some(selection) => show_detail(ui, selection, kill_confirm),
         None => {
             show_placeholder(ui);
             None
@@ -37,144 +34,104 @@ pub fn show(ui: &mut Ui, info: Option<&ConnInfo>, kill_confirm: bool) -> Option<
     }
 }
 
-// ── Placeholder ───────────────────────────────────────────────────────────────
-
 fn show_placeholder(ui: &mut Ui) {
     let rect = ui.available_rect_before_wrap();
-    let center = rect.center();
     ui.painter().text(
-        center,
+        rect.center(),
         egui::Align2::CENTER_CENTER,
-        "Select a connection\nto inspect",
+        "Select a process\nto inspect",
         egui::FontId::proportional(12.0),
         theme::TEXT3,
     );
 }
 
-// ── Detail view ───────────────────────────────────────────────────────────────
-
-fn show_detail(ui: &mut Ui, info: &ConnInfo, kill_confirm: bool) -> Option<Action> {
+fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Option<Action> {
     let mut action: Option<Action> = None;
+    let ghost = is_ghost_process_name(&sel.proc_name);
+    let known_location = has_known_location(sel);
+    let trust_enabled = known_location;
+    let open_location_enabled = known_location;
+    let kill_enabled = !ghost;
 
     egui::ScrollArea::vertical()
         .id_salt("inspector_scroll")
         .show(ui, |ui| {
             ui.add_space(8.0);
 
-            // ── Score badge + timestamp ───────────────────────────────────────
-            ui.horizontal(|ui| {
-                score_badge(ui, info.score);
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(&info.timestamp)
-                        .color(theme::TEXT2)
-                        .size(11.0),
-                );
-            });
-
-            ui.add_space(6.0);
-
-            // ── Process name + path ───────────────────────────────────────────
-            ui.label(
-                RichText::new(&info.proc_name)
-                    .color(theme::TEXT)
-                    .size(14.0)
-                    .strong(),
-            );
-            if !info.proc_path.is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        RichText::new(&info.proc_path)
-                            .color(theme::TEXT2)
-                            .size(10.5),
-                    )
-                    .wrap(),
-                );
-            }
-
+            process_hero(ui, sel);
             ui.add_space(10.0);
             separator(ui);
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
-            // ── Process section ───────────────────────────────────────────────
             section_header(ui, "Process");
-            kv(ui, "PID", &info.pid.to_string());
-            kv(ui, "User", if info.proc_user.is_empty() { "—" } else { &info.proc_user });
+            kv(ui, "PID", &sel.pid.to_string());
+            kv(ui, "User", nonempty(&sel.proc_user));
+            kv(ui, "Parent", &format!("{} ({})", nonempty(&sel.parent_name), sel.parent_pid));
+            kv(ui, "Service", nonempty(&sel.service_name));
+            kv(ui, "Publisher", nonempty(&sel.publisher));
 
-            // Ancestor tree (replaces the single "Parent" kv row)
-            ancestor_tree(ui, info);
+            ui.add_space(8.0);
+            separator(ui);
+            ui.add_space(8.0);
 
+            section_header(ui, "Connections");
+            kv(ui, "Count", &format!("{}", sel.connection_count));
+            kv(ui, "Distinct ports", &format!("{}", sel.distinct_ports));
+            kv(ui, "Distinct remotes", &format!("{}", sel.distinct_remotes));
+            let statuses = if sel.statuses.is_empty() {
+                "—".to_string()
+            } else {
+                sel.statuses.join(" · ")
+            };
             kv(
                 ui,
-                "Service",
-                if info.service_name.is_empty() { "—" } else { &info.service_name },
-            );
-            kv(
-                ui,
-                "Publisher",
-                if info.publisher.is_empty() { "—" } else { &info.publisher },
+                "Statuses",
+                statuses.as_str(),
             );
 
             ui.add_space(8.0);
             separator(ui);
-            ui.add_space(6.0);
+            ui.add_space(8.0);
 
-            // ── Connection section ────────────────────────────────────────────
-            section_header(ui, "Connection");
-            kv_mono(ui, "Remote", &info.remote_addr);
-            if let Some(host) = info.hostname.as_deref().filter(|h| !h.is_empty()) {
-                kv_mono(ui, "Hostname", host);
-            }
-            kv_mono(ui, "Local", &info.local_addr);
-            kv(ui, "Status", &info.status);
-
-            // ── Reputation / geolocation (Phase 10) ────────────────────────────
-            let has_geo = info.country.is_some() || info.asn.is_some()
-                || info.reputation_hit.is_some() || info.recently_dropped
-                || info.long_lived || info.dga_like;
-            if has_geo {
-                ui.add_space(6.0);
-                if let Some(c) = info.country.as_deref() {
-                    kv(ui, "Country", c);
-                }
-                if let (Some(asn), org) = (info.asn, info.asn_org.as_deref()) {
-                    let label = match org {
-                        Some(o) => format!("AS{asn}  {o}"),
-                        None    => format!("AS{asn}"),
-                    };
-                    kv(ui, "ASN", &label);
-                }
-                if let Some(src) = info.reputation_hit.as_deref() {
-                    kv(ui, "Reputation", &format!("⚠ blocklist: {src}"));
-                }
-                if info.recently_dropped {
-                    kv(ui, "Dropper", "⚠ executable just dropped on disk");
-                }
-                if info.long_lived {
-                    kv(ui, "Long-lived", "⚠ connection open past threshold");
-                }
-                if info.dga_like {
-                    kv(ui, "DGA-like", "⚠ hostname looks random-generated");
-                }
-            }
-
-            // ── Reasons section ───────────────────────────────────────────────
-            if !info.reasons.is_empty() {
-                ui.add_space(8.0);
-                separator(ui);
-                ui.add_space(6.0);
-                section_header(ui, "Why it scored");
-                for reason in &info.reasons {
+            section_header(ui, "Why it scored");
+            if sel.reasons.is_empty() {
+                ui.label(RichText::new("No score reasons recorded.").color(theme::TEXT3).size(11.0));
+            } else {
+                for reason in &sel.reasons {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("▸").color(theme::WARN).size(10.0));
                         ui.add(
-                            egui::Label::new(
-                                RichText::new(reason).color(theme::TEXT2).size(11.0),
-                            )
-                            .wrap(),
+                            egui::Label::new(RichText::new(reason).color(theme::TEXT2).size(11.0))
+                                .wrap(),
                         );
                     });
-                    ui.add_space(1.0);
+                    ui.add_space(2.0);
+                }
+            }
+
+            if let Some(conn) = sel.selected_connection.as_ref() {
+                ui.add_space(8.0);
+                separator(ui);
+                ui.add_space(8.0);
+
+                section_header(ui, "Selected connection");
+                kv_mono(ui, "Local", &conn.local_addr);
+                kv_mono(ui, "Remote", &conn.remote_addr);
+                kv(ui, "Status", &conn.status);
+                kv(ui, "Time", &conn.timestamp);
+                if !conn.reasons.is_empty() {
+                    ui.add_space(4.0);
+                    for reason in &conn.reasons {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("•").color(theme::TEXT3).size(10.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(reason).color(theme::TEXT2).size(10.6),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    }
                 }
             }
 
@@ -182,7 +139,6 @@ fn show_detail(ui: &mut Ui, info: &ConnInfo, kill_confirm: bool) -> Option<Actio
             separator(ui);
             ui.add_space(8.0);
 
-            // ── Action buttons ────────────────────────────────────────────────
             if kill_confirm {
                 ui.label(
                     RichText::new("Really kill this process?")
@@ -191,173 +147,212 @@ fn show_detail(ui: &mut Ui, info: &ConnInfo, kill_confirm: bool) -> Option<Actio
                 );
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    if accent_btn(ui, "✕  Kill").clicked() {
+                    let kill_resp = ui.add_enabled(kill_enabled, accent_btn("✕  Kill"));
+                    let kill_resp = if kill_enabled {
+                        kill_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    } else {
+                        kill_resp.on_hover_text(
+                            "This row is unresolved, so Vigil cannot verify that a process is still running.",
+                        )
+                    };
+                    if kill_resp.clicked() {
                         action = Some(Action::KillConfirmed);
                     }
-                    if muted_btn(ui, "Cancel").clicked() {
+                    if ui
+                        .add(muted_btn("Cancel"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
                         action = Some(Action::KillCancelled);
                     }
                 });
             } else {
                 ui.horizontal_wrapped(|ui| {
-                    if accent_btn(ui, "✓  Trust").clicked() {
+                    let trust_resp = ui.add_enabled(trust_enabled, accent_btn("✓  Trust"));
+                    let trust_resp = if trust_enabled {
+                        trust_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    } else {
+                        trust_resp.on_hover_text(
+                            "Trust is disabled because Vigil does not know this process's executable location.",
+                        )
+                    };
+                    if trust_resp.clicked() {
                         action = Some(Action::Trust);
                     }
-                    if muted_btn(ui, "Open Loc").clicked() {
+                    let open_resp =
+                        ui.add_enabled(open_location_enabled, muted_btn("Open Loc"));
+                    let open_resp = if open_location_enabled {
+                        open_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    } else {
+                        open_resp.on_hover_text("No executable path is known for this process.")
+                    };
+                    if open_resp.clicked() {
                         action = Some(Action::OpenLocation);
                     }
-                    if danger_btn(ui, "Kill").clicked() {
+                    let kill_resp = ui.add_enabled(kill_enabled, danger_btn("Kill"));
+                    let kill_resp = if kill_enabled {
+                        kill_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    } else {
+                        kill_resp.on_hover_text(
+                            "This is an unresolved PID row, so it cannot be killed from the UI.",
+                        )
+                    };
+                    if kill_resp.clicked() {
                         action = Some(Action::Kill);
                     }
                 });
             }
 
-            ui.add_space(16.0);
+            ui.add_space(12.0);
         });
 
     action
 }
 
-// ── Ancestor tree ─────────────────────────────────────────────────────────────
+fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
+    let ghost = is_ghost_process_name(&sel.proc_name);
+    egui::Frame::NONE
+        .fill(theme::SURFACE2)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT_BG))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                score_badge(ui, sel.score);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(&sel.proc_name)
+                            .color(theme::TEXT)
+                            .size(14.5)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!("PID {}  ·  {}", sel.pid, sel.timestamp))
+                            .color(theme::TEXT2)
+                            .size(10.5),
+                    );
+                    ui.label(
+                        RichText::new(format!("Latest: {}  →  {}", sel.status, sel.remote_addr))
+                            .color(theme::TEXT3)
+                            .size(10.0),
+                    );
+                });
+            });
 
-/// Renders the process ancestor tree in the "Process" section.
-///
-/// If `ancestor_chain` is non-empty, shows a "Process tree" section label
-/// followed by each node indented at its depth level.  Level 0 is the current
-/// process; levels 1..n are successive ancestors from `ancestor_chain`.
-///
-/// Falls back to a plain `kv` row when there is no ancestry information.
-fn ancestor_tree(ui: &mut Ui, info: &ConnInfo) {
-    if info.ancestor_chain.is_empty() {
-        // No ancestor data — show a plain parent row.
-        kv(
-            ui,
-            "Parent",
-            &if info.parent_name.is_empty() {
-                "—".to_string()
-            } else {
-                format!("{} ({})", info.parent_name, info.parent_pid)
-            },
-        );
-        return;
-    }
-
-    // Section label, styled like section_header but without the gap that
-    // section_header adds — we keep the same spacing rhythm as other kv rows.
-    ui.horizontal(|ui| {
-        ui.add_sized(
-            [80.0, 16.0],
-            egui::Label::new(RichText::new("Process tree").color(theme::TEXT3).size(11.0)),
-        );
-    });
-    ui.add_space(1.0);
-
-    // Level 0 — the current process itself (no branch prefix).
-    let root_line = format!("{} ({})", info.proc_name, info.pid);
-    ui.add(
-        egui::Label::new(
-            RichText::new(&root_line)
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new(if sel.proc_path.is_empty() {
+                    "No executable path available"
+                } else {
+                    sel.proc_path.as_str()
+                })
                 .color(theme::TEXT2)
-                .size(11.0)
-                .monospace(),
-        )
-        .wrap(),
-    );
+                .size(10.5),
+            );
 
-    // Levels 1..n — one entry per ancestor.
-    for (i, (name, pid)) in info.ancestor_chain.iter().enumerate() {
-        let indent = "  ".repeat(i + 1);
-        let line = format!("{}└─ {} ({})", indent, name, pid);
-        ui.add(
-            egui::Label::new(
-                RichText::new(&line)
-                    .color(theme::TEXT2)
-                    .size(11.0)
-                    .monospace(),
-            )
-            .wrap(),
-        );
-    }
-
-    ui.add_space(1.0);
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                chip(ui, &format!("{} connections", sel.connection_count));
+                chip(ui, &format!("{} ports", sel.distinct_ports));
+                chip(ui, &format!("{} remotes", sel.distinct_remotes));
+                if ghost {
+                    chip(ui, "Unresolved PID");
+                }
+                if sel.proc_path.is_empty() {
+                    chip(ui, "No location");
+                }
+                if sel.selected_connection.is_some() {
+                    chip(ui, "Connection selected");
+                } else {
+                    chip(ui, "Process summary");
+                }
+            });
+        });
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 fn separator(ui: &mut Ui) {
-    let rect = egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(ui.available_width(), 1.0),
-    );
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 1.0));
     ui.painter().rect_filled(rect, 0.0, theme::BORDER);
     ui.advance_cursor_after_rect(rect);
 }
 
 fn section_header(ui: &mut Ui, title: &str) {
-    ui.label(
-        RichText::new(title)
-            .color(theme::TEXT2)
-            .size(10.5)
-            .strong(),
-    );
+    ui.label(RichText::new(title).color(theme::TEXT2).size(10.5).strong());
     ui.add_space(4.0);
 }
 
 fn kv(ui: &mut Ui, key: &str, val: &str) {
     ui.horizontal(|ui| {
         ui.add_sized(
-            [80.0, 16.0],
+            [88.0, 16.0],
             egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
         );
         ui.add(egui::Label::new(RichText::new(val).color(theme::TEXT).size(11.0)).wrap());
     });
-    ui.add_space(1.0);
+    ui.add_space(2.0);
 }
 
 fn kv_mono(ui: &mut Ui, key: &str, val: &str) {
     ui.horizontal(|ui| {
         ui.add_sized(
-            [80.0, 16.0],
+            [88.0, 16.0],
             egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
         );
         ui.add(
-            egui::Label::new(RichText::new(val).color(theme::TEXT).monospace().size(10.5))
-                .wrap(),
+            egui::Label::new(RichText::new(val).color(theme::TEXT).monospace().size(10.5)).wrap(),
         );
     });
-    ui.add_space(1.0);
+    ui.add_space(2.0);
 }
 
 fn score_badge(ui: &mut Ui, score: u8) {
     let (fg, bg) = theme::score_colors(score);
-    let text = RichText::new(format!(" {score:>2} "))
-        .color(fg)
-        .monospace()
-        .size(12.0)
-        .background_color(bg);
-    ui.label(text);
+    ui.label(
+        RichText::new(format!(" {score:>2} "))
+            .color(fg)
+            .background_color(bg)
+            .monospace()
+            .size(12.0)
+            .strong(),
+    );
 }
 
-fn accent_btn(ui: &mut Ui, label: &str) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(label).color(theme::ACCENT).size(11.5))
+fn chip(ui: &mut Ui, text: &str) {
+    ui.label(
+        RichText::new(format!(" {text} "))
+            .color(theme::TEXT2)
+            .background_color(theme::SURFACE3)
+            .size(10.0)
+            .strong(),
+    );
+}
+
+fn nonempty(text: &str) -> &str {
+    if text.is_empty() {
+        "—"
+    } else {
+        text
+    }
+}
+
+fn accent_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::ACCENT).size(11.5))
         .fill(theme::ACCENT_BG)
         .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-        .corner_radius(4.0);
-    ui.add(btn)
+        .corner_radius(6.0)
 }
 
-fn muted_btn(ui: &mut Ui, label: &str) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(label).color(theme::TEXT2).size(11.5))
+fn muted_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::TEXT2).size(11.5))
         .fill(theme::SURFACE2)
         .stroke(egui::Stroke::new(1.0, theme::BORDER))
-        .corner_radius(4.0);
-    ui.add(btn)
+        .corner_radius(6.0)
 }
 
-fn danger_btn(ui: &mut Ui, label: &str) -> egui::Response {
-    let btn = egui::Button::new(RichText::new(label).color(theme::DANGER).size(11.5))
+fn danger_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::DANGER).size(11.5))
         .fill(theme::DANGER_BG)
         .stroke(egui::Stroke::new(1.0, theme::DANGER))
-        .corner_radius(4.0);
-    ui.add(btn)
+        .corner_radius(6.0)
 }

@@ -1,50 +1,49 @@
-//! Settings tab — edits a live `Config` via a draft-and-save pattern.
+//! Settings tab — edits a live `Config` with auto-save on change.
 //!
-//! Changes are buffered in `SettingsDraft` and only written to disk when the
-//! user clicks Save.  Returns `true` when a save is triggered.
+//! Changes are buffered in `SettingsDraft` and written to disk as soon as any
+//! control changes. Returns `true` when the draft changed.
 //!
-//! Layout is responsive: content is centred with a max width of 680 px,
-//! so it looks good whether the window is narrow or maximised.
+//! Layout is responsive and fills the available width, so the trusted list can
+//! breathe instead of collapsing into a narrow column.
 
 use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
-use egui_extras::{Column, TableBuilder};
 
 // ── Draft state ───────────────────────────────────────────────────────────────
 
 pub struct SettingsDraft {
-    pub alert_threshold:    u8,
+    pub alert_threshold: u8,
     pub poll_interval_secs: u64,
     pub log_all_connections: bool,
-    pub autostart:          bool,
-    pub trusted_processes:  Vec<String>,
-    pub new_trusted_input:  String,
+    pub autostart: bool,
+    pub trusted_processes: Vec<String>,
+    pub new_trusted_input: String,
     /// UI-only filter string for the trusted processes table; never persisted.
-    pub trusted_filter:     String,
-    pub status_msg:         Option<(String, std::time::Instant)>,
+    pub trusted_filter: String,
+    pub status_msg: Option<(String, std::time::Instant)>,
 }
 
 impl SettingsDraft {
     pub fn from_config(cfg: &Config) -> Self {
         Self {
-            alert_threshold:    cfg.alert_threshold,
+            alert_threshold: cfg.alert_threshold,
             poll_interval_secs: cfg.poll_interval_secs,
             log_all_connections: cfg.log_all_connections,
-            autostart:          cfg.autostart,
-            trusted_processes:  cfg.trusted_processes.clone(),
-            new_trusted_input:  String::new(),
-            trusted_filter:     String::new(),
-            status_msg:         None,
+            autostart: cfg.autostart,
+            trusted_processes: cfg.trusted_processes.clone(),
+            new_trusted_input: String::new(),
+            trusted_filter: String::new(),
+            status_msg: None,
         }
     }
 
     pub fn apply_to(&self, cfg: &mut Config) {
-        cfg.alert_threshold     = self.alert_threshold;
-        cfg.poll_interval_secs  = self.poll_interval_secs;
+        cfg.alert_threshold = self.alert_threshold;
+        cfg.poll_interval_secs = self.poll_interval_secs;
         cfg.log_all_connections = self.log_all_connections;
-        cfg.autostart           = self.autostart;
-        cfg.trusted_processes   = self.trusted_processes.clone();
+        cfg.autostart = self.autostart;
+        cfg.trusted_processes = self.trusted_processes.clone();
         // trusted_filter is intentionally not persisted
     }
 }
@@ -52,48 +51,38 @@ impl SettingsDraft {
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
 pub fn show(ui: &mut egui::Ui, draft: &mut SettingsDraft) -> bool {
-    let mut saved = false;
+    let mut changed = false;
 
     egui::ScrollArea::vertical()
         .id_salt("settings_scroll")
         .show(ui, |ui| {
-            // Centre content with a max-width cap so it doesn't sprawl across
-            // a maximised window.
-            let avail_w  = ui.available_width();
-            let content_w = avail_w.min(700.0);
-            let side_pad  = ((avail_w - content_w) / 2.0).max(0.0);
-
-            ui.add_space(20.0);
-
-            // Indent so the content block is centred.
-            ui.horizontal(|ui| {
-                ui.add_space(side_pad + 16.0);
-                ui.vertical(|ui| {
-                    ui.set_max_width(content_w - 32.0);
-                    inner(ui, draft, &mut saved);
-                });
-                ui.add_space(side_pad);
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                let content_w = ui.available_width();
+                ui.set_max_width(content_w);
+                ui.set_width(content_w);
+                inner(ui, draft, &mut changed);
             });
-
-            ui.add_space(24.0);
+            ui.add_space(18.0);
         });
 
-    saved
+    changed
 }
 
-/// All settings content — rendered inside the centred, max-width column.
-fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
-    let label_w = 170.0f32;
+/// All settings content — rendered full width with live auto-save.
+fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
+    let label_w = 185.0f32;
 
     // ── Detection ─────────────────────────────────────────────────────────────
     section_header(ui, "Detection");
 
     setting_row(ui, label_w, "Alert threshold", |ui| {
         ui.horizontal(|ui| {
-            ui.add(
+            let resp = ui.add(
                 egui::Slider::new(&mut draft.alert_threshold, 1_u8..=10_u8)
                     .clamping(egui::SliderClamping::Always),
             );
+            *changed |= resp.changed();
             ui.label(
                 RichText::new(format!("  score ≥ {} → alert", draft.alert_threshold))
                     .color(theme::TEXT3)
@@ -104,11 +93,12 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
 
     setting_row(ui, label_w, "Poll interval", |ui| {
         ui.horizontal(|ui| {
-            ui.add(
+            let resp = ui.add(
                 egui::Slider::new(&mut draft.poll_interval_secs, 2_u64..=60_u64)
                     .suffix(" s")
                     .clamping(egui::SliderClamping::Always),
             );
+            *changed |= resp.changed();
             ui.label(
                 RichText::new("  (ETW uses longer interval)")
                     .color(theme::TEXT3)
@@ -118,12 +108,14 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
     });
 
     setting_row(ui, label_w, "Log all connections", |ui| {
-        ui.checkbox(
-            &mut draft.log_all_connections,
-            RichText::new("include score-0 connections in the log and activity table")
-                .color(theme::TEXT2)
-                .size(11.5),
-        );
+        *changed |= ui
+            .checkbox(
+                &mut draft.log_all_connections,
+                RichText::new("include score-0 connections in the log and activity table")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
 
     // ── Startup ───────────────────────────────────────────────────────────────
@@ -131,47 +123,44 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
     section_header(ui, "Startup");
 
     setting_row(ui, label_w, "Run at login", |ui| {
-        ui.checkbox(
-            &mut draft.autostart,
-            RichText::new("start Vigil automatically when you log in")
-                .color(theme::TEXT2)
-                .size(11.5),
-        );
+        *changed |= ui
+            .checkbox(
+                &mut draft.autostart,
+                RichText::new("start Vigil automatically when you log in")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
 
     // ── Trusted Processes ─────────────────────────────────────────────────────
     ui.add_space(16.0);
     section_header(ui, "Trusted Processes");
-    ui.add_space(4.0);
-    ui.add(
-        egui::Label::new(
-            RichText::new(
-                "Trusted processes are not penalised for routine connections — their \
-                 baseline score is 0. They will still alert if they exhibit severe \
-                 behaviour (e.g. connecting to a known malware port). \
-                 Names are matched case-insensitively; .exe suffix is ignored.",
-            )
-            .color(theme::TEXT2)
-            .size(11.5),
+    ui.add_space(6.0);
+    ui.label(
+        RichText::new(
+            "Trusted processes are exempt from routine penalties. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.",
         )
-        .wrap(),
+        .color(theme::TEXT2)
+        .size(12.0),
     );
     ui.add_space(10.0);
 
-    // ── Add input row (unchanged) ──────────────────────────────────────────────
+    // ── Add / reset row ────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
         let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
             .hint_text("process name…")
-            .desired_width(220.0);
+            .desired_width(280.0);
         let resp = ui.add(te);
 
         let add_clicked = ui
             .add(
-                egui::Button::new(RichText::new("  Add  ").color(theme::ACCENT).size(12.0))
-                    .fill(theme::ACCENT_BG)
+                egui::Button::new(RichText::new("  Add  ").color(theme::TEXT).size(12.0))
+                    .fill(theme::ACCENT)
                     .stroke(egui::Stroke::new(1.0, theme::ACCENT))
                     .corner_radius(4.0),
             )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
             .clicked();
 
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
@@ -179,16 +168,55 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
         if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
             let key = normalise_name(draft.new_trusted_input.trim());
             if !key.is_empty()
-                && !draft.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key))
+                && !draft
+                    .trusted_processes
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(&key))
             {
                 draft.trusted_processes.push(key);
                 draft.trusted_processes.sort_unstable();
+                *changed = true;
             }
             draft.new_trusted_input.clear();
         }
+
+        ui.add_space(10.0);
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Reset shipped defaults")
+                        .color(theme::TEXT2)
+                        .size(11.0),
+                )
+                .fill(theme::SURFACE2)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .corner_radius(4.0),
+            )
+            .on_hover_text("Restore the trusted list that ships with Vigil")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            draft.trusted_processes = Config::default().trusted_processes;
+            draft.trusted_filter.clear();
+            draft.new_trusted_input.clear();
+            draft.status_msg = Some((
+                "Restored shipped trusted defaults.".into(),
+                std::time::Instant::now(),
+            ));
+            *changed = true;
+        }
     });
 
-    ui.add_space(8.0);
+    ui.add_space(10.0);
+
+    if let Some((msg, at)) = &draft.status_msg {
+        if at.elapsed().as_secs() < 3 {
+            ui.label(RichText::new(msg).color(theme::ACCENT).size(11.5));
+            ui.add_space(8.0);
+        } else {
+            draft.status_msg = None;
+        }
+    }
 
     // ── Trusted list ──────────────────────────────────────────────────────────
     let mut remove_idx: Option<usize> = None;
@@ -197,7 +225,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
         ui.label(
             RichText::new("No trusted processes yet.")
                 .color(theme::TEXT3)
-                .size(11.0),
+                .size(11.5),
         );
     } else {
         let total = draft.trusted_processes.len();
@@ -213,12 +241,11 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
                 if !draft.trusted_filter.is_empty()
                     && ui
                         .add(
-                            egui::Button::new(
-                                RichText::new("✕").color(theme::TEXT2).size(11.0),
-                            )
-                            .fill(egui::Color32::TRANSPARENT)
-                            .stroke(egui::Stroke::NONE),
+                            egui::Button::new(RichText::new("✕").color(theme::TEXT2).size(11.0))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
                         )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
                 {
                     draft.trusted_filter.clear();
@@ -234,8 +261,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
             .iter()
             .enumerate()
             .filter(|(_, name)| {
-                filter_lower.is_empty()
-                    || name.to_lowercase().contains(&filter_lower)
+                filter_lower.is_empty() || name.to_lowercase().contains(&filter_lower)
             })
             .map(|(i, _)| i)
             .collect();
@@ -248,68 +274,100 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
         } else {
             format!("{} / {} processes", visible, total)
         };
-        ui.label(RichText::new(&count_label).color(theme::TEXT3).size(11.0));
-        ui.add_space(4.0);
+        ui.label(RichText::new(&count_label).color(theme::TEXT3).size(11.5));
+        ui.add_space(8.0);
 
-        // Framed table.
+        // Framed list.
         egui::Frame::NONE
-            .fill(theme::SURFACE)
+            .fill(theme::SURFACE3)
             .stroke(egui::Stroke::new(1.0, theme::BORDER))
-            .corner_radius(6.0)
-            .inner_margin(egui::Margin::symmetric(0, 4))
+            .corner_radius(12.0)
+            .inner_margin(egui::Margin::symmetric(12, 10))
             .show(ui, |ui| {
-                // Reserve enough vertical space for the table rows.
-                let row_h = 24.0;
-                let table_height = row_h * visible as f32;
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Process")
+                            .color(theme::TEXT3)
+                            .size(11.0)
+                            .strong(),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new("Action")
+                                .color(theme::TEXT3)
+                                .size(11.0)
+                                .strong(),
+                        );
+                    });
+                });
 
-                TableBuilder::new(ui)
-                    .striped(false)
-                    .resizable(false)
-                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
-                    .column(Column::remainder())
-                    .column(Column::exact(70.0))
-                    .min_scrolled_height(0.0)
-                    .max_scroll_height(table_height)
-                    .body(|body| {
-                        body.rows(row_h, visible, |mut row| {
-                            let display_pos = row.index();
-                            let orig_idx = filtered[display_pos];
+                ui.add_space(8.0);
+
+                let list_h = (visible.max(4) as f32 * 42.0).clamp(210.0, 520.0);
+                egui::ScrollArea::vertical()
+                    .max_height(list_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for orig_idx in filtered {
                             let name = draft.trusted_processes[orig_idx].clone();
 
-                            // Name cell
-                            row.col(|ui| {
-                                ui.add_space(8.0);
-                                let label = egui::Label::new(
-                                    RichText::new(&name)
-                                        .color(theme::TEXT)
-                                        .size(11.5)
-                                        .monospace(),
-                                )
-                                .truncate();
-                                ui.add(label);
-                            });
-
-                            // Remove button cell
-                            row.col(|ui| {
-                                ui.centered_and_justified(|ui| {
-                                    if ui
-                                        .add(
-                                            egui::Button::new(
-                                                RichText::new("Remove")
-                                                    .color(theme::DANGER)
-                                                    .size(11.0),
-                                            )
-                                            .fill(theme::DANGER_BG)
-                                            .stroke(egui::Stroke::new(1.0, theme::DANGER))
-                                            .corner_radius(4.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        remove_idx = Some(orig_idx);
-                                    }
+                            egui::Frame::NONE
+                                .fill(theme::SURFACE2)
+                                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                                .corner_radius(12.0)
+                                .inner_margin(egui::Margin::symmetric(10, 5))
+                                .show(ui, |ui| {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(ui.available_width(), 38.0),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            let (bar_rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(3.0, 16.0),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter().rect_filled(bar_rect, 2.0, theme::ACCENT);
+                                            ui.add_space(8.0);
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    RichText::new(&name)
+                                                        .color(theme::TEXT)
+                                                        .size(12.2),
+                                                );
+                                                ui.label(
+                                                    RichText::new(
+                                                        "Trusted for routine connections",
+                                                    )
+                                                    .color(theme::TEXT3)
+                                                    .size(9.6),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    let remove_btn = egui::Button::new(
+                                                        RichText::new("Remove")
+                                                            .color(theme::DANGER)
+                                                            .size(11.0),
+                                                    )
+                                                    .fill(theme::DANGER_BG)
+                                                    .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                                                    .corner_radius(7.0);
+                                                    if ui
+                                                        .add(remove_btn)
+                                                        .on_hover_cursor(
+                                                            egui::CursorIcon::PointingHand,
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        remove_idx = Some(orig_idx);
+                                                    }
+                                                },
+                                            );
+                                        },
+                                    );
                                 });
-                            });
-                        });
+                            ui.add_space(6.0);
+                        }
                     });
             });
     }
@@ -317,38 +375,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, saved: &mut bool) {
     if let Some(idx) = remove_idx {
         draft.trusted_processes.remove(idx);
         // Keep filter valid; no index fixup needed since we remove by original index.
+        *changed = true;
     }
-
-    // ── Save ──────────────────────────────────────────────────────────────────
-    ui.add_space(24.0);
-    divider(ui);
-    ui.add_space(14.0);
-
-    ui.horizontal(|ui| {
-        if ui
-            .add(
-                egui::Button::new(
-                    RichText::new("  Save Settings  ").color(theme::ACCENT).size(12.5),
-                )
-                .fill(theme::ACCENT_BG)
-                .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-                .corner_radius(5.0),
-            )
-            .clicked()
-        {
-            *saved = true;
-            draft.status_msg = Some(("Settings saved.".into(), std::time::Instant::now()));
-        }
-
-        if let Some((msg, at)) = &draft.status_msg {
-            if at.elapsed().as_secs() < 3 {
-                ui.add_space(10.0);
-                ui.label(RichText::new(msg).color(theme::ACCENT).size(11.5));
-            } else {
-                draft.status_msg = None;
-            }
-        }
-    });
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -365,12 +393,7 @@ fn section_header(ui: &mut egui::Ui, title: &str) {
 }
 
 /// Two-column row: fixed-width label on the left, control closure on the right.
-fn setting_row(
-    ui: &mut egui::Ui,
-    label_w: f32,
-    label: &str,
-    ctrl: impl FnOnce(&mut egui::Ui),
-) {
+fn setting_row(ui: &mut egui::Ui, label_w: f32, label: &str, ctrl: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.add_sized(
             [label_w, 20.0],
@@ -380,14 +403,4 @@ fn setting_row(
         ctrl(ui);
     });
     ui.add_space(8.0);
-}
-
-/// Full-width 1 px divider line.
-fn divider(ui: &mut egui::Ui) {
-    let rect = egui::Rect::from_min_size(
-        ui.cursor().min,
-        egui::vec2(ui.available_width(), 1.0),
-    );
-    ui.painter().rect_filled(rect, 0.0, theme::BORDER);
-    ui.advance_cursor_after_rect(rect);
 }

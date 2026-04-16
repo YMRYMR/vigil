@@ -63,8 +63,8 @@ mod platform {
     /// account with no $DISPLAY set) but are benign — they just add `+2`
     /// to the risk score for those particular events.
     pub fn is_pre_login() -> bool {
-        let has_display = std::env::var_os("DISPLAY").is_some()
-            || std::env::var_os("WAYLAND_DISPLAY").is_some();
+        let has_display =
+            std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
         if has_display {
             return false;
         }

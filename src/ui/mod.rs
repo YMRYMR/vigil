@@ -8,6 +8,7 @@ pub mod activity;
 pub mod alerts;
 pub mod help;
 pub mod inspector;
+pub mod process_list;
 pub mod settings;
 pub mod tab_bar;
 pub mod theme;
@@ -24,14 +25,18 @@ use tokio::sync::broadcast;
 // ── Table sort / filter state ─────────────────────────────────────────────────
 
 pub struct TableState {
-    pub filter:   String,
+    pub filter: String,
     pub sort_col: usize,
     pub sort_asc: bool,
 }
 
 impl TableState {
     pub fn new(default_col: usize, default_asc: bool) -> Self {
-        Self { filter: String::new(), sort_col: default_col, sort_asc: default_asc }
+        Self {
+            filter: String::new(),
+            sort_col: default_col,
+            sort_asc: default_asc,
+        }
     }
 
     /// Called when a column header is clicked.
@@ -47,8 +52,62 @@ impl TableState {
 
     /// Arrow indicator appended to the active sort column header label.
     pub fn arrow(&self, col: usize) -> &'static str {
-        if self.sort_col == col { if self.sort_asc { " ▲" } else { " ▼" } } else { "" }
+        if self.sort_col == col {
+            if self.sort_asc {
+                " ▲"
+            } else {
+                " ▼"
+            }
+        } else {
+            ""
+        }
     }
+}
+
+/// Current selection in the Activity / Alerts views.
+///
+/// `selected_connection` is optional so the inspector can show the whole
+/// process summary when the card header is clicked, or a specific socket when
+/// a stacked connection row is clicked.
+#[derive(Clone)]
+pub struct ProcessSelection {
+    pub pid: u32,
+    pub proc_name: String,
+    pub proc_path: String,
+    pub proc_user: String,
+    pub parent_name: String,
+    pub parent_pid: u32,
+    pub service_name: String,
+    pub publisher: String,
+    pub score: u8,
+    pub reasons: Vec<String>,
+    pub timestamp: String,
+    pub status: String,
+    pub remote_addr: String,
+    pub connection_count: usize,
+    pub distinct_ports: usize,
+    pub distinct_remotes: usize,
+    pub statuses: Vec<String>,
+    pub selected_connection: Option<ConnInfo>,
+}
+
+/// Returns `true` when the process name is just a resolved-PID placeholder
+/// like `<11540>` rather than a real executable name.
+pub fn is_ghost_process_name(name: &str) -> bool {
+    let Some(inner) = name
+        .trim()
+        .strip_prefix('<')
+        .and_then(|s| s.strip_suffix('>'))
+    else {
+        return false;
+    };
+    !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Returns `true` when the UI knows enough about the process to offer path
+/// based actions such as Open Loc or Trust.
+pub fn has_known_location(sel: &ProcessSelection) -> bool {
+    !sel.proc_path.is_empty() && !is_ghost_process_name(&sel.proc_name)
 }
 
 // ── App state ─────────────────────────────────────────────────────────────────
@@ -56,8 +115,8 @@ impl TableState {
 pub struct VigilApp {
     activity: VecDeque<ConnInfo>, // all connections, newest first, max 500
     alerts: VecDeque<ConnInfo>,   // scored threats only, newest first, max 200
-    selected_activity: Option<usize>,
-    selected_alert: Option<usize>,
+    selected_activity: Option<ProcessSelection>,
+    selected_alert: Option<ProcessSelection>,
     active_tab: Tab,
     unseen_alerts: usize,
     event_rx: broadcast::Receiver<ConnEvent>,
@@ -135,7 +194,7 @@ impl VigilApp {
                             push_capped(&mut self.activity, info.clone(), 500);
                             push_capped(&mut self.alerts, info.clone(), 200);
                             self.unseen_alerts += 1;
-                            let _ = self.tray_tx.try_send(TrayCmd::Alert(info));
+                            let _ = self.tray_tx.try_send(TrayCmd::Alert(Box::new(info)));
                         }
                         ConnEvent::New(info) => {
                             push_capped(&mut self.activity, info, 500);
@@ -155,21 +214,18 @@ impl VigilApp {
     // ── Inspector action handler ──────────────────────────────────────────────
 
     fn handle_inspector_action(&mut self, action: inspector::Action) {
-        let selected_info: Option<ConnInfo> = match self.active_tab {
-            Tab::Activity => self
-                .selected_activity
-                .and_then(|i| self.activity.get(i))
-                .cloned(),
-            Tab::Alerts => self
-                .selected_alert
-                .and_then(|i| self.alerts.get(i))
-                .cloned(),
+        let selected_info: Option<ProcessSelection> = match self.active_tab {
+            Tab::Activity => self.selected_activity.clone(),
+            Tab::Alerts => self.selected_alert.clone(),
             _ => None,
         };
 
         match action {
             inspector::Action::Trust => {
                 if let Some(info) = selected_info {
+                    if !has_known_location(&info) {
+                        return;
+                    }
                     let mut cfg = self.cfg.write().unwrap();
                     if cfg.add_trusted(&info.proc_name) {
                         cfg.save();
@@ -179,7 +235,7 @@ impl VigilApp {
             }
             inspector::Action::OpenLocation => {
                 if let Some(info) = selected_info {
-                    if !info.proc_path.is_empty() {
+                    if has_known_location(&info) {
                         let path = std::path::Path::new(&info.proc_path);
                         let dir = path.parent().unwrap_or(path);
                         let _ = open::that(dir);
@@ -191,7 +247,29 @@ impl VigilApp {
             }
             inspector::Action::KillConfirmed => {
                 if let Some(info) = selected_info {
-                    kill_process(info.pid);
+                    if !is_ghost_process_name(&info.proc_name) {
+                        kill_process(info.pid);
+                        remove_pid(&mut self.activity, info.pid);
+                        remove_pid(&mut self.alerts, info.pid);
+                        if self
+                            .selected_activity
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == info.pid)
+                        {
+                            self.selected_activity = None;
+                        }
+                        if self
+                            .selected_alert
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == info.pid)
+                        {
+                            self.selected_alert = None;
+                        }
+                        if self.alerts.is_empty() {
+                            self.unseen_alerts = 0;
+                            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
+                        }
+                    }
                 }
                 self.kill_confirm = false;
             }
@@ -210,7 +288,7 @@ impl VigilApp {
             ui.label(
                 egui::RichText::new("Vigil")
                     .color(theme::TEXT)
-                    .size(15.0)
+                    .size(16.0)
                     .strong(),
             );
             ui.add_space(10.0);
@@ -238,7 +316,8 @@ impl VigilApp {
                 .stroke(egui::Stroke::new(1.0, theme::BORDER))
                 .corner_radius(4.0);
 
-                if ui.add(btn).clicked() {
+                let resp = ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if resp.clicked() {
                     self.paused = !self.paused;
                     if !self.paused {
                         let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
@@ -267,19 +346,20 @@ impl eframe::App for VigilApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             // Switch to Alerts tab
-            self.active_tab    = Tab::Alerts;
-            self.kill_confirm  = false;
+            self.active_tab = Tab::Alerts;
+            self.kill_confirm = false;
             self.unseen_alerts = 0;
             let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-            // Find the matching alert and select it.
-            // Match on timestamp + proc_name + remote_addr (unique enough).
-            if let Some(idx) = self.alerts.iter().position(|a| {
-                a.timestamp   == nav.timestamp
-                    && a.proc_name   == nav.proc_name
-                    && a.remote_addr == nav.remote_addr
-            }) {
-                self.selected_alert = Some(idx);
-            }
+            self.selected_alert = process_list::selection_for_pid(
+                &self.alerts,
+                nav.pid,
+                self.alerts.iter().find(|a| {
+                    a.timestamp == nav.timestamp
+                        && a.proc_name == nav.proc_name
+                        && a.remote_addr == nav.remote_addr
+                }),
+                process_list::Kind::Alerts,
+            );
         }
 
         // ── Hide to tray on window close ──────────────────────────────────────
@@ -310,7 +390,12 @@ impl eframe::App for VigilApp {
             .exact_size(36.0)
             .frame(egui::Frame::NONE.fill(theme::SURFACE))
             .show_inside(ui, |ui| {
-                tab_bar::tab_bar(ui, self.active_tab, self.unseen_alerts)
+                tab_bar::tab_bar(
+                    ui,
+                    self.active_tab,
+                    process_count(&self.activity),
+                    process_count(&self.alerts),
+                )
             })
             .inner;
 
@@ -323,11 +408,9 @@ impl eframe::App for VigilApp {
         let mut inspector_action: Option<inspector::Action> = None;
 
         if matches!(self.active_tab, Tab::Activity | Tab::Alerts) {
-            let selected_info: Option<&ConnInfo> = match self.active_tab {
-                Tab::Activity => self
-                    .selected_activity
-                    .and_then(|i| self.activity.get(i)),
-                Tab::Alerts => self.selected_alert.and_then(|i| self.alerts.get(i)),
+            let selected_info: Option<&ProcessSelection> = match self.active_tab {
+                Tab::Activity => self.selected_activity.as_ref(),
+                Tab::Alerts => self.selected_alert.as_ref(),
                 _ => None,
             };
             let kill_confirm = self.kill_confirm;
@@ -351,16 +434,30 @@ impl eframe::App for VigilApp {
 
         // ── Central content ───────────────────────────────────────────────────
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(theme::BG).inner_margin(egui::Margin::ZERO))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::same(12)),
+            )
             .show_inside(ui, |ui| match self.active_tab {
                 Tab::Activity => {
-                    if activity::show(ui, &self.activity, &mut self.selected_activity, &mut self.table_state) {
+                    if activity::show(
+                        ui,
+                        &self.activity,
+                        &mut self.selected_activity,
+                        &mut self.table_state,
+                    ) {
                         self.activity.clear();
                         self.selected_activity = None;
                     }
                 }
                 Tab::Alerts => {
-                    if alerts::show(ui, &self.alerts, &mut self.selected_alert, &mut self.table_state) {
+                    if alerts::show(
+                        ui,
+                        &self.alerts,
+                        &mut self.selected_alert,
+                        &mut self.table_state,
+                    ) {
                         self.alerts.clear();
                         self.selected_alert = None;
                         self.unseen_alerts = 0;
@@ -368,8 +465,8 @@ impl eframe::App for VigilApp {
                     }
                 }
                 Tab::Settings => {
-                    let saved = settings::show(ui, &mut self.settings);
-                    if saved {
+                    let changed = settings::show(ui, &mut self.settings);
+                    if changed {
                         let mut cfg = self.cfg.write().unwrap();
                         self.settings.apply_to(&mut cfg);
                         if cfg.autostart {
@@ -380,6 +477,8 @@ impl eframe::App for VigilApp {
                             crate::autostart::disable();
                         }
                         cfg.save();
+                        self.settings.status_msg =
+                            Some(("Settings auto-saved.".into(), std::time::Instant::now()));
                     }
                 }
                 Tab::Help => {
@@ -391,7 +490,12 @@ impl eframe::App for VigilApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [0x14 as f32 / 255.0, 0x15 as f32 / 255.0, 0x1A as f32 / 255.0, 1.0]
+        [
+            0x14 as f32 / 255.0,
+            0x15 as f32 / 255.0,
+            0x1A as f32 / 255.0,
+            1.0,
+        ]
     }
 }
 
@@ -402,6 +506,28 @@ fn push_capped<T>(deque: &mut VecDeque<T>, item: T, cap: usize) {
     if deque.len() > cap {
         deque.pop_back();
     }
+}
+
+pub fn conn_matches_selection(info: &ConnInfo, selected: Option<&ConnInfo>) -> bool {
+    selected.is_some_and(|sel| {
+        info.timestamp == sel.timestamp
+            && info.pid == sel.pid
+            && info.proc_name == sel.proc_name
+            && info.local_addr == sel.local_addr
+            && info.remote_addr == sel.remote_addr
+    })
+}
+
+fn remove_pid(rows: &mut VecDeque<ConnInfo>, pid: u32) {
+    rows.retain(|info| info.pid != pid);
+}
+
+fn process_count(rows: &VecDeque<ConnInfo>) -> usize {
+    use std::collections::HashSet;
+    rows.iter()
+        .map(|info| info.pid)
+        .collect::<HashSet<_>>()
+        .len()
 }
 
 fn kill_process(pid: u32) {
