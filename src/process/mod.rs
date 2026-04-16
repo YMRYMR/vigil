@@ -40,10 +40,22 @@ impl ProcessInfo {
 ///
 /// `svc_map` maps pid → Windows service name (built once per poll cycle on
 /// Windows; empty on other platforms).
+///
+/// ## ETW race-condition mitigation
+/// When ETW fires sub-millisecond after a kernel connection event, the target
+/// process may not yet appear in sysinfo's snapshot — or may already be gone
+/// for short-lived spawners.  We retry once with a 100 ms delay before giving
+/// up; this catches most of the "`<pid>`" ghost rows that would otherwise fire.
 pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> ProcessInfo {
     let mut sys = System::new();
     let spid = Pid::from_u32(pid);
     sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
+
+    // One retry after a short delay if the process isn't in the snapshot yet.
+    if sys.process(spid).is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
+    }
 
     let proc = match sys.process(spid) {
         Some(p) => p,

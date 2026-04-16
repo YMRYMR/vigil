@@ -9,8 +9,12 @@
 //!   +3  no executable path on disk  (possible injection)
 //!   +3  executable running from a suspicious directory
 //!   +3  suspicious parent process (Office → shell, etc.)
+//!   +3  beaconing pattern detected (C2 callback timing signature)
 //!   +2  process not in trusted list
 //!   +2  no publisher / unsigned binary making an external connection
+//!   +2  DNS query from a non-DNS process (possible DNS tunneling)
+//!   +2  connection observed before any interactive user login (boot-time
+//!        persistence — classic rootkit / dropper signal)
 //!   +1  unusual destination port (not in common_ports) for untrusted process
 
 use crate::config::Config;
@@ -33,6 +37,13 @@ pub struct ScoreInput<'a> {
     pub status: &'a str,
     /// Ancestor chain: [(name_lowercase_no_ext, pid), …] from parent to root.
     pub ancestors: &'a [(String, u32)],
+    /// `true` when the beacon detector has identified a regular C2-style callback
+    /// pattern for this `(pid, remote_ip)` pair.
+    pub beaconing: bool,
+    /// `true` when no interactive user session is active — i.e. the event
+    /// was captured by Vigil running as a boot-time service / daemon before
+    /// anyone logged in.
+    pub pre_login: bool,
 }
 
 // ── Suspicious parent rules ───────────────────────────────────────────────────
@@ -88,8 +99,19 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
     let mut reasons: Vec<String> = Vec::new();
 
     // +3  No executable path (possible process injection / hollowing)
+    //
+    // Two exceptions:
+    //   * Legitimate kernel-side "processes" that never have a disk image
+    //     (System, kernel, Registry).
+    //   * Ghost rows where sysinfo couldn't resolve the PID at all — the
+    //     name looks like "<1234>".  These already get a visible marker in
+    //     the UI and we don't want to double-count the lack-of-path.
     const SAFE_NO_PATH: &[&str] = &["system", "kernel", "registry"];
-    if input.path.is_empty() && !SAFE_NO_PATH.contains(&input.name) {
+    let is_ghost = input.name.starts_with('<') && input.name.ends_with('>');
+    if input.path.is_empty()
+        && !SAFE_NO_PATH.contains(&input.name)
+        && !is_ghost
+    {
         s = s.saturating_add(3);
         reasons.push("No executable path (possible process injection / hollowing)".into());
     }
@@ -129,6 +151,41 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
                 break;
             }
         }
+    }
+
+    // +3  Beaconing pattern (regular C2 callback intervals)
+    if input.beaconing {
+        s = s.saturating_add(3);
+        reasons.push(
+            "Beaconing pattern detected (regular C2 callback timing signature)".into(),
+        );
+    }
+
+    // +2  Pre-login / boot-time activity
+    // Connections observed before any interactive user has logged in are a
+    // classic rootkit / dropper callback signal.
+    if input.pre_login {
+        s = s.saturating_add(2);
+        reasons.push(
+            "Connection observed before user login (boot-time persistence)".into(),
+        );
+    }
+
+    // +2  DNS query from a non-DNS process (possible DNS tunneling / exfiltration)
+    // System DNS resolvers are exempt; anything else querying port 53 is suspicious.
+    const DNS_NATIVE: &[&str] = &[
+        "svchost", "dnscache", "dns", "systemd-resolved",
+        "resolved", "named", "unbound", "dnsmasq",
+    ];
+    if input.remote_port == 53
+        && !DNS_NATIVE.contains(&input.name)
+        && !is_trusted
+    {
+        s = s.saturating_add(2);
+        reasons.push(format!(
+            "DNS query from non-DNS process: {} (possible DNS tunneling)",
+            input.name
+        ));
     }
 
     // +5 / +1  Port-based scoring
@@ -179,7 +236,7 @@ mod tests {
     ) -> ScoreInput<'a> {
         ScoreInput {
             name, path, publisher: "", remote_ip, remote_port, status,
-            ancestors: &[],
+            ancestors: &[], beaconing: false, pre_login: false,
         }
     }
 
@@ -237,6 +294,8 @@ mod tests {
                 remote_port: 443,
                 status: "ESTABLISHED",
                 ancestors: &[],
+                beaconing: false,
+                pre_login: false,
             },
             &cfg(),
         );
@@ -268,6 +327,8 @@ mod tests {
                 remote_port: 443,
                 status: "ESTABLISHED",
                 ancestors: &ancestors,
+                beaconing: false,
+                pre_login: false,
             },
             &cfg(),
         );
@@ -297,11 +358,88 @@ mod tests {
                 remote_port: 443,
                 status: "ESTABLISHED",
                 ancestors: &[],
+                beaconing: false,
+                pre_login: false,
             },
             &cfg(),
         );
         // +2 untrusted  +2 unsigned  (port 443 common)
         assert_eq!(s, 4);
         assert!(r.iter().any(|r| r.contains("Unsigned")));
+    }
+
+    #[test]
+    fn beaconing_adds_three() {
+        let (s, r) = score(
+            &ScoreInput {
+                name: "updater",
+                path: r"C:\Program Files\SomeApp\updater.exe",
+                publisher: "",
+                remote_ip: "203.0.113.10",
+                remote_port: 443,
+                status: "ESTABLISHED",
+                ancestors: &[],
+                beaconing: true,
+                pre_login: false,
+            },
+            &cfg(),
+        );
+        // +3 beaconing  +2 untrusted  +2 unsigned  (port 443 common)
+        assert_eq!(s, 7);
+        assert!(r.iter().any(|r| r.contains("Beaconing")));
+    }
+
+    #[test]
+    fn dns_query_from_untrusted_process_adds_two() {
+        let (s, r) = score(
+            &input("strangething", r"C:\Temp\strangething.exe", "8.8.8.8", 53, "ESTABLISHED"),
+            &cfg(),
+        );
+        // +3 suspicious path  +2 untrusted  +2 unsigned  +2 DNS tunneling
+        assert_eq!(s, 9);
+        assert!(r.iter().any(|r| r.contains("DNS tunneling")));
+    }
+
+    #[test]
+    fn ghost_pid_row_skips_no_path_penalty() {
+        // ETW fired before sysinfo could resolve the process — name is "<12345>".
+        // Without the fix we'd stack the "+3 no path" penalty on top of the
+        // other signals and score these ghost rows at 6 even though we already
+        // know the lack of info is a sysinfo race, not process hollowing.
+        let (s, r) = score(&input("<12345>", "", "1.2.3.4", 443, "ESTABLISHED"), &cfg());
+        // +2 untrusted  (port 443 common, path empty skips unsigned rule)
+        assert_eq!(s, 2);
+        assert!(!r.iter().any(|r| r.contains("injection")));
+    }
+
+    #[test]
+    fn pre_login_adds_two() {
+        let (s, r) = score(
+            &ScoreInput {
+                name: "chrome",
+                path: r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                publisher: "Google LLC",
+                remote_ip: "142.250.80.46",
+                remote_port: 443,
+                status: "ESTABLISHED",
+                ancestors: &[],
+                beaconing: false,
+                pre_login: true,
+            },
+            &cfg(),
+        );
+        // Chrome is trusted (no +2), port 443 common, but pre_login adds +2
+        assert_eq!(s, 2);
+        assert!(r.iter().any(|r| r.contains("before user login")));
+    }
+
+    #[test]
+    fn svchost_dns_query_not_penalised() {
+        // svchost is trusted, so no DNS tunneling penalty
+        let (s, _) = score(
+            &input("svchost", r"C:\Windows\System32\svchost.exe", "8.8.8.8", 53, "ESTABLISHED"),
+            &cfg(),
+        );
+        assert_eq!(s, 0); // svchost trusted
     }
 }

@@ -278,19 +278,73 @@ zero rough edges before seeking public adoption.
 
 ---
 
-## Phase 9 — Enhanced Detection (backlog)
+## Phase 9 — Enhanced Detection ✅ COMPLETE
 
-Features planned for v2.x. Implement after the v1.1 community release.
+Second round of detection features and cross-platform hardening.
 
-- [ ] **IP reputation** — check remote IPs against AbuseIPDB / Shodan free API; configurable API key
+### Detection
+- [x] **Beaconing detection** (`src/beacon.rs`) — tracks inter-arrival times per
+      `(pid, remote_ip)` across a rolling 30-sample window; flags regular C2
+      callbacks when stddev < 5 s and mean 1 – 600 s; adds **+3** to score
+- [x] **DNS tunneling detection** — flags any port-53 connection from a
+      non-DNS process and non-trusted binary; adds **+2** to score
+- [x] **Registry persistence watcher** (`src/registry.rs`, Windows) — polls
+      `HKCU\…\Run`, `HKLM\…\Run`, and both `RunOnce` keys every 30 s;
+      baselines at startup, raises a high-severity synthetic alert on any
+      newly-added autorun entry
+- [x] **Pre-login detection** (`src/session.rs`) — cross-platform check
+      (WTS API on Windows; `USER` / `DISPLAY` / `WAYLAND_DISPLAY` /
+      `XDG_SESSION_TYPE` on Unix) that tags events observed before any
+      interactive user session with `pre_login: true`; adds **+2** to score
+      and renders a red **`PL`** badge in the UI Time column
+
+### Cross-platform service mode
+- [x] `--install-service` / `--uninstall-service` CLI flags in `main.rs`
+- [x] `src/service.rs` — shared module with per-OS implementations:
+      Windows SCM (`sc create`), macOS launchd system daemon at
+      `/Library/LaunchDaemons/com.vigil.monitor.plist`, Linux systemd unit
+      at `/etc/systemd/system/vigil.service`
+- [x] Help tab + README document the install command per OS
+
+### UI
+- [x] **Linked grids** — Activity and Alerts now share a single `TableState`
+      and `id_salt`; clicking a column header in one grid re-sorts both,
+      and resizing a column in either tab persists across both
+- [x] **Pre-login badge** rendered in both grids' Time column
+- [x] Inspector selection works again via `row.response()` on
+      `TableBuilder::sense(Sense::click())`
+
+### Reliability
+- [x] **ETW race-condition retry** — `process::collect()` retries once with
+      100 ms delay if the PID isn't yet in sysinfo's snapshot, eliminating
+      most `<pid>` ghost rows
+- [x] **Ghost-row scoring** — scorer skips the "+3 no executable path"
+      penalty when the process name matches the `<pid>` ghost pattern
+- [x] **Notification fallback** — Windows branch of `notifier.rs` falls back
+      to `notify-rust` when WinRT's `ToastNotification::Show` fails (most
+      commonly because the AUMID isn't registered to a Start Menu shortcut,
+      e.g. running `target/debug/vigil.exe` directly)
+
+**Files added:** `src/beacon.rs`, `src/registry.rs`, `src/session.rs`,
+`src/service.rs`
+**Files changed:** `src/score.rs`, `src/types.rs`, `src/monitor/mod.rs`,
+`src/process/mod.rs`, `src/notifier.rs`, `src/main.rs`, `src/ui/mod.rs`,
+`src/ui/activity.rs`, `src/ui/alerts.rs`, `src/ui/help.rs`,
+`README.md`, `ROADMAP.md`
+
+**Verified:** `cargo build` clean; 25/25 tests pass.
+
+---
+
+## Phase 10 — Reputation & Telemetry (backlog)
+
+Features deferred to a future release.
+
+- [ ] **IP reputation** — AbuseIPDB / Shodan lookups with configurable API key + local cache
 - [ ] **Geolocation** — MaxMind GeoLite2 offline DB; flag connections to unusual regions
-- [ ] **Beaconing detection** — track connection intervals per (pid, remote_ip); alert if stddev < 5s over 10+ samples
 - [ ] **File system watcher** — `notify` crate watching Temp/AppData; correlate new exes with network connections
-- [ ] **Registry persistence watcher** — watch HKCU Run / HKLM Run; alert on new entries
 - [ ] **Unsigned DLL detection** — enumerate loaded modules per network process; flag unsigned ones from temp paths
 - [ ] **Volume anomaly** — track bytes/sec per process (Windows: `GetPerTcpConnectionEStats`); alert on spikes
-- [ ] **DNS monitoring** — flag DNS queries to non-standard ports or from unexpected processes
-- [ ] **Pre-login service mode** — install as a Windows service (`sc create`) so monitoring begins before user login
 
 ---
 
@@ -305,4 +359,5 @@ Features planned for v2.x. Implement after the v1.1 community release.
 | 0.5.0 | 6   | Logging + polish | ✅ Done |
 | 1.0.0 | 7   | Build pipeline + open-source release | ✅ Done |
 | 1.1.0 | 8   | UX, detection & quality overhaul | ✅ Done |
-| 2.x   | 9   | Enhanced detection features | 🔲 Backlog |
+| 1.2.0 | 9   | Beaconing, DNS, registry, pre-login, cross-platform service | ✅ Done |
+| 2.x   | 10  | Reputation & telemetry | 🔲 Backlog |

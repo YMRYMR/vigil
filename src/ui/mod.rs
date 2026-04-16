@@ -70,8 +70,12 @@ pub struct VigilApp {
     settings: settings::SettingsDraft,
     kill_confirm: bool,
     paused: bool,
-    activity_state: TableState,
-    alerts_state: TableState,
+    /// Shared table state — the **same** `TableState` drives both the Activity
+    /// and Alerts grids, so clicking a column header (or resizing — egui
+    /// persists the widths keyed on `id_salt` which we now set identically)
+    /// affects both views.  The user asked for the two grids to share sort
+    /// order and column widths, and this is the minimal-diff way to do it.
+    table_state: TableState,
 }
 
 impl VigilApp {
@@ -108,8 +112,11 @@ impl VigilApp {
             settings,
             kill_confirm: false,
             paused: false,
-            activity_state: TableState::new(0, false), // Time col, newest-first
-            alerts_state:   TableState::new(4, false), // Score col, highest-first
+            // Shared default: sort by Time (column 0) descending (newest first).
+            // The Alerts tab previously defaulted to Score-descending; since the
+            // grids now share state, picking one default means the user sees a
+            // consistent view when switching tabs.  Score is just one click away.
+            table_state: TableState::new(0, false),
         }
     }
 
@@ -347,13 +354,13 @@ impl eframe::App for VigilApp {
             .frame(egui::Frame::NONE.fill(theme::BG).inner_margin(egui::Margin::ZERO))
             .show_inside(ui, |ui| match self.active_tab {
                 Tab::Activity => {
-                    if activity::show(ui, &self.activity, &mut self.selected_activity, &mut self.activity_state) {
+                    if activity::show(ui, &self.activity, &mut self.selected_activity, &mut self.table_state) {
                         self.activity.clear();
                         self.selected_activity = None;
                     }
                 }
                 Tab::Alerts => {
-                    if alerts::show(ui, &self.alerts, &mut self.selected_alert, &mut self.alerts_state) {
+                    if alerts::show(ui, &self.alerts, &mut self.selected_alert, &mut self.table_state) {
                         self.alerts.clear();
                         self.selected_alert = None;
                         self.unseen_alerts = 0;

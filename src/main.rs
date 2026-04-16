@@ -14,12 +14,16 @@
 )]
 
 mod autostart;
+mod beacon;
 mod config;
 mod logger;
 mod monitor;
 mod notifier;
 mod process;
+mod registry;
 mod score;
+mod service;
+mod session;
 mod tray;
 mod types;
 mod ui;
@@ -30,12 +34,43 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
 fn main() {
+    // ── CLI flags (service install / uninstall) ───────────────────────────────
+    // We parse argv directly to avoid pulling in a CLI crate just for two
+    // mutually-exclusive flags.  When either is passed we run the command
+    // synchronously and exit — we never start the monitor or the GUI.
+    let args: Vec<String> = std::env::args().collect();
+    for a in &args[1..] {
+        match a.as_str() {
+            "--install-service" => {
+                std::process::exit(service::run_cmd("install"));
+            }
+            "--uninstall-service" => {
+                std::process::exit(service::run_cmd("uninstall"));
+            }
+            "--help" | "-h" => {
+                println!(
+                    "Vigil v{} — real-time network threat monitor\n\n\
+                     Usage:  vigil [flags]\n\n\
+                     Flags:\n  \
+                     --install-service     register Vigil as a boot-time service\n  \
+                     --uninstall-service   remove the boot-time service\n  \
+                     -h, --help            show this help and exit\n\n\
+                     Run with no flags to launch the GUI.",
+                    env!("CARGO_PKG_VERSION"),
+                );
+                std::process::exit(0);
+            }
+            _ => {}
+        }
+    }
+
     // ── Logging ───────────────────────────────────────────────────────────────
     // Must be first so all subsequent code can emit tracing events.
     let (_log_dir, _log_guard) = logger::init();
     let log_dir = _log_dir.clone();
 
     tracing::info!("Vigil v{} starting", env!("CARGO_PKG_VERSION"));
+    tracing::info!("pre-login session: {}", session::is_pre_login());
 
     // ── AUMID — correct taskbar / notification-centre identity ────────────────
     #[cfg(windows)]

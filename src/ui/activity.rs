@@ -78,7 +78,9 @@ pub fn show(
     let mut clicked_idx: Option<usize> = None;
 
     TableBuilder::new(ui)
-        .id_salt("activity_table_v2")
+        // Shared salt with alerts.rs → egui_extras persists a single set
+        // of column widths across both tabs.
+        .id_salt("vigil_table")
         .striped(true)
         .resizable(true)
         // sense(Sense::click()) makes every cell's response carry click/hover info.
@@ -105,9 +107,23 @@ pub fn show(
                 body.row(ROW_H, |mut row| {
                     row.set_selected(is_selected);
 
-                    // Time
+                    // Time (with optional "PL" pre-login badge)
                     row.col(|ui| {
-                        ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
+                            if info.pre_login {
+                                ui.label(
+                                    RichText::new("PL")
+                                        .color(theme::DANGER)
+                                        .background_color(theme::DANGER_BG)
+                                        .monospace()
+                                        .size(9.5),
+                                )
+                                .on_hover_text(
+                                    "PRE-LOGIN — observed before any user logged in (+2)",
+                                );
+                            }
+                        });
                     });
 
                     // Process + pid

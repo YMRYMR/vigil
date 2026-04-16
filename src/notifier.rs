@@ -7,10 +7,13 @@
 //!
 //! Platform strategy
 //! -----------------
-//! Windows  — WinRT `ToastNotification` (via the `windows` crate).
-//!            The `Activated` event fires on a WinRT thread-pool thread.
-//!            We avoid `notify-rust` here because its Windows backend returns
-//!            `show() -> Result<()>` with no handle or callback support.
+//! Windows  — WinRT `ToastNotification` (via the `windows` crate) is preferred
+//!            because it supports the `Activated` click callback.
+//!            If WinRT fails (most commonly because the AUMID `Vigil.App.1`
+//!            isn't registered to a Start Menu shortcut — e.g. when running
+//!            `target/debug/vigil.exe` directly rather than the installed
+//!            build), we fall back to `notify-rust` so the user still sees the
+//!            notification (without the click-to-navigate behaviour).
 //!
 //! macOS / Linux — `notify-rust` which returns a handle with
 //!                 `wait_for_action(closure)`.  A background thread waits on it
@@ -70,7 +73,32 @@ mod platform {
         })();
 
         if let Err(e) = result {
-            tracing::warn!("toast notification failed: {e}");
+            tracing::warn!(
+                "WinRT toast failed ({e}); falling back to notify-rust \
+                 (click-to-navigate will be unavailable for this notification)"
+            );
+            fallback_notify_rust(info);
+        }
+    }
+
+    /// Basic `notify-rust` fallback used when WinRT refuses to show the toast.
+    /// Unlike macOS/Linux, the Windows backend of `notify-rust` does not
+    /// support `wait_for_action`, so we only surface the alert text — the
+    /// click-to-navigate wiring is lost for that one notification.
+    fn fallback_notify_rust(info: &ConnInfo) {
+        let body = format!(
+            "{} \u{2192} {}   score: {}\n{}",
+            info.proc_name,
+            info.remote_addr,
+            info.score,
+            info.reasons.first().map(|r| r.as_str()).unwrap_or(""),
+        );
+        if let Err(e) = notify_rust::Notification::new()
+            .summary("\u{26A0}  Vigil \u{2014} Threat Detected")
+            .body(&body)
+            .show()
+        {
+            tracing::warn!("notify-rust fallback also failed: {e}");
         }
     }
 

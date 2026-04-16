@@ -1,7 +1,11 @@
 //! Alerts tab — scored threats, sortable and filterable.
 //!
-//! Columns (all resizable): Time · Process · Parent · Score · Remote · Reasons
-//! Default sort: Score descending (highest threat first).
+//! Columns (all resizable): Time · Process · Parent · Remote · Status · Score
+//! The column layout is intentionally **identical** to the Activity tab so
+//! that a single shared `TableState` drives the sort order, and egui_extras'
+//! shared `id_salt` ("vigil_table") makes the two tabs track each other's
+//! column widths across frames.  Reasons for each alert are shown in the
+//! inspector side-panel (not as a grid column).
 
 use crate::types::ConnInfo;
 use crate::ui::{theme, TableState};
@@ -10,19 +14,21 @@ use egui_extras::{Column, TableBuilder};
 use std::collections::VecDeque;
 
 const W_TIME:   f32 = 80.0;
-const W_PROC:   f32 = 185.0;
 const W_PARENT: f32 = 140.0;
-const W_SCORE:  f32 = 58.0;
 const W_REMOTE: f32 = 175.0;
+const W_STATUS: f32 = 115.0;
+const W_SCORE:  f32 = 58.0;
 const ROW_H:    f32 = 26.0;
 const HDR_H:    f32 = 28.0;
 
-const COL_TIME:    usize = 0;
-const COL_PROC:    usize = 1;
-const COL_PARENT:  usize = 2;
-const COL_SCORE:   usize = 3;
-const COL_REMOTE:  usize = 4;
-const COL_REASONS: usize = 5;
+// Column indices are kept in lock-step with `ui::activity` so the shared
+// `TableState` (one click = both tabs re-sort) is meaningful.
+const COL_TIME:   usize = 0;
+const COL_PROC:   usize = 1;
+const COL_PARENT: usize = 2;
+const COL_REMOTE: usize = 3;
+const COL_STATUS: usize = 4;
+const COL_SCORE:  usize = 5;
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -77,26 +83,26 @@ pub fn show(
     let mut clicked_idx: Option<usize> = None;
 
     TableBuilder::new(ui)
-        .id_salt("alerts_table_v2")
+        // Shared salt with activity.rs → egui_extras persists a single set
+        // of column widths across both tabs.
+        .id_salt("vigil_table")
         .striped(true)
         .resizable(true)
-        // sense(Sense::click()) makes every cell's response carry click/hover info.
-        // Use the (Rect, Response) return value of row.col() for interaction.
         .sense(Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::initial(W_TIME).at_least(54.0))
-        .column(Column::initial(W_PROC).at_least(80.0))
+        .column(Column::remainder().at_least(80.0))
         .column(Column::initial(W_PARENT).at_least(70.0))
-        .column(Column::initial(W_SCORE).at_least(44.0))
         .column(Column::initial(W_REMOTE).at_least(90.0))
-        .column(Column::remainder().at_least(60.0))
+        .column(Column::initial(W_STATUS).at_least(70.0))
+        .column(Column::initial(W_SCORE).at_least(44.0))
         .header(HDR_H, |mut hdr| {
-            sort_header(&mut hdr, "Time",    COL_TIME,    state);
-            sort_header(&mut hdr, "Process", COL_PROC,    state);
-            sort_header(&mut hdr, "Parent",  COL_PARENT,  state);
-            sort_header(&mut hdr, "Score",   COL_SCORE,   state);
-            sort_header(&mut hdr, "Remote",  COL_REMOTE,  state);
-            sort_header(&mut hdr, "Reasons", COL_REASONS, state);
+            sort_header(&mut hdr, "Time",    COL_TIME,   state);
+            sort_header(&mut hdr, "Process", COL_PROC,   state);
+            sort_header(&mut hdr, "Parent",  COL_PARENT, state);
+            sort_header(&mut hdr, "Remote",  COL_REMOTE, state);
+            sort_header(&mut hdr, "Status",  COL_STATUS, state);
+            sort_header(&mut hdr, "Score",   COL_SCORE,  state);
         })
         .body(|mut body| {
             for (orig_idx, info) in &view {
@@ -104,9 +110,23 @@ pub fn show(
                 body.row(ROW_H, |mut row| {
                     row.set_selected(is_selected);
 
-                    // Time
+                    // Time (with optional "PL" pre-login badge)
                     row.col(|ui| {
-                        ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
+                            if info.pre_login {
+                                ui.label(
+                                    RichText::new("PL")
+                                        .color(theme::DANGER)
+                                        .background_color(theme::DANGER_BG)
+                                        .monospace()
+                                        .size(9.5),
+                                )
+                                .on_hover_text(
+                                    "PRE-LOGIN — observed before any user logged in (+2)",
+                                );
+                            }
+                        });
                     });
 
                     // Process
@@ -133,18 +153,6 @@ pub fn show(
                         );
                     });
 
-                    // Score
-                    row.col(|ui| {
-                        let (fg, bg) = theme::score_colors(info.score);
-                        ui.label(
-                            RichText::new(format!("{:>2}", info.score))
-                                .color(fg)
-                                .background_color(bg)
-                                .monospace()
-                                .size(11.0),
-                        );
-                    });
-
                     // Remote
                     row.col(|ui| {
                         ui.add(
@@ -158,19 +166,27 @@ pub fn show(
                         );
                     });
 
-                    // Reasons
+                    // Status
                     row.col(|ui| {
-                        let reason = info.reasons.first().map(|s| s.as_str()).unwrap_or("—");
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(reason).color(theme::TEXT2).size(11.0),
-                            )
-                            .truncate(),
+                        ui.label(
+                            RichText::new(&info.status)
+                                .color(theme::TEXT2)
+                                .size(11.0),
                         );
                     });
 
-                    // row.response() gives the union of all column responses when
-                    // sense(Sense::click()) is set on the builder — no overlay needed.
+                    // Score
+                    row.col(|ui| {
+                        let (fg, bg) = theme::score_colors(info.score);
+                        ui.label(
+                            RichText::new(format!("{:>2}", info.score))
+                                .color(fg)
+                                .background_color(bg)
+                                .monospace()
+                                .size(11.0),
+                        );
+                    });
+
                     let resp = row.response().on_hover_cursor(egui::CursorIcon::PointingHand);
                     if resp.clicked() {
                         clicked_idx = Some(*orig_idx);
@@ -237,14 +253,13 @@ fn sorted_view<'a>(
 
     view.sort_by(|(ai, a), (bi, b)| {
         let ord = match sort_col {
-            COL_TIME    => bi.cmp(ai),   // descending index = newest first
-            COL_PROC    => a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()),
-            COL_PARENT  => a.parent_name.to_lowercase().cmp(&b.parent_name.to_lowercase()),
-            COL_SCORE   => a.score.cmp(&b.score),
-            COL_REMOTE  => a.remote_addr.cmp(&b.remote_addr),
-            COL_REASONS => a.reasons.first().map(|s| s.as_str()).unwrap_or("")
-                .cmp(b.reasons.first().map(|s| s.as_str()).unwrap_or("")),
-            _           => bi.cmp(ai),
+            COL_TIME   => bi.cmp(ai),   // descending index = newest first
+            COL_PROC   => a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()),
+            COL_PARENT => a.parent_name.to_lowercase().cmp(&b.parent_name.to_lowercase()),
+            COL_REMOTE => a.remote_addr.cmp(&b.remote_addr),
+            COL_STATUS => a.status.cmp(&b.status),
+            COL_SCORE  => a.score.cmp(&b.score),
+            _          => bi.cmp(ai),
         };
         if sort_asc { ord } else { ord.reverse() }
     });
@@ -256,6 +271,7 @@ fn matches_filter(r: &ConnInfo, lower: &str) -> bool {
     r.proc_name.to_lowercase().contains(lower)
         || r.parent_name.to_lowercase().contains(lower)
         || r.remote_addr.to_lowercase().contains(lower)
+        || r.status.to_lowercase().contains(lower)
         || r.reasons.iter().any(|s| s.to_lowercase().contains(lower))
 }
 

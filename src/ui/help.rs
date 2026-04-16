@@ -38,8 +38,11 @@ pub fn show(ui: &mut egui::Ui) {
             score_row(ui, "+3", theme::WARN, "No executable path found (possible process injection or hollowing)");
             score_row(ui, "+3", theme::WARN, "Executable running from a suspicious directory (Temp, AppData\\Roaming, Downloads, etc.)");
             score_row(ui, "+3", theme::WARN, "Suspicious parent process: Office/PDF app spawning a shell, WMI spawning scripts, etc.");
+            score_row(ui, "+3", theme::WARN, "Beaconing pattern detected — regular timing signature of a C2 callback (30+ s of samples needed)");
             score_row(ui, "+2", theme::TEXT2, "Unrecognised process (not in trusted list) — stacks with the unsigned binary penalty below");
             score_row(ui, "+2", theme::TEXT2, "Unsigned binary — no publisher information (stacks with Unrecognised)");
+            score_row(ui, "+2", theme::TEXT2, "DNS query (port 53) from a non-DNS process — possible DNS tunneling / exfiltration");
+            score_row(ui, "+2", theme::TEXT2, "Observed before user login — flagged with a red \u{201C}PL\u{201D} badge in the Time column; classic rootkit / dropper signal");
             score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
 
             // ── Inspector fields ──────────────────────────────────────────────
@@ -89,19 +92,38 @@ pub fn show(ui: &mut egui::Ui) {
             tip(ui, "Add your own internal tools to the Trusted Processes list so they don't generate +2 alerts.");
             tip(ui, "vigil.json lives next to the executable. Back it up to preserve your trusted-processes customisations.");
 
-            // ── Running before login ──────────────────────────────────────────
+            // ── Registry persistence watcher ──────────────────────────────────
             ui.add_space(8.0);
-            section(ui, "Running Before Login (Windows)");
+            section(ui, "Registry Persistence Watcher (Windows)");
             body(
                 ui,
-                "Vigil can be configured to start as a Windows Service so it monitors \
-                 network connections even before a user logs in — catching rootkits and \
-                 malware that activates during boot. To install as a service, run the \
-                 following from an elevated command prompt:\n\n\
-                 \u{00a0}\u{00a0}sc create Vigil binPath= \"\\\"<path>\\vigil.exe\\\"\" start= auto\n\
-                 \u{00a0}\u{00a0}sc start Vigil\n\n\
-                 Note: the GUI tray icon requires a logged-in desktop session — service \
-                 mode runs the monitor only, with no UI.",
+                "Vigil polls the four standard Windows autorun keys every 30 seconds \
+                 and raises a high-severity alert when a new entry appears:\n\n\
+                 \u{00a0}\u{00a0}\u{2022} HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\
+                 \u{00a0}\u{00a0}\u{2022} HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\n\
+                 \u{00a0}\u{00a0}\u{2022} HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\
+                 \u{00a0}\u{00a0}\u{2022} HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\RunOnce\n\n\
+                 These are the most heavily abused persistence locations — malware \
+                 writes itself here so it survives a reboot.  Existing entries at \
+                 start-up are baselined silently; only **new** entries raise an alert.",
+            );
+
+            // ── Running before login ──────────────────────────────────────────
+            ui.add_space(8.0);
+            section(ui, "Running Before Login (all platforms)");
+            body(
+                ui,
+                "Vigil can install itself as a boot-time service/daemon so it \
+                 monitors network connections even before a user logs in. \
+                 Connections captured before login get a +2 score bump and a red \
+                 \u{201C}PL\u{201D} badge in the Time column — the first user to log \
+                 in sees the backlog in the Alerts tab (subject to the 200-row cap).\n\n\
+                 Install from an elevated shell:\n\n\
+                 \u{00a0}\u{00a0}Windows (Admin CMD):  vigil.exe --install-service\n\
+                 \u{00a0}\u{00a0}macOS   (root):       sudo vigil --install-service\n\
+                 \u{00a0}\u{00a0}Linux   (root):       sudo vigil --install-service\n\n\
+                 Uninstall with  --uninstall-service.  The service runs the monitor \
+                 only — tray icon and UI still require a logged-in desktop session.",
             );
 
             // ── Version ───────────────────────────────────────────────────────

@@ -34,6 +34,15 @@ pub struct ConnInfo {
     /// Full ancestor chain: [(name, pid), …] from immediate parent to root.
     /// Empty when the process has no parent or the chain cannot be walked.
     pub ancestor_chain: Vec<(String, u32)>,
+
+    // ── Session ──────────────────────────────────────────────────────────────
+    /// `true` when this connection was observed while **no interactive user
+    /// session** was active — i.e. Vigil is running as a boot-time service
+    /// and nobody has logged in yet.  Boot-time persistence callbacks are a
+    /// classic rootkit / dropper signal, so this flag adds `+2` to the score
+    /// and the UI tags the row with a "PRE-LOGIN" badge.
+    #[serde(default)]
+    pub pre_login: bool,
 }
 
 // ── Events sent monitor → UI ──────────────────────────────────────────────────

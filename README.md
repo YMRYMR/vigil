@@ -28,7 +28,7 @@ notification, and a full GUI — the moment something looks wrong.
 
 ## How the score works
 
-Each new connection is scored independently across eight signals. Points
+Each new connection is scored independently across eleven signals. Points
 stack — a PowerShell process spawned by Word, connecting to port 4444, can
 score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 
@@ -39,14 +39,25 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +3 | No executable path found — possible process injection or hollowing |
 | +3 | Running from a suspicious directory (`\Temp\`, `\AppData\Roaming\`, …) |
 | +3 | Suspicious parent process (e.g. `winword.exe` spawning `powershell.exe`) |
+| +3 | Beaconing pattern detected — regular C2 callback timing signature |
 | +2 | Unrecognised process (not on your trusted list) |
 | +2 | Unsigned binary — no code-signing certificate |
+| +2 | DNS query (port 53) from a non-DNS process — possible DNS tunneling |
+| +2 | Connection observed **before user login** — rootkit / dropper signal |
 | +1 | Unusual destination port for an untrusted process |
 
 Trusted processes skip the **+2 unrecognised** and **+2 unsigned** penalties,
 so routine connections from browsers and system services score 0.  High-severity
-signals (malware ports, LoLBins) still apply — if a trusted app suddenly dials
-a C2 port, you want to know.
+signals (malware ports, LoLBins, pre-login activity) still apply — if a trusted
+app suddenly dials a C2 port, you want to know.
+
+Vigil also runs two passive persistence watchers that raise synthetic alerts
+(independent of active connections):
+
+- **Registry autorun watcher** (Windows) — polls `HKCU\…\Run`, `HKLM\…\Run`,
+  and both `RunOnce` keys every 30 s; alerts on any new entry.
+- **Beaconing detector** — tracks inter-arrival time per `(pid, remote_ip)`
+  across a rolling 30-sample window; flags stddev < 5 s / mean 1 – 600 s.
 
 ---
 
@@ -154,20 +165,37 @@ Open the log folder via the tray icon context menu → **Open Logs Folder**.
 
 ---
 
-## Running before login (Windows service mode)
+## Running before login (all platforms)
 
-Vigil can be installed as a Windows service so monitoring starts before any
-user logs in — useful for detecting rogue processes that activate early in
-the boot sequence:
+Vigil can install itself as a boot-time service so monitoring starts
+**before any user logs in** — useful for detecting rogue processes that
+activate early in the boot sequence (rootkits, dropper callbacks,
+persistence mechanisms).
 
-```cmd
-sc create Vigil binPath= "C:\Program Files\Vigil\vigil.exe" start= auto
-sc description Vigil "Real-time network threat monitor"
-sc start Vigil
-```
+Connections captured before login get a **+2 score bump** and a red
+**`PL`** badge in the Time column, so when the first user logs in they
+immediately see everything the monitor caught during boot.
 
-Note: service mode runs without a GUI. Alerts are written to the log file
-only.  The GUI launches normally when a user logs in.
+From an elevated shell:
+
+| OS      | Command                                          |
+| ------- | ------------------------------------------------ |
+| Windows | `vigil.exe --install-service`   *(Admin CMD)*    |
+| macOS   | `sudo vigil --install-service`                   |
+| Linux   | `sudo vigil --install-service`                   |
+
+To remove the boot-time service, replace with `--uninstall-service`.
+
+Under the hood:
+
+- Windows uses the Service Control Manager (`sc create Vigil …`).
+- macOS writes a launchd system daemon at
+  `/Library/LaunchDaemons/com.vigil.monitor.plist` and `launchctl load`s it.
+- Linux writes a systemd unit at `/etc/systemd/system/vigil.service` and
+  enables it with `systemctl enable --now vigil.service`.
+
+Note: service mode runs the **monitor only** — the tray icon and GUI
+require a logged-in desktop session and launch normally via autostart.
 
 ---
 

@@ -21,9 +21,12 @@
 pub mod etw;
 pub mod poll;
 
+use crate::beacon::BeaconTracker;
 use crate::config::Config;
 use crate::process;
+use crate::registry;
 use crate::score::{score, ScoreInput};
+use crate::session;
 use crate::types::{ConnEvent, ConnInfo, MonitorCmd};
 use chrono::Local;
 use poll::RawConn;
@@ -100,6 +103,10 @@ impl Monitor {
             tracing::info!("ETW unavailable — falling back to polling");
         }
 
+        // Spawn the registry persistence watcher (Windows only; no-op elsewhere).
+        let threshold = config.read().unwrap().alert_threshold;
+        registry::win::spawn(tx.clone(), threshold);
+
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
             rt.block_on(poll_loop(config, tx, etw_rx))
@@ -130,6 +137,9 @@ async fn poll_loop(
     let using_etw = etw_rx.is_some();
     let mut known: HashMap<ConnKey, ConnInfo> = HashMap::new();
 
+    // Beaconing detector: tracks inter-connection timing per (pid, remote_ip).
+    let mut beacon = BeaconTracker::new();
+
     // Build service map once; refresh it on every full poll cycle.
     let mut svc_map = process::build_service_map();
 
@@ -155,8 +165,9 @@ async fn poll_loop(
                     Some(raw_conn) => {
                         let key = ConnKey::from(&raw_conn);
                         if !known.contains_key(&key) {
+                            let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                             process_conn(
-                                &raw_conn, &mut known, &svc_map,
+                                &raw_conn, beaconing, &mut known, &svc_map,
                                 &config, &tx, threshold, log_all,
                             );
                         }
@@ -196,6 +207,10 @@ async fn poll_loop(
                     }
                 }
 
+                // Prune the beacon tracker: drop entries for pids no longer seen.
+                let active_pids: HashSet<u32> = known.keys().map(|k| k.pid).collect();
+                beacon.prune(&active_pids);
+
                 // Process any new connections the poll found
                 // (ETW may already have them in `known`; skip those)
                 for raw_conn in &raw {
@@ -203,8 +218,9 @@ async fn poll_loop(
                     if known.contains_key(&key) {
                         continue;
                     }
+                    let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                     process_conn(
-                        raw_conn, &mut known, &svc_map,
+                        raw_conn, beaconing, &mut known, &svc_map,
                         &config, &tx, threshold, log_all,
                     );
                 }
@@ -219,6 +235,7 @@ async fn poll_loop(
 /// appropriate `ConnEvent` over the broadcast channel.
 fn process_conn(
     raw_conn: &RawConn,
+    beaconing: bool,
     known: &mut HashMap<ConnKey, ConnInfo>,
     svc_map: &HashMap<u32, String>,
     config: &Arc<RwLock<Config>>,
@@ -234,6 +251,12 @@ fn process_conn(
         .map(|(n, pid)| (crate::config::normalise_name(n), *pid))
         .collect();
 
+    // Capture the interactive-session state at the moment we observed the
+    // connection.  Once a user logs in this becomes false and stays false
+    // for the rest of the process lifetime, so the check is effectively
+    // "has a user ever logged in since we started monitoring?".
+    let pre_login = session::is_pre_login();
+
     let (s, reasons) = {
         let cfg = config.read().unwrap();
         score(
@@ -245,6 +268,8 @@ fn process_conn(
                 remote_port: raw_conn.remote_port,
                 status:      &raw_conn.status,
                 ancestors:   &ancestors_norm,
+                beaconing,
+                pre_login,
             },
             &cfg,
         )
@@ -273,6 +298,7 @@ fn process_conn(
         status: raw_conn.status.clone(),
         score: s,
         reasons: reasons.clone(),
+        pre_login,
     };
 
     let key = ConnKey::from(raw_conn);
