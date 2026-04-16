@@ -338,13 +338,110 @@ Second round of detection features and cross-platform hardening.
 
 ## Phase 10 — Reputation & Telemetry (backlog)
 
-Features deferred to a future release.
+Enrich existing detections with external and offline context. All items are read-only (no blocking).
 
-- [ ] **IP reputation** — AbuseIPDB / Shodan lookups with configurable API key + local cache
-- [ ] **Geolocation** — MaxMind GeoLite2 offline DB; flag connections to unusual regions
-- [ ] **File system watcher** — `notify` crate watching Temp/AppData; correlate new exes with network connections
-- [ ] **Unsigned DLL detection** — enumerate loaded modules per network process; flag unsigned ones from temp paths
-- [ ] **Volume anomaly** — track bytes/sec per process (Windows: `GetPerTcpConnectionEStats`); alert on spikes
+- [ ] **IP reputation** — AbuseIPDB / Shodan / VirusTotal lookups with configurable API key + local SQLite cache; +N score when remote IP has recent abuse reports
+- [ ] **Geolocation** — MaxMind GeoLite2 offline DB; flag connections to unusual regions (configurable allowlist of expected countries)
+- [ ] **ASN / hosting classification** — flag bulletproof hosters, VPS providers known for abuse, Tor exit nodes
+- [ ] **Domain reputation** — reverse-DNS + Cisco Umbrella / Quad9 threat feed lookup for newly-seen domains
+- [ ] **Newly registered domain (NRD) detection** — WHOIS age check; domains < 7 days old get +2
+- [ ] **File system watcher** — `notify` crate watching `%TEMP%`, `%APPDATA%`, `Downloads`; correlate new exes with network connections inside N seconds
+- [ ] **Unsigned DLL detection** — enumerate loaded modules per network process (Windows PSAPI); flag unsigned ones from temp paths
+- [ ] **Volume anomaly** — track bytes/sec per process (Windows: `GetPerTcpConnectionEStats`, Linux: `/proc/net/tcp` diff); alert on spikes and large uploads
+- [ ] **Long-lived outbound connection tracker** — alert when a non-browser process keeps a connection open > 1 h
+- [ ] **Entropy scoring on domains** — DGA-style random-looking domains get +2 (Shannon entropy over labels)
+
+---
+
+## Phase 11 — Active Response (backlog)
+
+Move Vigil from passive observer to intervening defender. All actions must be explicit, reversible, and auditable.
+
+### Per-connection and per-process blocking
+- [ ] **Block single connection** — kill one socket without killing the owning process
+  - Windows: `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
+  - Linux: `ss -K dst <ip> dport = <port>` (needs `CONFIG_INET_DIAG_DESTROY`) or `conntrack -D`
+  - macOS: `pfctl` rule injection + state flush (no native socket-kill API)
+- [ ] **Block all connections from a process** (without killing it) — the user's explicit request
+  - Windows: add a transient WFP (Windows Filtering Platform) filter scoped to the process image path or PID; requires a signed WFP callout driver for PID scope, or a user-mode filter via `FwpmFilterAdd` for image-path scope
+  - Linux: `nftables` rule matching `meta skuid` / cgroup v2 `net_cls` — Vigil moves the offending PID into a quarantine cgroup that has a deny-all netfilter rule; process continues running but all new sockets are dropped
+  - macOS: `pf` anchor per-process via `pfctl` + Network Extension content-filter (needs entitlement)
+  - UI: new "Quarantine process" button in inspector; shows countdown + "Release" button
+- [ ] **Block remote IP / CIDR** system-wide — add to host firewall blocklist with TTL (1 h / 24 h / permanent)
+- [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
+- [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation
+- [ ] **Suspend process** — freeze the process (Windows: `NtSuspendProcess`, Unix: `SIGSTOP`) while the user investigates; resumable
+
+### Machine-wide lockdown
+- [ ] **Panic button — full network isolation** — the user's explicit request
+  - One-click "Isolate machine" in the tray menu and main window header
+  - Windows: disable all network adapters via `netsh interface set interface <name> admin=disable`, OR add a blanket WFP deny-all filter at the ALE layer (reversible in one call)
+  - Linux: `nmcli networking off` + `iptables -P INPUT/OUTPUT/FORWARD DROP` with a saved rollback script
+  - macOS: `networksetup -setairportpower <dev> off` + disable each service via `networksetup -setnetworkserviceenabled`
+  - Vigil itself must keep running in offline mode; on-disk audit log records the trigger reason
+  - Big red "Restore network" button stays visible; requires typed confirmation to restore
+- [ ] **Allowlist-only mode** — invert the firewall: only signed Microsoft processes, or a user-curated list, may talk to the network; everything else blocked
+- [ ] **Quarantine profile** — preset combining: lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
+- [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched
+
+### Rule engine and automation
+- [ ] **User-defined response rules** — "if score ≥ 8 AND process is unsigned → auto-quarantine process"
+  - YAML rule file with condition DSL (same fields as `ScoreInput`)
+  - Dry-run mode that logs what would have been blocked
+- [ ] **Threshold escalation** — first offence notify, second block connection, third quarantine process
+- [ ] **Time-boxed blocks** — every block has an expiry; auto-revert at TTL
+- [ ] **Scheduled lockdown** — isolate machine automatically during specified hours (e.g. overnight)
+
+### Containment and forensics
+- [ ] **PCAP capture on alert** — spawn a short ring-buffered packet capture when a high-score alert fires (Windows: `pktmon`; Linux: `tcpdump`; macOS: `tcpdump`)
+- [ ] **Process memory dump on alert** — optional minidump for offline analysis (Windows: `MiniDumpWriteDump`)
+- [ ] **Freeze autorun entries** — snapshot HKCU/HKLM Run keys; revert additions made after snapshot
+- [ ] **Honeypot decoy files** — canary files in common locations; alert + auto-lockdown if touched
+
+---
+
+## Phase 12 — Detection Depth (backlog)
+
+Raise detection ceiling with richer signals and correlation.
+
+- [ ] **Behavioural baselines** — per-process profile of typical remote endpoints and ports over N days; flag deviations
+- [ ] **Process lineage chains** — track full ancestor chain (not just parent); alert on chains like `winword → powershell → cmd → curl`
+- [ ] **Script-host content inspection** — ETW scriptblock logging (PowerShell) and command-line capture for `cmd.exe` / `wscript.exe` / `mshta.exe`; pattern-match for downloader patterns
+- [ ] **Signed-but-malicious detection** — maintain revocation list of abused code-signing certs (e.g. known leaked certs)
+- [ ] **LOLBAS/GTFOBins coverage** — expand beyond the current `certutil`/`bitsadmin`/`mshta` list to the full LOLBAS catalogue; auto-sync from upstream JSON
+- [ ] **Driver load monitoring** — ETW Microsoft-Windows-Kernel-PnP events; alert on unsigned or recently dropped drivers
+- [ ] **Token manipulation detection** — ETW process token events; alert on SeDebugPrivilege acquisition by non-admin processes
+- [ ] **Parent-spoofing detection** — compare reported parent PID against creation-time parent via ETW `Process/Start`
+- [ ] **TLS SNI / JA3 fingerprinting** — capture TLS ClientHello via ETW-Tls or eBPF; score on SNI mismatch with reverse DNS and on known-malicious JA3
+- [ ] **MITRE ATT&CK mapping** — tag every detection with ATT&CK technique ID; dashboard shows coverage heatmap
+
+---
+
+## Phase 13 — Integration & Fleet (backlog)
+
+Make Vigil useful beyond a single endpoint.
+
+- [ ] **SIEM export** — syslog / CEF / JSON over TCP push for Splunk, Elastic, Sentinel
+- [ ] **Webhook alerts** — configurable HTTPS POST per alert (Discord, Slack, ntfy, PagerDuty)
+- [ ] **Fleet mode** — optional central server aggregates alerts from many Vigil instances; read-only dashboard
+- [ ] **Remote lockdown** — signed command from central server triggers Phase 11 isolation on a target host
+- [ ] **Shared blocklist sync** — subscribe to community-curated IP/domain blocklists with HTTPS pull + signature verification
+- [ ] **Threat-intel STIX/TAXII client** — pull IoCs from standard feeds
+- [ ] **Export alert as ATT&CK Navigator layer** — share incidents in standard format
+
+---
+
+## Phase 14 — Hardening & Self-defence (backlog)
+
+Vigil must resist tampering to be trustworthy.
+
+- [ ] **Self-protection** — prevent non-admin processes from killing Vigil (Windows: PPL / protected process light; Linux: `PR_SET_DUMPABLE=0` + seccomp)
+- [ ] **Config signing** — require signed config changes; reject tampered `config.json`
+- [ ] **Tamper-evident audit log** — hash-chained append-only log of every alert and user action; detect truncation
+- [ ] **Secure update channel** — signed release bundles (minisign / cosign); auto-verify before replacing binary
+- [ ] **Sandboxed providers** — move file-watcher and DLL-enumeration helpers into separate low-privilege worker processes; IPC over a pipe
+- [ ] **Anti-debug heuristics** — refuse to run under a debugger unless `--debug` flag passed explicitly
+- [ ] **Compromised-host mode** — if self-integrity check fails, refuse to start and write a red banner to the event log
 
 ---
 
@@ -360,4 +457,8 @@ Features deferred to a future release.
 | 1.0.0 | 7   | Build pipeline + open-source release | ✅ Done |
 | 1.1.0 | 8   | UX, detection & quality overhaul | ✅ Done |
 | 1.2.0 | 9   | Beaconing, DNS, registry, pre-login, cross-platform service | ✅ Done |
-| 2.x   | 10  | Reputation & telemetry | 🔲 Backlog |
+| 2.0.0 | 10  | Reputation & telemetry | 🔲 Backlog |
+| 3.0.0 | 11  | Active response: per-process block, machine isolation, rule engine | 🔲 Backlog |
+| 3.x   | 12  | Detection depth: behavioural baselines, script inspection, JA3 | 🔲 Backlog |
+| 4.x   | 13  | Integration & fleet: SIEM, webhooks, central server | 🔲 Backlog |
+| 4.x   | 14  | Hardening & self-defence | 🔲 Backlog |
