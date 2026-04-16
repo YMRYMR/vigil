@@ -103,20 +103,14 @@ pub fn show(
                 let is_selected = *selected == Some(*orig_idx);
                 body.row(ROW_H, |mut row| {
                     row.set_selected(is_selected);
-                    let mut row_clicked = false;
-
-                    // Each row.col() call returns (Rect, Response).
-                    // The Response has clicked/hovered because sense(Sense::click())
-                    // was set on the builder.
 
                     // Time
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Process
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.proc_name)
@@ -126,10 +120,9 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Parent
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.parent_name)
@@ -139,10 +132,9 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Score
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         let (fg, bg) = theme::score_colors(info.score);
                         ui.label(
                             RichText::new(format!("{:>2}", info.score))
@@ -152,10 +144,9 @@ pub fn show(
                                 .size(11.0),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Remote
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.remote_addr)
@@ -166,10 +157,9 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Reasons
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         let reason = info.reasons.first().map(|s| s.as_str()).unwrap_or("—");
                         ui.add(
                             egui::Label::new(
@@ -178,9 +168,19 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
-                    if row_clicked { clicked_idx = Some(*orig_idx); }
+                    // row.response() gives the union of all column responses when
+                    // sense(Sense::click()) is set on the builder — no overlay needed.
+                    let resp = row.response().on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() {
+                        clicked_idx = Some(*orig_idx);
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button("Clear all").clicked() {
+                            clear_requested = true;
+                            ui.close();
+                        }
+                    });
                 });
             }
         });
@@ -188,18 +188,6 @@ pub fn show(
     if let Some(idx) = clicked_idx {
         *selected = if *selected == Some(idx) { None } else { Some(idx) };
     }
-
-    let table_response = ui.interact(
-        ui.min_rect(),
-        ui.id().with("ctx_menu"),
-        egui::Sense::click(),
-    );
-    table_response.context_menu(|ui| {
-        if ui.button("Clear all").clicked() {
-            clear_requested = true;
-            ui.close();
-        }
-    });
 
     clear_requested
 }

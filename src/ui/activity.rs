@@ -104,21 +104,14 @@ pub fn show(
                 let is_selected = *selected == Some(*orig_idx);
                 body.row(ROW_H, |mut row| {
                     row.set_selected(is_selected);
-                    let mut row_clicked = false;
-
-                    // Each row.col() call returns (Rect, Response).
-                    // The Response has clicked/hovered because sense(Sense::click())
-                    // was set on the builder. Use on_hover_cursor to show a hand
-                    // pointer, and check .clicked() to detect row selection.
 
                     // Time
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Process + pid
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         let text = format!("{}  {}", info.proc_name, info.pid);
                         ui.add(
                             egui::Label::new(
@@ -127,10 +120,9 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Parent
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.parent_name)
@@ -140,10 +132,9 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Remote
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.remote_addr)
@@ -154,42 +145,37 @@ pub fn show(
                             .truncate(),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Status
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         ui.label(
                             RichText::new(&info.status)
                                 .color(status_color(&info.status))
                                 .size(11.0),
                         );
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Score badge
-                    let (_, r) = row.col(|ui| {
+                    row.col(|ui| {
                         let (fg, bg) = theme::score_colors(info.score);
                         score_badge(ui, info.score, fg, bg);
                     });
-                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
-                    if row_clicked { clicked_idx = Some(*orig_idx); }
+                    // row.response() gives the union of all column responses when
+                    // sense(Sense::click()) is set on the builder — no overlay needed.
+                    let resp = row.response().on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if resp.clicked() {
+                        clicked_idx = Some(*orig_idx);
+                    }
+                    resp.context_menu(|ui| {
+                        if ui.button("Clear all").clicked() {
+                            clear_requested = true;
+                            ui.close();
+                        }
+                    });
                 });
             }
         });
-
-    // ── Context menu (right-click on table area) ──────────────────────────────
-    let table_response = ui.interact(
-        ui.min_rect(),
-        ui.id().with("ctx_menu"),
-        egui::Sense::click(),
-    );
-    table_response.context_menu(|ui| {
-        if ui.button("Clear all").clicked() {
-            clear_requested = true;
-            ui.close();
-        }
-    });
 
     if let Some(idx) = clicked_idx {
         *selected = if *selected == Some(idx) { None } else { Some(idx) };
