@@ -3,7 +3,7 @@
 //! Columns (all resizable): Time · Process · Parent · Remote · Status · Score
 //! Rows are sorted by the active column; newest-first by default.
 //! Click any column header to sort; click again to flip direction.
-//! Click a row anywhere to select it for the inspector.
+//! Click a row to select it for the inspector panel.
 //! Right-click the table body to get a context menu with "Clear all".
 
 use crate::types::ConnInfo;
@@ -81,7 +81,9 @@ pub fn show(
         .id_salt("activity_table_v2")
         .striped(true)
         .resizable(true)
-        .sense(Sense::hover())
+        // sense(Sense::click()) makes every cell's response carry click/hover info.
+        // Use the (Rect, Response) return value of row.col() for interaction.
+        .sense(Sense::click())
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::initial(W_TIME).at_least(54.0))
         .column(Column::remainder().at_least(80.0))
@@ -104,20 +106,19 @@ pub fn show(
                     row.set_selected(is_selected);
                     let mut row_clicked = false;
 
+                    // Each row.col() call returns (Rect, Response).
+                    // The Response has clicked/hovered because sense(Sense::click())
+                    // was set on the builder. Use on_hover_cursor to show a hand
+                    // pointer, and check .clicked() to detect row selection.
+
                     // Time
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Process + pid
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         let text = format!("{}  {}", info.proc_name, info.pid);
                         ui.add(
                             egui::Label::new(
@@ -125,14 +126,11 @@ pub fn show(
                             )
                             .truncate(),
                         );
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Parent
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.parent_name)
@@ -141,14 +139,11 @@ pub fn show(
                             )
                             .truncate(),
                         );
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Remote
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         ui.add(
                             egui::Label::new(
                                 RichText::new(&info.remote_addr)
@@ -158,31 +153,25 @@ pub fn show(
                             )
                             .truncate(),
                         );
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Status
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         ui.label(
                             RichText::new(&info.status)
                                 .color(status_color(&info.status))
                                 .size(11.0),
                         );
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     // Score badge
-                    row.col(|ui| {
-                        let r = ui
-                            .interact(ui.max_rect(), ui.id().with("ri"), Sense::click())
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let (_, r) = row.col(|ui| {
                         let (fg, bg) = theme::score_colors(info.score);
                         score_badge(ui, info.score, fg, bg);
-                        if r.clicked() { row_clicked = true; }
                     });
+                    if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { row_clicked = true; }
 
                     if row_clicked { clicked_idx = Some(*orig_idx); }
                 });
@@ -211,6 +200,12 @@ pub fn show(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Render a sortable column header.
+///
+/// Using `Label::sense(Sense::click())` on the label widget — not `ui.interact()`.
+/// This is the documented egui_extras approach and works with `sense(Sense::click())`
+/// on the TableBuilder.  The label's own sense takes priority for the label rect,
+/// and the surrounding cell area carries the same sense via the builder.
 fn sort_header(
     hdr: &mut egui_extras::TableRow<'_, '_>,
     label: &str,
@@ -223,14 +218,11 @@ fn sort_header(
         let text   = format!("{label}{arrow}");
         let color  = if active { theme::TEXT } else { theme::TEXT2 };
         let rich   = RichText::new(&text).color(color).size(10.5).strong();
-        // Claim the full cell rect first — same pattern used for body-row clicks.
-        // Label::sense(click()) stopped working once the table sense was set to
-        // Sense::hover(); ui.interact on max_rect is reliable in egui_extras 0.34.
-        let r = ui
-            .interact(ui.max_rect(), ui.id().with("sh"), Sense::click())
-            .on_hover_cursor(egui::CursorIcon::PointingHand);
-        ui.label(rich);
-        if r.clicked() {
+        if ui
+            .add(egui::Label::new(rich).sense(Sense::click()))
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             state.toggle(col);
         }
     });
@@ -267,7 +259,7 @@ fn sorted_view<'a>(
 
     view.sort_by(|(ai, a), (bi, b)| {
         let ord = match sort_col {
-            COL_TIME   => bi.cmp(ai),
+            COL_TIME   => bi.cmp(ai),   // descending index = newest first
             COL_PROC   => a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()),
             COL_PARENT => a.parent_name.to_lowercase().cmp(&b.parent_name.to_lowercase()),
             COL_REMOTE => a.remote_addr.cmp(&b.remote_addr),
@@ -283,6 +275,7 @@ fn sorted_view<'a>(
 
 fn matches_filter(r: &ConnInfo, lower: &str) -> bool {
     r.proc_name.to_lowercase().contains(lower)
+        || r.parent_name.to_lowercase().contains(lower)
         || r.remote_addr.to_lowercase().contains(lower)
         || r.status.to_lowercase().contains(lower)
         || r.local_addr.to_lowercase().contains(lower)
