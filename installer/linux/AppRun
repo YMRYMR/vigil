@@ -1,0 +1,3 @@
+#!/bin/sh
+# AppImage entry point — runs the vigil binary from the bundle.
+exec "$APPDIR/usr/bin/vigil" "$@"

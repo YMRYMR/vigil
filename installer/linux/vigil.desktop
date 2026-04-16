@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Vigil
+Comment=Real-time network threat monitor
+Exec=vigil
+Icon=vigil
+Type=Application
+Categories=Utility;Security;Network;
+Keywords=network;security;monitor;firewall;threat;
+StartupNotify=false
+# Vigil is a tray app — it doesn't open a window on launch
+NoDisplay=false

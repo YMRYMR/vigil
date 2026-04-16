@@ -1,0 +1,30 @@
+# Rust build output
+/target
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.pdb
+.vscode/
+.idea/
+
+# Vigil runtime files (generated, not source)
+vigil.json
+/logs/
+
+# Secrets — never commit these
+*.env
+
+# Claude Code session data
+.claude/
+CLAUDE.md
+
+# Build artefacts that get staged next to installer scripts
+# (the real binaries go in target/; these are copies used by Inno Setup / DMG)
+installer/windows/vigil.exe
+installer/windows/output/
+installer/windows/logs/
+
+# Generated icon assets (produced by build.rs from programmatic code)
+assets/vigil.ico
+assets/vigil.png

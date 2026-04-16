@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Identity -->
+    <key>CFBundleName</key>
+    <string>Vigil</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vigil</string>
+    <key>CFBundleIdentifier</key>
+    <string>dev.vigil.app</string>
+
+    <!-- Version — substituted by the release workflow -->
+    <key>CFBundleVersion</key>
+    <string>VIGIL_VERSION</string>
+    <key>CFBundleShortVersionString</key>
+    <string>VIGIL_VERSION</string>
+
+    <!-- Executable -->
+    <key>CFBundleExecutable</key>
+    <string>vigil</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+
+    <!-- Icon (vigil.icns placed in Contents/Resources by the build) -->
+    <key>CFBundleIconFile</key>
+    <string>vigil</string>
+
+    <!-- UI -->
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key>
+    <true/>
+
+    <!-- Vigil is a background/tray app — hide the Dock icon -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Minimum macOS version: Ventura (13.0) -->
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+
+    <!-- Category shown in Launchpad / App Store -->
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+</dict>
+</plist>
