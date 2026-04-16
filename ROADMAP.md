@@ -336,20 +336,26 @@ Second round of detection features and cross-platform hardening.
 
 ---
 
-## Phase 10 — Reputation & Telemetry (backlog)
+## Phase 10 — Reputation & Telemetry ✅ COMPLETE
 
-Enrich existing detections with external and offline context. All items are read-only (no blocking).
+Shipped in 1.3.0. Enrichment signals layered on top of behavioural scoring,
+all off-by-default and configurable in `vigil.json`.
 
-- [ ] **IP reputation** — AbuseIPDB / Shodan / VirusTotal lookups with configurable API key + local SQLite cache; +N score when remote IP has recent abuse reports
-- [ ] **Geolocation** — MaxMind GeoLite2 offline DB; flag connections to unusual regions (configurable allowlist of expected countries)
-- [ ] **ASN / hosting classification** — flag bulletproof hosters, VPS providers known for abuse, Tor exit nodes
-- [ ] **Domain reputation** — reverse-DNS + Cisco Umbrella / Quad9 threat feed lookup for newly-seen domains
-- [ ] **Newly registered domain (NRD) detection** — WHOIS age check; domains < 7 days old get +2
-- [ ] **File system watcher** — `notify` crate watching `%TEMP%`, `%APPDATA%`, `Downloads`; correlate new exes with network connections inside N seconds
-- [ ] **Unsigned DLL detection** — enumerate loaded modules per network process (Windows PSAPI); flag unsigned ones from temp paths
-- [ ] **Volume anomaly** — track bytes/sec per process (Windows: `GetPerTcpConnectionEStats`, Linux: `/proc/net/tcp` diff); alert on spikes and large uploads
-- [ ] **Long-lived outbound connection tracker** — alert when a non-browser process keeps a connection open > 1 h
-- [ ] **Entropy scoring on domains** — DGA-style random-looking domains get +2 (Shannon entropy over labels)
+### Shipped
+- [x] **IP reputation via local blocklists** — `src/blocklist.rs`: load plain-text IP/CIDR lists, +3 on hit, REP badge. Online API lookups (AbuseIPDB / Shodan / VirusTotal) deferred.
+- [x] **Geolocation** — `src/geoip.rs`: MaxMind GeoLite2-City offline DB; country code per connection; +2 for countries outside `allowed_countries`.
+- [x] **ASN / hosting classification** — `src/geoip.rs`: GeoLite2-ASN DB; ASN number + AS organisation shown in Inspector. Bulletproof-hoster flagging deferred to Phase 12.
+- [x] **File system watcher** — `src/fswatch.rs`: `notify` crate watches Temp / AppData / Downloads for new `.exe`/`.dll`/`.scr`/`.ps1`/…; +3 and DRP badge when a fresh drop makes a connection within `fswatch_window_secs` (default 600 s).
+- [x] **Long-lived connection tracker** — `src/longlived.rs`: tracks first-seen per `(pid, remote_ip)`; +2 and LL badge when untrusted process stays connected past `long_lived_secs` (default 3600 s).
+- [x] **DGA entropy scoring** — `src/entropy.rs`: Shannon entropy over leftmost hostname label; +2 and DGA badge when above `dga_entropy_threshold` (default 3.2 bits/char).
+- [x] **Reverse DNS (cached)** — `src/revdns.rs`: background worker + in-memory cache; opt-in via `reverse_dns_enabled` (off by default because of resolver leakage).
+
+### Deferred to later phases
+- [ ] **Domain reputation** — Umbrella / Quad9 feed lookup (requires network round-trip)
+- [ ] **Newly registered domain (NRD) detection** — WHOIS client
+- [ ] **Unsigned DLL detection** — PSAPI module enumeration + Authenticode verification per DLL (Phase 12 detection-depth work)
+- [ ] **Volume anomaly** — Windows `GetPerTcpConnectionEStats` / Linux `/proc/net/tcp` byte-counter diffs (Phase 12)
+- [ ] **Online reputation APIs** — AbuseIPDB / Shodan / VirusTotal REST clients with SQLite cache (Phase 13 integration work)
 
 ---
 
@@ -457,7 +463,7 @@ Vigil must resist tampering to be trustworthy.
 | 1.0.0 | 7   | Build pipeline + open-source release | ✅ Done |
 | 1.1.0 | 8   | UX, detection & quality overhaul | ✅ Done |
 | 1.2.0 | 9   | Beaconing, DNS, registry, pre-login, cross-platform service | ✅ Done |
-| 2.0.0 | 10  | Reputation & telemetry | 🔲 Backlog |
+| 1.3.0 | 10  | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11  | Active response: per-process block, machine isolation, rule engine | 🔲 Backlog |
 | 3.x   | 12  | Detection depth: behavioural baselines, script inspection, JA3 | 🔲 Backlog |
 | 4.x   | 13  | Integration & fleet: SIEM, webhooks, central server | 🔲 Backlog |

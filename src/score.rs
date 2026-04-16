@@ -10,11 +10,16 @@
 //!   +3  executable running from a suspicious directory
 //!   +3  suspicious parent process (Office → shell, etc.)
 //!   +3  beaconing pattern detected (C2 callback timing signature)
+//!   +3  IP matched a user-supplied reputation blocklist (Phase 10)
+//!   +3  executable was dropped into a watched dir just before connecting (Phase 10)
 //!   +2  process not in trusted list
 //!   +2  no publisher / unsigned binary making an external connection
 //!   +2  DNS query from a non-DNS process (possible DNS tunneling)
 //!   +2  connection observed before any interactive user login (boot-time
 //!        persistence — classic rootkit / dropper signal)
+//!   +2  connection to an unexpected country (Phase 10, requires allowed_countries)
+//!   +2  long-lived connection past threshold for untrusted process (Phase 10)
+//!   +2  hostname looks DGA-generated (high Shannon entropy) (Phase 10)
 //!   +1  unusual destination port (not in common_ports) for untrusted process
 
 use crate::config::Config;
@@ -44,6 +49,19 @@ pub struct ScoreInput<'a> {
     /// was captured by Vigil running as a boot-time service / daemon before
     /// anyone logged in.
     pub pre_login: bool,
+
+    // ── Phase 10 inputs ──────────────────────────────────────────────────────
+    /// Name of the matching blocklist file (stem), or `None` if no match.
+    pub reputation_hit: Option<&'a str>,
+    /// ISO country code for the remote IP, uppercase (e.g. "US"), when known.
+    pub country: Option<&'a str>,
+    /// Reverse-DNS hostname for the remote IP, when resolved.
+    pub hostname: Option<&'a str>,
+    /// `true` when the executable at `path` was dropped into a watched dir
+    /// within the configured correlation window.
+    pub recently_dropped: bool,
+    /// `true` when the connection has been open past the long-lived threshold.
+    pub long_lived: bool,
 }
 
 // ── Suspicious parent rules ───────────────────────────────────────────────────
@@ -171,6 +189,51 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
         );
     }
 
+    // ── Phase 10 rules ───────────────────────────────────────────────────────
+
+    // +3  IP reputation hit
+    if let Some(src) = input.reputation_hit {
+        s = s.saturating_add(3);
+        reasons.push(format!("Reputation hit: {} is in blocklist '{}'", input.remote_ip, src));
+    }
+
+    // +3  Executable dropped into a watched dir right before connecting
+    if input.recently_dropped {
+        s = s.saturating_add(3);
+        reasons.push(
+            "Executable was just dropped into a watched directory (possible dropper)".into(),
+        );
+    }
+
+    // +2  Unexpected country (only when allowed_countries is non-empty)
+    if let Some(country) = input.country {
+        if !cfg.allowed_countries.is_empty()
+            && !cfg.allowed_countries.iter().any(|a| a.eq_ignore_ascii_case(country))
+        {
+            s = s.saturating_add(2);
+            reasons.push(format!("Connection to unexpected country: {country}"));
+        }
+    }
+
+    // +2  Long-lived connection from an untrusted process
+    if input.long_lived && !is_trusted {
+        s = s.saturating_add(2);
+        reasons.push(format!(
+            "Long-lived connection held open past {}s by untrusted process",
+            cfg.long_lived_secs,
+        ));
+    }
+
+    // +2  DGA-like hostname (Shannon entropy over leftmost label)
+    if let Some(host) = input.hostname {
+        if !host.is_empty()
+            && crate::entropy::is_dga_like(host, cfg.dga_entropy_threshold)
+        {
+            s = s.saturating_add(2);
+            reasons.push(format!("Hostname looks DGA-generated: {host}"));
+        }
+    }
+
     // +2  DNS query from a non-DNS process (possible DNS tunneling / exfiltration)
     // System DNS resolvers are exempt; anything else querying port 53 is suspicious.
     const DNS_NATIVE: &[&str] = &[
@@ -237,6 +300,8 @@ mod tests {
         ScoreInput {
             name, path, publisher: "", remote_ip, remote_port, status,
             ancestors: &[], beaconing: false, pre_login: false,
+            reputation_hit: None, country: None, hostname: None,
+            recently_dropped: false, long_lived: false,
         }
     }
 
@@ -296,6 +361,8 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None, country: None, hostname: None,
+                recently_dropped: false, long_lived: false,
             },
             &cfg(),
         );
@@ -329,6 +396,8 @@ mod tests {
                 ancestors: &ancestors,
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None, country: None, hostname: None,
+                recently_dropped: false, long_lived: false,
             },
             &cfg(),
         );
@@ -360,6 +429,8 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None, country: None, hostname: None,
+                recently_dropped: false, long_lived: false,
             },
             &cfg(),
         );
@@ -381,6 +452,8 @@ mod tests {
                 ancestors: &[],
                 beaconing: true,
                 pre_login: false,
+                reputation_hit: None, country: None, hostname: None,
+                recently_dropped: false, long_lived: false,
             },
             &cfg(),
         );
@@ -425,12 +498,106 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: true,
+                reputation_hit: None, country: None, hostname: None,
+                recently_dropped: false, long_lived: false,
             },
             &cfg(),
         );
         // Chrome is trusted (no +2), port 443 common, but pre_login adds +2
         assert_eq!(s, 2);
         assert!(r.iter().any(|r| r.contains("before user login")));
+    }
+
+    // ── Phase 10 tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn reputation_hit_adds_three() {
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "45.141.84.15", 443, "ESTABLISHED");
+        inp.reputation_hit = Some("abuseipdb");
+        let (s, r) = score(&inp, &cfg());
+        // chrome trusted, port 443 common, +3 blocklist
+        assert_eq!(s, 3);
+        assert!(r.iter().any(|r| r.contains("abuseipdb")));
+    }
+
+    #[test]
+    fn unexpected_country_adds_two_when_allowlist_set() {
+        let mut cfg = cfg();
+        cfg.allowed_countries = vec!["US".into(), "GB".into()];
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.country = Some("RU");
+        let (s, r) = score(&inp, &cfg);
+        assert_eq!(s, 2);
+        assert!(r.iter().any(|r| r.contains("unexpected country")));
+    }
+
+    #[test]
+    fn allowed_country_does_not_score() {
+        let mut cfg = cfg();
+        cfg.allowed_countries = vec!["US".into()];
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.country = Some("US");
+        let (s, _) = score(&inp, &cfg);
+        assert_eq!(s, 0);
+    }
+
+    #[test]
+    fn empty_allowlist_skips_country_rule() {
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.country = Some("RU");
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
+    }
+
+    #[test]
+    fn recently_dropped_adds_three() {
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.recently_dropped = true;
+        let (s, r) = score(&inp, &cfg());
+        assert_eq!(s, 3);
+        assert!(r.iter().any(|r| r.contains("dropped")));
+    }
+
+    #[test]
+    fn long_lived_adds_two_only_for_untrusted() {
+        // Trusted: skipped
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.long_lived = true;
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
+
+        // Untrusted: +2
+        let mut inp = input("unknownthing", r"C:\Program Files\Unknown\u.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.long_lived = true;
+        let (s, _) = score(&inp, &cfg());
+        // +2 untrusted + 2 unsigned + 2 long-lived
+        assert_eq!(s, 6);
+    }
+
+    #[test]
+    fn dga_hostname_adds_two() {
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.hostname = Some("xj4k8s9qzr.example.com");
+        let (s, r) = score(&inp, &cfg());
+        assert_eq!(s, 2);
+        assert!(r.iter().any(|r| r.contains("DGA-generated")));
+    }
+
+    #[test]
+    fn normal_hostname_does_not_score_dga() {
+        let mut inp = input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                            "1.2.3.4", 443, "ESTABLISHED");
+        inp.hostname = Some("www.google.com");
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
     }
 
     #[test]

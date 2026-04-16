@@ -22,9 +22,14 @@ pub mod etw;
 pub mod poll;
 
 use crate::beacon::BeaconTracker;
+use crate::blocklist;
 use crate::config::Config;
+use crate::fswatch;
+use crate::geoip;
+use crate::longlived::LongLivedTracker;
 use crate::process;
 use crate::registry;
+use crate::revdns;
 use crate::score::{score, ScoreInput};
 use crate::session;
 use crate::types::{ConnEvent, ConnInfo, MonitorCmd};
@@ -140,6 +145,9 @@ async fn poll_loop(
     // Beaconing detector: tracks inter-connection timing per (pid, remote_ip).
     let mut beacon = BeaconTracker::new();
 
+    // Long-lived outbound connection tracker.
+    let long_lived = std::sync::Arc::new(LongLivedTracker::new());
+
     // Build service map once; refresh it on every full poll cycle.
     let mut svc_map = process::build_service_map();
 
@@ -168,7 +176,7 @@ async fn poll_loop(
                             let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                             process_conn(
                                 &raw_conn, beaconing, &mut known, &svc_map,
-                                &config, &tx, threshold, log_all,
+                                &config, &tx, threshold, log_all, &long_lived,
                             );
                         }
                     }
@@ -221,9 +229,15 @@ async fn poll_loop(
                     let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                     process_conn(
                         raw_conn, beaconing, &mut known, &svc_map,
-                        &config, &tx, threshold, log_all,
+                        &config, &tx, threshold, log_all, &long_lived,
                     );
                 }
+
+                // Prune long-lived tracker of closed connections.
+                let active: HashSet<(u32, String)> = known.keys()
+                    .map(|k| (k.pid, k.remote_ip.clone()))
+                    .collect();
+                long_lived.retain_active(|pid, ip| active.contains(&(pid, ip.to_string())));
             }
         }
     }
@@ -242,6 +256,7 @@ fn process_conn(
     tx: &broadcast::Sender<ConnEvent>,
     threshold: u8,
     log_all: bool,
+    long_lived: &LongLivedTracker,
 ) {
     let proc = process::collect(raw_conn.pid, svc_map);
 
@@ -257,6 +272,48 @@ fn process_conn(
     // "has a user ever logged in since we started monitoring?".
     let pre_login = session::is_pre_login();
 
+    // ── Phase 10 enrichments ──────────────────────────────────────────────
+    // Read the relevant config knobs once so we don't hold the lock across
+    // the (potentially slow) reverse-DNS / geoip calls.
+    let (fs_window, long_threshold, rev_enabled, reputation_enabled) = {
+        let cfg = config.read().unwrap();
+        (
+            std::time::Duration::from_secs(cfg.fswatch_window_secs),
+            std::time::Duration::from_secs(cfg.long_lived_secs),
+            cfg.reverse_dns_enabled,
+            !cfg.blocklist_paths.is_empty(),
+        )
+    };
+
+    // Reputation hit
+    let reputation_hit: Option<String> = if reputation_enabled {
+        blocklist::lookup(&raw_conn.remote_ip)
+    } else {
+        None
+    };
+
+    // Geolocation + ASN
+    let geo = if !raw_conn.remote_ip.is_empty() {
+        geoip::lookup(&raw_conn.remote_ip)
+    } else {
+        crate::geoip::GeoInfo::default()
+    };
+
+    // Reverse DNS (cached; may return None on first sight)
+    let hostname: Option<String> = if rev_enabled && !raw_conn.remote_ip.is_empty() {
+        revdns::lookup(&raw_conn.remote_ip).filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+
+    // File-drop correlation
+    let recently_dropped = !proc.path.is_empty()
+        && fswatch::dropped_within(&proc.path, fs_window).is_some();
+
+    // Long-lived tracker — register every event we see for this (pid, ip).
+    let ll_flag = !raw_conn.remote_ip.is_empty()
+        && long_lived.is_long_lived(raw_conn.pid, &raw_conn.remote_ip, long_threshold);
+
     let (s, reasons) = {
         let cfg = config.read().unwrap();
         score(
@@ -270,6 +327,11 @@ fn process_conn(
                 ancestors:   &ancestors_norm,
                 beaconing,
                 pre_login,
+                reputation_hit:   reputation_hit.as_deref(),
+                country:          geo.country.as_deref(),
+                hostname:         hostname.as_deref(),
+                recently_dropped,
+                long_lived:       ll_flag,
             },
             &cfg,
         )
@@ -280,6 +342,13 @@ fn process_conn(
         "LISTEN".to_string()
     } else {
         format!("{}:{}", raw_conn.remote_ip, raw_conn.remote_port)
+    };
+
+    let dga_like = {
+        let cfg = config.read().unwrap();
+        hostname.as_deref()
+            .map(|h| crate::entropy::is_dga_like(h, cfg.dga_entropy_threshold))
+            .unwrap_or(false)
     };
 
     let info = ConnInfo {
@@ -299,6 +368,14 @@ fn process_conn(
         score: s,
         reasons: reasons.clone(),
         pre_login,
+        hostname,
+        country: geo.country,
+        asn: geo.asn,
+        asn_org: geo.asn_org,
+        reputation_hit,
+        recently_dropped,
+        long_lived: ll_flag,
+        dga_like,
     };
 
     let key = ConnKey::from(raw_conn);

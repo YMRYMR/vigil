@@ -28,7 +28,7 @@ notification, and a full GUI — the moment something looks wrong.
 
 ## How the score works
 
-Each new connection is scored independently across eleven signals. Points
+Each new connection is scored independently across seventeen signals. Points
 stack — a PowerShell process spawned by Word, connecting to port 4444, can
 score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 
@@ -40,10 +40,15 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +3 | Running from a suspicious directory (`\Temp\`, `\AppData\Roaming\`, …) |
 | +3 | Suspicious parent process (e.g. `winword.exe` spawning `powershell.exe`) |
 | +3 | Beaconing pattern detected — regular C2 callback timing signature |
+| +3 | IP reputation hit — remote matched a user-supplied blocklist (**Phase 10**, REP badge) |
+| +3 | Executable was just dropped into Temp/AppData/Downloads before connecting (**Phase 10**, DRP badge) |
 | +2 | Unrecognised process (not on your trusted list) |
 | +2 | Unsigned binary — no code-signing certificate |
 | +2 | DNS query (port 53) from a non-DNS process — possible DNS tunneling |
-| +2 | Connection observed **before user login** — rootkit / dropper signal |
+| +2 | Connection observed **before user login** — rootkit / dropper signal (PL badge) |
+| +2 | Connection to an unexpected country (**Phase 10**, requires `allowed_countries`) |
+| +2 | Long-lived connection from untrusted process past threshold (**Phase 10**, LL badge) |
+| +2 | Hostname looks DGA-generated — high Shannon entropy (**Phase 10**, DGA badge) |
 | +1 | Unusual destination port for an untrusted process |
 
 Trusted processes skip the **+2 unrecognised** and **+2 unsigned** penalties,
@@ -196,6 +201,74 @@ Under the hood:
 
 Note: service mode runs the **monitor only** — the tray icon and GUI
 require a logged-in desktop session and launch normally via autostart.
+
+---
+
+## Reputation, geolocation & file-drop correlation (Phase 10)
+
+Vigil layers offline reputation data on top of its behavioural scoring.
+All of it is off by default; point the config at your data to enable it.
+
+### Add geolocation and ASN lookup
+
+Download the free MaxMind GeoLite2-City and GeoLite2-ASN `.mmdb` files
+from https://www.maxmind.com/en/geolite2/signup and drop them anywhere
+on disk. Then edit `vigil.json` next to the binary:
+
+```json
+{
+  "geoip_city_db": "C:\\vigil\\GeoLite2-City.mmdb",
+  "geoip_asn_db":  "C:\\vigil\\GeoLite2-ASN.mmdb",
+  "allowed_countries": ["US", "GB", "ES"]
+}
+```
+
+With the City DB, every row in Activity and Alerts gets a country code
+in the Remote column. With the ASN DB, the Inspector shows the remote's
+ASN number and AS organisation (e.g. `AS15169  Google LLC`). With
+`allowed_countries` set, connections to anywhere else score **+2**.
+
+### Add IP blocklists
+
+Drop plain-text blocklists anywhere and list them:
+
+```json
+{
+  "blocklist_paths": [
+    "C:\\vigil\\abuseipdb.txt",
+    "C:\\vigil\\firehol-level1.txt"
+  ]
+}
+```
+
+Format: one IP or CIDR per line, `#` starts a comment. Hits add **+3**
+and the Alerts row gets a red `REP` badge naming the source list.
+
+### File-drop correlation
+
+Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\Temp`,
+`%APPDATA%`, `Downloads`, and (on Unix) `/tmp` and `/var/tmp` for new
+`.exe` / `.dll` / `.ps1` / `.scr` / `.msi` / `.sh` / `.py` drops. When a
+connection originates from a file that was dropped within the last
+`fswatch_window_secs` seconds (default 600), Vigil adds **+3** and shows
+a `DRP` badge. This catches staged-payload chains
+(phish → macro → dropper → callback) in flagrante.
+
+### Long-lived connection bonus
+
+Untrusted processes that hold a connection open past `long_lived_secs`
+(default 3600 s = 1 h) earn **+2** and an `LL` badge. Browsers and other
+trusted processes are exempt.
+
+### DGA hostname detection
+
+Off by default because reverse-DNS queries leak the fact Vigil is
+watching to the OS resolver. Turn it on with `"reverse_dns_enabled":
+true` in the config. Hostnames whose leftmost label has Shannon entropy
+≥ `dga_entropy_threshold` (default 3.2 bits/char) earn **+2** and a
+`DGA` badge. Brand names like `google.com` or `paypal.com` score well
+below the threshold; machine-generated strings like `xj4k8s9qzr.com`
+trip it.
 
 ---
 

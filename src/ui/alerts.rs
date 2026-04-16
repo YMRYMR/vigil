@@ -110,22 +110,11 @@ pub fn show(
                 body.row(ROW_H, |mut row| {
                     row.set_selected(is_selected);
 
-                    // Time (with optional "PL" pre-login badge)
+                    // Time (with PL / REP / DRP / DGA / LL badges)
                     row.col(|ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&info.timestamp).color(theme::TEXT2).size(11.0));
-                            if info.pre_login {
-                                ui.label(
-                                    RichText::new("PL")
-                                        .color(theme::DANGER)
-                                        .background_color(theme::DANGER_BG)
-                                        .monospace()
-                                        .size(9.5),
-                                )
-                                .on_hover_text(
-                                    "PRE-LOGIN — observed before any user logged in (+2)",
-                                );
-                            }
+                            badge_row(ui, info);
                         });
                     });
 
@@ -153,17 +142,31 @@ pub fn show(
                         );
                     });
 
-                    // Remote
+                    // Remote (+ country code + hostname)
                     row.col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&info.remote_addr)
-                                    .color(theme::TEXT2)
-                                    .monospace()
-                                    .size(10.5),
-                            )
-                            .truncate(),
-                        );
+                        ui.horizontal(|ui| {
+                            if let Some(cc) = info.country.as_deref() {
+                                ui.label(
+                                    RichText::new(cc)
+                                        .color(theme::TEXT3)
+                                        .monospace()
+                                        .size(9.5),
+                                );
+                            }
+                            let shown = info.hostname.as_deref()
+                                .filter(|h| !h.is_empty())
+                                .map(|h| format!("{}  ({})", h, info.remote_addr))
+                                .unwrap_or_else(|| info.remote_addr.clone());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(&shown)
+                                        .color(theme::TEXT2)
+                                        .monospace()
+                                        .size(10.5),
+                                )
+                                .truncate(),
+                            );
+                        });
                     });
 
                     // Status
@@ -209,6 +212,35 @@ pub fn show(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Inline Phase-10 badges rendered next to the timestamp.
+fn badge_row(ui: &mut egui::Ui, info: &ConnInfo) {
+    fn badge(ui: &mut egui::Ui, text: &str, tip: &str) {
+        ui.label(
+            RichText::new(text)
+                .color(theme::DANGER)
+                .background_color(theme::DANGER_BG)
+                .monospace()
+                .size(9.5),
+        )
+        .on_hover_text(tip);
+    }
+    if info.pre_login {
+        badge(ui, "PL", "PRE-LOGIN — observed before any user logged in (+2)");
+    }
+    if info.reputation_hit.is_some() {
+        badge(ui, "REP", "IP matched a reputation blocklist (+3)");
+    }
+    if info.recently_dropped {
+        badge(ui, "DRP", "Executable dropped into Temp/AppData just before connecting (+3)");
+    }
+    if info.long_lived {
+        badge(ui, "LL", "Long-lived connection for untrusted process (+2)");
+    }
+    if info.dga_like {
+        badge(ui, "DGA", "Hostname looks DGA-generated (+2)");
+    }
+}
 
 fn sort_header(
     hdr: &mut egui_extras::TableRow<'_, '_>,
@@ -273,6 +305,8 @@ fn matches_filter(r: &ConnInfo, lower: &str) -> bool {
         || r.remote_addr.to_lowercase().contains(lower)
         || r.status.to_lowercase().contains(lower)
         || r.reasons.iter().any(|s| s.to_lowercase().contains(lower))
+        || r.hostname.as_deref().map(|h| h.to_lowercase().contains(lower)).unwrap_or(false)
+        || r.country.as_deref().map(|c| c.to_lowercase().contains(lower)).unwrap_or(false)
 }
 
 fn alert_color(score: u8) -> Color32 {

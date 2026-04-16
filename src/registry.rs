@@ -111,6 +111,14 @@ pub mod win {
                         score:          alert_threshold.max(8),
                         reasons:        vec![reason],
                         pre_login:      crate::session::is_pre_login(),
+                        hostname:       None,
+                        country:        None,
+                        asn:            None,
+                        asn_org:        None,
+                        reputation_hit: None,
+                        recently_dropped: false,
+                        long_lived:     false,
+                        dga_like:       false,
                     };
 
                     let _ = tx.send(ConnEvent::Alert(info));

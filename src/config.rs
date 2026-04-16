@@ -24,7 +24,66 @@ pub struct Config {
     pub malware_ports:         Vec<u16>,
     pub suspicious_path_fragments: Vec<String>,
     pub lolbins:               Vec<String>,
+
+    // ── Phase 10: Reputation & Telemetry ─────────────────────────────────────
+    //
+    // All fields below are optional / defaulted — the `#[serde(default)]`
+    // attributes keep the config file backwards-compatible with older Vigil
+    // releases.
+
+    /// Path to a MaxMind GeoLite2-City `.mmdb` file. When empty, geolocation is
+    /// disabled and country scoring is a no-op.
+    #[serde(default)]
+    pub geoip_city_db: String,
+
+    /// Path to a MaxMind GeoLite2-ASN `.mmdb` file. Same rules as City.
+    #[serde(default)]
+    pub geoip_asn_db: String,
+
+    /// Two-letter ISO country codes (uppercase) considered normal. Connections
+    /// to countries **not** on the list score +2 "unusual country". Empty list
+    /// disables the rule.
+    #[serde(default)]
+    pub allowed_countries: Vec<String>,
+
+    /// Paths to plain-text IP blocklists (one IP or CIDR per line; `#` starts
+    /// a comment). Connections to blocked IPs score +3 with a "reputation hit"
+    /// reason naming the list file.
+    #[serde(default)]
+    pub blocklist_paths: Vec<String>,
+
+    /// Enable the file-system watcher for `Temp`, `AppData`, and `Downloads`.
+    /// When a connection's executable matches a file that was dropped there
+    /// within `fswatch_window_secs`, the score gets +3.
+    #[serde(default = "default_true")]
+    pub fswatch_enabled: bool,
+
+    /// Correlation window, in seconds, between a new executable appearing and
+    /// a connection originating from it.
+    #[serde(default = "default_fswatch_window")]
+    pub fswatch_window_secs: u64,
+
+    /// Threshold, in seconds, after which a still-open outbound connection
+    /// from an untrusted process earns the "long-lived connection" +2 bonus.
+    #[serde(default = "default_long_lived_threshold")]
+    pub long_lived_secs: u64,
+
+    /// Enable reverse-DNS lookups on remote IPs. Disabled by default because
+    /// the OS resolver can leak the fact that Vigil is watching.
+    #[serde(default)]
+    pub reverse_dns_enabled: bool,
+
+    /// Minimum Shannon entropy (bits per character) of a resolved hostname's
+    /// leftmost label to flag as DGA-like. Typical human-readable domains
+    /// score under 3.5; random-looking DGA output scores 4.0+.
+    #[serde(default = "default_dga_threshold")]
+    pub dga_entropy_threshold: f32,
 }
+
+fn default_true() -> bool { true }
+fn default_fswatch_window() -> u64 { 600 }
+fn default_long_lived_threshold() -> u64 { 3600 }
+fn default_dga_threshold() -> f32 { 3.2 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -110,6 +169,17 @@ impl Default for Config {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+
+            // Phase 10 defaults
+            geoip_city_db:         String::new(),
+            geoip_asn_db:          String::new(),
+            allowed_countries:     Vec::new(),
+            blocklist_paths:       Vec::new(),
+            fswatch_enabled:       true,
+            fswatch_window_secs:   600,
+            long_lived_secs:       3600,
+            reverse_dns_enabled:   false,
+            dga_entropy_threshold: 3.2,
         }
     }
 }
@@ -174,6 +244,17 @@ impl Config {
             // Numeric lists — exact-equality union
             common_ports:  union_eq(base.common_ports,  stored.common_ports),
             malware_ports: union_eq(base.malware_ports, stored.malware_ports),
+
+            // Phase 10 scalars / paths — stored wins
+            geoip_city_db:         stored.geoip_city_db,
+            geoip_asn_db:          stored.geoip_asn_db,
+            allowed_countries:     union_str(base.allowed_countries,  stored.allowed_countries),
+            blocklist_paths:       union_str(base.blocklist_paths,    stored.blocklist_paths),
+            fswatch_enabled:       stored.fswatch_enabled,
+            fswatch_window_secs:   stored.fswatch_window_secs,
+            long_lived_secs:       stored.long_lived_secs,
+            reverse_dns_enabled:   stored.reverse_dns_enabled,
+            dga_entropy_threshold: stored.dga_entropy_threshold,
         }
     }
 

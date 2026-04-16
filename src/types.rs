@@ -43,6 +43,37 @@ pub struct ConnInfo {
     /// and the UI tags the row with a "PRE-LOGIN" badge.
     #[serde(default)]
     pub pre_login: bool,
+
+    // ── Phase 10: Reputation & Telemetry ─────────────────────────────────────
+    /// Resolved reverse-DNS hostname (None if disabled / unresolved).
+    #[serde(default)]
+    pub hostname: Option<String>,
+    /// ISO-3166-1 alpha-2 country code (e.g. "US") for the remote IP.
+    #[serde(default)]
+    pub country: Option<String>,
+    /// Autonomous System Number of the remote IP (e.g. 15169 for Google).
+    #[serde(default)]
+    pub asn: Option<u32>,
+    /// AS organisation name (e.g. "Google LLC").
+    #[serde(default)]
+    pub asn_org: Option<String>,
+    /// If the remote IP matched one of the blocklists, this holds the source
+    /// file's stem (e.g. "abuseipdb.txt") so the UI and logs can surface it.
+    #[serde(default)]
+    pub reputation_hit: Option<String>,
+    /// `true` when the connection's executable was dropped into a suspicious
+    /// directory (Temp / AppData / Downloads) within the last
+    /// `fswatch_window_secs` seconds.  A classic dropper signature.
+    #[serde(default)]
+    pub recently_dropped: bool,
+    /// `true` when the connection has been continuously open for longer than
+    /// `long_lived_secs` and the process is not in the trusted list.
+    #[serde(default)]
+    pub long_lived: bool,
+    /// `true` when the reverse-DNS hostname's leftmost label has high enough
+    /// Shannon entropy to look like DGA output.
+    #[serde(default)]
+    pub dga_like: bool,
 }
 
 // ── Events sent monitor → UI ──────────────────────────────────────────────────

@@ -122,8 +122,41 @@ fn show_detail(ui: &mut Ui, info: &ConnInfo, kill_confirm: bool) -> Option<Actio
             // ── Connection section ────────────────────────────────────────────
             section_header(ui, "Connection");
             kv_mono(ui, "Remote", &info.remote_addr);
+            if let Some(host) = info.hostname.as_deref().filter(|h| !h.is_empty()) {
+                kv_mono(ui, "Hostname", host);
+            }
             kv_mono(ui, "Local", &info.local_addr);
             kv(ui, "Status", &info.status);
+
+            // ── Reputation / geolocation (Phase 10) ────────────────────────────
+            let has_geo = info.country.is_some() || info.asn.is_some()
+                || info.reputation_hit.is_some() || info.recently_dropped
+                || info.long_lived || info.dga_like;
+            if has_geo {
+                ui.add_space(6.0);
+                if let Some(c) = info.country.as_deref() {
+                    kv(ui, "Country", c);
+                }
+                if let (Some(asn), org) = (info.asn, info.asn_org.as_deref()) {
+                    let label = match org {
+                        Some(o) => format!("AS{asn}  {o}"),
+                        None    => format!("AS{asn}"),
+                    };
+                    kv(ui, "ASN", &label);
+                }
+                if let Some(src) = info.reputation_hit.as_deref() {
+                    kv(ui, "Reputation", &format!("⚠ blocklist: {src}"));
+                }
+                if info.recently_dropped {
+                    kv(ui, "Dropper", "⚠ executable just dropped on disk");
+                }
+                if info.long_lived {
+                    kv(ui, "Long-lived", "⚠ connection open past threshold");
+                }
+                if info.dga_like {
+                    kv(ui, "DGA-like", "⚠ hostname looks random-generated");
+                }
+            }
 
             // ── Reasons section ───────────────────────────────────────────────
             if !info.reasons.is_empty() {

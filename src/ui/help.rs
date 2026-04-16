@@ -43,6 +43,11 @@ pub fn show(ui: &mut egui::Ui) {
             score_row(ui, "+2", theme::TEXT2, "Unsigned binary — no publisher information (stacks with Unrecognised)");
             score_row(ui, "+2", theme::TEXT2, "DNS query (port 53) from a non-DNS process — possible DNS tunneling / exfiltration");
             score_row(ui, "+2", theme::TEXT2, "Observed before user login — flagged with a red \u{201C}PL\u{201D} badge in the Time column; classic rootkit / dropper signal");
+            score_row(ui, "+3", theme::WARN,  "IP reputation hit — remote matched a user-supplied blocklist (badge: REP)");
+            score_row(ui, "+3", theme::WARN,  "Executable was just dropped into Temp/AppData/Downloads right before connecting (badge: DRP) — classic dropper pattern");
+            score_row(ui, "+2", theme::TEXT2, "Connection to an unexpected country (requires `allowed_countries` to be set in config)");
+            score_row(ui, "+2", theme::TEXT2, "Long-lived connection from an untrusted process, held open past `long_lived_secs` (badge: LL, default 1 h)");
+            score_row(ui, "+2", theme::TEXT2, "Reverse-DNS hostname looks DGA-generated (high Shannon entropy; badge: DGA)");
             score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
 
             // ── Inspector fields ──────────────────────────────────────────────
@@ -124,6 +129,33 @@ pub fn show(ui: &mut egui::Ui) {
                  \u{00a0}\u{00a0}Linux   (root):       sudo vigil --install-service\n\n\
                  Uninstall with  --uninstall-service.  The service runs the monitor \
                  only — tray icon and UI still require a logged-in desktop session.",
+            );
+
+            // ── Reputation & Telemetry (Phase 10) ─────────────────────────────
+            ui.add_space(8.0);
+            section(ui, "Reputation, Geolocation & Telemetry");
+            body(
+                ui,
+                "Vigil enriches each connection with offline reputation data when you \
+                 configure the relevant fields in vigil.json:\n\n\
+                 \u{00a0}\u{00a0}\u{2022} geoip_city_db / geoip_asn_db — path to MaxMind \
+                 GeoLite2-City and GeoLite2-ASN .mmdb files (download free from MaxMind). \
+                 Adds country code, ASN number, and AS organisation to each connection.\n\
+                 \u{00a0}\u{00a0}\u{2022} allowed_countries — list of ISO country codes \
+                 (e.g. [\"US\",\"GB\"]). Connections to anywhere else score +2.\n\
+                 \u{00a0}\u{00a0}\u{2022} blocklist_paths — paths to plain-text IP blocklists \
+                 (one IP or CIDR per line, `#` for comments). Hits score +3 and get a REP \
+                 badge.\n\
+                 \u{00a0}\u{00a0}\u{2022} fswatch_enabled — watches Temp, AppData, and \
+                 Downloads for new .exe/.dll drops; a connection from a freshly-dropped \
+                 file within fswatch_window_secs scores +3 (DRP badge).\n\
+                 \u{00a0}\u{00a0}\u{2022} long_lived_secs — threshold for the +2 long-lived \
+                 bonus on untrusted processes (LL badge, default 3600 s).\n\
+                 \u{00a0}\u{00a0}\u{2022} reverse_dns_enabled — off by default (leaks which \
+                 IPs Vigil is inspecting to the OS resolver). When on, remote IPs are \
+                 reverse-resolved and high-entropy hostnames earn a +2 DGA bonus.\n\n\
+                 All of these are additive: a connection can accumulate REP + DRP + LL + \
+                 DGA in the same row.",
             );
 
             // ── Version ───────────────────────────────────────────────────────
