@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 /// Fire a notification for `info`.  Clicking the notification will signal
 /// `show_window` and fill `pending_nav` so the UI can navigate.
 pub fn send_alert(
-    info:        &ConnInfo,
+    info: &ConnInfo,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
@@ -45,14 +45,14 @@ mod platform {
     };
 
     pub fn send(
-        info:        &ConnInfo,
+        info: &ConnInfo,
         show_window: Arc<AtomicBool>,
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
     ) {
         let xml = build_xml(info);
 
         let result = (|| -> windows::core::Result<()> {
-            let aumid    = &windows::core::HSTRING::from("Vigil.App.1");
+            let aumid = &windows::core::HSTRING::from("Vigil.App.1");
             let notifier = ToastNotificationManager::CreateToastNotifierWithId(aumid)?;
 
             let doc = XmlDocument::new()?;
@@ -103,25 +103,23 @@ mod platform {
     }
 
     fn build_xml(info: &ConnInfo) -> String {
-        let title  = "⚠  Vigil — Threat Detected";
-        let line1  = xml_escape(&format!(
+        let title = "⚠  Vigil — Threat Detected";
+        let line1 = xml_escape(&format!(
             "{} → {}   score: {}",
             info.proc_name, info.remote_addr, info.score,
         ));
-        let line2  = xml_escape(
-            info.reasons.first().map(|r| r.as_str()).unwrap_or(""),
-        );
+        let line2 = xml_escape(info.reasons.first().map(|r| r.as_str()).unwrap_or(""));
         format!(
             r#"<toast><visual><binding template="ToastGeneric"><text>{title}</text><text>{line1}</text><text>{line2}</text></binding></visual></toast>"#
         )
     }
 
     fn xml_escape(s: &str) -> String {
-        s.replace('&',  "&amp;")
-         .replace('<',  "&lt;")
-         .replace('>',  "&gt;")
-         .replace('"',  "&quot;")
-         .replace('\'', "&apos;")
+        s.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
     }
 }
 
@@ -132,7 +130,7 @@ mod platform {
     use super::*;
 
     pub fn send(
-        info:        &ConnInfo,
+        info: &ConnInfo,
         show_window: Arc<AtomicBool>,
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
     ) {

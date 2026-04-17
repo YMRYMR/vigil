@@ -94,7 +94,9 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       - Win32 `PeekMessageW` message pump at 50 ms cadence on dedicated OS thread
       - Alert → amber icon + "⚠ Threat detected" tooltip; ResetOk → restores green
 - [x] `src/notifier.rs` — `send_alert(&ConnInfo)` via `notify-rust` (fire-and-forget)
-- [x] `src/autostart.rs` — thin wrapper over `auto-launch 0.6.0`; enable / disable / is_enabled
+- [x] `src/autostart.rs` — login-item wrapper with Windows privilege-aware autostart
+      (normal Run key on unelevated launches, highest-privilege scheduled task
+      when Vigil itself is launched elevated)
 - [x] First-run logic in `main.rs` — enables autostart and sets `first_run_done = true`
 - [x] Tray thread spawned with `std::thread::Builder` (not tokio task — Win32 HWND must stay on creating thread)
 
@@ -115,31 +117,35 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 - [x] `src/ui/mod.rs` — `VigilApp` implementing `eframe::App` (`fn ui` in eframe 0.34)
       - Drains `broadcast::Receiver<ConnEvent>` via `try_recv` loop each frame
       - `VecDeque<ConnInfo>` for activity (cap 500) and alerts (cap 200)
-      - `selected_activity/alert: Option<usize>` (index into VecDeque)
-      - `active_tab: Tab` enum, `unseen_alerts: usize`, `paused: bool`, `kill_confirm: bool`
+      - process-first `selected_activity/alert: Option<ProcessSelection>`
+      - `active_tab: Tab` enum, per-grid `TableState`, `unseen_alerts: usize`,
+        `paused: bool`, `kill_confirm: bool`
 - [x] `src/ui/theme.rs` — 11 colour constants; `apply()` sets egui Visuals + text styles
 - [x] `src/ui/tab_bar.rs` — `Tab` enum + `tab_bar()` widget; ACCENT 2 px underline on active
 
 ### 5b — Activity + Alerts tables ✅
 - [x] `src/ui/activity.rs` — `egui_extras::TableBuilder`: Time · Process · Remote · Status · Score
-      Score-coloured process name; monospace remote addr; click any cell to select row
+      Process-grouped cards with stacked connections; click process header for the
+      full process summary, or a child row for a specific connection; sort state is
+      persisted per grid
 - [x] `src/ui/alerts.rs` — columns: Time · Process · Score · Remote · Reasons
       Empty-state placeholder; DANGER/WARN text colour on process column
 
 ### 5c — Inspector panel ✅
-- [x] `src/ui/inspector.rs` — `show(ui, info, kill_confirm) -> Option<Action>`
-      Placeholder when nothing selected; score badge + kv rows + reasons when selected
-      Actions: Trust / Open Location / Kill (with kill-confirm dialogue)
+- [x] `src/ui/inspector.rs` — `show(ui, selection, kill_confirm) -> Option<Action>`
+      Process-first summary with score badge, combined reasons, and optional
+      selected-connection details; Trust / Open Location / Kill actions
+      are disabled for unresolved or location-less rows, with kill-confirm dialogue
 
 ### 5d — Settings panel ✅
-- [x] `src/ui/settings.rs` — `SettingsDraft` buffers edits until Save is clicked
+- [x] `src/ui/settings.rs` — `SettingsDraft` auto-saves on change
       Sliders: alert_threshold 1–10, poll_interval_secs 2–60
       Checkboxes: log_all_connections, autostart
-      Trusted processes list with inline Add/Remove; "Settings saved." transient msg
+      Trusted processes grid with inline Add/Remove and shipped-default reset
 
 ### 5e — Help panel ✅
-- [x] `src/ui/help.rs` — static scrollable content: What Vigil does, score table,
-      inspector field explanations, action button explanations, svchost note, tips, version
+- [x] `src/ui/help.rs` — polished operator-help layout: what Vigil does, score table,
+      process-first inspector explanation, action gating, tips, and version
 
 ### 5f — Wire everything ✅
 - [x] Status pill ("● Monitoring" green / "○ Paused" muted) in header
@@ -254,10 +260,12 @@ zero rough edges before seeking public adoption.
 - [x] **Tray left-click = open UI** — `with_menu_on_left_click(false)` + event polling;
       right-click still shows the context menu
 - [x] **Window size/position persistence** — `persist_window: true` in `NativeOptions`
-- [x] **Responsive settings layout** — centred content capped at 700 px; adapts to any
-      window width from narrow to maximised
-- [x] **Trusted processes as filterable grid** — `TableBuilder` with filter bar
-      (shown when >4 entries), per-row Remove button, correct removal under filter
+- [x] **Per-grid sort persistence** — Activity and Alerts remember their own sort
+      order and filter state across launches
+- [x] **Responsive settings layout** — full-width settings canvas with auto-save and
+      compact trusted-process rows
+- [x] **Trusted processes as filterable grid** — filter bar, per-row Remove button,
+      shipped-default reset, correct removal under filter
 
 ### Code quality
 - [x] All `eprintln!` / `println!` replaced with `tracing::` calls — zero console output
@@ -307,9 +315,9 @@ Second round of detection features and cross-platform hardening.
 - [x] Help tab + README document the install command per OS
 
 ### UI
-- [x] **Linked grids** — Activity and Alerts now share a single `TableState`
-      and `id_salt`; clicking a column header in one grid re-sorts both,
-      and resizing a column in either tab persists across both
+- [x] **Independent grids** — Activity and Alerts now keep their own persisted
+      sort/filter state; clicking a column header in one grid no longer forces
+      the other tab to follow the same order
 - [x] **Pre-login badge** rendered in both grids' Time column
 - [x] Inspector selection works again via `row.response()` on
       `TableBuilder::sense(Sense::click())`
@@ -336,20 +344,26 @@ Second round of detection features and cross-platform hardening.
 
 ---
 
-## Phase 10 — Reputation & Telemetry (backlog)
+## Phase 10 — Reputation & Telemetry ✅ COMPLETE
 
-Enrich existing detections with external and offline context. All items are read-only (no blocking).
+Shipped in 1.3.0. Enrichment signals layered on top of behavioural scoring,
+all off-by-default and configurable in `vigil.json`.
 
-- [ ] **IP reputation** — AbuseIPDB / Shodan / VirusTotal lookups with configurable API key + local SQLite cache; +N score when remote IP has recent abuse reports
-- [ ] **Geolocation** — MaxMind GeoLite2 offline DB; flag connections to unusual regions (configurable allowlist of expected countries)
-- [ ] **ASN / hosting classification** — flag bulletproof hosters, VPS providers known for abuse, Tor exit nodes
-- [ ] **Domain reputation** — reverse-DNS + Cisco Umbrella / Quad9 threat feed lookup for newly-seen domains
-- [ ] **Newly registered domain (NRD) detection** — WHOIS age check; domains < 7 days old get +2
-- [ ] **File system watcher** — `notify` crate watching `%TEMP%`, `%APPDATA%`, `Downloads`; correlate new exes with network connections inside N seconds
-- [ ] **Unsigned DLL detection** — enumerate loaded modules per network process (Windows PSAPI); flag unsigned ones from temp paths
-- [ ] **Volume anomaly** — track bytes/sec per process (Windows: `GetPerTcpConnectionEStats`, Linux: `/proc/net/tcp` diff); alert on spikes and large uploads
-- [ ] **Long-lived outbound connection tracker** — alert when a non-browser process keeps a connection open > 1 h
-- [ ] **Entropy scoring on domains** — DGA-style random-looking domains get +2 (Shannon entropy over labels)
+### Shipped
+- [x] **IP reputation via local blocklists** — `src/blocklist.rs`: load plain-text IP/CIDR lists, +3 on hit, REP badge. Online API lookups (AbuseIPDB / Shodan / VirusTotal) deferred.
+- [x] **Geolocation** — `src/geoip.rs`: MaxMind GeoLite2-City offline DB; country code per connection; +2 for countries outside `allowed_countries`.
+- [x] **ASN / hosting classification** — `src/geoip.rs`: GeoLite2-ASN DB; ASN number + AS organisation shown in Inspector. Bulletproof-hoster flagging deferred to Phase 12.
+- [x] **File system watcher** — `src/fswatch.rs`: `notify` crate watches Temp / AppData / Downloads for new `.exe`/`.dll`/`.scr`/`.ps1`/…; +3 and DRP badge when a fresh drop makes a connection within `fswatch_window_secs` (default 600 s).
+- [x] **Long-lived connection tracker** — `src/longlived.rs`: tracks first-seen per `(pid, remote_ip)`; +2 and LL badge when untrusted process stays connected past `long_lived_secs` (default 3600 s).
+- [x] **DGA entropy scoring** — `src/entropy.rs`: Shannon entropy over leftmost hostname label; +2 and DGA badge when above `dga_entropy_threshold` (default 3.2 bits/char).
+- [x] **Reverse DNS (cached)** — `src/revdns.rs`: background worker + in-memory cache; opt-in via `reverse_dns_enabled` (off by default because of resolver leakage).
+
+### Deferred to later phases
+- [ ] **Domain reputation** — Umbrella / Quad9 feed lookup (requires network round-trip)
+- [ ] **Newly registered domain (NRD) detection** — WHOIS client
+- [ ] **Unsigned DLL detection** — PSAPI module enumeration + Authenticode verification per DLL (Phase 12 detection-depth work)
+- [ ] **Volume anomaly** — Windows `GetPerTcpConnectionEStats` / Linux `/proc/net/tcp` byte-counter diffs (Phase 12)
+- [ ] **Online reputation APIs** — AbuseIPDB / Shodan / VirusTotal REST clients with SQLite cache (Phase 13 integration work)
 
 ---
 
@@ -362,24 +376,20 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - Windows: `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
   - Linux: `ss -K dst <ip> dport = <port>` (needs `CONFIG_INET_DIAG_DESTROY`) or `conntrack -D`
   - macOS: `pfctl` rule injection + state flush (no native socket-kill API)
-- [ ] **Block all connections from a process** (without killing it) — the user's explicit request
-  - Windows: add a transient WFP (Windows Filtering Platform) filter scoped to the process image path or PID; requires a signed WFP callout driver for PID scope, or a user-mode filter via `FwpmFilterAdd` for image-path scope
+- [x] **Block all connections from a process** (without killing it) — Windows implementation uses reversible firewall rules scoped to the executable path, with duration presets and cleanup on expiry
+  - Windows: implemented via temporary firewall rules bound to the process image path
   - Linux: `nftables` rule matching `meta skuid` / cgroup v2 `net_cls` — Vigil moves the offending PID into a quarantine cgroup that has a deny-all netfilter rule; process continues running but all new sockets are dropped
   - macOS: `pf` anchor per-process via `pfctl` + Network Extension content-filter (needs entitlement)
-  - UI: new "Quarantine process" button in inspector; shows countdown + "Release" button
-- [ ] **Block remote IP / CIDR** system-wide — add to host firewall blocklist with TTL (1 h / 24 h / permanent)
+  - UI: inspector shows `Block process` / `Unblock process` with duration presets
+- [x] **Active-response UX** — temporary blocks show live countdowns and inline unblock buttons; the header reflects privilege state with `Admin` / `Run as Admin`
+- [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
 - [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
 - [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation
 - [ ] **Suspend process** — freeze the process (Windows: `NtSuspendProcess`, Unix: `SIGSTOP`) while the user investigates; resumable
 
 ### Machine-wide lockdown
-- [ ] **Panic button — full network isolation** — the user's explicit request
-  - One-click "Isolate machine" in the tray menu and main window header
-  - Windows: disable all network adapters via `netsh interface set interface <name> admin=disable`, OR add a blanket WFP deny-all filter at the ALE layer (reversible in one call)
-  - Linux: `nmcli networking off` + `iptables -P INPUT/OUTPUT/FORWARD DROP` with a saved rollback script
-  - macOS: `networksetup -setairportpower <dev> off` + disable each service via `networksetup -setnetworkserviceenabled`
-  - Vigil itself must keep running in offline mode; on-disk audit log records the trigger reason
-  - Big red "Restore network" button stays visible; requires typed confirmation to restore
+- [x] **Panic button — full network isolation** — reversible Windows firewall rules added from the UI, with a matching restore action and confirmation prompt
+  - Linux/macOS-specific adapter / pf / nft equivalents remain backlog
 - [ ] **Allowlist-only mode** — invert the firewall: only signed Microsoft processes, or a user-curated list, may talk to the network; everything else blocked
 - [ ] **Quarantine profile** — preset combining: lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
 - [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched
@@ -457,7 +467,7 @@ Vigil must resist tampering to be trustworthy.
 | 1.0.0 | 7   | Build pipeline + open-source release | ✅ Done |
 | 1.1.0 | 8   | UX, detection & quality overhaul | ✅ Done |
 | 1.2.0 | 9   | Beaconing, DNS, registry, pre-login, cross-platform service | ✅ Done |
-| 2.0.0 | 10  | Reputation & telemetry | 🔲 Backlog |
+| 1.3.0 | 10  | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11  | Active response: per-process block, machine isolation, rule engine | 🔲 Backlog |
 | 3.x   | 12  | Detection depth: behavioural baselines, script inspection, JA3 | 🔲 Backlog |
 | 4.x   | 13  | Integration & fleet: SIEM, webhooks, central server | 🔲 Backlog |

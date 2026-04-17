@@ -22,9 +22,14 @@ pub mod etw;
 pub mod poll;
 
 use crate::beacon::BeaconTracker;
+use crate::blocklist;
 use crate::config::Config;
+use crate::fswatch;
+use crate::geoip;
+use crate::longlived::LongLivedTracker;
 use crate::process;
 use crate::registry;
+use crate::revdns;
 use crate::score::{score, ScoreInput};
 use crate::session;
 use crate::types::{ConnEvent, ConnInfo, MonitorCmd};
@@ -72,7 +77,7 @@ impl Monitor {
     /// Create a new monitor.  Subscribe to events via `subscribe()` **before**
     /// calling `start()` or events emitted during startup may be missed.
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
-        let (tx, _) = broadcast::channel(512);
+        let (tx, _) = broadcast::channel(4096);
         let (cmd_tx, _) = mpsc::channel(32);
         Self {
             config,
@@ -118,9 +123,7 @@ impl Monitor {
 
 /// Await the next ETW connection event, or return `pending` (never resolves)
 /// when ETW is not active — makes `tokio::select!` work cleanly.
-async fn recv_etw(
-    rx: &mut Option<mpsc::UnboundedReceiver<RawConn>>,
-) -> Option<RawConn> {
+async fn recv_etw(rx: &mut Option<mpsc::UnboundedReceiver<RawConn>>) -> Option<RawConn> {
     match rx.as_mut() {
         Some(r) => r.recv().await,
         None => std::future::pending().await,
@@ -140,19 +143,26 @@ async fn poll_loop(
     // Beaconing detector: tracks inter-connection timing per (pid, remote_ip).
     let mut beacon = BeaconTracker::new();
 
+    // Long-lived outbound connection tracker.
+    let long_lived = std::sync::Arc::new(LongLivedTracker::new());
+
     // Build service map once; refresh it on every full poll cycle.
     let mut svc_map = process::build_service_map();
 
     loop {
         let (interval, threshold, log_all) = {
             let cfg = config.read().unwrap();
-            (cfg.poll_interval_secs, cfg.alert_threshold, cfg.log_all_connections)
+            (
+                cfg.poll_interval_secs,
+                cfg.alert_threshold,
+                cfg.log_all_connections,
+            )
         };
 
         // When ETW is active we run full polls less frequently — only for
         // cleanup (closed connections) and catching anything ETW missed.
         let poll_secs = if using_etw {
-            (interval * 6).max(30).min(60)
+            (interval * 6).clamp(30, 60)
         } else {
             interval.max(1)
         };
@@ -168,7 +178,7 @@ async fn poll_loop(
                             let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                             process_conn(
                                 &raw_conn, beaconing, &mut known, &svc_map,
-                                &config, &tx, threshold, log_all,
+                                &config, &tx, threshold, log_all, &long_lived,
                             );
                         }
                     }
@@ -221,9 +231,15 @@ async fn poll_loop(
                     let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                     process_conn(
                         raw_conn, beaconing, &mut known, &svc_map,
-                        &config, &tx, threshold, log_all,
+                        &config, &tx, threshold, log_all, &long_lived,
                     );
                 }
+
+                // Prune long-lived tracker of closed connections.
+                let active: HashSet<(u32, String)> = known.keys()
+                    .map(|k| (k.pid, k.remote_ip.clone()))
+                    .collect();
+                long_lived.retain_active(|pid, ip| active.contains(&(pid, ip.to_string())));
             }
         }
     }
@@ -233,6 +249,7 @@ async fn poll_loop(
 
 /// Enrich a single `RawConn`, score it, record it in `known`, and emit the
 /// appropriate `ConnEvent` over the broadcast channel.
+#[allow(clippy::too_many_arguments)]
 fn process_conn(
     raw_conn: &RawConn,
     beaconing: bool,
@@ -242,11 +259,13 @@ fn process_conn(
     tx: &broadcast::Sender<ConnEvent>,
     threshold: u8,
     log_all: bool,
+    long_lived: &LongLivedTracker,
 ) {
     let proc = process::collect(raw_conn.pid, svc_map);
 
     // Normalise ancestor names the same way as the process name
-    let ancestors_norm: Vec<(String, u32)> = proc.ancestors
+    let ancestors_norm: Vec<(String, u32)> = proc
+        .ancestors
         .iter()
         .map(|(n, pid)| (crate::config::normalise_name(n), *pid))
         .collect();
@@ -257,19 +276,66 @@ fn process_conn(
     // "has a user ever logged in since we started monitoring?".
     let pre_login = session::is_pre_login();
 
+    // ── Phase 10 enrichments ──────────────────────────────────────────────
+    // Read the relevant config knobs once so we don't hold the lock across
+    // the (potentially slow) reverse-DNS / geoip calls.
+    let (fs_window, long_threshold, rev_enabled, reputation_enabled) = {
+        let cfg = config.read().unwrap();
+        (
+            std::time::Duration::from_secs(cfg.fswatch_window_secs),
+            std::time::Duration::from_secs(cfg.long_lived_secs),
+            cfg.reverse_dns_enabled,
+            !cfg.blocklist_paths.is_empty(),
+        )
+    };
+
+    // Reputation hit
+    let reputation_hit: Option<String> = if reputation_enabled {
+        blocklist::lookup(&raw_conn.remote_ip)
+    } else {
+        None
+    };
+
+    // Geolocation + ASN
+    let geo = if !raw_conn.remote_ip.is_empty() {
+        geoip::lookup(&raw_conn.remote_ip)
+    } else {
+        crate::geoip::GeoInfo::default()
+    };
+
+    // Reverse DNS (cached; may return None on first sight)
+    let hostname: Option<String> = if rev_enabled && !raw_conn.remote_ip.is_empty() {
+        revdns::lookup(&raw_conn.remote_ip).filter(|s| !s.is_empty())
+    } else {
+        None
+    };
+
+    // File-drop correlation
+    let recently_dropped =
+        !proc.path.is_empty() && fswatch::dropped_within(&proc.path, fs_window).is_some();
+
+    // Long-lived tracker — register every event we see for this (pid, ip).
+    let ll_flag = !raw_conn.remote_ip.is_empty()
+        && long_lived.is_long_lived(raw_conn.pid, &raw_conn.remote_ip, long_threshold);
+
     let (s, reasons) = {
         let cfg = config.read().unwrap();
         score(
             &ScoreInput {
-                name:        &proc.name_key,
-                path:        &proc.path,
-                publisher:   &proc.publisher,
-                remote_ip:   &raw_conn.remote_ip,
+                name: &proc.name_key,
+                path: &proc.path,
+                publisher: &proc.publisher,
+                remote_ip: &raw_conn.remote_ip,
                 remote_port: raw_conn.remote_port,
-                status:      &raw_conn.status,
-                ancestors:   &ancestors_norm,
+                status: &raw_conn.status,
+                ancestors: &ancestors_norm,
                 beaconing,
                 pre_login,
+                reputation_hit: reputation_hit.as_deref(),
+                country: geo.country.as_deref(),
+                hostname: hostname.as_deref(),
+                recently_dropped,
+                long_lived: ll_flag,
             },
             &cfg,
         )
@@ -280,6 +346,14 @@ fn process_conn(
         "LISTEN".to_string()
     } else {
         format!("{}:{}", raw_conn.remote_ip, raw_conn.remote_port)
+    };
+
+    let dga_like = {
+        let cfg = config.read().unwrap();
+        hostname
+            .as_deref()
+            .map(|h| crate::entropy::is_dga_like(h, cfg.dga_entropy_threshold))
+            .unwrap_or(false)
     };
 
     let info = ConnInfo {
@@ -299,6 +373,14 @@ fn process_conn(
         score: s,
         reasons: reasons.clone(),
         pre_login,
+        hostname,
+        country: geo.country,
+        asn: geo.asn,
+        asn_org: geo.asn_org,
+        reputation_hit,
+        recently_dropped,
+        long_lived: ll_flag,
+        dga_like,
     };
 
     let key = ConnKey::from(raw_conn);
@@ -307,13 +389,21 @@ fn process_conn(
     let event = if s >= threshold {
         tracing::warn!(
             "{} ({}) | {} → {} | score={}",
-            info.proc_name, raw_conn.pid, info.local_addr, info.remote_addr, s
+            info.proc_name,
+            raw_conn.pid,
+            info.local_addr,
+            info.remote_addr,
+            s
         );
         ConnEvent::Alert(info)
     } else if s > 0 || log_all {
         tracing::info!(
             "{} ({}) | {} → {} | score={}",
-            info.proc_name, raw_conn.pid, info.local_addr, info.remote_addr, s
+            info.proc_name,
+            raw_conn.pid,
+            info.local_addr,
+            info.remote_addr,
+            s
         );
         ConnEvent::New(info)
     } else {
@@ -322,4 +412,3 @@ fn process_conn(
 
     let _ = tx.send(event);
 }
-

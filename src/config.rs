@@ -1,95 +1,205 @@
-//! Configuration: load, save, merge, and mutate `vigil.json`.
+//! Configuration: load, save, and mutate `vigil.json`.
 //!
-//! On load, stored values are *merged* with compiled-in defaults:
-//! - Lists are unioned (user additions are kept; defaults are always present)
-//! - Scalars use the stored value if present, else the default
+//! On first run, Vigil seeds `vigil.json` with the compiled-in defaults.
+//! After that, the file is treated as authoritative so user edits persist
+//! exactly as saved.
 //!
 //! The config file lives next to the binary:  `<exe_dir>/vigil.json`
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 // ── Config struct ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
-    pub poll_interval_secs:    u64,
-    pub alert_threshold:       u8,
-    pub log_all_connections:   bool,
-    pub autostart:             bool,
-    pub first_run_done:        bool,
-    pub trusted_processes:     Vec<String>,
-    pub common_ports:          Vec<u16>,
-    pub malware_ports:         Vec<u16>,
+    pub poll_interval_secs: u64,
+    pub alert_threshold: u8,
+    pub log_all_connections: bool,
+    pub autostart: bool,
+    pub first_run_done: bool,
+    pub trusted_processes: Vec<String>,
+    pub common_ports: Vec<u16>,
+    pub malware_ports: Vec<u16>,
     pub suspicious_path_fragments: Vec<String>,
-    pub lolbins:               Vec<String>,
+    pub lolbins: Vec<String>,
+
+    // ── Phase 10: Reputation & Telemetry ─────────────────────────────────────
+    //
+    // All fields below are optional / defaulted — the `#[serde(default)]`
+    // attributes keep the config file backwards-compatible with older Vigil
+    // releases.
+    /// Path to a MaxMind GeoLite2-City `.mmdb` file. When empty, geolocation is
+    /// disabled and country scoring is a no-op.
+    #[serde(default)]
+    pub geoip_city_db: String,
+
+    /// Path to a MaxMind GeoLite2-ASN `.mmdb` file. Same rules as City.
+    #[serde(default)]
+    pub geoip_asn_db: String,
+
+    /// Two-letter ISO country codes (uppercase) considered normal. Connections
+    /// to countries **not** on the list score +2 "unusual country". Empty list
+    /// disables the rule.
+    #[serde(default)]
+    pub allowed_countries: Vec<String>,
+
+    /// Paths to plain-text IP blocklists (one IP or CIDR per line; `#` starts
+    /// a comment). Connections to blocked IPs score +3 with a "reputation hit"
+    /// reason naming the list file.
+    #[serde(default)]
+    pub blocklist_paths: Vec<String>,
+
+    /// Enable the file-system watcher for `Temp`, `AppData`, and `Downloads`.
+    /// When a connection's executable matches a file that was dropped there
+    /// within `fswatch_window_secs`, the score gets +3.
+    #[serde(default = "default_true")]
+    pub fswatch_enabled: bool,
+
+    /// Correlation window, in seconds, between a new executable appearing and
+    /// a connection originating from it.
+    #[serde(default = "default_fswatch_window")]
+    pub fswatch_window_secs: u64,
+
+    /// Threshold, in seconds, after which a still-open outbound connection
+    /// from an untrusted process earns the "long-lived connection" +2 bonus.
+    #[serde(default = "default_long_lived_threshold")]
+    pub long_lived_secs: u64,
+
+    /// Enable reverse-DNS lookups on remote IPs. Disabled by default because
+    /// the OS resolver can leak the fact that Vigil is watching.
+    #[serde(default)]
+    pub reverse_dns_enabled: bool,
+
+    /// Minimum Shannon entropy (bits per character) of a resolved hostname's
+    /// leftmost label to flag as DGA-like. Typical human-readable domains
+    /// score under 3.5; random-looking DGA output scores 4.0+.
+    #[serde(default = "default_dga_threshold")]
+    pub dga_entropy_threshold: f32,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_fswatch_window() -> u64 {
+    600
+}
+fn default_long_lived_threshold() -> u64 {
+    3600
+}
+fn default_dga_threshold() -> f32 {
+    3.2
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            poll_interval_secs:  5,
-            alert_threshold:     3,
+            poll_interval_secs: 5,
+            alert_threshold: 3,
             log_all_connections: false,
-            autostart:           false,
-            first_run_done:      false,
+            autostart: false,
+            first_run_done: false,
 
             trusted_processes: vec![
                 // Windows core
-                "svchost", "lsass", "services", "system", "smss", "csrss",
-                "wininit", "winlogon", "explorer", "runtimebroker", "searchhost",
-                "startmenuexperiencehost", "shellhost", "sihost", "ctfmon",
-                "textinputhost", "shellexperiencehost", "widgetservice", "widgetboard",
-                "crossdeviceservice", "crossdeviceresume", "phoneexperiencehost",
+                "svchost",
+                "lsass",
+                "services",
+                "system",
+                "smss",
+                "csrss",
+                "wininit",
+                "winlogon",
+                "explorer",
+                "runtimebroker",
+                "searchhost",
+                "startmenuexperiencehost",
+                "shellhost",
+                "sihost",
+                "ctfmon",
+                "textinputhost",
+                "shellexperiencehost",
+                "widgetservice",
+                "widgetboard",
+                "crossdeviceservice",
+                "crossdeviceresume",
+                "phoneexperiencehost",
                 "castsrv",
                 // Browsers
-                "chrome", "msedge", "firefox", "opera", "brave", "vivaldi",
-                "msedgewebview2", "cefsharp.browsersubprocess",
+                "chrome",
+                "msedge",
+                "firefox",
+                "opera",
+                "brave",
+                "vivaldi",
+                "msedgewebview2",
+                "cefsharp.browsersubprocess",
                 // Microsoft cloud / update
-                "onedrive", "systemsettings", "microsoftstartfeedprovider",
+                "onedrive",
+                "systemsettings",
+                "microsoftstartfeedprovider",
                 // AVG / antivirus suite
-                "avgsvc", "avgui", "avgbidsagent", "avgdriverupdsvc",
-                "avgtuneupssvc", "vpnsvc", "tuneupssvc", "avgwscreporter",
-                "avgantitrack", "antitrackSvc", "securevpn",
-                "su_worker", "avgtoolssvc", "wa_3rd_party_host_64", "avlaunch",
+                "avgsvc",
+                "avgui",
+                "avgbidsagent",
+                "avgdriverupdsvc",
+                "avgtuneupssvc",
+                "vpnsvc",
+                "tuneupssvc",
+                "avgwscreporter",
+                "avgantitrack",
+                "antitrackSvc",
+                "securevpn",
+                "su_worker",
+                "avgtoolssvc",
+                "wa_3rd_party_host_64",
+                "avlaunch",
                 // Dev tools
-                "claude", "node", "python", "python3",
+                "claude",
+                "node",
+                "python",
+                "python3",
                 // Gaming / media
-                "spotify", "steam", "epicgameslauncher", "ealauncher",
-                "eadesktop", "eabackgroundservice",
+                "spotify",
+                "steam",
+                "epicgameslauncher",
+                "ealauncher",
+                "eadesktop",
+                "eabackgroundservice",
                 // Comms
-                "whatsapp", "whatsapp.root", "zoom", "slack", "discord", "telegram",
+                "whatsapp",
+                "whatsapp.root",
+                "zoom",
+                "slack",
+                "discord",
+                "telegram",
                 // Local AI
-                "ollama", "ollama_llama_server",
+                "ollama",
+                "ollama_llama_server",
                 // NVIDIA
-                "nvdisplay.containerlocalsystem", "nvbroadcast.containerlocalsystem",
+                "nvdisplay.containerlocalsystem",
+                "nvbroadcast.containerlocalsystem",
                 // Misc hardware / OS
-                "rtkaudiouniversalservice", "intelgraphicssoftwareservice",
-                "waasmedicsvc", "wsaifabricsvc",
+                "rtkaudiouniversalservice",
+                "intelgraphicssoftwareservice",
+                "waasmedicsvc",
+                "wsaifabricsvc",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
 
             common_ports: vec![
-                80, 443, 8080, 8443,
-                53, 853,
-                22, 21,
-                25, 587, 465, 993, 995, 110, 143,
-                5222, 5228,
-                3478, 3479,
-                7500, 27275,
+                80, 443, 8080, 8443, 53, 853, 22, 21, 25, 587, 465, 993, 995, 110, 143, 5222, 5228,
+                3478, 3479, 7500, 27275,
             ],
 
             malware_ports: vec![
-                4444, 1337, 31337,
-                6666, 6667, 6668, 6669,
-                9999, 1234, 54321, 12345,
-                23, 5900, 5901, 4899, 8888,
+                4444, 1337, 31337, 6666, 6667, 6668, 6669, 9999, 1234, 54321, 12345, 23, 5900,
+                5901, 4899, 8888,
             ],
 
-            suspicious_path_fragments: vec![
+            suspicious_path_fragments: [
                 r"\Temp\",
                 r"\AppData\Local\Temp\",
                 r"\AppData\Roaming\",
@@ -98,18 +208,42 @@ impl Default for Config {
                 "/tmp/",
                 "/var/tmp/",
             ]
-            .iter()
+            .into_iter()
             .map(|s| s.to_string())
             .collect(),
 
             lolbins: vec![
-                "cmd", "powershell", "pwsh", "wscript", "cscript", "mshta",
-                "regsvr32", "rundll32", "certutil", "bitsadmin", "wmic",
-                "msiexec", "installutil", "regasm", "regsvcs", "forfiles",
+                "cmd",
+                "powershell",
+                "pwsh",
+                "wscript",
+                "cscript",
+                "mshta",
+                "regsvr32",
+                "rundll32",
+                "certutil",
+                "bitsadmin",
+                "wmic",
+                "msiexec",
+                "installutil",
+                "regasm",
+                "regsvcs",
+                "forfiles",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
+
+            // Phase 10 defaults
+            geoip_city_db: String::new(),
+            geoip_asn_db: String::new(),
+            allowed_countries: Vec::new(),
+            blocklist_paths: Vec::new(),
+            fswatch_enabled: true,
+            fswatch_window_secs: 600,
+            long_lived_secs: 3600,
+            reverse_dns_enabled: false,
+            dga_entropy_threshold: 3.2,
         }
     }
 }
@@ -125,20 +259,17 @@ pub fn config_path() -> PathBuf {
 }
 
 impl Config {
-    /// Load config from disk and merge with compiled-in defaults.
+    /// Load config from disk.
     /// If the file doesn't exist or is corrupt, returns pure defaults.
     pub fn load() -> Self {
         let path = config_path();
         if !path.exists() {
             return Self::default();
         }
-        match std::fs::read_to_string(&path)
+        std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<Config>(&s).ok())
-        {
-            Some(stored) => Self::merge(Self::default(), stored),
-            None => Self::default(),
-        }
+            .unwrap_or_default()
     }
 
     /// Save to disk. Logs a warning on failure but never panics.
@@ -154,31 +285,9 @@ impl Config {
         }
     }
 
-    /// Merge `stored` onto `base`:
-    /// - Lists: union of base + stored (no duplicates, order preserved)
-    /// - Scalars: stored wins
-    fn merge(base: Config, stored: Config) -> Config {
-        Config {
-            // Scalars — stored wins
-            poll_interval_secs:  stored.poll_interval_secs,
-            alert_threshold:     stored.alert_threshold,
-            log_all_connections: stored.log_all_connections,
-            autostart:           stored.autostart,
-            first_run_done:      stored.first_run_done,
-
-            // String lists — case-insensitive union
-            trusted_processes:         union_str(base.trusted_processes,         stored.trusted_processes),
-            suspicious_path_fragments: union_str(base.suspicious_path_fragments, stored.suspicious_path_fragments),
-            lolbins:                   union_str(base.lolbins,                   stored.lolbins),
-
-            // Numeric lists — exact-equality union
-            common_ports:  union_eq(base.common_ports,  stored.common_ports),
-            malware_ports: union_eq(base.malware_ports, stored.malware_ports),
-        }
-    }
-
     // ── Trusted process helpers ───────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn get_trusted(&self) -> &[String] {
         &self.trusted_processes
     }
@@ -190,7 +299,11 @@ impl Config {
         if key.is_empty() {
             return false;
         }
-        if self.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key)) {
+        if self
+            .trusted_processes
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(&key))
+        {
             return false;
         }
         self.trusted_processes.push(key);
@@ -199,36 +312,13 @@ impl Config {
 
     /// Remove a process name from the trusted list.
     /// Returns `true` if it was present.
+    #[allow(dead_code)]
     pub fn remove_trusted(&mut self, name: &str) -> bool {
         let before = self.trusted_processes.len();
         self.trusted_processes
             .retain(|t| !t.eq_ignore_ascii_case(name));
         self.trusted_processes.len() < before
     }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Union two String vecs, case-insensitive dedup, order preserved.
-fn union_str(mut base: Vec<String>, extra: Vec<String>) -> Vec<String> {
-    let seen: HashSet<String> = base.iter().map(|s| s.to_lowercase()).collect();
-    for item in extra {
-        if !seen.contains(&item.to_lowercase()) {
-            base.push(item);
-        }
-    }
-    base
-}
-
-/// Union two u16 vecs, exact dedup, order preserved.
-fn union_eq(mut base: Vec<u16>, extra: Vec<u16>) -> Vec<u16> {
-    let seen: HashSet<u16> = base.iter().copied().collect();
-    for item in extra {
-        if !seen.contains(&item) {
-            base.push(item);
-        }
-    }
-    base
 }
 
 /// Normalise a process name for storage: lowercase, strip `.exe`.
@@ -262,9 +352,12 @@ mod tests {
     fn add_trusted_no_duplicate() {
         let mut cfg = Config::default();
         cfg.add_trusted("testapp");
-        assert!(!cfg.add_trusted("testapp"));   // second add returns false
+        assert!(!cfg.add_trusted("testapp")); // second add returns false
         assert_eq!(
-            cfg.trusted_processes.iter().filter(|t| *t == "testapp").count(),
+            cfg.trusted_processes
+                .iter()
+                .filter(|t| *t == "testapp")
+                .count(),
             1
         );
     }
@@ -278,29 +371,20 @@ mod tests {
     }
 
     #[test]
-    fn merge_unions_lists() {
-        let mut base = Config::default();
-        base.trusted_processes = vec!["a".into(), "b".into()];
-        let mut stored = Config::default();
-        stored.trusted_processes = vec!["b".into(), "c".into()];
-        let merged = Config::merge(base, stored);
-        assert!(merged.trusted_processes.contains(&"a".to_string()));
-        assert!(merged.trusted_processes.contains(&"b".to_string()));
-        assert!(merged.trusted_processes.contains(&"c".to_string()));
-        assert_eq!(
-            merged.trusted_processes.iter().filter(|t| *t == "b").count(),
-            1
-        );
-    }
-
-    #[test]
-    fn merge_scalars_prefer_stored() {
-        let base = Config::default();
+    fn load_uses_stored_values_exactly() {
         let mut stored = Config::default();
         stored.alert_threshold = 7;
         stored.poll_interval_secs = 10;
-        let merged = Config::merge(base, stored);
-        assert_eq!(merged.alert_threshold, 7);
-        assert_eq!(merged.poll_interval_secs, 10);
+        stored.trusted_processes = vec!["b".into(), "c".into()];
+
+        let json = serde_json::to_string(&stored).unwrap();
+        let loaded: Config = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.alert_threshold, 7);
+        assert_eq!(loaded.poll_interval_secs, 10);
+        assert_eq!(
+            loaded.trusted_processes,
+            vec!["b".to_string(), "c".to_string()]
+        );
     }
 }

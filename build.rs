@@ -1,11 +1,11 @@
-/// Build script for Vigil.
-///
-/// Platform-agnostic:
-///   Generates `assets/vigil.png` (256 × 256 RGBA) — used by the macOS DMG
-///   and Linux AppImage installers.
-///
-/// Windows only:
-///   1. Generates `assets/vigil.ico` (16 / 32 / 48 px) and embeds it via `winres`.
+// Build script for Vigil.
+//
+// Platform-agnostic:
+//   Generates `assets/vigil.png` (256 × 256 RGBA) — used by the macOS DMG
+//   and Linux AppImage installers.
+//
+// Windows only:
+//   1. Generates `assets/vigil.ico` (16 / 32 / 48 px) and embeds it via `winres`.
 
 fn main() {
     // Only re-run this build script when it changes — the generated assets are
@@ -60,8 +60,8 @@ fn make_ico(sizes: &[u32], r: u8, g: u8, b: u8) -> Vec<u8> {
         // ICONDIRENTRY (16 bytes)
         ico.push(size as u8); // width  (0 = 256)
         ico.push(size as u8); // height (0 = 256)
-        ico.push(0);          // color count (0 for 32-bpp)
-        ico.push(0);          // reserved
+        ico.push(0); // color count (0 for 32-bpp)
+        ico.push(0); // reserved
         ico.extend_from_slice(&1u16.to_le_bytes()); // planes
         ico.extend_from_slice(&32u16.to_le_bytes()); // bit count
         ico.extend_from_slice(&img_size.to_le_bytes()); // bytes in resource
@@ -92,9 +92,9 @@ fn make_image_data(size: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
             let d = (dx * dx + dy * dy).sqrt();
             let idx = ((row * size + x) * 4) as usize;
             if d <= radius {
-                bgra[idx] = b;       // B
-                bgra[idx + 1] = g;   // G
-                bgra[idx + 2] = r;   // R
+                bgra[idx] = b; // B
+                bgra[idx + 1] = g; // G
+                bgra[idx + 2] = r; // R
                 bgra[idx + 3] = 255; // A
             }
             // else: transparent (alpha=0, rest zero)
@@ -103,22 +103,22 @@ fn make_image_data(size: u32, r: u8, g: u8, b: u8) -> Vec<u8> {
 
     // AND mask: 1 bit per pixel, rows DWORD-aligned, bottom-to-top.
     // All zeros = opaque (alpha channel carries the real transparency for 32-bpp).
-    let mask_row_stride = ((size + 31) / 32) * 4;
+    let mask_row_stride = size.div_ceil(32) * 4;
     let and_mask = vec![0u8; (mask_row_stride * size) as usize];
 
     // BITMAPINFOHEADER (40 bytes)
     let mut data: Vec<u8> = Vec::with_capacity(40 + bgra.len() + and_mask.len());
-    data.extend_from_slice(&40u32.to_le_bytes());              // biSize
-    data.extend_from_slice(&(size as i32).to_le_bytes());     // biWidth
+    data.extend_from_slice(&40u32.to_le_bytes()); // biSize
+    data.extend_from_slice(&(size as i32).to_le_bytes()); // biWidth
     data.extend_from_slice(&((size * 2) as i32).to_le_bytes()); // biHeight (doubled)
-    data.extend_from_slice(&1u16.to_le_bytes());               // biPlanes
-    data.extend_from_slice(&32u16.to_le_bytes());              // biBitCount
-    data.extend_from_slice(&0u32.to_le_bytes());               // biCompression (BI_RGB)
-    data.extend_from_slice(&0u32.to_le_bytes());               // biSizeImage
-    data.extend_from_slice(&0i32.to_le_bytes());               // biXPelsPerMeter
-    data.extend_from_slice(&0i32.to_le_bytes());               // biYPelsPerMeter
-    data.extend_from_slice(&0u32.to_le_bytes());               // biClrUsed
-    data.extend_from_slice(&0u32.to_le_bytes());               // biClrImportant
+    data.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
+    data.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
+    data.extend_from_slice(&0u32.to_le_bytes()); // biCompression (BI_RGB)
+    data.extend_from_slice(&0u32.to_le_bytes()); // biSizeImage
+    data.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
+    data.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
+    data.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
+    data.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
 
     data.extend_from_slice(&bgra);
     data.extend_from_slice(&and_mask);
@@ -142,7 +142,7 @@ fn write_png(path: &str, size: u32, r: u8, g: u8, b: u8) {
             let d = (dx * dx + dy * dy).sqrt();
             let idx = ((y * size + x) * 4) as usize;
             if d <= radius {
-                rgba[idx]     = r;
+                rgba[idx] = r;
                 rgba[idx + 1] = g;
                 rgba[idx + 2] = b;
                 rgba[idx + 3] = 255;
@@ -151,13 +151,15 @@ fn write_png(path: &str, size: u32, r: u8, g: u8, b: u8) {
         }
     }
 
-    let file = std::fs::File::create(path)
-        .unwrap_or_else(|e| panic!("failed to create {path}: {e}"));
+    let file =
+        std::fs::File::create(path).unwrap_or_else(|e| panic!("failed to create {path}: {e}"));
     let mut enc = png::Encoder::new(file, size, size);
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header()
+    let mut writer = enc
+        .write_header()
         .unwrap_or_else(|e| panic!("failed to write PNG header for {path}: {e}"));
-    writer.write_image_data(&rgba)
+    writer
+        .write_image_data(&rgba)
         .unwrap_or_else(|e| panic!("failed to write PNG data for {path}: {e}"));
 }
