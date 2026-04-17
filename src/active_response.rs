@@ -1,9 +1,9 @@
 //! Active response: reversible, auditable intervention actions.
 //!
 //! Phase 11 starts with practical controls for blocking traffic, killing a
-//! live socket, suspending a suspicious process, and isolating the machine.
-//! The module persists a tiny state file so rules can be reconciled and the UI
-//! can reflect the current status after restarts.
+//! live socket, suspending a suspicious process, blocking a suspicious domain,
+//! and isolating the machine. The module persists a tiny state file so rules
+//! can be reconciled and the UI can reflect the current status after restarts.
 
 use crate::{audit, types::ConnInfo};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const STATE_FILE: &str = "vigil-active-response.json";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
 const PROCESS_BLOCK_RULE_PREFIX: &str = "Vigil Proc Block";
+const DOMAIN_MARKER_PREFIX: &str = "# Vigil Domain Block";
 const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 
@@ -23,6 +24,7 @@ const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 pub struct Status {
     pub blocked_rules: usize,
     pub blocked_processes: usize,
+    pub blocked_domains: usize,
     pub suspended_processes: usize,
     pub isolated: bool,
 }
@@ -32,6 +34,8 @@ struct State {
     blocked: Vec<BlockedTarget>,
     #[serde(default)]
     blocked_processes: Vec<BlockedProcess>,
+    #[serde(default)]
+    blocked_domains: Vec<BlockedDomain>,
     #[serde(default)]
     suspended_processes: Vec<SuspendedProcess>,
     isolated: bool,
@@ -52,6 +56,12 @@ struct BlockedProcess {
     inbound_rule_name: String,
     outbound_rule_name: String,
     expires_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BlockedDomain {
+    domain: String,
+    marker: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +140,7 @@ pub fn status() -> Status {
     Status {
         blocked_rules: state.blocked.len() + state.blocked_processes.len(),
         blocked_processes: state.blocked_processes.len(),
+        blocked_domains: state.blocked_domains.len(),
         suspended_processes: state.suspended_processes.len(),
         isolated: state.isolated,
     }
@@ -148,6 +159,10 @@ pub fn can_kill_connection(conn: &ConnInfo) -> bool {
 
 pub fn can_suspend_process(pid: u32) -> bool {
     platform::is_supported() && platform::is_elevated() && pid != 0
+}
+
+pub fn can_block_domain() -> bool {
+    platform::is_supported() && platform::is_elevated()
 }
 
 pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
@@ -242,6 +257,59 @@ pub fn resume_process(pid: u32, path: &str) -> Result<String, String> {
         }),
     );
     Ok(message)
+}
+
+pub fn block_domain(domain: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let domain = normalise_domain(domain)?;
+    let marker = domain_marker(&domain);
+    platform::add_domain_block(&domain, &marker)?;
+
+    let mut state = load_state().unwrap_or_default();
+    state.blocked_domains.retain(|entry| entry.domain != domain);
+    state.blocked_domains.push(BlockedDomain {
+        domain: domain.clone(),
+        marker: marker.clone(),
+    });
+    save_state(&state)?;
+
+    audit::record(
+        "block_domain",
+        "success",
+        json!({
+            "domain": domain,
+            "marker": marker,
+        }),
+    );
+    Ok(format!("Blocked domain {domain} via the local hosts file."))
+}
+
+pub fn unblock_domain(domain: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let domain = normalise_domain(domain)?;
+    let marker = domain_marker(&domain);
+    platform::remove_domain_block(&domain, &marker)?;
+
+    let mut state = load_state().unwrap_or_default();
+    let before = state.blocked_domains.len();
+    state.blocked_domains.retain(|entry| entry.domain != domain);
+    let removed = before.saturating_sub(state.blocked_domains.len());
+    save_state(&state)?;
+
+    audit::record(
+        "unblock_domain",
+        if removed > 0 { "success" } else { "noop" },
+        json!({
+            "domain": domain,
+            "marker": marker,
+            "removed_entries": removed,
+        }),
+    );
+    Ok(if removed > 0 {
+        format!("Removed the hosts-file block for {domain}.")
+    } else {
+        format!("No hosts-file block found for {domain}.")
+    })
 }
 
 pub fn reconcile() {
@@ -477,6 +545,16 @@ pub fn is_blocked(target: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn is_domain_blocked(domain: &str) -> bool {
+    let Ok(domain) = normalise_domain(domain) else {
+        return false;
+    };
+    load_state()
+        .ok()
+        .map(|state| state.blocked_domains.iter().any(|entry| entry.domain == domain))
+        .unwrap_or(false)
+}
+
 pub fn remote_block_remaining(target: &str) -> Option<Duration> {
     let target = normalise_target(target).ok()?;
     let now = unix_now();
@@ -559,6 +637,25 @@ pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
     }
 }
 
+pub fn extract_domain_target(conn: &ConnInfo) -> Option<String> {
+    conn.hostname.as_deref().and_then(extract_domain_from_hostname)
+}
+
+pub fn extract_domain_from_hostname(hostname: &str) -> Option<String> {
+    let host = hostname.trim().trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() || host.parse::<IpAddr>().is_ok() || !host.contains('.') {
+        return None;
+    }
+    if host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        Some(host)
+    } else {
+        None
+    }
+}
+
 fn ensure_modifiable() -> Result<(), String> {
     if !platform::is_supported() {
         return Err("Active response is currently only implemented on Windows.".into());
@@ -606,12 +703,20 @@ fn normalise_target(target: &str) -> Result<String, String> {
     Ok(target.to_string())
 }
 
+fn normalise_domain(domain: &str) -> Result<String, String> {
+    extract_domain_from_hostname(domain).ok_or_else(|| "Domain is empty or invalid.".into())
+}
+
 fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
     rule.path == path
 }
 
 fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool {
     entry.pid == pid && (path.is_empty() || entry.path == path)
+}
+
+fn domain_marker(domain: &str) -> String {
+    format!("{DOMAIN_MARKER_PREFIX}:{}", sanitise_rule_suffix(domain))
 }
 
 fn rule_name_for_target(target: &str) -> String {
@@ -730,6 +835,7 @@ fn unix_now() -> u64 {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use std::fs;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, NO_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{
         SetTcpEntry, MIB_TCP_STATE_DELETE_TCB, MIB_TCPROW,
@@ -740,6 +846,7 @@ mod platform {
     use windows::Win32::System::Diagnostics::ToolHelp::{
         CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
     };
+    use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
     use windows::Win32::System::Threading::{
         GetCurrentProcess, OpenProcess, OpenProcessToken, OpenThread, ResumeThread, SuspendThread,
         PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
@@ -864,6 +971,94 @@ mod platform {
             Err(format!("no resumable threads were found for PID {pid}"))
         } else {
             Ok(())
+        }
+    }
+
+    pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        let path = hosts_path()?;
+        let existing = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        if existing.contains(marker) {
+            return Ok(());
+        }
+        let addition = format!("\r\n{marker}\r\n127.0.0.1 {domain}\r\n::1 {domain}\r\n");
+        fs::write(&path, format!("{existing}{addition}"))
+            .map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+        let _ = flush_dns();
+        Ok(())
+    }
+
+    pub fn remove_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        let path = hosts_path()?;
+        let existing = fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        let target_v4 = format!("127.0.0.1 {domain}");
+        let target_v6 = format!("::1 {domain}");
+        let mut lines = Vec::new();
+        let mut skipping = false;
+        for line in existing.lines() {
+            let trimmed = line.trim();
+            if trimmed == marker {
+                skipping = true;
+                continue;
+            }
+            if skipping && (trimmed == target_v4 || trimmed == target_v6) {
+                continue;
+            }
+            if skipping && !trimmed.is_empty() {
+                skipping = false;
+            }
+            if !skipping || trimmed.is_empty() {
+                lines.push(line);
+            }
+        }
+        fs::write(&path, lines.join("\r\n"))
+            .map_err(|e| format!("failed to update {}: {e}", path.display()))?;
+        let _ = flush_dns();
+        Ok(())
+    }
+
+    fn flush_dns() -> Result<(), String> {
+        let status = Command::new("ipconfig")
+            .arg("/flushdns")
+            .status()
+            .map_err(|e| format!("failed to spawn ipconfig: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("ipconfig /flushdns failed".into())
+        }
+    }
+
+    fn hosts_path() -> Result<PathBuf, String> {
+        let windows_dir = windows_directory()
+            .ok_or_else(|| "failed to resolve the Windows directory".to_string())?;
+        Ok(windows_dir
+            .join("System32")
+            .join("drivers")
+            .join("etc")
+            .join("hosts"))
+    }
+
+    fn windows_directory() -> Option<PathBuf> {
+        let mut buffer = vec![0u16; 260];
+        unsafe {
+            let len = GetSystemWindowsDirectoryW(Some(&mut buffer));
+            if len == 0 {
+                return None;
+            }
+            let len = len as usize;
+            if len >= buffer.len() {
+                buffer.resize(len + 1, 0);
+                let retry_len = GetSystemWindowsDirectoryW(Some(&mut buffer));
+                if retry_len == 0 {
+                    return None;
+                }
+                return Some(PathBuf::from(String::from_utf16_lossy(
+                    &buffer[..retry_len as usize],
+                )));
+            }
+            Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
         }
     }
 
@@ -1007,6 +1202,14 @@ mod platform {
         Err("Process resume is not implemented on this platform.".into())
     }
 
+    pub fn add_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
+        Err("Domain blocking is not implemented on this platform.".into())
+    }
+
+    pub fn remove_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
+        Err("Domain blocking is not implemented on this platform.".into())
+    }
+
     pub fn kill_tcp_connection(_target: &SocketKillTarget) -> Result<(), SocketKillError> {
         Err(SocketKillError::PlatformUnsupported)
     }
@@ -1054,6 +1257,13 @@ mod tests {
         }
     }
 
+    fn blocked_domain(domain: &str) -> BlockedDomain {
+        BlockedDomain {
+            domain: domain.to_string(),
+            marker: domain_marker(domain),
+        }
+    }
+
     fn suspended_process(pid: u32, path: &str) -> SuspendedProcess {
         SuspendedProcess {
             pid,
@@ -1081,7 +1291,7 @@ mod tests {
             reasons: vec!["test".into()],
             ancestor_chain: vec![("cmd.exe".into(), 123)],
             pre_login: false,
-            hostname: None,
+            hostname: Some("c2.bad.example".into()),
             country: None,
             asn: None,
             asn_org: None,
@@ -1097,6 +1307,7 @@ mod tests {
         let mut state = State {
             blocked: vec![blocked_target("10.0.0.1", Some(10))],
             blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            blocked_domains: vec![blocked_domain("bad.example")],
             suspended_processes: vec![suspended_process(1234, "C:/app.exe")],
             isolated: false,
         };
@@ -1106,6 +1317,7 @@ mod tests {
         assert!(!changed);
         assert_eq!(state.blocked.len(), 1);
         assert_eq!(state.blocked_processes.len(), 1);
+        assert_eq!(state.blocked_domains.len(), 1);
     }
 
     #[test]
@@ -1114,6 +1326,7 @@ mod tests {
         let mut state = State {
             blocked: vec![blocked_target("10.0.0.1", Some(10))],
             blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            blocked_domains: vec![],
             suspended_processes: vec![],
             isolated: false,
         };
@@ -1206,5 +1419,12 @@ mod tests {
             extract_remote_target("2606:4700:4700::1111:443").as_deref(),
             Some("2606:4700:4700::1111")
         );
+    }
+
+    #[test]
+    fn extract_domain_target_uses_hostname() {
+        let sample = conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED");
+        assert_eq!(extract_domain_target(&sample).as_deref(), Some("c2.bad.example"));
+        assert_eq!(extract_domain_from_hostname("8.8.8.8"), None);
     }
 }
