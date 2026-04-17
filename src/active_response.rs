@@ -548,10 +548,7 @@ fn stable_hash(text: &str) -> u64 {
 }
 
 fn state_path() -> PathBuf {
-    crate::config::config_path()
-        .parent()
-        .map(|dir| dir.join(STATE_FILE))
-        .unwrap_or_else(|| PathBuf::from(STATE_FILE))
+    crate::config::data_dir().join(STATE_FILE)
 }
 
 fn load_state() -> Result<State, String> {
@@ -566,6 +563,10 @@ fn load_state() -> Result<State, String> {
 
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
