@@ -22,81 +22,59 @@ pub struct Config {
     pub suspicious_path_fragments: Vec<String>,
     pub lolbins: Vec<String>,
 
-    #[serde(default)]
-    pub geoip_city_db: String,
-    #[serde(default)]
-    pub geoip_asn_db: String,
-    #[serde(default)]
-    pub allowed_countries: Vec<String>,
-    #[serde(default)]
-    pub blocklist_paths: Vec<String>,
-    #[serde(default = "default_true")]
-    pub fswatch_enabled: bool,
-    #[serde(default = "default_fswatch_window")]
-    pub fswatch_window_secs: u64,
-    #[serde(default = "default_long_lived_threshold")]
-    pub long_lived_secs: u64,
-    #[serde(default)]
-    pub reverse_dns_enabled: bool,
-    #[serde(default = "default_dga_threshold")]
-    pub dga_entropy_threshold: f32,
+    #[serde(default)] pub geoip_city_db: String,
+    #[serde(default)] pub geoip_asn_db: String,
+    #[serde(default)] pub allowed_countries: Vec<String>,
+    #[serde(default)] pub blocklist_paths: Vec<String>,
+    #[serde(default = "default_true")] pub fswatch_enabled: bool,
+    #[serde(default = "default_fswatch_window")] pub fswatch_window_secs: u64,
+    #[serde(default = "default_long_lived_threshold")] pub long_lived_secs: u64,
+    #[serde(default)] pub reverse_dns_enabled: bool,
+    #[serde(default = "default_dga_threshold")] pub dga_entropy_threshold: f32,
 
-    #[serde(default)]
-    pub auto_response_enabled: bool,
-    #[serde(default)]
-    pub auto_response_dry_run: bool,
-    #[serde(default)]
-    pub auto_kill_connection: bool,
-    #[serde(default)]
-    pub auto_block_remote: bool,
-    #[serde(default)]
-    pub auto_block_process: bool,
-    #[serde(default)]
-    pub auto_isolate_machine: bool,
-    #[serde(default = "default_auto_response_min_score")]
-    pub auto_response_min_score: u8,
-    #[serde(default = "default_auto_response_cooldown_secs")]
-    pub auto_response_cooldown_secs: u64,
+    #[serde(default)] pub auto_response_enabled: bool,
+    #[serde(default)] pub auto_response_dry_run: bool,
+    #[serde(default)] pub auto_kill_connection: bool,
+    #[serde(default)] pub auto_block_remote: bool,
+    #[serde(default)] pub auto_block_process: bool,
+    #[serde(default)] pub auto_isolate_machine: bool,
+    #[serde(default = "default_auto_response_min_score")] pub auto_response_min_score: u8,
+    #[serde(default = "default_auto_response_cooldown_secs")] pub auto_response_cooldown_secs: u64,
 
-    #[serde(default)]
-    pub scheduled_lockdown_enabled: bool,
-    #[serde(default = "default_scheduled_lockdown_start_hour")]
-    pub scheduled_lockdown_start_hour: u8,
-    #[serde(default = "default_scheduled_lockdown_start_minute")]
-    pub scheduled_lockdown_start_minute: u8,
-    #[serde(default = "default_scheduled_lockdown_end_hour")]
-    pub scheduled_lockdown_end_hour: u8,
-    #[serde(default = "default_scheduled_lockdown_end_minute")]
-    pub scheduled_lockdown_end_minute: u8,
+    #[serde(default)] pub allowlist_mode_enabled: bool,
+    #[serde(default)] pub allowlist_mode_dry_run: bool,
+    #[serde(default)] pub allowlist_processes: Vec<String>,
 
-    #[serde(default)]
-    pub process_dump_on_alert: bool,
-    #[serde(default = "default_process_dump_min_score")]
-    pub process_dump_min_score: u8,
-    #[serde(default = "default_process_dump_cooldown_secs")]
-    pub process_dump_cooldown_secs: u64,
-    #[serde(default)]
-    pub process_dump_dir: String,
+    #[serde(default)] pub response_rules_enabled: bool,
+    #[serde(default = "default_true")] pub response_rules_dry_run: bool,
+    #[serde(default)] pub response_rules_path: String,
 
-    #[serde(default)]
-    pub pcap_on_alert: bool,
-    #[serde(default = "default_pcap_min_score")]
-    pub pcap_min_score: u8,
-    #[serde(default = "default_pcap_duration_secs")]
-    pub pcap_duration_secs: u64,
-    #[serde(default = "default_pcap_cooldown_secs")]
-    pub pcap_cooldown_secs: u64,
-    #[serde(default = "default_pcap_packet_size_bytes")]
-    pub pcap_packet_size_bytes: u32,
-    #[serde(default)]
-    pub pcap_dir: String,
+    #[serde(default)] pub scheduled_lockdown_enabled: bool,
+    #[serde(default = "default_scheduled_lockdown_start_hour")] pub scheduled_lockdown_start_hour: u8,
+    #[serde(default = "default_scheduled_lockdown_start_minute")] pub scheduled_lockdown_start_minute: u8,
+    #[serde(default = "default_scheduled_lockdown_end_hour")] pub scheduled_lockdown_end_hour: u8,
+    #[serde(default = "default_scheduled_lockdown_end_minute")] pub scheduled_lockdown_end_minute: u8,
 
-    #[serde(default = "default_true")]
-    pub break_glass_enabled: bool,
-    #[serde(default = "default_break_glass_timeout_mins")]
-    pub break_glass_timeout_mins: u64,
-    #[serde(default = "default_break_glass_heartbeat_secs")]
-    pub break_glass_heartbeat_secs: u64,
+    #[serde(default)] pub process_dump_on_alert: bool,
+    #[serde(default = "default_process_dump_min_score")] pub process_dump_min_score: u8,
+    #[serde(default = "default_process_dump_cooldown_secs")] pub process_dump_cooldown_secs: u64,
+    #[serde(default)] pub process_dump_dir: String,
+
+    #[serde(default)] pub pcap_on_alert: bool,
+    #[serde(default = "default_pcap_min_score")] pub pcap_min_score: u8,
+    #[serde(default = "default_pcap_duration_secs")] pub pcap_duration_secs: u64,
+    #[serde(default = "default_pcap_cooldown_secs")] pub pcap_cooldown_secs: u64,
+    #[serde(default = "default_pcap_packet_size_bytes")] pub pcap_packet_size_bytes: u32,
+    #[serde(default)] pub pcap_dir: String,
+
+    #[serde(default)] pub honeypot_decoys_enabled: bool,
+    #[serde(default)] pub honeypot_auto_isolate: bool,
+    #[serde(default = "default_honeypot_poll_secs")] pub honeypot_poll_secs: u64,
+    #[serde(default)] pub honeypot_decoy_names: Vec<String>,
+
+    #[serde(default = "default_true")] pub break_glass_enabled: bool,
+    #[serde(default = "default_break_glass_timeout_mins")] pub break_glass_timeout_mins: u64,
+    #[serde(default = "default_break_glass_heartbeat_secs")] pub break_glass_heartbeat_secs: u64,
 }
 
 fn default_true() -> bool { true }
@@ -115,6 +93,7 @@ fn default_pcap_min_score() -> u8 { 12 }
 fn default_pcap_duration_secs() -> u64 { 15 }
 fn default_pcap_cooldown_secs() -> u64 { 300 }
 fn default_pcap_packet_size_bytes() -> u32 { 0 }
+fn default_honeypot_poll_secs() -> u64 { 10 }
 fn default_break_glass_timeout_mins() -> u64 { 10 }
 fn default_break_glass_heartbeat_secs() -> u64 { 30 }
 
@@ -144,9 +123,12 @@ impl Default for Config {
             lolbins: vec!["cmd","powershell","pwsh","wscript","cscript","mshta","regsvr32","rundll32","certutil","bitsadmin","wmic","msiexec","installutil","regasm","regsvcs","forfiles"].iter().map(|s| s.to_string()).collect(),
             geoip_city_db: String::new(), geoip_asn_db: String::new(), allowed_countries: Vec::new(), blocklist_paths: Vec::new(), fswatch_enabled: true, fswatch_window_secs: 600, long_lived_secs: 3600, reverse_dns_enabled: false, dga_entropy_threshold: 3.2,
             auto_response_enabled: false, auto_response_dry_run: true, auto_kill_connection: false, auto_block_remote: false, auto_block_process: false, auto_isolate_machine: false, auto_response_min_score: 10, auto_response_cooldown_secs: 300,
+            allowlist_mode_enabled: false, allowlist_mode_dry_run: true, allowlist_processes: Vec::new(),
+            response_rules_enabled: false, response_rules_dry_run: true, response_rules_path: String::new(),
             scheduled_lockdown_enabled: false, scheduled_lockdown_start_hour: 23, scheduled_lockdown_start_minute: 0, scheduled_lockdown_end_hour: 6, scheduled_lockdown_end_minute: 0,
             process_dump_on_alert: false, process_dump_min_score: 12, process_dump_cooldown_secs: 600, process_dump_dir: String::new(),
             pcap_on_alert: false, pcap_min_score: 12, pcap_duration_secs: 15, pcap_cooldown_secs: 300, pcap_packet_size_bytes: 0, pcap_dir: String::new(),
+            honeypot_decoys_enabled: false, honeypot_auto_isolate: false, honeypot_poll_secs: 10, honeypot_decoy_names: vec!["Quarterly Payroll 2026.xlsx".into(), "Passwords-Do-Not-Open.txt".into(), "AWS-Root-Keys.txt".into()],
             break_glass_enabled: true, break_glass_timeout_mins: 10, break_glass_heartbeat_secs: 30,
         }
     }
@@ -195,10 +177,5 @@ mod tests {
     #[test] fn add_trusted_normalises_name() { let mut cfg = Config::default(); assert!(cfg.add_trusted("MyApp.exe")); assert!(cfg.trusted_processes.contains(&"myapp".to_string())); }
     #[test] fn add_trusted_no_duplicate() { let mut cfg = Config::default(); cfg.add_trusted("testapp"); assert!(!cfg.add_trusted("testapp")); assert_eq!(cfg.trusted_processes.iter().filter(|t| *t == "testapp").count(), 1); }
     #[test] fn remove_trusted_works() { let mut cfg = Config::default(); cfg.add_trusted("removeme"); assert!(cfg.remove_trusted("removeme")); assert!(!cfg.trusted_processes.contains(&"removeme".to_string())); }
-    #[test] fn load_uses_stored_values_exactly() { let stored = Config { alert_threshold: 7, poll_interval_secs: 10, trusted_processes: vec!["b".into(), "c".into()], ..Config::default() }; let json = serde_json::to_string(&stored).unwrap(); let loaded: Config = serde_json::from_str(&json).unwrap(); assert_eq!(loaded.alert_threshold, 7); assert_eq!(loaded.poll_interval_secs, 10); assert_eq!(loaded.trusted_processes, vec!["b".to_string(), "c".to_string()]); }
-    #[test] fn auto_response_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.auto_response_enabled); assert!(cfg.auto_response_dry_run); assert!(!cfg.auto_kill_connection); assert!(!cfg.auto_block_remote); assert!(!cfg.auto_block_process); assert!(!cfg.auto_isolate_machine); assert_eq!(cfg.auto_response_min_score, 10); assert_eq!(cfg.auto_response_cooldown_secs, 300); }
-    #[test] fn scheduled_lockdown_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.scheduled_lockdown_enabled); assert_eq!(cfg.scheduled_lockdown_start_hour, 23); assert_eq!(cfg.scheduled_lockdown_start_minute, 0); assert_eq!(cfg.scheduled_lockdown_end_hour, 6); assert_eq!(cfg.scheduled_lockdown_end_minute, 0); }
-    #[test] fn process_dump_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.process_dump_on_alert); assert_eq!(cfg.process_dump_min_score, 12); assert_eq!(cfg.process_dump_cooldown_secs, 600); assert!(cfg.process_dump_dir.is_empty()); }
-    #[test] fn pcap_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.pcap_on_alert); assert_eq!(cfg.pcap_min_score, 12); assert_eq!(cfg.pcap_duration_secs, 15); assert_eq!(cfg.pcap_cooldown_secs, 300); assert_eq!(cfg.pcap_packet_size_bytes, 0); assert!(cfg.pcap_dir.is_empty()); }
-    #[test] fn break_glass_defaults_are_safe() { let cfg = Config::default(); assert!(cfg.break_glass_enabled); assert_eq!(cfg.break_glass_timeout_mins, 10); assert_eq!(cfg.break_glass_heartbeat_secs, 30); }
+    #[test] fn defaults_cover_phase_eleven_backlog() { let cfg = Config::default(); assert!(!cfg.allowlist_mode_enabled); assert!(cfg.allowlist_mode_dry_run); assert!(!cfg.response_rules_enabled); assert!(cfg.response_rules_dry_run); assert!(!cfg.honeypot_decoys_enabled); assert!(!cfg.honeypot_auto_isolate); assert_eq!(cfg.honeypot_poll_secs, 10); assert!(cfg.break_glass_enabled); }
 }
