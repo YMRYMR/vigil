@@ -8,8 +8,9 @@
 //! The module persists a tiny state file so rules can be reconciled and
 //! expired later, and so the UI can reflect the current status after restarts.
 
-use crate::types::ConnInfo;
+use crate::{audit, types::ConnInfo};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
@@ -74,7 +75,7 @@ impl std::fmt::Display for SocketKillError {
             Self::InvalidLocalAddr(addr) => write!(f, "invalid local address: {addr}"),
             Self::InvalidRemoteAddr(addr) => write!(f, "invalid remote address: {addr}"),
             Self::UnsupportedAddressFamily => {
-                write!(f, "socket kill currently supports IPv4 TCP only")
+                write!(f, "live socket kill currently supports IPv4 TCP only on Windows")
             }
             Self::UnsupportedProtocol => {
                 write!(f, "socket kill currently supports TCP connections only")
@@ -145,10 +146,18 @@ pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
     }
     let target = socket_kill_target(conn)?;
     platform::kill_tcp_connection(&target)?;
-    Ok(format!(
-        "Killed TCP connection {} -> {}.",
-        target.local, target.remote
-    ))
+    let message = format!("Killed TCP connection {} -> {}.", target.local, target.remote);
+    audit::record(
+        "kill_connection",
+        "success",
+        json!({
+            "local_addr": target.local.to_string(),
+            "remote_addr": target.remote.to_string(),
+            "pid": conn.pid,
+            "proc_name": conn.proc_name,
+        }),
+    );
+    Ok(message)
 }
 
 pub fn reconcile() {
@@ -190,11 +199,21 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
     });
     save_state(&state)?;
 
-    Ok(match preset {
+    let message = match preset {
         DurationPreset::OneHour => format!("Blocked {target} for 1 hour."),
         DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {target} until removed."),
-    })
+    };
+    audit::record(
+        "block_remote",
+        "success",
+        json!({
+            "target": target,
+            "duration": format!("{:?}", preset),
+            "rule_name": rule_name,
+        }),
+    );
+    Ok(message)
 }
 
 pub fn unblock_remote(target: &str) -> Result<String, String> {
@@ -222,12 +241,18 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
             "Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."
         ));
     }
-    if removed > 0 {
+    let message = if removed > 0 {
         save_state(&state)?;
-        Ok(format!("Removed {removed} block rule(s) for {target}."))
+        format!("Removed {removed} block rule(s) for {target}.")
     } else {
-        Ok(format!("No active block rule found for {target}."))
-    }
+        format!("No active block rule found for {target}.")
+    };
+    audit::record(
+        "unblock_remote",
+        if removed > 0 { "success" } else { "noop" },
+        json!({ "target": target, "removed_rules": removed }),
+    );
+    Ok(message)
 }
 
 pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<String, String> {
@@ -255,17 +280,29 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     state.blocked_processes.push(BlockedProcess {
         pid,
         path: path.clone(),
-        inbound_rule_name,
-        outbound_rule_name,
+        inbound_rule_name: inbound_rule_name.clone(),
+        outbound_rule_name: outbound_rule_name.clone(),
         expires_at_unix,
     });
     save_state(&state)?;
 
-    Ok(match preset {
+    let message = match preset {
         DurationPreset::OneHour => format!("Blocked {path} for 1 hour."),
         DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {path} until removed."),
-    })
+    };
+    audit::record(
+        "block_process",
+        "success",
+        json!({
+            "pid": pid,
+            "path": path,
+            "duration": format!("{:?}", preset),
+            "inbound_rule_name": inbound_rule_name,
+            "outbound_rule_name": outbound_rule_name,
+        }),
+    );
+    Ok(message)
 }
 
 pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
@@ -295,16 +332,18 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
             "Could not remove the firewall rules for PID {pid} ({path}); they were kept in state so Vigil can retry."
         ));
     }
-    if removed > 0 {
+    let message = if removed > 0 {
         save_state(&state)?;
-        Ok(format!(
-            "Removed {removed} process block(s) for PID {pid} ({path})."
-        ))
+        format!("Removed {removed} process block(s) for PID {pid} ({path}).")
     } else {
-        Ok(format!(
-            "No active process block found for PID {pid} ({path})."
-        ))
-    }
+        format!("No active process block found for PID {pid} ({path}).")
+    };
+    audit::record(
+        "unblock_process",
+        if removed > 0 { "success" } else { "noop" },
+        json!({ "pid": pid, "path": path, "removed_rules": removed }),
+    );
+    Ok(message)
 }
 
 pub fn isolate_machine() -> Result<String, String> {
@@ -318,6 +357,11 @@ pub fn isolate_machine() -> Result<String, String> {
     state.isolated = true;
     save_state(&state)?;
 
+    audit::record(
+        "isolate_machine",
+        "success",
+        json!({ "inbound_rule_name": ISOLATE_RULE_IN, "outbound_rule_name": ISOLATE_RULE_OUT }),
+    );
     Ok("Network isolation enabled.".into())
 }
 
@@ -335,6 +379,7 @@ pub fn restore_machine() -> Result<String, String> {
     state.isolated = false;
     save_state(&state)?;
 
+    audit::record("restore_machine", "success", json!({}));
     Ok("Network isolation removed.".into())
 }
 
@@ -396,11 +441,7 @@ pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
 }
 
 pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
-    let (host, port) = remote_addr.rsplit_once(':')?;
-    if host.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    Some(host.to_string())
+    socket_addr_from_text(remote_addr).map(|addr| addr.ip().to_string())
 }
 
 fn ensure_modifiable() -> Result<(), String> {
@@ -427,19 +468,19 @@ fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillErr
         return Err(SocketKillError::UnsupportedStatus(conn.status.clone()));
     }
 
-    let local = conn
-        .local_addr
-        .parse::<SocketAddr>()
+    let local = socket_addr_from_text(&conn.local_addr)
         .map_err(|_| SocketKillError::InvalidLocalAddr(conn.local_addr.clone()))?;
-    let remote = conn
-        .remote_addr
-        .parse::<SocketAddr>()
+    let remote = socket_addr_from_text(&conn.remote_addr)
         .map_err(|_| SocketKillError::InvalidRemoteAddr(conn.remote_addr.clone()))?;
 
     match (local.ip(), remote.ip()) {
         (IpAddr::V4(_), IpAddr::V4(_)) => Ok(SocketKillTarget { local, remote }),
         _ => Err(SocketKillError::UnsupportedAddressFamily),
     }
+}
+
+fn socket_addr_from_text(text: &str) -> Result<SocketAddr, std::net::AddrParseError> {
+    text.trim().parse::<SocketAddr>()
 }
 
 fn normalise_target(target: &str) -> Result<String, String> {
@@ -735,7 +776,11 @@ mod platform {
         Err("Active response is not implemented on this platform.".into())
     }
 
-    pub fn add_block_program_rule(_rule_name: &str, _path: &str, _dir: &str) -> Result<(), String> {
+    pub fn add_block_program_rule(
+        _rule_name: &str,
+        _path: &str,
+        _dir: &str,
+    ) -> Result<(), String> {
         Err("Active response is not implemented on this platform.".into())
     }
 
@@ -865,23 +910,15 @@ mod tests {
 
     #[test]
     fn socket_kill_target_rejects_listen_rows() {
-        let err = socket_kill_target(&conn(
-            "0.0.0.0:80",
-            "0.0.0.0:0",
-            "LISTEN",
-        ))
-        .unwrap_err();
+        let err = socket_kill_target(&conn("0.0.0.0:80", "0.0.0.0:0", "LISTEN")).unwrap_err();
         assert!(matches!(err, SocketKillError::UnsupportedStatus(_)));
     }
 
     #[test]
     fn socket_kill_target_rejects_invalid_remote() {
-        let err = socket_kill_target(&conn(
-            "192.168.1.10:50000",
-            "not-an-endpoint",
-            "ESTABLISHED",
-        ))
-        .unwrap_err();
+        let err =
+            socket_kill_target(&conn("192.168.1.10:50000", "not-an-endpoint", "ESTABLISHED"))
+                .unwrap_err();
         assert!(matches!(err, SocketKillError::InvalidRemoteAddr(_)));
     }
 
@@ -894,5 +931,14 @@ mod tests {
         ))
         .unwrap_err();
         assert!(matches!(err, SocketKillError::UnsupportedAddressFamily));
+    }
+
+    #[test]
+    fn extract_remote_target_supports_ipv4_and_ipv6() {
+        assert_eq!(extract_remote_target("8.8.8.8:443").as_deref(), Some("8.8.8.8"));
+        assert_eq!(
+            extract_remote_target("[2606:4700:4700::1111]:443").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
     }
 }
