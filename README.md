@@ -2,6 +2,13 @@
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
+## Download the latest build
+
+- [Windows installer](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-windows-x86_64.exe)
+- [macOS DMG](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-macos-aarch64.dmg)
+- [Linux AppImage](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-linux-x86_64.AppImage)
+- [All supported OSs bundle](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-all-supported-os.zip)
+
 Vigil watches every TCP/UDP connection on your machine, scores each one for
 suspicious behaviour, and alerts you — via a system tray icon, desktop
 notification, and a full GUI — the moment something looks wrong.
