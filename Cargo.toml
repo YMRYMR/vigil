@@ -70,6 +70,8 @@ ipnetwork = "0.20"
 windows = { version = "0.62", features = [
     # ETW (Event Tracing for Windows) — Phase 3
     "Win32_System_Diagnostics_Etw",
+    # Thread snapshots and suspend/resume for active response
+    "Win32_System_Diagnostics_ToolHelp",
     # Required by OpenTraceW / EVENT_TRACE_LOGFILEW
     "Win32_System_Time",
     # Service enumeration
@@ -81,6 +83,8 @@ windows = { version = "0.62", features = [
     # Process info
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
+    # Resolve trusted system paths such as schtasks.exe
+    "Win32_System_SystemInformation",
     # File version info (publisher extraction)
     "Win32_Storage_FileSystem",
     # Token / security (kill process elevation check)
