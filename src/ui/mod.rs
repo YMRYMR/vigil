@@ -14,6 +14,7 @@ pub mod tab_bar;
 pub mod theme;
 
 use crate::active_response;
+use crate::auto_response;
 use crate::config::Config;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
@@ -135,6 +136,7 @@ enum PendingResponse {
         path: String,
         preset: active_response::DurationPreset,
     },
+    KillConnection(ConnInfo),
     UnblockRemote(String),
     UnblockProcess {
         pid: u32,
@@ -185,6 +187,7 @@ pub struct VigilApp {
     response_status: active_response::Status,
     response_message: Option<(String, std::time::Instant)>,
     admin_message: Option<(String, std::time::Instant)>,
+    auto_response_state: auto_response::EngineState,
     exit_requested: bool,
     last_response_reconcile: std::time::Instant,
     paused: bool,
@@ -236,6 +239,7 @@ impl VigilApp {
             response_status: active_response::status(),
             response_message: None,
             admin_message: None,
+            auto_response_state: auto_response::EngineState::default(),
             exit_requested: false,
             last_response_reconcile: std::time::Instant::now(),
             paused: false,
@@ -261,10 +265,12 @@ impl VigilApp {
                             push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
                             push_capped(&mut self.alerts, info.clone(), ALERTS_CAP);
                             self.unseen_alerts += 1;
-                            let _ = self.tray_tx.try_send(TrayCmd::Alert(Box::new(info)));
+                            let _ = self.tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())));
+                            self.maybe_apply_auto_response(&info);
                         }
                         ConnEvent::New(info) => {
-                            push_capped(&mut self.activity, info, ACTIVITY_CAP);
+                            push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
+                            self.maybe_apply_auto_response(&info);
                         }
                         ConnEvent::Closed { .. } => {}
                     }
@@ -277,6 +283,14 @@ impl VigilApp {
             }
         }
         handled
+    }
+
+    fn maybe_apply_auto_response(&mut self, info: &ConnInfo) {
+        let cfg = self.cfg.read().unwrap().clone();
+        if let Some(message) = auto_response::maybe_apply(info, &cfg, &mut self.auto_response_state) {
+            self.response_message = Some((message, std::time::Instant::now()));
+            self.response_status = active_response::status();
+        }
     }
 
     // ── Inspector action handler ──────────────────────────────────────────────
@@ -333,6 +347,13 @@ impl VigilApp {
                             path: info.proc_path,
                             preset,
                         });
+                    }
+                }
+            }
+            inspector::Action::KillConnection => {
+                if let Some(info) = selected_info {
+                    if let Some(conn) = info.selected_connection {
+                        self.response_confirm = Some(PendingResponse::KillConnection(conn));
                     }
                 }
             }
@@ -811,6 +832,14 @@ impl VigilApp {
                     label.to_string(),
                 )
             }
+            PendingResponse::KillConnection(conn) => (
+                "Kill connection",
+                format!(
+                    "Immediately terminate the live TCP connection {} -> {}?",
+                    conn.local_addr, conn.remote_addr
+                ),
+                "Kill connection".to_string(),
+            ),
             PendingResponse::UnblockRemote(target) => (
                 "Remove remote block",
                 format!("Remove the temporary firewall rule for {target}?"),
@@ -898,6 +927,12 @@ impl VigilApp {
                 match active_response::block_process(*pid, path, *preset) {
                     Ok(msg) => msg,
                     Err(err) => format!("Could not block {path}: {err}"),
+                }
+            }
+            PendingResponse::KillConnection(conn) => {
+                match active_response::kill_connection(conn) {
+                    Ok(msg) => msg,
+                    Err(err) => format!("Could not kill {} -> {}: {err}", conn.local_addr, conn.remote_addr),
                 }
             }
             PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target)
