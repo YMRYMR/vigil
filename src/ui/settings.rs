@@ -41,6 +41,9 @@ pub struct SettingsDraft {
     pub pcap_cooldown_secs: u64,
     pub pcap_packet_size_bytes: u32,
     pub pcap_dir: String,
+    pub break_glass_enabled: bool,
+    pub break_glass_timeout_mins: u64,
+    pub break_glass_heartbeat_secs: u64,
     pub status_msg: Option<(String, std::time::Instant)>,
 }
 
@@ -77,6 +80,9 @@ impl SettingsDraft {
             pcap_cooldown_secs: cfg.pcap_cooldown_secs,
             pcap_packet_size_bytes: cfg.pcap_packet_size_bytes,
             pcap_dir: cfg.pcap_dir.clone(),
+            break_glass_enabled: cfg.break_glass_enabled,
+            break_glass_timeout_mins: cfg.break_glass_timeout_mins,
+            break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
             status_msg: None,
         }
     }
@@ -110,6 +116,9 @@ impl SettingsDraft {
         cfg.pcap_cooldown_secs = self.pcap_cooldown_secs;
         cfg.pcap_packet_size_bytes = self.pcap_packet_size_bytes;
         cfg.pcap_dir = self.pcap_dir.trim().to_string();
+        cfg.break_glass_enabled = self.break_glass_enabled;
+        cfg.break_glass_timeout_mins = self.break_glass_timeout_mins.clamp(1, 240);
+        cfg.break_glass_heartbeat_secs = self.break_glass_heartbeat_secs.clamp(5, 300);
     }
 }
 
@@ -220,6 +229,34 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     });
     if !draft.scheduled_lockdown_enabled {
         ui.label(RichText::new("Scheduled lockdown is currently disabled.").color(theme::TEXT3).size(10.8));
+    }
+
+    ui.add_space(16.0);
+    section_header(ui, "Break-glass recovery");
+    ui.label(RichText::new("When machine isolation is active, Vigil can arm a recovery watchdog. It keeps touching a heartbeat file while the app is alive, and a scheduled watchdog task restores the network if the heartbeat goes stale past the timeout.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable break-glass", |ui| {
+        *changed |= ui.checkbox(&mut draft.break_glass_enabled, RichText::new("automatically recover from a stale isolation lockout").color(theme::TEXT2).size(11.5)).changed();
+    });
+    ui.add_enabled_ui(draft.break_glass_enabled, |ui| {
+        setting_row(ui, label_w, "Recovery timeout", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.break_glass_timeout_mins, 1_u64..=240_u64).suffix(" min").clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new("  restores networking after this timeout if the heartbeat is stale").color(theme::TEXT3).size(11.0));
+            });
+        });
+        setting_row(ui, label_w, "Heartbeat interval", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.break_glass_heartbeat_secs, 5_u64..=300_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new("  Vigil refreshes the heartbeat at this cadence while running").color(theme::TEXT3).size(11.0));
+            });
+        });
+        ui.label(RichText::new("Current implementation is Windows-only and uses a scheduled task that runs the same Vigil binary with --break-glass-recover.").color(theme::TEXT3).size(10.8));
+    });
+    if !draft.break_glass_enabled {
+        ui.label(RichText::new("Break-glass recovery is disabled, so an operator must manually restore networking after a crash during isolation.").color(theme::TEXT3).size(10.8));
     }
 
     ui.add_space(16.0);
