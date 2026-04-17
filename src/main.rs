@@ -14,6 +14,7 @@
 )]
 
 mod active_response;
+mod audit;
 mod auto_response;
 mod autostart;
 mod beacon;

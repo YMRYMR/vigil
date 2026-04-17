@@ -8,10 +8,11 @@
 //! - actions are cooldown-limited per target to avoid thrashing
 
 use crate::{
-    active_response,
+    active_response, audit,
     config::{normalise_name, Config},
     types::ConnInfo,
 };
+use serde_json::json;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -37,7 +38,7 @@ pub enum PlannedAction {
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
     let action = plan(conn, cfg)?;
     let cooldown = Duration::from_secs(cfg.auto_response_cooldown_secs.max(1));
-    if !state.try_acquire(cooldown_key(&action), cooldown) {
+    if !state.try_acquire(cooldown_key(&action, conn), cooldown) {
         return None;
     }
 
@@ -51,6 +52,18 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
             remote_addr = %conn.remote_addr,
             action = %summary,
             "auto-response dry run"
+        );
+        audit::record(
+            "auto_response",
+            "dry_run",
+            json!({
+                "summary": summary,
+                "pid": conn.pid,
+                "proc_name": conn.proc_name,
+                "local_addr": conn.local_addr,
+                "remote_addr": conn.remote_addr,
+                "score": conn.score,
+            }),
         );
         return Some(format!("Auto-response dry run: {summary}."));
     }
@@ -68,6 +81,19 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
                 result = %message,
                 "auto-response executed"
             );
+            audit::record(
+                "auto_response",
+                "success",
+                json!({
+                    "summary": summary,
+                    "message": message,
+                    "pid": conn.pid,
+                    "proc_name": conn.proc_name,
+                    "local_addr": conn.local_addr,
+                    "remote_addr": conn.remote_addr,
+                    "score": conn.score,
+                }),
+            );
             Some(format!("Auto-response: {message}"))
         }
         Err(err) => {
@@ -80,6 +106,19 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
                 action = %summary,
                 error = %err,
                 "auto-response failed"
+            );
+            audit::record(
+                "auto_response",
+                "failure",
+                json!({
+                    "summary": summary,
+                    "error": err,
+                    "pid": conn.pid,
+                    "proc_name": conn.proc_name,
+                    "local_addr": conn.local_addr,
+                    "remote_addr": conn.remote_addr,
+                    "score": conn.score,
+                }),
             );
             Some(format!("Auto-response failed: {summary} ({err})"))
         }
@@ -139,13 +178,13 @@ fn execute(action: &PlannedAction, conn: &ConnInfo) -> Result<String, String> {
 fn describe_action(action: &PlannedAction, conn: &ConnInfo) -> String {
     match action {
         PlannedAction::KillConnection => {
-            format!("would kill connection {} -> {}", conn.local_addr, conn.remote_addr)
+            format!("kill connection {} -> {}", conn.local_addr, conn.remote_addr)
         }
         PlannedAction::BlockRemote { target, .. } => {
-            format!("would block remote {target} for 1 hour")
+            format!("block remote {target} for 1 hour")
         }
         PlannedAction::BlockProcess { path, .. } => {
-            format!("would block process traffic for {path} for 1 hour")
+            format!("block process traffic for {path} for 1 hour")
         }
     }
 }
@@ -202,9 +241,11 @@ fn signal_strength(conn: &ConnInfo) -> u8 {
     }
 }
 
-fn cooldown_key(action: &PlannedAction) -> String {
+fn cooldown_key(action: &PlannedAction, conn: &ConnInfo) -> String {
     match action {
-        PlannedAction::KillConnection => "kill-connection".to_string(),
+        PlannedAction::KillConnection => {
+            format!("kill-connection:{}:{}", conn.local_addr, conn.remote_addr)
+        }
         PlannedAction::BlockRemote { target, .. } => format!("block-remote:{target}"),
         PlannedAction::BlockProcess { path, .. } => format!("block-process:{path}"),
     }
@@ -309,5 +350,15 @@ mod tests {
         let mut state = EngineState::default();
         assert!(state.try_acquire("k".into(), Duration::from_secs(60)));
         assert!(!state.try_acquire("k".into(), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn kill_connection_cooldown_is_per_socket() {
+        let conn_a = sample_conn();
+        let mut conn_b = sample_conn();
+        conn_b.remote_addr = "1.1.1.1:443".into();
+        let mut state = EngineState::default();
+        assert!(state.try_acquire(cooldown_key(&PlannedAction::KillConnection, &conn_a), Duration::from_secs(60)));
+        assert!(state.try_acquire(cooldown_key(&PlannedAction::KillConnection, &conn_b), Duration::from_secs(60)));
     }
 }
