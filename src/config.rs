@@ -94,6 +94,18 @@ pub struct Config {
     pub auto_response_min_score: u8,
     #[serde(default = "default_auto_response_cooldown_secs")]
     pub auto_response_cooldown_secs: u64,
+
+    // ── Phase 11: Scheduled lockdown ─────────────────────────────────────────
+    #[serde(default)]
+    pub scheduled_lockdown_enabled: bool,
+    #[serde(default = "default_scheduled_lockdown_start_hour")]
+    pub scheduled_lockdown_start_hour: u8,
+    #[serde(default = "default_scheduled_lockdown_start_minute")]
+    pub scheduled_lockdown_start_minute: u8,
+    #[serde(default = "default_scheduled_lockdown_end_hour")]
+    pub scheduled_lockdown_end_hour: u8,
+    #[serde(default = "default_scheduled_lockdown_end_minute")]
+    pub scheduled_lockdown_end_minute: u8,
 }
 
 fn default_true() -> bool {
@@ -113,6 +125,18 @@ fn default_auto_response_min_score() -> u8 {
 }
 fn default_auto_response_cooldown_secs() -> u64 {
     300
+}
+fn default_scheduled_lockdown_start_hour() -> u8 {
+    23
+}
+fn default_scheduled_lockdown_start_minute() -> u8 {
+    0
+}
+fn default_scheduled_lockdown_end_hour() -> u8 {
+    6
+}
+fn default_scheduled_lockdown_end_minute() -> u8 {
+    0
 }
 
 impl Default for Config {
@@ -278,6 +302,13 @@ impl Default for Config {
             auto_isolate_machine: false,
             auto_response_min_score: 10,
             auto_response_cooldown_secs: 300,
+
+            // Phase 11 defaults (safe / disabled)
+            scheduled_lockdown_enabled: false,
+            scheduled_lockdown_start_hour: 23,
+            scheduled_lockdown_start_minute: 0,
+            scheduled_lockdown_end_hour: 6,
+            scheduled_lockdown_end_minute: 0,
         }
     }
 }
@@ -479,5 +510,15 @@ mod tests {
         assert!(!cfg.auto_isolate_machine);
         assert_eq!(cfg.auto_response_min_score, 10);
         assert_eq!(cfg.auto_response_cooldown_secs, 300);
+    }
+
+    #[test]
+    fn scheduled_lockdown_defaults_are_safe() {
+        let cfg = Config::default();
+        assert!(!cfg.scheduled_lockdown_enabled);
+        assert_eq!(cfg.scheduled_lockdown_start_hour, 23);
+        assert_eq!(cfg.scheduled_lockdown_start_minute, 0);
+        assert_eq!(cfg.scheduled_lockdown_end_hour, 6);
+        assert_eq!(cfg.scheduled_lockdown_end_minute, 0);
     }
 }
