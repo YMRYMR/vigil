@@ -9,8 +9,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-// ── Config struct ─────────────────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub poll_interval_secs: u64,
@@ -24,7 +22,6 @@ pub struct Config {
     pub suspicious_path_fragments: Vec<String>,
     pub lolbins: Vec<String>,
 
-    // ── Phase 10: Reputation & Telemetry ─────────────────────────────────────
     #[serde(default)]
     pub geoip_city_db: String,
     #[serde(default)]
@@ -44,7 +41,6 @@ pub struct Config {
     #[serde(default = "default_dga_threshold")]
     pub dga_entropy_threshold: f32,
 
-    // ── Phase 12: Optional auto response ─────────────────────────────────────
     #[serde(default)]
     pub auto_response_enabled: bool,
     #[serde(default)]
@@ -62,7 +58,6 @@ pub struct Config {
     #[serde(default = "default_auto_response_cooldown_secs")]
     pub auto_response_cooldown_secs: u64,
 
-    // ── Phase 11: Scheduled lockdown ─────────────────────────────────────────
     #[serde(default)]
     pub scheduled_lockdown_enabled: bool,
     #[serde(default = "default_scheduled_lockdown_start_hour")]
@@ -74,7 +69,6 @@ pub struct Config {
     #[serde(default = "default_scheduled_lockdown_end_minute")]
     pub scheduled_lockdown_end_minute: u8,
 
-    // ── Phase 11: Forensics on alert ─────────────────────────────────────────
     #[serde(default)]
     pub process_dump_on_alert: bool,
     #[serde(default = "default_process_dump_min_score")]
@@ -83,6 +77,19 @@ pub struct Config {
     pub process_dump_cooldown_secs: u64,
     #[serde(default)]
     pub process_dump_dir: String,
+
+    #[serde(default)]
+    pub pcap_on_alert: bool,
+    #[serde(default = "default_pcap_min_score")]
+    pub pcap_min_score: u8,
+    #[serde(default = "default_pcap_duration_secs")]
+    pub pcap_duration_secs: u64,
+    #[serde(default = "default_pcap_cooldown_secs")]
+    pub pcap_cooldown_secs: u64,
+    #[serde(default = "default_pcap_packet_size_bytes")]
+    pub pcap_packet_size_bytes: u32,
+    #[serde(default)]
+    pub pcap_dir: String,
 }
 
 fn default_true() -> bool { true }
@@ -97,6 +104,10 @@ fn default_scheduled_lockdown_end_hour() -> u8 { 6 }
 fn default_scheduled_lockdown_end_minute() -> u8 { 0 }
 fn default_process_dump_min_score() -> u8 { 12 }
 fn default_process_dump_cooldown_secs() -> u64 { 600 }
+fn default_pcap_min_score() -> u8 { 12 }
+fn default_pcap_duration_secs() -> u64 { 15 }
+fn default_pcap_cooldown_secs() -> u64 { 300 }
+fn default_pcap_packet_size_bytes() -> u32 { 0 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -148,6 +159,12 @@ impl Default for Config {
             process_dump_min_score: 12,
             process_dump_cooldown_secs: 600,
             process_dump_dir: String::new(),
+            pcap_on_alert: false,
+            pcap_min_score: 12,
+            pcap_duration_secs: 15,
+            pcap_cooldown_secs: 300,
+            pcap_packet_size_bytes: 0,
+            pcap_dir: String::new(),
         }
     }
 }
@@ -225,4 +242,5 @@ mod tests {
     #[test] fn auto_response_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.auto_response_enabled); assert!(cfg.auto_response_dry_run); assert!(!cfg.auto_kill_connection); assert!(!cfg.auto_block_remote); assert!(!cfg.auto_block_process); assert!(!cfg.auto_isolate_machine); assert_eq!(cfg.auto_response_min_score, 10); assert_eq!(cfg.auto_response_cooldown_secs, 300); }
     #[test] fn scheduled_lockdown_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.scheduled_lockdown_enabled); assert_eq!(cfg.scheduled_lockdown_start_hour, 23); assert_eq!(cfg.scheduled_lockdown_start_minute, 0); assert_eq!(cfg.scheduled_lockdown_end_hour, 6); assert_eq!(cfg.scheduled_lockdown_end_minute, 0); }
     #[test] fn process_dump_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.process_dump_on_alert); assert_eq!(cfg.process_dump_min_score, 12); assert_eq!(cfg.process_dump_cooldown_secs, 600); assert!(cfg.process_dump_dir.is_empty()); }
+    #[test] fn pcap_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.pcap_on_alert); assert_eq!(cfg.pcap_min_score, 12); assert_eq!(cfg.pcap_duration_secs, 15); assert_eq!(cfg.pcap_cooldown_secs, 300); assert_eq!(cfg.pcap_packet_size_bytes, 0); assert!(cfg.pcap_dir.is_empty()); }
 }
