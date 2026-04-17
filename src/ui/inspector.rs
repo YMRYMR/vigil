@@ -17,6 +17,8 @@ pub enum Action {
     Trust,
     OpenLocation,
     Kill,
+    SuspendProcess,
+    ResumeProcess,
     RequestAdmin,
     BlockRemote(active_response::DurationPreset),
     BlockProcess(active_response::DurationPreset),
@@ -63,6 +65,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let trust_enabled = known_location;
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
+    let suspend_enabled = active_response::can_suspend_process(sel.pid) && !ghost;
     let firewall_enabled = active_response::can_modify_firewall();
     let response_status = active_response::status();
     let remote_target = sel
@@ -77,6 +80,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         .and_then(active_response::remote_block_remaining);
     let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
     let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
+    let process_suspended = active_response::is_process_suspended(sel.pid, &sel.proc_path);
     let connection_kill_enabled = sel
         .selected_connection
         .as_ref()
@@ -240,22 +244,49 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             }
 
             ui.add_space(6.0);
-            let kill_conn_resp = ui.add_enabled(
-                connection_kill_enabled,
-                danger_btn("Kill connection"),
-            );
-            let kill_conn_resp = if connection_kill_enabled {
-                kill_conn_resp
-                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                    .on_hover_text("Immediately terminate the selected live TCP connection.")
-            } else {
-                kill_conn_resp.on_hover_text(
-                    "Select an IPv4 TCP connection with a killable state while Vigil is running as administrator.",
-                )
-            };
-            if kill_conn_resp.clicked() {
-                action = Some(Action::KillConnection);
-            }
+            ui.horizontal_wrapped(|ui| {
+                let kill_conn_resp = ui.add_enabled(
+                    connection_kill_enabled,
+                    danger_btn("Kill connection"),
+                );
+                let kill_conn_resp = if connection_kill_enabled {
+                    kill_conn_resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Immediately terminate the selected live TCP connection.")
+                } else {
+                    kill_conn_resp.on_hover_text(
+                        "Select an IPv4 TCP connection with a killable state while Vigil is running as administrator.",
+                    )
+                };
+                if kill_conn_resp.clicked() {
+                    action = Some(Action::KillConnection);
+                }
+
+                if process_suspended {
+                    chip(ui, "Process suspended");
+                    let resume = ui.add(accent_btn("Resume process"));
+                    let resume = resume
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Resume every suspended thread in this process.");
+                    if resume.clicked() {
+                        action = Some(Action::ResumeProcess);
+                    }
+                } else {
+                    let suspend = ui.add_enabled(suspend_enabled, danger_btn("Suspend process"));
+                    let suspend = if suspend_enabled {
+                        suspend
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Freeze the process while you investigate. Use Resume process to continue it later.")
+                    } else {
+                        suspend.on_hover_text(
+                            "Suspension requires a real PID, administrator privileges, and the Windows active-response backend.",
+                        )
+                    };
+                    if suspend.clicked() {
+                        action = Some(Action::SuspendProcess);
+                    }
+                }
+            });
 
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
@@ -278,6 +309,13 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                         } else {
                             "s"
                         }
+                    ),
+                );
+                chip(
+                    ui,
+                    &format!(
+                        "{} suspended",
+                        response_status.suspended_processes,
                     ),
                 );
             });
