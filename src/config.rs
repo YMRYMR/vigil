@@ -372,10 +372,12 @@ mod tests {
 
     #[test]
     fn load_uses_stored_values_exactly() {
-        let mut stored = Config::default();
-        stored.alert_threshold = 7;
-        stored.poll_interval_secs = 10;
-        stored.trusted_processes = vec!["b".into(), "c".into()];
+        let stored = Config {
+            alert_threshold: 7,
+            poll_interval_secs: 10,
+            trusted_processes: vec!["b".into(), "c".into()],
+            ..Config::default()
+        };
 
         let json = serde_json::to_string(&stored).unwrap();
         let loaded: Config = serde_json::from_str(&json).unwrap();
