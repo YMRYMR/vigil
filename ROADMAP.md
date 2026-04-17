@@ -94,7 +94,9 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       - Win32 `PeekMessageW` message pump at 50 ms cadence on dedicated OS thread
       - Alert → amber icon + "⚠ Threat detected" tooltip; ResetOk → restores green
 - [x] `src/notifier.rs` — `send_alert(&ConnInfo)` via `notify-rust` (fire-and-forget)
-- [x] `src/autostart.rs` — thin wrapper over `auto-launch 0.6.0`; enable / disable / is_enabled
+- [x] `src/autostart.rs` — login-item wrapper with Windows privilege-aware autostart
+      (normal Run key on unelevated launches, highest-privilege scheduled task
+      when Vigil itself is launched elevated)
 - [x] First-run logic in `main.rs` — enables autostart and sets `first_run_done = true`
 - [x] Tray thread spawned with `std::thread::Builder` (not tokio task — Win32 HWND must stay on creating thread)
 
@@ -116,14 +118,16 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       - Drains `broadcast::Receiver<ConnEvent>` via `try_recv` loop each frame
       - `VecDeque<ConnInfo>` for activity (cap 500) and alerts (cap 200)
       - process-first `selected_activity/alert: Option<ProcessSelection>`
-      - `active_tab: Tab` enum, `unseen_alerts: usize`, `paused: bool`, `kill_confirm: bool`
+      - `active_tab: Tab` enum, per-grid `TableState`, `unseen_alerts: usize`,
+        `paused: bool`, `kill_confirm: bool`
 - [x] `src/ui/theme.rs` — 11 colour constants; `apply()` sets egui Visuals + text styles
 - [x] `src/ui/tab_bar.rs` — `Tab` enum + `tab_bar()` widget; ACCENT 2 px underline on active
 
 ### 5b — Activity + Alerts tables ✅
 - [x] `src/ui/activity.rs` — `egui_extras::TableBuilder`: Time · Process · Remote · Status · Score
       Process-grouped cards with stacked connections; click process header for the
-      full process summary, or a child row for a specific connection
+      full process summary, or a child row for a specific connection; sort state is
+      persisted per grid
 - [x] `src/ui/alerts.rs` — columns: Time · Process · Score · Remote · Reasons
       Empty-state placeholder; DANGER/WARN text colour on process column
 
@@ -256,6 +260,8 @@ zero rough edges before seeking public adoption.
 - [x] **Tray left-click = open UI** — `with_menu_on_left_click(false)` + event polling;
       right-click still shows the context menu
 - [x] **Window size/position persistence** — `persist_window: true` in `NativeOptions`
+- [x] **Per-grid sort persistence** — Activity and Alerts remember their own sort
+      order and filter state across launches
 - [x] **Responsive settings layout** — full-width settings canvas with auto-save and
       compact trusted-process rows
 - [x] **Trusted processes as filterable grid** — filter bar, per-row Remove button,
@@ -309,9 +315,9 @@ Second round of detection features and cross-platform hardening.
 - [x] Help tab + README document the install command per OS
 
 ### UI
-- [x] **Linked grids** — Activity and Alerts now share a single `TableState`
-      and `id_salt`; clicking a column header in one grid re-sorts both,
-      and resizing a column in either tab persists across both
+- [x] **Independent grids** — Activity and Alerts now keep their own persisted
+      sort/filter state; clicking a column header in one grid no longer forces
+      the other tab to follow the same order
 - [x] **Pre-login badge** rendered in both grids' Time column
 - [x] Inspector selection works again via `row.response()` on
       `TableBuilder::sense(Sense::click())`
@@ -370,24 +376,20 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - Windows: `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
   - Linux: `ss -K dst <ip> dport = <port>` (needs `CONFIG_INET_DIAG_DESTROY`) or `conntrack -D`
   - macOS: `pfctl` rule injection + state flush (no native socket-kill API)
-- [ ] **Block all connections from a process** (without killing it) — the user's explicit request
-  - Windows: add a transient WFP (Windows Filtering Platform) filter scoped to the process image path or PID; requires a signed WFP callout driver for PID scope, or a user-mode filter via `FwpmFilterAdd` for image-path scope
+- [x] **Block all connections from a process** (without killing it) — Windows implementation uses reversible firewall rules scoped to the executable path, with duration presets and cleanup on expiry
+  - Windows: implemented via temporary firewall rules bound to the process image path
   - Linux: `nftables` rule matching `meta skuid` / cgroup v2 `net_cls` — Vigil moves the offending PID into a quarantine cgroup that has a deny-all netfilter rule; process continues running but all new sockets are dropped
   - macOS: `pf` anchor per-process via `pfctl` + Network Extension content-filter (needs entitlement)
-  - UI: new "Quarantine process" button in inspector; shows countdown + "Release" button
-- [ ] **Block remote IP / CIDR** system-wide — add to host firewall blocklist with TTL (1 h / 24 h / permanent)
+  - UI: inspector shows `Block process` / `Unblock process` with duration presets
+- [x] **Active-response UX** — temporary blocks show live countdowns and inline unblock buttons; the header reflects privilege state with `Admin` / `Run as Admin`
+- [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
 - [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
 - [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation
 - [ ] **Suspend process** — freeze the process (Windows: `NtSuspendProcess`, Unix: `SIGSTOP`) while the user investigates; resumable
 
 ### Machine-wide lockdown
-- [ ] **Panic button — full network isolation** — the user's explicit request
-  - One-click "Isolate machine" in the tray menu and main window header
-  - Windows: disable all network adapters via `netsh interface set interface <name> admin=disable`, OR add a blanket WFP deny-all filter at the ALE layer (reversible in one call)
-  - Linux: `nmcli networking off` + `iptables -P INPUT/OUTPUT/FORWARD DROP` with a saved rollback script
-  - macOS: `networksetup -setairportpower <dev> off` + disable each service via `networksetup -setnetworkserviceenabled`
-  - Vigil itself must keep running in offline mode; on-disk audit log records the trigger reason
-  - Big red "Restore network" button stays visible; requires typed confirmation to restore
+- [x] **Panic button — full network isolation** — reversible Windows firewall rules added from the UI, with a matching restore action and confirmation prompt
+  - Linux/macOS-specific adapter / pf / nft equivalents remain backlog
 - [ ] **Allowlist-only mode** — invert the firewall: only signed Microsoft processes, or a user-curated list, may talk to the network; everything else blocked
 - [ ] **Quarantine profile** — preset combining: lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
 - [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched

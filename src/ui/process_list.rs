@@ -79,6 +79,7 @@ pub fn show(
 
             for group in &groups {
                 let selected_in_group = selected.as_ref().is_some_and(|sel| sel.pid == group.pid);
+                let collapsed = state.is_collapsed(group.pid);
 
                 let frame_fill = if selected_in_group {
                     theme::SURFACE3
@@ -92,7 +93,7 @@ pub fn show(
                     .corner_radius(12.0)
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
-                        let summary_h = 56.0;
+                        let summary_h = if collapsed { 48.0 } else { 56.0 };
                         let (summary_rect, summary_resp) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), summary_h),
                             egui::Sense::click(),
@@ -116,15 +117,30 @@ pub fn show(
 
                         ui.allocate_ui_at_rect(summary_rect.shrink2(egui::vec2(12.0, 8.0)), |ui| {
                             ui.horizontal(|ui| {
-                                let (bar_rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(4.0, 40.0),
-                                    egui::Sense::hover(),
+                                let (bar_rect, bar_resp) = ui.allocate_exact_size(
+                                    egui::vec2(4.0, if collapsed { 28.0 } else { 40.0 }),
+                                    egui::Sense::click(),
                                 );
                                 ui.painter().rect_filled(
                                     bar_rect,
                                     2.0,
-                                    summary_bar_color(group.score, kind),
+                                    if collapsed {
+                                        theme::TEXT3
+                                    } else {
+                                        summary_bar_color(group.score, kind)
+                                    },
                                 );
+                                if bar_resp
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(if collapsed {
+                                        "Expand this process card"
+                                    } else {
+                                        "Collapse this process card"
+                                    })
+                                    .clicked()
+                                {
+                                    state.toggle_collapsed(group.pid);
+                                }
                                 ui.add_space(12.0);
 
                                 ui.vertical(|ui| {
@@ -174,7 +190,7 @@ pub fn show(
                                     ui.add_space(2.0);
                                     ui.label(
                                         RichText::new(format!(
-                                            "{}  •  {}  •  {}",
+                                            "{} | {} | {}",
                                             if group.proc_path.is_empty() {
                                                 "No path"
                                             } else {
@@ -202,7 +218,7 @@ pub fn show(
                                         ui.label(
                                             RichText::new(format!(
                                                 "Statuses: {}",
-                                                group.statuses.join(" · ")
+                                                group.statuses.join(", ")
                                             ))
                                             .color(theme::TEXT3)
                                             .size(10.0),
@@ -239,21 +255,36 @@ pub fn show(
                             *selected = Some(selection_from_group(group, None));
                         }
 
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(8.0);
+                        if !collapsed {
+                            ui.add_space(10.0);
+                            ui.separator();
+                            ui.add_space(8.0);
 
-                        for conn in &group.connections {
-                            let conn_selected = selected
-                                .as_ref()
-                                .and_then(|sel| sel.selected_connection.as_ref())
-                                .is_some_and(|sel_conn| {
-                                    crate::ui::conn_matches_selection(conn, Some(sel_conn))
-                                });
-                            if let Some(clicked) = connection_line(ui, conn, kind, conn_selected) {
-                                *selected = Some(selection_from_group(group, Some(clicked)));
+                            for conn in &group.connections {
+                                let conn_selected = selected
+                                    .as_ref()
+                                    .and_then(|sel| sel.selected_connection.as_ref())
+                                    .is_some_and(|sel_conn| {
+                                        crate::ui::conn_matches_selection(conn, Some(sel_conn))
+                                    });
+                                if let Some(clicked) =
+                                    connection_line(ui, conn, kind, conn_selected)
+                                {
+                                    *selected = Some(selection_from_group(group, Some(clicked)));
+                                }
+                                ui.add_space(6.0);
                             }
-                            ui.add_space(6.0);
+                        } else {
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(format!(
+                                    "{} connection{} hidden",
+                                    group.conn_count,
+                                    if group.conn_count == 1 { "" } else { "s" }
+                                ))
+                                .color(theme::TEXT3)
+                                .size(10.2),
+                            );
                         }
                     });
 
@@ -262,11 +293,11 @@ pub fn show(
 
             let footer = match kind {
                 Kind::Activity => format!(
-                    "{} processes · {} connections",
+                    "{} processes / {} connections",
                     total_groups, total_connections
                 ),
                 Kind::Alerts => format!(
-                    "{} alerting processes · {} alert rows",
+                    "{} alerting processes / {} alert rows",
                     total_groups, total_connections
                 ),
             };
@@ -297,7 +328,7 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("⌕").size(14.0).color(theme::TEXT3));
+                ui.label(RichText::new("Search").size(11.5).color(theme::TEXT3));
                 let hint = match kind {
                     Kind::Activity => "filter by process, host, status, or reason…",
                     Kind::Alerts => "filter alerts by process, host, status, or reason…",
@@ -310,7 +341,7 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
                 if !state.filter.is_empty()
                     && ui
                         .add(
-                            egui::Button::new(RichText::new("✕").color(theme::TEXT3).size(11.0))
+                            egui::Button::new(RichText::new("x").color(theme::TEXT3).size(11.0))
                                 .fill(egui::Color32::TRANSPARENT)
                                 .stroke(egui::Stroke::NONE),
                         )

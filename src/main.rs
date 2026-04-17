@@ -13,6 +13,7 @@
     windows_subsystem = "windows"
 )]
 
+mod active_response;
 mod autostart;
 mod beacon;
 mod blocklist;
@@ -123,6 +124,8 @@ fn main() {
         );
     }
 
+    active_response::reconcile();
+
     // First-run: silently enable autostart
     {
         let mut w = cfg.write().unwrap();
@@ -135,6 +138,15 @@ fn main() {
             }
             w.first_run_done = true;
             w.save();
+        }
+    }
+
+    // Keep the login-item / scheduled-task autostart entry aligned with the
+    // current privilege level whenever autostart is enabled.
+    {
+        let c = cfg.read().unwrap();
+        if c.autostart && !autostart::enable() {
+            tracing::warn!("could not refresh autostart");
         }
     }
 

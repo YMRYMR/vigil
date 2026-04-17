@@ -12,15 +12,128 @@ pub fn show(ui: &mut egui::Ui) {
             hero(ui);
             ui.add_space(16.0);
 
-            ui.columns(2, |cols| {
-                card(&mut cols[0], "What Vigil does", |ui| {
+            if ui.available_width() > 780.0 {
+                card(ui, "Operator workflow", |ui| {
+                    field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
+                    field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
+                    field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
+                    field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                });
+
+                ui.columns(2, |cols| {
+                    cols[0].vertical(|ui| {
+                        card(ui, "What Vigil does", |ui| {
+                            body(
+                                ui,
+                                "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.",
+                            );
+                        });
+
+                        card(ui, "How scoring works", |ui| {
+                            body(
+                                ui,
+                                "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.",
+                            );
+                            ui.add_space(6.0);
+                            score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
+                            score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection");
+                            score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, or recent file-drop");
+                            score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, or DGA-like hostname");
+                            score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
+                            score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
+                        });
+
+                        card(ui, "Persistence signals", |ui| {
+                            body(
+                                ui,
+                                "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
+                            );
+                        });
+                    });
+
+                    cols[1].vertical(|ui| {
+                        card(ui, "Active response", |ui| {
+                            body(
+                                ui,
+                                "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
+                            );
+                            ui.add_space(6.0);
+                            bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                            bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
+                            bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                            bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
+                        });
+
+                        card(ui, "Telemetry and reputation", |ui| {
+                            body(
+                                ui,
+                                "Offline enrichment is optional. Point the config at MaxMind GeoLite2 databases for country and ASN lookups, add blocklists for reputation hits, and enable reverse DNS only if you accept that the OS resolver may observe the lookups.",
+                            );
+                            ui.add_space(6.0);
+                            bullet(
+                                ui,
+                                "geoip_city_db / geoip_asn_db",
+                                "MaxMind files that add country and ASN metadata.",
+                            );
+                            bullet(
+                                ui,
+                                "allowed_countries",
+                                "Restrict normal destinations to known-good countries.",
+                            );
+                            bullet(
+                                ui,
+                                "blocklist_paths",
+                                "Plain-text IP or CIDR lists for offline reputation hits.",
+                            );
+                            bullet(
+                                ui,
+                                "fswatch_enabled",
+                                "Correlate fresh file drops with new connections.",
+                            );
+                            bullet(
+                                ui,
+                                "reverse_dns_enabled",
+                                "Off by default because it leaks inspection activity.",
+                            );
+                        });
+
+                        card(ui, "UI tips", |ui| {
+                            bullet(
+                                ui,
+                                "Activity",
+                                "Use the filter to narrow process cards by name, host, status, or reason text.",
+                            );
+                            bullet(
+                                ui,
+                                "Alerts",
+                                "Alerts are the high-signal cards; the stacked connections show the traffic behind the score.",
+                            );
+                            bullet(
+                                ui,
+                                "Settings",
+                                "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                            );
+                            bullet(
+                                ui,
+                                "Privilege state",
+                                "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.",
+                            );
+                            bullet(
+                                ui,
+                                "Keyboard",
+                                "The app is built for mouse-first triage, but the controls are intentionally compact and predictable.",
+                            );
+                        });
+                    });
+                });
+            } else {
+                card(ui, "What Vigil does", |ui| {
                     body(
                         ui,
                         "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.",
                     );
                 });
-
-                card(&mut cols[1], "How scoring works", |ui| {
+                card(ui, "How scoring works", |ui| {
                     body(
                         ui,
                         "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.",
@@ -33,30 +146,30 @@ pub fn show(ui: &mut egui::Ui) {
                     score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
                     score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
                 });
-            });
-
-            ui.add_space(2.0);
-
-            ui.columns(2, |cols| {
-                card(&mut cols[0], "Operator workflow", |ui| {
+                card(ui, "Operator workflow", |ui| {
                     field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
                     field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                 });
-
-                card(&mut cols[1], "Persistence signals", |ui| {
+                card(ui, "Active response", |ui| {
+                    body(
+                        ui,
+                        "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
+                    );
+                    ui.add_space(6.0);
+                    bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                    bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
+                    bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                    bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
+                });
+                card(ui, "Persistence signals", |ui| {
                     body(
                         ui,
                         "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
                     );
                 });
-            });
-
-            ui.add_space(2.0);
-
-            ui.columns(2, |cols| {
-                card(&mut cols[0], "Telemetry and reputation", |ui| {
+                card(ui, "Telemetry and reputation", |ui| {
                     body(
                         ui,
                         "Offline enrichment is optional. Point the config at MaxMind GeoLite2 databases for country and ASN lookups, add blocklists for reputation hits, and enable reverse DNS only if you accept that the OS resolver may observe the lookups.",
@@ -88,8 +201,7 @@ pub fn show(ui: &mut egui::Ui) {
                         "Off by default because it leaks inspection activity.",
                     );
                 });
-
-                card(&mut cols[1], "UI tips", |ui| {
+                card(ui, "UI tips", |ui| {
                     bullet(
                         ui,
                         "Activity",
@@ -107,11 +219,16 @@ pub fn show(ui: &mut egui::Ui) {
                     );
                     bullet(
                         ui,
+                        "Privilege state",
+                        "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.",
+                    );
+                    bullet(
+                        ui,
                         "Keyboard",
                         "The app is built for mouse-first triage, but the controls are intentionally compact and predictable.",
                     );
                 });
-            });
+            }
 
             ui.add_space(16.0);
             ui.separator();
@@ -130,7 +247,7 @@ fn hero(ui: &mut egui::Ui) {
         .fill(theme::SURFACE2)
         .stroke(egui::Stroke::new(1.0, theme::ACCENT_BG))
         .corner_radius(14.0)
-        .inner_margin(egui::Margin::symmetric(18, 18))
+        .inner_margin(egui::Margin::symmetric(18, 16))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label(
@@ -166,7 +283,7 @@ fn card(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
             ui.add_space(10.0);
             f(ui);
         });
-    ui.add_space(14.0);
+    ui.add_space(12.0);
 }
 
 fn chip(ui: &mut egui::Ui, text: &str) {
@@ -185,7 +302,7 @@ fn body(ui: &mut egui::Ui, text: &str) {
 
 fn bullet(ui: &mut egui::Ui, key: &str, text: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("▸").color(theme::ACCENT).size(11.0));
+        ui.label(RichText::new(">").color(theme::ACCENT).size(11.0));
         ui.add_space(2.0);
         ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong());
         ui.add_space(6.0);
