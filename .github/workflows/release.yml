@@ -9,6 +9,13 @@ name: Release
 #   macOS    →  Vigil-<ver>-aarch64.dmg         (drag-to-Applications DMG)
 #   Linux    →  Vigil-<ver>-x86_64.AppImage     (portable, double-click to run)
 #   Bundle   →  Vigil-<ver>-all-supported-os.zip (all three installers together)
+#
+# Stable aliases are also published so the README can point directly to the
+# latest assets without knowing the version string:
+#   Vigil-latest-windows-x86_64.exe
+#   Vigil-latest-macos-aarch64.dmg
+#   Vigil-latest-linux-x86_64.AppImage
+#   Vigil-latest-all-supported-os.zip
 on:
   push:
     tags: ["v*"]
@@ -203,7 +210,7 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Build all-platforms bundle
+      - name: Build all-platforms bundle and stable aliases
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
@@ -215,6 +222,11 @@ jobs:
             cd dist/bundle
             zip -r "../Vigil-${VERSION}-all-supported-os.zip" .
           )
+
+          cp dist/Vigil-Setup-${VERSION}-x86_64.exe dist/Vigil-latest-windows-x86_64.exe
+          cp dist/Vigil-${VERSION}-aarch64.dmg dist/Vigil-latest-macos-aarch64.dmg
+          cp dist/Vigil-${VERSION}-x86_64.AppImage dist/Vigil-latest-linux-x86_64.AppImage
+          cp dist/Vigil-${VERSION}-all-supported-os.zip dist/Vigil-latest-all-supported-os.zip
 
       - name: List release assets
         run: ls -lh dist/
