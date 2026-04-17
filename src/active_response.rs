@@ -1,0 +1,375 @@
+//! Active response: reversible, auditable intervention actions.
+//!
+//! Phase 11 starts with two practical controls:
+//! - block a remote IP or CIDR with a temporary Windows firewall rule
+//! - isolate / restore the machine with paired firewall rules
+//!
+//! The module persists a tiny state file so rules can be reconciled and
+//! expired later, and so the UI can reflect the current status after restarts.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const STATE_FILE: &str = "vigil-active-response.json";
+const BLOCK_RULE_PREFIX: &str = "Vigil Block";
+const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
+const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct Status {
+    pub blocked_rules: usize,
+    pub isolated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct State {
+    blocked: Vec<BlockedTarget>,
+    isolated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BlockedTarget {
+    target: String,
+    rule_name: String,
+    expires_at_unix: Option<u64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+pub enum DurationPreset {
+    OneHour,
+    OneDay,
+    Permanent,
+}
+
+impl DurationPreset {
+    fn ttl(self) -> Option<Duration> {
+        match self {
+            Self::OneHour => Some(Duration::from_secs(60 * 60)),
+            Self::OneDay => Some(Duration::from_secs(60 * 60 * 24)),
+            Self::Permanent => None,
+        }
+    }
+}
+
+pub fn status() -> Status {
+    let state = load_state().unwrap_or_default();
+    Status {
+        blocked_rules: state.blocked.len(),
+        isolated: state.isolated,
+    }
+}
+
+pub fn can_modify_firewall() -> bool {
+    platform::is_supported() && platform::is_elevated()
+}
+
+pub fn reconcile() {
+    if !platform::is_supported() || !platform::is_elevated() {
+        return;
+    }
+
+    let Ok(mut state) = load_state() else {
+        return;
+    };
+
+    let now = unix_now();
+    let mut changed = false;
+    state.blocked.retain(|rule| {
+        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
+        if expired {
+            let _ = platform::delete_rule(&rule.rule_name);
+            changed = true;
+            false
+        } else {
+            true
+        }
+    });
+
+    if changed {
+        let _ = save_state(&state);
+    }
+}
+
+pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
+    ensure_modifiable()?;
+    let target = normalise_target(target)?;
+    let rule_name = rule_name_for_target(&target);
+    let expires_at_unix = preset
+        .ttl()
+        .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
+
+    let _ = platform::delete_rule(&rule_name);
+    platform::add_block_rule(&rule_name, &target)?;
+
+    let mut state = load_state().unwrap_or_default();
+    state.blocked.retain(|rule| rule.target != target);
+    state.blocked.push(BlockedTarget {
+        target: target.clone(),
+        rule_name: rule_name.clone(),
+        expires_at_unix,
+    });
+    save_state(&state)?;
+
+    Ok(match preset {
+        DurationPreset::OneHour => format!("Blocked {target} for 1 hour."),
+        DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
+        DurationPreset::Permanent => format!("Blocked {target} until removed."),
+    })
+}
+
+pub fn unblock_remote(target: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let target = normalise_target(target)?;
+    let mut state = load_state().unwrap_or_default();
+    let mut removed = 0usize;
+    state.blocked.retain(|rule| {
+        if rule.target == target {
+            let _ = platform::delete_rule(&rule.rule_name);
+            removed += 1;
+            false
+        } else {
+            true
+        }
+    });
+    if removed > 0 {
+        save_state(&state)?;
+        Ok(format!("Removed {removed} block rule(s) for {target}."))
+    } else {
+        Ok(format!("No active block rule found for {target}."))
+    }
+}
+
+pub fn isolate_machine() -> Result<String, String> {
+    ensure_modifiable()?;
+    let _ = platform::delete_rule(ISOLATE_RULE_IN);
+    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+    platform::add_block_all_rule(ISOLATE_RULE_IN, "in")?;
+    platform::add_block_all_rule(ISOLATE_RULE_OUT, "out")?;
+
+    let mut state = load_state().unwrap_or_default();
+    state.isolated = true;
+    save_state(&state)?;
+
+    Ok("Network isolation enabled.".into())
+}
+
+pub fn restore_machine() -> Result<String, String> {
+    ensure_modifiable()?;
+    let _ = platform::delete_rule(ISOLATE_RULE_IN);
+    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+
+    let mut state = load_state().unwrap_or_default();
+    state.isolated = false;
+    save_state(&state)?;
+
+    Ok("Network isolation removed.".into())
+}
+
+pub fn is_blocked(target: &str) -> bool {
+    let Ok(target) = normalise_target(target) else {
+        return false;
+    };
+    load_state()
+        .ok()
+        .map(|state| state.blocked.iter().any(|r| r.target == target))
+        .unwrap_or(false)
+}
+
+pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
+    let (host, port) = remote_addr.rsplit_once(':')?;
+    if host.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(host.to_string())
+}
+
+fn ensure_modifiable() -> Result<(), String> {
+    if !platform::is_supported() {
+        return Err("Active response is currently only implemented on Windows.".into());
+    }
+    if !platform::is_elevated() {
+        return Err("Administrator privileges are required for active response.".into());
+    }
+    Ok(())
+}
+
+fn normalise_target(target: &str) -> Result<String, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("Target cannot be empty.".into());
+    }
+    Ok(target.to_string())
+}
+
+fn rule_name_for_target(target: &str) -> String {
+    format!("{BLOCK_RULE_PREFIX} {}", sanitise_rule_suffix(target))
+}
+
+fn sanitise_rule_suffix(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn state_path() -> PathBuf {
+    crate::config::config_path()
+        .parent()
+        .map(|dir| dir.join(STATE_FILE))
+        .unwrap_or_else(|| PathBuf::from(STATE_FILE))
+}
+
+fn load_state() -> Result<State, String> {
+    let path = state_path();
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+}
+
+fn save_state(state: &State) -> Result<(), String> {
+    let path = state_path();
+    let json = serde_json::to_string_pretty(state)
+        .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+#[cfg(windows)]
+mod platform {
+    use super::*;
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{
+        GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    pub fn is_supported() -> bool {
+        true
+    }
+
+    pub fn is_elevated() -> bool {
+        unsafe {
+            let mut token = HANDLE::default();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
+                return false;
+            }
+
+            let mut elevation = TOKEN_ELEVATION::default();
+            let mut bytes = 0u32;
+            let ok = GetTokenInformation(
+                token,
+                TokenElevation,
+                Some((&mut elevation as *mut TOKEN_ELEVATION).cast()),
+                std::mem::size_of::<TOKEN_ELEVATION>() as u32,
+                &mut bytes,
+            )
+            .is_ok();
+            let _ = CloseHandle(token);
+            ok && elevation.TokenIsElevated != 0
+        }
+    }
+
+    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
+        let status = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                "dir=out",
+                "action=block",
+                &format!("remoteip={target}"),
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add firewall rule for {target}"))
+        }
+    }
+
+    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
+        let status = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                &format!("dir={dir}"),
+                "action=block",
+                "remoteip=any",
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add isolation rule {rule_name}"))
+        }
+    }
+
+    pub fn delete_rule(rule_name: &str) -> Result<(), String> {
+        let status = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                &format!("name={rule_name}"),
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to delete firewall rule {rule_name}"))
+        }
+    }
+}
+
+#[cfg(not(windows))]
+mod platform {
+    pub fn is_supported() -> bool {
+        false
+    }
+
+    pub fn is_elevated() -> bool {
+        false
+    }
+
+    pub fn add_block_rule(_rule_name: &str, _target: &str) -> Result<(), String> {
+        Err("Active response is not implemented on this platform.".into())
+    }
+
+    pub fn add_block_all_rule(_rule_name: &str, _dir: &str) -> Result<(), String> {
+        Err("Active response is not implemented on this platform.".into())
+    }
+
+    pub fn delete_rule(_rule_name: &str) -> Result<(), String> {
+        Ok(())
+    }
+}

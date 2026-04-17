@@ -29,6 +29,17 @@ pub fn show(ui: &mut egui::Ui) {
                             field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                         });
 
+                        card(ui, "Active response", |ui| {
+                            body(
+                                ui,
+                                "Phase 11 starts with reversible intervention: block a remote IP temporarily or isolate the machine with firewall rules. Both actions require administrator privileges on Windows and always ask for confirmation.",
+                            );
+                            ui.add_space(6.0);
+                            bullet(ui, "Block remote 1h", "Temporarily block the selected connection's remote IP through the Windows firewall.");
+                            bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                            bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
+                        });
+
                         card(ui, "Telemetry and reputation", |ui| {
                             body(
                                 ui,
@@ -134,6 +145,16 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                });
+                card(ui, "Active response", |ui| {
+                    body(
+                        ui,
+                        "Phase 11 starts with reversible intervention: block a remote IP temporarily or isolate the machine with firewall rules. Both actions require administrator privileges on Windows and always ask for confirmation.",
+                    );
+                    ui.add_space(6.0);
+                    bullet(ui, "Block remote 1h", "Temporarily block the selected connection's remote IP through the Windows firewall.");
+                    bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                    bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
                 });
                 card(ui, "Persistence signals", |ui| {
                     body(

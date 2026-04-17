@@ -4,7 +4,10 @@
 //! user clicks a specific stacked connection row, the selected connection is
 //! shown underneath the process summary.
 
-use crate::ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection};
+use crate::{
+    active_response,
+    ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
+};
 use egui::{RichText, Ui};
 
 // ── Actions ───────────────────────────────────────────────────────────────────
@@ -14,6 +17,10 @@ pub enum Action {
     Trust,
     OpenLocation,
     Kill,
+    BlockRemote,
+    UnblockRemote,
+    IsolateMachine,
+    RestoreNetwork,
     KillConfirmed,
     KillCancelled,
 }
@@ -52,6 +59,15 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let trust_enabled = known_location;
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
+    let firewall_enabled = active_response::can_modify_firewall();
+    let remote_target = sel
+        .selected_connection
+        .as_ref()
+        .and_then(|conn| active_response::extract_remote_target(&conn.remote_addr));
+    let remote_blocked = remote_target
+        .as_deref()
+        .is_some_and(active_response::is_blocked);
+    let isolated = active_response::status().isolated;
 
     egui::ScrollArea::vertical()
         .id_salt("inspector_scroll")
@@ -138,6 +154,64 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             ui.add_space(12.0);
             separator(ui);
             ui.add_space(8.0);
+
+            section_header(ui, "Active response");
+            if firewall_enabled {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some(target) = remote_target.as_ref() {
+                        let label = if remote_blocked {
+                            "Unblock remote"
+                        } else {
+                            "Block remote 1h"
+                        };
+                        let resp = ui.add_enabled(remote_target.is_some(), accent_btn(label));
+                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(
+                            if remote_blocked {
+                                format!("Remove the temporary firewall rule for {target}.")
+                            } else {
+                                format!("Temporarily block outbound traffic to {target}.")
+                            },
+                        );
+                        if resp.clicked() {
+                            action = Some(if remote_blocked {
+                                Action::UnblockRemote
+                            } else {
+                                Action::BlockRemote
+                            });
+                        }
+                    } else {
+                        ui.add_enabled(false, accent_btn("Block remote 1h"))
+                            .on_hover_text("Select a concrete connection row to block its remote IP.");
+                    }
+
+                    let isolate_label = if isolated {
+                        "Restore network"
+                    } else {
+                        "Isolate network"
+                    };
+                    let iso_resp = ui.add_enabled(true, danger_btn(isolate_label));
+                    let iso_resp = iso_resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if isolated {
+                            "Remove the temporary network-isolation firewall rules."
+                        } else {
+                            "Temporarily block inbound and outbound traffic with reversible firewall rules."
+                        });
+                    if iso_resp.clicked() {
+                        action = Some(if isolated {
+                            Action::RestoreNetwork
+                        } else {
+                            Action::IsolateMachine
+                        });
+                    }
+                });
+            } else {
+                ui.label(
+                    RichText::new("Administrator privileges are required for active response.")
+                        .color(theme::TEXT3)
+                        .size(10.5),
+                );
+            }
 
             if kill_confirm {
                 ui.label(

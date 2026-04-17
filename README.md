@@ -22,6 +22,8 @@ notification, and a full GUI — the moment something looks wrong.
 - **Full GUI** — process-grouped Activity and Alerts views, a process-first
   Inspector, auto-save Settings, persisted grid sort/window state, and a
   polished Help screen
+- **Active response** — reversible Windows firewall actions for blocking a
+  remote IP temporarily or isolating the machine, with confirmation prompts
 - **Rolling daily log** at `<install-dir>/logs/vigil.YYYY-MM-DD`
 - **Autostart at login** enabled on first run (configurable in Settings);
   if Vigil is launched elevated on Windows, future autostart uses a
@@ -158,6 +160,17 @@ to restore the bundled list.
 The Inspector disables `Trust` and `Open Loc` when the executable location is
 unknown, and disables `Kill` for unresolved PID placeholder rows like
 `<11540>`.
+
+### Active response
+
+When Vigil is running with administrator privileges on Windows, the Inspector
+can now take reversible action:
+
+- **Block remote 1h** adds a temporary outbound firewall rule for the selected
+  connection's remote IP.
+- **Isolate network** adds reversible firewall rules that block inbound and
+  outbound traffic for the machine.
+- Both actions require confirmation and can be undone from the same UI.
 
 ---
 

@@ -13,6 +13,7 @@
     windows_subsystem = "windows"
 )]
 
+mod active_response;
 mod autostart;
 mod beacon;
 mod blocklist;
@@ -122,6 +123,8 @@ fn main() {
             c.reverse_dns_enabled,
         );
     }
+
+    active_response::reconcile();
 
     // First-run: silently enable autostart
     {

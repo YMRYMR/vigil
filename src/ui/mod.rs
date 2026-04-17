@@ -13,6 +13,7 @@ pub mod settings;
 pub mod tab_bar;
 pub mod theme;
 
+use crate::active_response;
 use crate::config::Config;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
@@ -110,6 +111,14 @@ pub struct ProcessSelection {
     pub selected_connection: Option<ConnInfo>,
 }
 
+#[derive(Clone)]
+enum PendingResponse {
+    BlockRemote(String),
+    UnblockRemote(String),
+    IsolateMachine,
+    RestoreNetwork,
+}
+
 /// Returns `true` when the process name is just a resolved-PID placeholder
 /// like `<11540>` rather than a real executable name.
 pub fn is_ghost_process_name(name: &str) -> bool {
@@ -147,6 +156,10 @@ pub struct VigilApp {
     cfg: Arc<RwLock<Config>>,
     settings: settings::SettingsDraft,
     kill_confirm: bool,
+    response_confirm: Option<PendingResponse>,
+    response_status: active_response::Status,
+    response_message: Option<(String, std::time::Instant)>,
+    last_response_reconcile: std::time::Instant,
     paused: bool,
     activity_table: TableState,
     alerts_table: TableState,
@@ -189,6 +202,10 @@ impl VigilApp {
             cfg,
             settings,
             kill_confirm: false,
+            response_confirm: None,
+            response_status: active_response::status(),
+            response_message: None,
+            last_response_reconcile: std::time::Instant::now(),
             paused: false,
             activity_table: persisted.activity_table,
             alerts_table: persisted.alerts_table,
@@ -261,6 +278,34 @@ impl VigilApp {
             inspector::Action::Kill => {
                 self.kill_confirm = true;
             }
+            inspector::Action::BlockRemote => {
+                if let Some(info) = selected_info {
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm = Some(PendingResponse::BlockRemote(target));
+                        }
+                    }
+                }
+            }
+            inspector::Action::UnblockRemote => {
+                if let Some(info) = selected_info {
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm = Some(PendingResponse::UnblockRemote(target));
+                        }
+                    }
+                }
+            }
+            inspector::Action::IsolateMachine => {
+                self.response_confirm = Some(PendingResponse::IsolateMachine);
+            }
+            inspector::Action::RestoreNetwork => {
+                self.response_confirm = Some(PendingResponse::RestoreNetwork);
+            }
             inspector::Action::KillConfirmed => {
                 if let Some(info) = selected_info {
                     if !is_ghost_process_name(&info.proc_name) {
@@ -297,7 +342,8 @@ impl VigilApp {
 
     // ── Header ────────────────────────────────────────────────────────────────
 
-    fn show_header(&mut self, ui: &mut egui::Ui) {
+    fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
+        let mut action = None;
         ui.horizontal_centered(|ui| {
             ui.add_space(12.0);
 
@@ -339,8 +385,43 @@ impl VigilApp {
                         let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
                     }
                 }
+
+                ui.add_space(8.0);
+                let isolate_label = if self.response_status.isolated {
+                    "Restore Net"
+                } else {
+                    "Isolate Net"
+                };
+                let can_act = active_response::can_modify_firewall();
+                let resp_btn = ui.add_enabled(
+                    can_act,
+                    egui::Button::new(
+                        egui::RichText::new(isolate_label)
+                            .color(theme::DANGER)
+                            .size(11.0),
+                    )
+                    .fill(theme::DANGER_BG)
+                    .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                    .corner_radius(4.0),
+                );
+                let resp_btn = if can_act {
+                    resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand)
+                } else {
+                    resp_btn.on_hover_text(
+                        "Administrator privileges are required for network isolation.",
+                    )
+                };
+                if resp_btn.clicked() {
+                    action = Some(if self.response_status.isolated {
+                        inspector::Action::RestoreNetwork
+                    } else {
+                        inspector::Action::IsolateMachine
+                    });
+                }
             });
         });
+
+        action
     }
 }
 
@@ -349,6 +430,8 @@ impl VigilApp {
 impl eframe::App for VigilApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+
+        self.refresh_active_response_state();
 
         // ── Tray "Open Vigil" signal ──────────────────────────────────────────
         if self.show_window.swap(false, Ordering::Relaxed) {
@@ -394,12 +477,13 @@ impl eframe::App for VigilApp {
         }
 
         // ── Header panel ──────────────────────────────────────────────────────
-        egui::Panel::top("header")
+        let header_action = egui::Panel::top("header")
             .exact_size(48.0)
             .frame(egui::Frame::NONE.fill(theme::SURFACE))
-            .show_inside(ui, |ui| {
-                self.show_header(ui);
-            });
+            .show_inside(ui, |ui| self.show_header(ui));
+        if let Some(action) = header_action.inner {
+            self.handle_inspector_action(action);
+        }
 
         // ── Tab bar panel ─────────────────────────────────────────────────────
         let new_tab = egui::Panel::top("tabs")
@@ -447,6 +531,28 @@ impl eframe::App for VigilApp {
         if let Some(action) = inspector_action {
             self.handle_inspector_action(action);
         }
+
+        if let Some(message) = self.response_message.as_ref() {
+            if message.1.elapsed().as_secs() < 4 {
+                egui::Panel::top("active_response_message")
+                    .exact_size(28.0)
+                    .frame(egui::Frame::NONE.fill(theme::BG))
+                    .show_inside(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&message.0)
+                                    .color(theme::DANGER)
+                                    .size(10.8)
+                                    .strong(),
+                            );
+                        });
+                    });
+            } else {
+                self.response_message = None;
+            }
+        }
+
+        self.show_response_confirm(ctx.clone());
 
         // ── Central content ───────────────────────────────────────────────────
         egui::CentralPanel::default()
@@ -521,6 +627,124 @@ impl eframe::App for VigilApp {
             alerts_table: self.alerts_table.clone(),
         };
         eframe::set_value(storage, "ui", &state);
+    }
+}
+
+impl VigilApp {
+    fn refresh_active_response_state(&mut self) {
+        if self.last_response_reconcile.elapsed().as_secs() >= 1 {
+            active_response::reconcile();
+            self.response_status = active_response::status();
+            self.last_response_reconcile = std::time::Instant::now();
+        }
+    }
+
+    fn show_response_confirm(&mut self, ctx: egui::Context) {
+        let Some(pending) = self.response_confirm.clone() else {
+            return;
+        };
+
+        let (title, body, confirm_label) = match &pending {
+            PendingResponse::BlockRemote(target) => (
+                "Block remote IP",
+                format!("Temporarily block outbound traffic to {target}?"),
+                "Block".to_string(),
+            ),
+            PendingResponse::UnblockRemote(target) => (
+                "Remove remote block",
+                format!("Remove the temporary firewall rule for {target}?"),
+                "Unblock".to_string(),
+            ),
+            PendingResponse::IsolateMachine => (
+                "Isolate machine",
+                "Temporarily block inbound and outbound traffic with reversible firewall rules."
+                    .to_string(),
+                "Isolate".to_string(),
+            ),
+            PendingResponse::RestoreNetwork => (
+                "Restore network",
+                "Remove the temporary network-isolation firewall rules?".to_string(),
+                "Restore".to_string(),
+            ),
+        };
+
+        egui::Window::new(title)
+            .id(egui::Id::new("active_response_confirm"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::SURFACE2)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(12.0),
+            )
+            .show(&ctx, |ui| {
+                ui.set_min_width(360.0);
+                ui.label(egui::RichText::new(body).color(theme::TEXT2).size(11.5));
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    let confirm = ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(confirm_label.as_str())
+                                    .color(theme::DANGER)
+                                    .size(11.0),
+                            )
+                            .fill(theme::DANGER_BG)
+                            .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                            .corner_radius(6.0),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if confirm.clicked() {
+                        let result = self.execute_pending_response(&pending);
+                        self.response_message = Some((result, std::time::Instant::now()));
+                        self.response_status = active_response::status();
+                        self.response_confirm = None;
+                    }
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new("Cancel").color(theme::TEXT2).size(11.0),
+                            )
+                            .fill(theme::SURFACE3)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(6.0),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        self.response_confirm = None;
+                    }
+                });
+            });
+    }
+
+    fn execute_pending_response(&mut self, pending: &PendingResponse) -> String {
+        match pending {
+            PendingResponse::BlockRemote(target) => {
+                match active_response::block_remote(
+                    target,
+                    active_response::DurationPreset::OneHour,
+                ) {
+                    Ok(msg) => msg,
+                    Err(err) => format!("Could not block {target}: {err}"),
+                }
+            }
+            PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target)
+            {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not unblock {target}: {err}"),
+            },
+            PendingResponse::IsolateMachine => match active_response::isolate_machine() {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not isolate the machine: {err}"),
+            },
+            PendingResponse::RestoreNetwork => match active_response::restore_machine() {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not restore the network: {err}"),
+            },
+        }
     }
 }
 

@@ -381,19 +381,14 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - Linux: `nftables` rule matching `meta skuid` / cgroup v2 `net_cls` — Vigil moves the offending PID into a quarantine cgroup that has a deny-all netfilter rule; process continues running but all new sockets are dropped
   - macOS: `pf` anchor per-process via `pfctl` + Network Extension content-filter (needs entitlement)
   - UI: new "Quarantine process" button in inspector; shows countdown + "Release" button
-- [ ] **Block remote IP / CIDR** system-wide — add to host firewall blocklist with TTL (1 h / 24 h / permanent)
+- [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
 - [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
 - [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation
 - [ ] **Suspend process** — freeze the process (Windows: `NtSuspendProcess`, Unix: `SIGSTOP`) while the user investigates; resumable
 
 ### Machine-wide lockdown
-- [ ] **Panic button — full network isolation** — the user's explicit request
-  - One-click "Isolate machine" in the tray menu and main window header
-  - Windows: disable all network adapters via `netsh interface set interface <name> admin=disable`, OR add a blanket WFP deny-all filter at the ALE layer (reversible in one call)
-  - Linux: `nmcli networking off` + `iptables -P INPUT/OUTPUT/FORWARD DROP` with a saved rollback script
-  - macOS: `networksetup -setairportpower <dev> off` + disable each service via `networksetup -setnetworkserviceenabled`
-  - Vigil itself must keep running in offline mode; on-disk audit log records the trigger reason
-  - Big red "Restore network" button stays visible; requires typed confirmation to restore
+- [x] **Panic button — full network isolation** — reversible Windows firewall rules added from the UI, with a matching restore action and confirmation prompt
+  - Linux/macOS-specific adapter / pf / nft equivalents remain backlog
 - [ ] **Allowlist-only mode** — invert the firewall: only signed Microsoft processes, or a user-curated list, may talk to the network; everything else blocked
 - [ ] **Quarantine profile** — preset combining: lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
 - [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched
