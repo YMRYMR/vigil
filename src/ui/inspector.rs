@@ -21,9 +21,11 @@ pub enum Action {
     ResumeProcess,
     RequestAdmin,
     BlockRemote(active_response::DurationPreset),
+    BlockDomain,
     BlockProcess(active_response::DurationPreset),
     KillConnection,
     UnblockRemote,
+    UnblockDomain,
     UnblockProcess,
     IsolateMachine,
     RestoreNetwork,
@@ -66,7 +68,8 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
     let suspend_enabled = active_response::can_suspend_process(sel.pid) && !ghost;
-    let firewall_enabled = active_response::can_modify_firewall();
+    let response_enabled = active_response::can_modify_firewall();
+    let domain_enabled = active_response::can_block_domain();
     let response_status = active_response::status();
     let remote_target = sel
         .selected_connection
@@ -78,6 +81,13 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let remote_remaining = remote_target
         .as_deref()
         .and_then(active_response::remote_block_remaining);
+    let domain_target = sel
+        .selected_connection
+        .as_ref()
+        .and_then(active_response::extract_domain_target);
+    let domain_blocked = domain_target
+        .as_deref()
+        .is_some_and(active_response::is_domain_blocked);
     let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
     let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
     let process_suspended = active_response::is_process_suspended(sel.pid, &sel.proc_path);
@@ -124,7 +134,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             ui.add_space(8.0);
 
             section_header(ui, "Active response");
-            if firewall_enabled {
+            if response_enabled {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(target) = remote_target.as_ref() {
                         if remote_blocked {
@@ -245,6 +255,35 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
 
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
+                if domain_blocked {
+                    chip(ui, "Domain blocked");
+                    let unblock_domain = ui.add(accent_btn("Unblock domain"));
+                    let unblock_domain = unblock_domain
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Remove the local hosts-file block for this hostname.");
+                    if unblock_domain.clicked() {
+                        action = Some(Action::UnblockDomain);
+                    }
+                } else {
+                    let domain_btn = ui.add_enabled(
+                        domain_enabled && domain_target.is_some(),
+                        danger_btn("Block domain"),
+                    );
+                    let domain_btn = if domain_enabled && domain_target.is_some() {
+                        let host = domain_target.as_deref().unwrap_or_default();
+                        domain_btn
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(format!("Redirect {host} to the local machine through the Windows hosts file."))
+                    } else {
+                        domain_btn.on_hover_text(
+                            "Block domain requires administrator privileges and a selected connection with a resolved hostname.",
+                        )
+                    };
+                    if domain_btn.clicked() {
+                        action = Some(Action::BlockDomain);
+                    }
+                }
+
                 let kill_conn_resp = ui.add_enabled(
                     connection_kill_enabled,
                     danger_btn("Kill connection"),
@@ -291,6 +330,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             ui.add_space(8.0);
             ui.horizontal_wrapped(|ui| {
                 chip(ui, &format!("{} blocked target{}", response_status.blocked_rules, if response_status.blocked_rules == 1 { "" } else { "s" }));
+                chip(ui, &format!("{} blocked domain{}", response_status.blocked_domains, if response_status.blocked_domains == 1 { "" } else { "s" }));
                 chip(
                     ui,
                     if response_status.isolated {
@@ -348,6 +388,9 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                 section_header(ui, "Selected connection");
                 kv_mono(ui, "Local", &conn.local_addr);
                 kv_mono(ui, "Remote", &conn.remote_addr);
+                if let Some(host) = domain_target.as_deref() {
+                    kv(ui, "Hostname", host);
+                }
                 kv(ui, "Status", &conn.status);
                 kv(ui, "Time", &conn.timestamp);
                 if !conn.reasons.is_empty() {
