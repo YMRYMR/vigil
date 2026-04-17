@@ -24,6 +24,7 @@ mod logger;
 mod longlived;
 mod monitor;
 mod notifier;
+mod pcap;
 mod process;
 mod registry;
 mod revdns;
