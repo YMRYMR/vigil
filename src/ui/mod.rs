@@ -185,6 +185,7 @@ pub struct VigilApp {
     response_status: active_response::Status,
     response_message: Option<(String, std::time::Instant)>,
     admin_message: Option<(String, std::time::Instant)>,
+    exit_requested: bool,
     last_response_reconcile: std::time::Instant,
     paused: bool,
     activity_table: TableState,
@@ -235,6 +236,7 @@ impl VigilApp {
             response_status: active_response::status(),
             response_message: None,
             admin_message: None,
+            exit_requested: false,
             last_response_reconcile: std::time::Instant::now(),
             paused: false,
             activity_table: persisted.activity_table,
@@ -363,6 +365,7 @@ impl VigilApp {
             }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
                 Ok(()) => {
+                    self.exit_requested = true;
                     self.admin_message = Some((
                         "Reopened Vigil as administrator.".into(),
                         std::time::Instant::now(),
@@ -555,7 +558,7 @@ impl eframe::App for VigilApp {
         }
 
         // ── Hide to tray on window close ──────────────────────────────────────
-        if ctx.input(|i| i.viewport().close_requested()) {
+        if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }

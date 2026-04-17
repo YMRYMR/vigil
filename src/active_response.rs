@@ -133,15 +133,26 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     let target = normalise_target(target)?;
     let mut state = load_state().unwrap_or_default();
     let mut removed = 0usize;
-    state.blocked.retain(|rule| {
+    let mut kept = Vec::with_capacity(state.blocked.len());
+    let mut delete_failed = false;
+    for rule in state.blocked.drain(..) {
         if rule.target == target {
-            let _ = platform::delete_rule(&rule.rule_name);
-            removed += 1;
-            false
+            if platform::delete_rule(&rule.rule_name).is_ok() {
+                removed += 1;
+            } else {
+                delete_failed = true;
+                kept.push(rule);
+            }
         } else {
-            true
+            kept.push(rule);
         }
-    });
+    }
+    state.blocked = kept;
+    if delete_failed {
+        return Err(format!(
+            "Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."
+        ));
+    }
     if removed > 0 {
         save_state(&state)?;
         Ok(format!("Removed {removed} block rule(s) for {target}."))
@@ -163,7 +174,10 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     let _ = platform::delete_rule(&outbound_rule_name);
     let _ = platform::delete_rule(&inbound_rule_name);
     platform::add_block_program_rule(&outbound_rule_name, &path, "out")?;
-    platform::add_block_program_rule(&inbound_rule_name, &path, "in")?;
+    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, &path, "in") {
+        let _ = platform::delete_rule(&outbound_rule_name);
+        return Err(err);
+    }
 
     let mut state = load_state().unwrap_or_default();
     state
@@ -190,16 +204,28 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     let path = normalise_target(path)?;
     let mut state = load_state().unwrap_or_default();
     let mut removed = 0usize;
-    state.blocked_processes.retain(|rule| {
-        if process_block_matches(rule, &path) {
-            let _ = platform::delete_rule(&rule.inbound_rule_name);
-            let _ = platform::delete_rule(&rule.outbound_rule_name);
-            removed += 1;
-            false
+    let mut kept = Vec::with_capacity(state.blocked_processes.len());
+    let mut delete_failed = false;
+    for rule in state.blocked_processes.drain(..) {
+        if process_block_matches(&rule, &path) {
+            let inbound_deleted = platform::delete_rule(&rule.inbound_rule_name).is_ok();
+            let outbound_deleted = platform::delete_rule(&rule.outbound_rule_name).is_ok();
+            if inbound_deleted && outbound_deleted {
+                removed += 1;
+            } else {
+                delete_failed = true;
+                kept.push(rule);
+            }
         } else {
-            true
+            kept.push(rule);
         }
-    });
+    }
+    state.blocked_processes = kept;
+    if delete_failed {
+        return Err(format!(
+            "Could not remove the firewall rules for PID {pid} ({path}); they were kept in state so Vigil can retry."
+        ));
+    }
     if removed > 0 {
         save_state(&state)?;
         Ok(format!(
@@ -228,8 +254,13 @@ pub fn isolate_machine() -> Result<String, String> {
 
 pub fn restore_machine() -> Result<String, String> {
     ensure_modifiable()?;
-    let _ = platform::delete_rule(ISOLATE_RULE_IN);
-    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+    let in_deleted = platform::delete_rule(ISOLATE_RULE_IN).is_ok();
+    let out_deleted = platform::delete_rule(ISOLATE_RULE_OUT).is_ok();
+    if !(in_deleted && out_deleted) {
+        return Err(
+            "Could not remove all isolation firewall rules; the state was kept for retry.".into(),
+        );
+    }
 
     let mut state = load_state().unwrap_or_default();
     state.isolated = false;
