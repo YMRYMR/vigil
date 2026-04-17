@@ -387,7 +387,7 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 ### Containment and forensics
 - [ ] **PCAP capture on alert** — spawn a short ring-buffered packet capture when a high-score alert fires (Windows: `pktmon`; Linux: `tcpdump`; macOS: `tcpdump`)
 - [ ] **Process memory dump on alert** — optional minidump for offline analysis (Windows: `MiniDumpWriteDump`)
-- [ ] **Freeze autorun entries** — snapshot HKCU/HKLM Run keys; revert additions made after snapshot
+- [x] **Freeze autorun entries** — current Windows implementation captures a Run / RunOnce baseline and can remove later additions or restore changed baseline values from the inspector
 - [ ] **Honeypot decoy files** — canary files in common locations; alert + auto-lockdown if touched
 
 ---
