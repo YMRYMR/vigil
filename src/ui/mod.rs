@@ -18,6 +18,7 @@ use crate::auto_response;
 use crate::config::Config;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
+use chrono::{Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -185,6 +186,8 @@ pub struct VigilApp {
     auto_response_state: auto_response::EngineState,
     exit_requested: bool,
     last_response_reconcile: std::time::Instant,
+    last_schedule_check: std::time::Instant,
+    scheduled_lockdown_active: bool,
     paused: bool,
     activity_table: TableState,
     alerts_table: TableState,
@@ -237,6 +240,8 @@ impl VigilApp {
             auto_response_state: auto_response::EngineState::default(),
             exit_requested: false,
             last_response_reconcile: std::time::Instant::now(),
+            last_schedule_check: std::time::Instant::now() - std::time::Duration::from_secs(60),
+            scheduled_lockdown_active: false,
             paused: false,
             activity_table: persisted.activity_table,
             alerts_table: persisted.alerts_table,
@@ -403,6 +408,7 @@ impl VigilApp {
                 self.response_confirm = Some(PendingResponse::IsolateMachine);
             }
             inspector::Action::RestoreNetwork => {
+                self.scheduled_lockdown_active = false;
                 self.response_confirm = Some(PendingResponse::RestoreNetwork);
             }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
@@ -486,6 +492,20 @@ impl VigilApp {
                     if relaunch.clicked() {
                         action = Some(inspector::Action::RequestAdmin);
                     }
+                }
+                if self.settings.scheduled_lockdown_enabled {
+                    let schedule_label = if self.scheduled_lockdown_active {
+                        format!(" Scheduled {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute)
+                    } else {
+                        format!(" Schedule {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute)
+                    };
+                    ui.label(
+                        egui::RichText::new(schedule_label)
+                            .color(if self.scheduled_lockdown_active { theme::DANGER } else { theme::TEXT2 })
+                            .background_color(if self.scheduled_lockdown_active { theme::DANGER_BG } else { theme::SURFACE2 })
+                            .size(10.0)
+                            .strong(),
+                    );
                 }
             });
 
@@ -760,6 +780,73 @@ impl VigilApp {
             active_response::reconcile();
             self.response_status = active_response::status();
             self.last_response_reconcile = std::time::Instant::now();
+        }
+
+        if self.last_schedule_check.elapsed().as_secs() >= 30 {
+            self.apply_scheduled_lockdown();
+            self.last_schedule_check = std::time::Instant::now();
+        }
+    }
+
+    fn apply_scheduled_lockdown(&mut self) {
+        let cfg = self.cfg.read().unwrap().clone();
+        if !cfg.scheduled_lockdown_enabled {
+            self.scheduled_lockdown_active = false;
+            return;
+        }
+        if !active_response::can_modify_firewall() {
+            return;
+        }
+
+        let now = Local::now();
+        let minute_of_day = now.hour() * 60 + now.minute();
+        let start = u32::from(cfg.scheduled_lockdown_start_hour.min(23)) * 60
+            + u32::from(cfg.scheduled_lockdown_start_minute.min(59));
+        let end = u32::from(cfg.scheduled_lockdown_end_hour.min(23)) * 60
+            + u32::from(cfg.scheduled_lockdown_end_minute.min(59));
+
+        let should_lock = if start == end {
+            false
+        } else if start < end {
+            minute_of_day >= start && minute_of_day < end
+        } else {
+            minute_of_day >= start || minute_of_day < end
+        };
+
+        if should_lock && !self.scheduled_lockdown_active {
+            match active_response::isolate_machine() {
+                Ok(msg) => {
+                    self.scheduled_lockdown_active = true;
+                    self.response_message = Some((
+                        format!("Scheduled lockdown: {msg}"),
+                        std::time::Instant::now(),
+                    ));
+                    self.response_status = active_response::status();
+                }
+                Err(err) => {
+                    self.response_message = Some((
+                        format!("Scheduled lockdown failed: {err}"),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
+        } else if !should_lock && self.scheduled_lockdown_active {
+            match active_response::restore_machine() {
+                Ok(msg) => {
+                    self.scheduled_lockdown_active = false;
+                    self.response_message = Some((
+                        format!("Scheduled lockdown ended: {msg}"),
+                        std::time::Instant::now(),
+                    ));
+                    self.response_status = active_response::status();
+                }
+                Err(err) => {
+                    self.response_message = Some((
+                        format!("Scheduled restore failed: {err}"),
+                        std::time::Instant::now(),
+                    ));
+                }
+            }
         }
     }
 
