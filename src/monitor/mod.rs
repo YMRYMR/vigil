@@ -28,6 +28,7 @@ use crate::forensics;
 use crate::fswatch;
 use crate::geoip;
 use crate::longlived::LongLivedTracker;
+use crate::pcap;
 use crate::process;
 use crate::registry;
 use crate::revdns;
@@ -146,7 +147,7 @@ fn process_conn(raw_conn: &RawConn, beaconing: bool, known: &mut HashMap<ConnKey
     let proc = process::collect(raw_conn.pid, svc_map);
     let ancestors_norm: Vec<(String, u32)> = proc.ancestors.iter().map(|(n, pid)| (crate::config::normalise_name(n), *pid)).collect();
     let pre_login = session::is_pre_login();
-    let (fs_window, long_threshold, rev_enabled, reputation_enabled, dump_cfg) = {
+    let (fs_window, long_threshold, rev_enabled, reputation_enabled, forensic_cfg) = {
         let cfg = config.read().unwrap();
         (
             std::time::Duration::from_secs(cfg.fswatch_window_secs),
@@ -203,7 +204,8 @@ fn process_conn(raw_conn: &RawConn, beaconing: bool, known: &mut HashMap<ConnKey
 
     let event = if s >= threshold {
         tracing::warn!("{} ({}) | {} → {} | score={}", info.proc_name, raw_conn.pid, info.local_addr, info.remote_addr, s);
-        forensics::maybe_capture_process_dump(&info, &dump_cfg);
+        forensics::maybe_capture_process_dump(&info, &forensic_cfg);
+        pcap::maybe_capture_pcap(&info, &forensic_cfg);
         ConnEvent::Alert(info)
     } else if s > 0 || log_all {
         tracing::info!("{} ({}) | {} → {} | score={}", info.proc_name, raw_conn.pid, info.local_addr, info.remote_addr, s);
