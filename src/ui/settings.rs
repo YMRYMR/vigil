@@ -35,6 +35,12 @@ pub struct SettingsDraft {
     pub process_dump_min_score: u8,
     pub process_dump_cooldown_secs: u64,
     pub process_dump_dir: String,
+    pub pcap_on_alert: bool,
+    pub pcap_min_score: u8,
+    pub pcap_duration_secs: u64,
+    pub pcap_cooldown_secs: u64,
+    pub pcap_packet_size_bytes: u32,
+    pub pcap_dir: String,
     pub status_msg: Option<(String, std::time::Instant)>,
 }
 
@@ -65,6 +71,12 @@ impl SettingsDraft {
             process_dump_min_score: cfg.process_dump_min_score,
             process_dump_cooldown_secs: cfg.process_dump_cooldown_secs,
             process_dump_dir: cfg.process_dump_dir.clone(),
+            pcap_on_alert: cfg.pcap_on_alert,
+            pcap_min_score: cfg.pcap_min_score,
+            pcap_duration_secs: cfg.pcap_duration_secs,
+            pcap_cooldown_secs: cfg.pcap_cooldown_secs,
+            pcap_packet_size_bytes: cfg.pcap_packet_size_bytes,
+            pcap_dir: cfg.pcap_dir.clone(),
             status_msg: None,
         }
     }
@@ -92,6 +104,12 @@ impl SettingsDraft {
         cfg.process_dump_min_score = self.process_dump_min_score;
         cfg.process_dump_cooldown_secs = self.process_dump_cooldown_secs;
         cfg.process_dump_dir = self.process_dump_dir.trim().to_string();
+        cfg.pcap_on_alert = self.pcap_on_alert;
+        cfg.pcap_min_score = self.pcap_min_score;
+        cfg.pcap_duration_secs = self.pcap_duration_secs;
+        cfg.pcap_cooldown_secs = self.pcap_cooldown_secs;
+        cfg.pcap_packet_size_bytes = self.pcap_packet_size_bytes;
+        cfg.pcap_dir = self.pcap_dir.trim().to_string();
     }
 }
 
@@ -206,7 +224,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
 
     ui.add_space(16.0);
     section_header(ui, "Forensics on alert");
-    ui.label(RichText::new("Optional forensic capture for high-confidence alerts. Current implementation is Windows-only and writes process memory dumps to disk when enabled.").color(theme::TEXT2).size(12.0));
+    ui.label(RichText::new("Optional forensic capture for high-confidence alerts. Current implementation is Windows-only and can write process memory dumps and short packet captures when enabled.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable process dump", |ui| {
         *changed |= ui.checkbox(&mut draft.process_dump_on_alert, RichText::new("capture a process memory dump on sufficiently high-score alerts").color(theme::TEXT2).size(11.5)).changed();
@@ -234,6 +252,49 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     });
     if !draft.process_dump_on_alert {
         ui.label(RichText::new("Process dump on alert is currently disabled.").color(theme::TEXT3).size(10.8));
+    }
+
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable PCAP capture", |ui| {
+        *changed |= ui.checkbox(&mut draft.pcap_on_alert, RichText::new("capture a short packet window on sufficiently high-score alerts").color(theme::TEXT2).size(11.5)).changed();
+    });
+    ui.add_enabled_ui(draft.pcap_on_alert, |ui| {
+        setting_row(ui, label_w, "PCAP minimum score", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.pcap_min_score, 8_u8..=20_u8).clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new(format!("  capture when score >= {}", draft.pcap_min_score)).color(theme::TEXT3).size(11.0));
+            });
+        });
+        setting_row(ui, label_w, "Capture seconds", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.pcap_duration_secs, 5_u64..=120_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new("  short host-wide pktmon capture window").color(theme::TEXT3).size(11.0));
+            });
+        });
+        setting_row(ui, label_w, "PCAP cooldown", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.pcap_cooldown_secs, 60_u64..=7200_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new("  suppress repeated packet captures for the same PID").color(theme::TEXT3).size(11.0));
+            });
+        });
+        setting_row(ui, label_w, "Packet bytes", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(egui::Slider::new(&mut draft.pcap_packet_size_bytes, 0_u32..=512_u32).clamping(egui::SliderClamping::Always));
+                *changed |= resp.changed();
+                ui.label(RichText::new("  0 = full packet, larger values truncate less").color(theme::TEXT3).size(11.0));
+            });
+        });
+        setting_row(ui, label_w, "PCAP directory", |ui| {
+            let resp = ui.add(egui::TextEdit::singleline(&mut draft.pcap_dir).hint_text("default: <data-dir>/artifacts/pcap").desired_width(420.0));
+            *changed |= resp.changed();
+        });
+        ui.label(RichText::new("Windows implementation uses pktmon and converts the ETL trace to pcapng. Only one packet capture runs at a time.").color(theme::TEXT3).size(10.8));
+    });
+    if !draft.pcap_on_alert {
+        ui.label(RichText::new("PCAP capture on alert is currently disabled.").color(theme::TEXT3).size(10.8));
     }
 
     ui.add_space(16.0);
