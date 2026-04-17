@@ -15,8 +15,6 @@ notification, and a full GUI — the moment something looks wrong.
 
 ![Vigil current UI](docs/images/vigil-current.png)
 
-Screenshot captured from the current Vigil UI by Codex.
-
 ---
 
 ## Features
