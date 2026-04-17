@@ -31,7 +31,7 @@ Screenshot captured from the current Vigil UI by Codex.
   remote IP for 1 hour, 24 hours, or permanently, blocking a process by
   executable path, or isolating the machine, with confirmation prompts,
   live countdowns for temporary blocks, and one-click unblock buttons
-- **Rolling daily log** at `<install-dir>/logs/vigil.YYYY-MM-DD`
+- **Rolling daily log** at the per-user Vigil data directory under `logs/vigil.YYYY-MM-DD`
 - **Autostart at login** enabled on first run (configurable in Settings);
   if Vigil is launched elevated on Windows, future autostart uses a
   highest-privilege scheduled task so it keeps admin visibility
@@ -141,7 +141,7 @@ custom icon in the taskbar.
 
 ## Configuration
 
-Settings are stored in `vigil.json` next to the executable and are fully
+Settings are stored in `vigil.json` in the per-user Vigil data directory and are fully
 editable in-app via the **Settings** tab:
 
 | Setting | Default | Description |
@@ -206,6 +206,7 @@ Each line follows the format:
 ```
 
 Open the log folder via the tray icon context menu → **Open Logs Folder**.
+The folder is inside the per-user Vigil data directory.
 
 ---
 
@@ -252,7 +253,7 @@ All of it is off by default; point the config at your data to enable it.
 
 Download the free MaxMind GeoLite2-City and GeoLite2-ASN `.mmdb` files
 from https://www.maxmind.com/en/geolite2/signup and drop them anywhere
-on disk. Then edit `vigil.json` next to the binary:
+on disk. Then edit the `vigil.json` file in the per-user Vigil data directory:
 
 ```json
 {

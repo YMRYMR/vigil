@@ -4,7 +4,7 @@
 //! After that, the file is treated as authoritative so user edits persist
 //! exactly as saved.
 //!
-//! The config file lives next to the binary:  `<exe_dir>/vigil.json`
+//! The config file lives in the per-user app-data directory.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -250,12 +250,50 @@ impl Default for Config {
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
-/// Returns the path to `vigil.json` next to the running binary.
-pub fn config_path() -> PathBuf {
+/// Returns the per-user application data directory for Vigil.
+///
+/// This is writable in the installed-app case and avoids keeping config or
+/// runtime state next to the executable.
+pub fn data_dir() -> PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(dir).join("Vigil");
+        }
+        if let Some(dir) = std::env::var_os("APPDATA") {
+            return PathBuf::from(dir).join("Vigil");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Vigil");
+        }
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+            return PathBuf::from(xdg).join("vigil");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(".config").join("vigil");
+        }
+    }
+
     std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("vigil.json")))
-        .unwrap_or_else(|| PathBuf::from("vigil.json"))
+        .and_then(|p| p.parent().map(|d| d.join("vigil-data")))
+        .unwrap_or_else(|| PathBuf::from("vigil-data"))
+}
+
+/// Returns the path to `vigil.json` in the per-user data directory.
+pub fn config_path() -> PathBuf {
+    data_dir().join("vigil.json")
 }
 
 impl Config {
@@ -275,6 +313,12 @@ impl Config {
     /// Save to disk. Logs a warning on failure but never panics.
     pub fn save(&self) {
         let path = config_path();
+        if let Some(parent) = path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!("failed to create config directory: {e}");
+                return;
+            }
+        }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
                 if let Err(e) = std::fs::write(&path, json) {

@@ -109,6 +109,7 @@ mod platform {
                 .into());
         }
 
+        let exe = xml_escape(&exe.display().to_string());
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -123,7 +124,7 @@ mod platform {
 </dict>
 </plist>
 "#,
-            exe = exe.display(),
+            exe = exe,
         );
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
@@ -174,6 +175,14 @@ mod platform {
         }
         unsafe { getuid() == 0 }
     }
+
+    fn xml_escape(text: &str) -> String {
+        text.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('\"', "&quot;")
+            .replace('\'', "&apos;")
+    }
 }
 
 // ── Linux ─────────────────────────────────────────────────────────────────────
@@ -198,6 +207,7 @@ mod platform {
                 .into());
         }
 
+        let exe = systemd_quote(&exe.display().to_string());
         let unit = format!(
             "[Unit]\n\
              Description=Vigil network monitor\n\
@@ -213,7 +223,7 @@ mod platform {
              \n\
              [Install]\n\
              WantedBy=multi-user.target\n",
-            exe = exe.display(),
+            exe = exe,
         );
         let path = unit_path();
         std::fs::write(&path, unit.as_bytes())
@@ -259,6 +269,10 @@ mod platform {
             fn getuid() -> u32;
         }
         unsafe { getuid() == 0 }
+    }
+
+    fn systemd_quote(text: &str) -> String {
+        format!("\"{}\"", text.replace('\"', "\\\""))
     }
 }
 

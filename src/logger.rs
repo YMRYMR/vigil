@@ -1,7 +1,7 @@
 //! Logging initialisation.
 //!
 //! Sets up a `tracing-subscriber` with a rolling daily file appender.
-//! Log files land in `<exe_dir>/logs/vigil.YYYY-MM-DD`.
+//! Log files land in the per-user data directory under `logs/`.
 //!
 //! Returns the log directory path (for the "Open Logs Folder" tray item)
 //! and a `WorkerGuard` that must be kept alive for the lifetime of the
@@ -33,7 +33,8 @@ pub struct LogGuard {
 ///
 /// Returns `(log_dir, guard)`.  Keep `guard` alive until the process exits.
 pub fn init() -> (PathBuf, LogGuard) {
-    let log_dir = exe_dir().join("logs");
+    let log_dir = crate::config::data_dir().join("logs");
+    let _ = std::fs::create_dir_all(&log_dir);
 
     let appender = tracing_appender::rolling::daily(&log_dir, "vigil");
     let (writer, guard) = tracing_appender::non_blocking(appender);
@@ -50,11 +51,3 @@ pub fn init() -> (PathBuf, LogGuard) {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .unwrap_or_default()
-        .parent()
-        .unwrap_or(std::path::Path::new("."))
-        .to_path_buf()
-}
