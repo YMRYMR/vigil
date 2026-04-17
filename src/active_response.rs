@@ -441,7 +441,26 @@ pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
 }
 
 pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
-    socket_addr_from_text(remote_addr).map(|addr| addr.ip().to_string())
+    if let Ok(addr) = socket_addr_from_text(remote_addr) {
+        return Some(addr.ip().to_string());
+    }
+
+    let trimmed = remote_addr.trim();
+    let (host, port) = trimmed.rsplit_once(':')?;
+    if host.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+
+    if host.parse::<IpAddr>().is_ok() {
+        Some(host.to_string())
+    } else {
+        None
+    }
 }
 
 fn ensure_modifiable() -> Result<(), String> {
@@ -938,6 +957,10 @@ mod tests {
         assert_eq!(extract_remote_target("8.8.8.8:443").as_deref(), Some("8.8.8.8"));
         assert_eq!(
             extract_remote_target("[2606:4700:4700::1111]:443").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
+        assert_eq!(
+            extract_remote_target("2606:4700:4700::1111:443").as_deref(),
             Some("2606:4700:4700::1111")
         );
     }
