@@ -5,10 +5,11 @@
 
 use crate::ui::theme;
 use egui::{Color32, RichText, Ui};
+use serde::{Deserialize, Serialize};
 
 // ── Tab enum ──────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum Tab {
     #[default]
     Activity,

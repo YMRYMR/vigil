@@ -123,14 +123,22 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     section_header(ui, "Startup");
 
     setting_row(ui, label_w, "Run at login", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.autostart,
-                RichText::new("start Vigil automatically when you log in")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        ui.vertical(|ui| {
+            *changed |= ui
+                .checkbox(
+                    &mut draft.autostart,
+                    RichText::new("start Vigil automatically when you log in")
+                        .color(theme::TEXT2)
+                        .size(11.5),
+                )
+                .changed();
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new("On Windows, elevated runs use a highest-privilege scheduled task.")
+                    .color(theme::TEXT3)
+                    .size(10.2),
+            );
+        });
     });
 
     // ── Trusted Processes ─────────────────────────────────────────────────────

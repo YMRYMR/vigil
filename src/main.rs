@@ -138,6 +138,15 @@ fn main() {
         }
     }
 
+    // Keep the login-item / scheduled-task autostart entry aligned with the
+    // current privilege level whenever autostart is enabled.
+    {
+        let c = cfg.read().unwrap();
+        if c.autostart && !autostart::enable() {
+            tracing::warn!("could not refresh autostart");
+        }
+    }
+
     // ── Monitor ───────────────────────────────────────────────────────────────
     let mon = Monitor::new(cfg.clone());
     let event_rx = mon.subscribe();

@@ -20,9 +20,12 @@ notification, and a full GUI — the moment something looks wrong.
 - **Clickable notifications** — clicking a desktop alert opens Vigil and
   navigates directly to the triggering connection
 - **Full GUI** — process-grouped Activity and Alerts views, a process-first
-  Inspector, auto-save Settings, and a polished Help screen
+  Inspector, auto-save Settings, persisted grid sort/window state, and a
+  polished Help screen
 - **Rolling daily log** at `<install-dir>/logs/vigil.YYYY-MM-DD`
-- **Autostart at login** enabled on first run (configurable in Settings)
+- **Autostart at login** enabled on first run (configurable in Settings);
+  if Vigil is launched elevated on Windows, future autostart uses a
+  highest-privilege scheduled task so it keeps admin visibility
 
 ---
 
@@ -137,7 +140,7 @@ editable in-app via the **Settings** tab:
 | `alert_threshold` | 3 | Minimum score to trigger an alert |
 | `poll_interval_secs` | 5 | Seconds between full connection polls |
 | `log_all_connections` | false | Log every connection, not just suspicious ones |
-| `autostart` | true | Launch Vigil at login |
+| `autostart` | true | Launch Vigil at login; elevated Windows runs use a highest-privilege scheduled task |
 | `trusted_processes` | *(see below)* | Process names exempt from low-level scoring |
 
 ### Default trusted processes

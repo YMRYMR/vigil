@@ -94,7 +94,9 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       - Win32 `PeekMessageW` message pump at 50 ms cadence on dedicated OS thread
       - Alert → amber icon + "⚠ Threat detected" tooltip; ResetOk → restores green
 - [x] `src/notifier.rs` — `send_alert(&ConnInfo)` via `notify-rust` (fire-and-forget)
-- [x] `src/autostart.rs` — thin wrapper over `auto-launch 0.6.0`; enable / disable / is_enabled
+- [x] `src/autostart.rs` — login-item wrapper with Windows privilege-aware autostart
+      (normal Run key on unelevated launches, highest-privilege scheduled task
+      when Vigil itself is launched elevated)
 - [x] First-run logic in `main.rs` — enables autostart and sets `first_run_done = true`
 - [x] Tray thread spawned with `std::thread::Builder` (not tokio task — Win32 HWND must stay on creating thread)
 
@@ -116,14 +118,16 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       - Drains `broadcast::Receiver<ConnEvent>` via `try_recv` loop each frame
       - `VecDeque<ConnInfo>` for activity (cap 500) and alerts (cap 200)
       - process-first `selected_activity/alert: Option<ProcessSelection>`
-      - `active_tab: Tab` enum, `unseen_alerts: usize`, `paused: bool`, `kill_confirm: bool`
+      - `active_tab: Tab` enum, per-grid `TableState`, `unseen_alerts: usize`,
+        `paused: bool`, `kill_confirm: bool`
 - [x] `src/ui/theme.rs` — 11 colour constants; `apply()` sets egui Visuals + text styles
 - [x] `src/ui/tab_bar.rs` — `Tab` enum + `tab_bar()` widget; ACCENT 2 px underline on active
 
 ### 5b — Activity + Alerts tables ✅
 - [x] `src/ui/activity.rs` — `egui_extras::TableBuilder`: Time · Process · Remote · Status · Score
       Process-grouped cards with stacked connections; click process header for the
-      full process summary, or a child row for a specific connection
+      full process summary, or a child row for a specific connection; sort state is
+      persisted per grid
 - [x] `src/ui/alerts.rs` — columns: Time · Process · Score · Remote · Reasons
       Empty-state placeholder; DANGER/WARN text colour on process column
 
@@ -256,6 +260,8 @@ zero rough edges before seeking public adoption.
 - [x] **Tray left-click = open UI** — `with_menu_on_left_click(false)` + event polling;
       right-click still shows the context menu
 - [x] **Window size/position persistence** — `persist_window: true` in `NativeOptions`
+- [x] **Per-grid sort persistence** — Activity and Alerts remember their own sort
+      order and filter state across launches
 - [x] **Responsive settings layout** — full-width settings canvas with auto-save and
       compact trusted-process rows
 - [x] **Trusted processes as filterable grid** — filter bar, per-row Remove button,
@@ -309,9 +315,9 @@ Second round of detection features and cross-platform hardening.
 - [x] Help tab + README document the install command per OS
 
 ### UI
-- [x] **Linked grids** — Activity and Alerts now share a single `TableState`
-      and `id_salt`; clicking a column header in one grid re-sorts both,
-      and resizing a column in either tab persists across both
+- [x] **Independent grids** — Activity and Alerts now keep their own persisted
+      sort/filter state; clicking a column header in one grid no longer forces
+      the other tab to follow the same order
 - [x] **Pre-login badge** rendered in both grids' Time column
 - [x] Inspector selection works again via `row.response()` on
       `TableBuilder::sense(Sense::click())`

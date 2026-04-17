@@ -16,6 +16,7 @@ pub mod theme;
 use crate::config::Config;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -24,6 +25,7 @@ use tokio::sync::broadcast;
 
 // ── Table sort / filter state ─────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableState {
     pub filter: String,
     pub sort_col: usize,
@@ -60,6 +62,23 @@ impl TableState {
             }
         } else {
             ""
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UiState {
+    active_tab: Tab,
+    activity_table: TableState,
+    alerts_table: TableState,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        Self {
+            active_tab: Tab::Activity,
+            activity_table: TableState::new(0, false),
+            alerts_table: TableState::new(4, false),
         }
     }
 }
@@ -129,12 +148,8 @@ pub struct VigilApp {
     settings: settings::SettingsDraft,
     kill_confirm: bool,
     paused: bool,
-    /// Shared table state — the **same** `TableState` drives both the Activity
-    /// and Alerts grids, so clicking a column header (or resizing — egui
-    /// persists the widths keyed on `id_salt` which we now set identically)
-    /// affects both views.  The user asked for the two grids to share sort
-    /// order and column widths, and this is the minimal-diff way to do it.
-    table_state: TableState,
+    activity_table: TableState,
+    alerts_table: TableState,
 }
 
 impl VigilApp {
@@ -152,6 +167,10 @@ impl VigilApp {
             let c = cfg.read().unwrap();
             settings::SettingsDraft::from_config(&c)
         };
+        let persisted = cc
+            .storage
+            .and_then(|storage| eframe::get_value::<UiState>(storage, "ui"))
+            .unwrap_or_default();
 
         cc.egui_ctx
             .request_repaint_after(std::time::Duration::from_millis(100));
@@ -161,7 +180,7 @@ impl VigilApp {
             alerts: VecDeque::new(),
             selected_activity: None,
             selected_alert: None,
-            active_tab: Tab::Activity,
+            active_tab: persisted.active_tab,
             unseen_alerts: 0,
             event_rx,
             tray_tx,
@@ -171,11 +190,8 @@ impl VigilApp {
             settings,
             kill_confirm: false,
             paused: false,
-            // Shared default: sort by Time (column 0) descending (newest first).
-            // The Alerts tab previously defaulted to Score-descending; since the
-            // grids now share state, picking one default means the user sees a
-            // consistent view when switching tabs.  Score is just one click away.
-            table_state: TableState::new(0, false),
+            activity_table: persisted.activity_table,
+            alerts_table: persisted.alerts_table,
         }
     }
 
@@ -445,7 +461,7 @@ impl eframe::App for VigilApp {
                         ui,
                         &self.activity,
                         &mut self.selected_activity,
-                        &mut self.table_state,
+                        &mut self.activity_table,
                     ) {
                         self.activity.clear();
                         self.selected_activity = None;
@@ -456,7 +472,7 @@ impl eframe::App for VigilApp {
                         ui,
                         &self.alerts,
                         &mut self.selected_alert,
-                        &mut self.table_state,
+                        &mut self.alerts_table,
                     ) {
                         self.alerts.clear();
                         self.selected_alert = None;
@@ -496,6 +512,15 @@ impl eframe::App for VigilApp {
             0x1A as f32 / 255.0,
             1.0,
         ]
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let state = UiState {
+            active_tab: self.active_tab,
+            activity_table: self.activity_table.clone(),
+            alerts_table: self.alerts_table.clone(),
+        };
+        eframe::set_value(storage, "ui", &state);
     }
 }
 
