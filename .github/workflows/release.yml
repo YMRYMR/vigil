@@ -214,14 +214,9 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
-          mkdir -p dist/bundle
-          cp dist/*.exe dist/bundle/ 2>/dev/null || true
-          cp dist/*.dmg dist/bundle/ 2>/dev/null || true
-          cp dist/*.AppImage dist/bundle/ 2>/dev/null || true
-          (
-            cd dist/bundle
-            zip -r "../Vigil-${VERSION}-all-supported-os.zip" .
-          )
+
+          zip -j "dist/Vigil-${VERSION}-all-supported-os.zip" \
+            dist/*.exe dist/*.dmg dist/*.AppImage
 
           cp dist/Vigil-Setup-${VERSION}-x86_64.exe dist/Vigil-latest-windows-x86_64.exe
           cp dist/Vigil-${VERSION}-aarch64.dmg dist/Vigil-latest-macos-aarch64.dmg
@@ -237,4 +232,4 @@ jobs:
           tag_name: ${{ github.ref_name }}
           name: Vigil ${{ github.ref_name }}
           generate_release_notes: true
-          files: dist/**
+          files: dist/*
