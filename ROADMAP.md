@@ -362,7 +362,7 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - UI: inspector shows `Block process` / `Unblock process` with duration presets
 - [x] **Active-response UX** — temporary blocks show live countdowns and inline unblock buttons; the header reflects privilege state with `Admin` / `Run as Admin`
 - [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
-- [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
+- [x] **Block remote domain** — Windows implementation injects reversible hosts-file entries and flushes DNS so operators can block or unblock the selected hostname directly from the inspector
 - [x] **Kill process** — one-click terminate in the inspector with confirmation
 - [x] **Suspend process** — Windows implementation freezes each thread in the selected PID via ToolHelp + `SuspendThread`, tracks suspended state in the UI, and supports explicit resume
 
@@ -377,9 +377,9 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 - [ ] **User-defined response rules** — "if score ≥ 8 AND process is unsigned → auto-quarantine process"
   - YAML rule file with condition DSL (same fields as `ScoreInput`)
   - Dry-run mode that logs what would have been blocked
-- [ ] **Threshold escalation** — first offence notify, second block connection, third quarantine process
+- [x] **Threshold escalation** — repeated offences now escalate in the auto-response planner from lower-tier containment toward remote and process-level blocking when those actions are enabled
 - [x] **Time-boxed blocks** — every block has an expiry; auto-revert at TTL
-- [ ] **Scheduled lockdown** — isolate machine automatically during specified hours (e.g. overnight)
+- [x] **Scheduled lockdown** — Windows settings now support a start/end window that automatically enters or exits machine isolation during the configured hours
 
 ### Containment and forensics
 - [ ] **PCAP capture on alert** — spawn a short ring-buffered packet capture when a high-score alert fires (Windows: `pktmon`; Linux: `tcpdump`; macOS: `tcpdump`)
