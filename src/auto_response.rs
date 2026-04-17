@@ -6,6 +6,7 @@
 //! - automation is suppressed for trusted processes
 //! - actions require strong corroborating signals, not just a high score
 //! - actions are cooldown-limited per target to avoid thrashing
+//! - repeated offences can escalate from connection kill to remote or process block
 
 use crate::{
     active_response, audit,
@@ -19,6 +20,13 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Default)]
 pub struct EngineState {
     cooldowns: HashMap<String, Instant>,
+    offences: HashMap<String, OffenceState>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OffenceState {
+    count: u8,
+    last_seen: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +44,7 @@ pub enum PlannedAction {
 }
 
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
-    let action = plan(conn, cfg)?;
+    let action = plan(conn, cfg, state)?;
     let cooldown = Duration::from_secs(cfg.auto_response_cooldown_secs.max(1));
     if !state.try_acquire(cooldown_key(&action, conn), cooldown) {
         return None;
@@ -125,7 +133,7 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
     }
 }
 
-pub fn plan(conn: &ConnInfo, cfg: &Config) -> Option<PlannedAction> {
+pub fn plan(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<PlannedAction> {
     if !cfg.auto_response_enabled || conn.score < cfg.auto_response_min_score {
         return None;
     }
@@ -136,6 +144,25 @@ pub fn plan(conn: &ConnInfo, cfg: &Config) -> Option<PlannedAction> {
     let signal_strength = signal_strength(conn);
     if signal_strength < 2 {
         return None;
+    }
+
+    let offence_level = state.record_offence(conn, offence_window(cfg));
+
+    if cfg.auto_block_process && offence_level >= 3 && signal_strength >= 3 && !conn.proc_path.trim().is_empty() {
+        return Some(PlannedAction::BlockProcess {
+            pid: conn.pid,
+            path: conn.proc_path.clone(),
+            preset: active_response::DurationPreset::OneHour,
+        });
+    }
+
+    if cfg.auto_block_remote && offence_level >= 2 {
+        if let Some(target) = active_response::extract_remote_target(&conn.remote_addr) {
+            return Some(PlannedAction::BlockRemote {
+                target,
+                preset: active_response::DurationPreset::OneHour,
+            });
+        }
     }
 
     if cfg.auto_kill_connection && active_response::can_kill_connection(conn) {
@@ -251,6 +278,16 @@ fn cooldown_key(action: &PlannedAction, conn: &ConnInfo) -> String {
     }
 }
 
+fn offence_key(conn: &ConnInfo) -> String {
+    let remote = active_response::extract_remote_target(&conn.remote_addr)
+        .unwrap_or_else(|| conn.remote_addr.clone());
+    format!("{}:{}:{}", conn.pid, normalise_name(&conn.proc_name), remote)
+}
+
+fn offence_window(cfg: &Config) -> Duration {
+    Duration::from_secs(cfg.auto_response_cooldown_secs.max(30).saturating_mul(3))
+}
+
 impl EngineState {
     fn try_acquire(&mut self, key: String, cooldown: Duration) -> bool {
         let now = Instant::now();
@@ -263,6 +300,19 @@ impl EngineState {
         }
         self.cooldowns.insert(key, now);
         true
+    }
+
+    fn record_offence(&mut self, conn: &ConnInfo, offence_window: Duration) -> u8 {
+        let now = Instant::now();
+        self.offences.retain(|_, state| now.duration_since(state.last_seen) < offence_window.saturating_mul(2));
+        let key = offence_key(conn);
+        let entry = self.offences.entry(key).or_insert(OffenceState { count: 0, last_seen: now });
+        if now.duration_since(entry.last_seen) > offence_window {
+            entry.count = 0;
+        }
+        entry.count = entry.count.saturating_add(1);
+        entry.last_seen = now;
+        entry.count
     }
 }
 
@@ -302,7 +352,8 @@ mod tests {
     #[test]
     fn disabled_config_never_plans() {
         let cfg = Config::default();
-        assert_eq!(plan(&sample_conn(), &cfg), None);
+        let mut state = EngineState::default();
+        assert_eq!(plan(&sample_conn(), &cfg, &mut state), None);
     }
 
     #[test]
@@ -311,7 +362,8 @@ mod tests {
         cfg.auto_response_enabled = true;
         cfg.auto_block_remote = true;
         cfg.trusted_processes.push("evil".into());
-        assert_eq!(plan(&sample_conn(), &cfg), None);
+        let mut state = EngineState::default();
+        assert_eq!(plan(&sample_conn(), &cfg, &mut state), None);
     }
 
     #[test]
@@ -319,7 +371,8 @@ mod tests {
         let mut cfg = Config::default();
         cfg.auto_response_enabled = true;
         cfg.auto_block_remote = true;
-        let planned = plan(&sample_conn(), &cfg).unwrap();
+        let mut state = EngineState::default();
+        let planned = plan(&sample_conn(), &cfg, &mut state).unwrap();
         assert!(matches!(
             planned,
             PlannedAction::BlockRemote {
@@ -334,7 +387,8 @@ mod tests {
         let mut cfg = Config::default();
         cfg.auto_response_enabled = true;
         cfg.auto_block_process = true;
-        let planned = plan(&sample_conn(), &cfg).unwrap();
+        let mut state = EngineState::default();
+        let planned = plan(&sample_conn(), &cfg, &mut state).unwrap();
         assert!(matches!(
             planned,
             PlannedAction::BlockProcess {
@@ -360,5 +414,23 @@ mod tests {
         let mut state = EngineState::default();
         assert!(state.try_acquire(cooldown_key(&PlannedAction::KillConnection, &conn_a), Duration::from_secs(60)));
         assert!(state.try_acquire(cooldown_key(&PlannedAction::KillConnection, &conn_b), Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn repeated_offences_escalate() {
+        let mut cfg = Config::default();
+        cfg.auto_response_enabled = true;
+        cfg.auto_kill_connection = true;
+        cfg.auto_block_remote = true;
+        cfg.auto_block_process = true;
+        let mut state = EngineState::default();
+
+        let first = plan(&sample_conn(), &cfg, &mut state).unwrap();
+        let second = plan(&sample_conn(), &cfg, &mut state).unwrap();
+        let third = plan(&sample_conn(), &cfg, &mut state).unwrap();
+
+        assert!(matches!(first, PlannedAction::KillConnection | PlannedAction::BlockRemote { .. } | PlannedAction::BlockProcess { .. }));
+        assert!(matches!(second, PlannedAction::BlockRemote { .. } | PlannedAction::BlockProcess { .. }));
+        assert!(matches!(third, PlannedAction::BlockProcess { .. }));
     }
 }
