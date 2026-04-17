@@ -142,10 +142,13 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
       Sliders: alert_threshold 1–10, poll_interval_secs 2–60
       Checkboxes: log_all_connections, autostart
       Trusted processes grid with inline Add/Remove and shipped-default reset
+      Extended Phase 11 controls now cover scheduled lockdown, break-glass
+      recovery, process dumps, and PCAP capture.
 
 ### 5e — Help panel ✅
 - [x] `src/ui/help.rs` — polished operator-help layout: what Vigil does, score table,
-      process-first inspector explanation, action gating, tips, and version
+      process-first inspector explanation, action gating, forensics, break-glass
+      recovery, tips, and version
 
 ### 5f — Wire everything ✅
 - [x] Status pill ("● Monitoring" green / "○ Paused" muted) in header
@@ -374,7 +377,9 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - Initial Windows preset implemented: isolate network + block executable path when known + suspend process when possible
   - Clear-quarantine path implemented: restore network + unblock executable path + resume process when possible
   - USB-storage disable and scheduled-task pause remain backlog
-- [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched
+- [x] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer restores connectivity after N minutes unless a heartbeat file is touched
+  - Current Windows implementation arms a scheduled task while isolation is active, refreshes a heartbeat file from the live process, and runs `--break-glass-recover` to restore networking when the heartbeat goes stale past the configured timeout
+  - Settings UI now exposes enable/disable, timeout, and heartbeat interval controls
 
 ### Rule engine and automation
 - [ ] **User-defined response rules** — "if score ≥ 8 AND process is unsigned → auto-quarantine process"
@@ -385,8 +390,8 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 - [x] **Scheduled lockdown** — Windows settings now support a start/end window that automatically enters or exits machine isolation during the configured hours
 
 ### Containment and forensics
-- [ ] **PCAP capture on alert** — spawn a short ring-buffered packet capture when a high-score alert fires (Windows: `pktmon`; Linux: `tcpdump`; macOS: `tcpdump`)
-- [ ] **Process memory dump on alert** — optional minidump for offline analysis (Windows: `MiniDumpWriteDump`)
+- [x] **PCAP capture on alert** — current Windows implementation spawns a short `pktmon` capture window on high-score alerts, serializes capture sessions, and writes converted `pcapng` artifacts to the configured directory
+- [x] **Process memory dump on alert** — current Windows implementation optionally captures a full process dump on sufficiently high-score alerts, rate-limited per PID and written to the configured dump directory
 - [x] **Freeze autorun entries** — current Windows implementation captures a Run / RunOnce baseline and can remove later additions or restore changed baseline values from the inspector
 - [ ] **Honeypot decoy files** — canary files in common locations; alert + auto-lockdown if touched
 
