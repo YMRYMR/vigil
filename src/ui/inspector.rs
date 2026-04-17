@@ -20,6 +20,7 @@ pub enum Action {
     RequestAdmin,
     BlockRemote(active_response::DurationPreset),
     BlockProcess(active_response::DurationPreset),
+    KillConnection,
     UnblockRemote,
     UnblockProcess,
     IsolateMachine,
@@ -76,6 +77,10 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         .and_then(active_response::remote_block_remaining);
     let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
     let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
+    let connection_kill_enabled = sel
+        .selected_connection
+        .as_ref()
+        .is_some_and(active_response::can_kill_connection);
     let isolated = response_status.isolated;
 
     egui::ScrollArea::vertical()
@@ -232,6 +237,24 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                         .color(theme::TEXT3)
                         .size(10.5),
                 );
+            }
+
+            ui.add_space(6.0);
+            let kill_conn_resp = ui.add_enabled(
+                connection_kill_enabled,
+                danger_btn("Kill connection"),
+            );
+            let kill_conn_resp = if connection_kill_enabled {
+                kill_conn_resp
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Immediately terminate the selected live TCP connection.")
+            } else {
+                kill_conn_resp.on_hover_text(
+                    "Select an IPv4 TCP connection with a killable state while Vigil is running as administrator.",
+                )
+            };
+            if kill_conn_resp.clicked() {
+                action = Some(Action::KillConnection);
             }
 
             ui.add_space(8.0);

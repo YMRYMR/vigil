@@ -76,6 +76,24 @@ pub struct Config {
     /// score under 3.5; random-looking DGA output scores 4.0+.
     #[serde(default = "default_dga_threshold")]
     pub dga_entropy_threshold: f32,
+
+    // ── Phase 12: Optional auto response ─────────────────────────────────────
+    #[serde(default)]
+    pub auto_response_enabled: bool,
+    #[serde(default)]
+    pub auto_response_dry_run: bool,
+    #[serde(default)]
+    pub auto_kill_connection: bool,
+    #[serde(default)]
+    pub auto_block_remote: bool,
+    #[serde(default)]
+    pub auto_block_process: bool,
+    #[serde(default)]
+    pub auto_isolate_machine: bool,
+    #[serde(default = "default_auto_response_min_score")]
+    pub auto_response_min_score: u8,
+    #[serde(default = "default_auto_response_cooldown_secs")]
+    pub auto_response_cooldown_secs: u64,
 }
 
 fn default_true() -> bool {
@@ -89,6 +107,12 @@ fn default_long_lived_threshold() -> u64 {
 }
 fn default_dga_threshold() -> f32 {
     3.2
+}
+fn default_auto_response_min_score() -> u8 {
+    10
+}
+fn default_auto_response_cooldown_secs() -> u64 {
+    300
 }
 
 impl Default for Config {
@@ -244,6 +268,16 @@ impl Default for Config {
             long_lived_secs: 3600,
             reverse_dns_enabled: false,
             dga_entropy_threshold: 3.2,
+
+            // Phase 12 defaults (safe / disabled)
+            auto_response_enabled: false,
+            auto_response_dry_run: true,
+            auto_kill_connection: false,
+            auto_block_remote: false,
+            auto_block_process: false,
+            auto_isolate_machine: false,
+            auto_response_min_score: 10,
+            auto_response_cooldown_secs: 300,
         }
     }
 }
@@ -386,5 +420,18 @@ mod tests {
             loaded.trusted_processes,
             vec!["b".to_string(), "c".to_string()]
         );
+    }
+
+    #[test]
+    fn auto_response_defaults_are_safe() {
+        let cfg = Config::default();
+        assert!(!cfg.auto_response_enabled);
+        assert!(cfg.auto_response_dry_run);
+        assert!(!cfg.auto_kill_connection);
+        assert!(!cfg.auto_block_remote);
+        assert!(!cfg.auto_block_process);
+        assert!(!cfg.auto_isolate_machine);
+        assert_eq!(cfg.auto_response_min_score, 10);
+        assert_eq!(cfg.auto_response_cooldown_secs, 300);
     }
 }

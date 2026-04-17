@@ -8,7 +8,9 @@
 //! The module persists a tiny state file so rules can be reconciled and
 //! expired later, and so the UI can reflect the current status after restarts.
 
+use crate::types::ConnInfo;
 use serde::{Deserialize, Serialize};
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -51,8 +53,53 @@ struct BlockedProcess {
     expires_at_unix: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SocketKillError {
+    UnsupportedStatus(String),
+    InvalidLocalAddr(String),
+    InvalidRemoteAddr(String),
+    UnsupportedAddressFamily,
+    UnsupportedProtocol,
+    PlatformUnsupported,
+    PermissionDenied,
+    OsError(u32),
+}
+
+impl std::fmt::Display for SocketKillError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedStatus(status) => {
+                write!(f, "cannot kill a socket in {status} state")
+            }
+            Self::InvalidLocalAddr(addr) => write!(f, "invalid local address: {addr}"),
+            Self::InvalidRemoteAddr(addr) => write!(f, "invalid remote address: {addr}"),
+            Self::UnsupportedAddressFamily => {
+                write!(f, "socket kill currently supports IPv4 TCP only")
+            }
+            Self::UnsupportedProtocol => {
+                write!(f, "socket kill currently supports TCP connections only")
+            }
+            Self::PlatformUnsupported => {
+                write!(f, "socket kill is currently only implemented on Windows")
+            }
+            Self::PermissionDenied => {
+                write!(f, "administrator privileges are required to kill a TCP connection")
+            }
+            Self::OsError(code) => write!(f, "Windows returned error code {code}"),
+        }
+    }
+}
+
+impl std::error::Error for SocketKillError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SocketKillTarget {
+    local: SocketAddr,
+    remote: SocketAddr,
+}
+
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurationPreset {
     OneHour,
     OneDay,
@@ -80,6 +127,28 @@ pub fn status() -> Status {
 
 pub fn can_modify_firewall() -> bool {
     platform::is_supported() && platform::is_elevated()
+}
+
+pub fn can_kill_connection(conn: &ConnInfo) -> bool {
+    if !platform::is_supported() || !platform::is_elevated() {
+        return false;
+    }
+    socket_kill_target(conn).is_ok()
+}
+
+pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
+    if !platform::is_supported() {
+        return Err(SocketKillError::PlatformUnsupported);
+    }
+    if !platform::is_elevated() {
+        return Err(SocketKillError::PermissionDenied);
+    }
+    let target = socket_kill_target(conn)?;
+    platform::kill_tcp_connection(&target)?;
+    Ok(format!(
+        "Killed TCP connection {} -> {}.",
+        target.local, target.remote
+    ))
 }
 
 pub fn reconcile() {
@@ -344,6 +413,35 @@ fn ensure_modifiable() -> Result<(), String> {
     Ok(())
 }
 
+fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
+    if !conn.status.eq_ignore_ascii_case("ESTABLISHED")
+        && !conn.status.eq_ignore_ascii_case("SYN_SENT")
+        && !conn.status.eq_ignore_ascii_case("SYN_RECEIVED")
+        && !conn.status.eq_ignore_ascii_case("FIN_WAIT_1")
+        && !conn.status.eq_ignore_ascii_case("FIN_WAIT_2")
+        && !conn.status.eq_ignore_ascii_case("CLOSE_WAIT")
+        && !conn.status.eq_ignore_ascii_case("CLOSING")
+        && !conn.status.eq_ignore_ascii_case("LAST_ACK")
+        && !conn.status.eq_ignore_ascii_case("TIME_WAIT")
+    {
+        return Err(SocketKillError::UnsupportedStatus(conn.status.clone()));
+    }
+
+    let local = conn
+        .local_addr
+        .parse::<SocketAddr>()
+        .map_err(|_| SocketKillError::InvalidLocalAddr(conn.local_addr.clone()))?;
+    let remote = conn
+        .remote_addr
+        .parse::<SocketAddr>()
+        .map_err(|_| SocketKillError::InvalidRemoteAddr(conn.remote_addr.clone()))?;
+
+    match (local.ip(), remote.ip()) {
+        (IpAddr::V4(_), IpAddr::V4(_)) => Ok(SocketKillTarget { local, remote }),
+        _ => Err(SocketKillError::UnsupportedAddressFamily),
+    }
+}
+
 fn normalise_target(target: &str) -> Result<String, String> {
     let target = target.trim();
     if target.is_empty() {
@@ -462,7 +560,10 @@ fn unix_now() -> u64 {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_ACCESS_DENIED, NO_ERROR};
+    use windows::Win32::NetworkManagement::IpHelper::{
+        SetTcpEntry, MIB_TCP_STATE_DELETE_TCB, MIB_TCPROW,
+    };
     use windows::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
     };
@@ -491,6 +592,34 @@ mod platform {
             .is_ok();
             let _ = CloseHandle(token);
             ok && elevation.TokenIsElevated != 0
+        }
+    }
+
+    pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
+        let local = match target.local {
+            SocketAddr::V4(local) => local,
+            SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily),
+        };
+        let remote = match target.remote {
+            SocketAddr::V4(remote) => remote,
+            SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily),
+        };
+
+        let row = MIB_TCPROW {
+            dwState: MIB_TCP_STATE_DELETE_TCB,
+            dwLocalAddr: u32::from_be_bytes(local.ip().octets()),
+            dwLocalPort: u32::from(local.port().to_be()),
+            dwRemoteAddr: u32::from_be_bytes(remote.ip().octets()),
+            dwRemotePort: u32::from(remote.port().to_be()),
+        };
+
+        let status = unsafe { SetTcpEntry(&row) };
+        if status == NO_ERROR {
+            Ok(())
+        } else if status == ERROR_ACCESS_DENIED.0 {
+            Err(SocketKillError::PermissionDenied)
+        } else {
+            Err(SocketKillError::OsError(status))
         }
     }
 
@@ -584,12 +713,18 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
+    use super::*;
+
     pub fn is_supported() -> bool {
         false
     }
 
     pub fn is_elevated() -> bool {
         false
+    }
+
+    pub fn kill_tcp_connection(_target: &SocketKillTarget) -> Result<(), SocketKillError> {
+        Err(SocketKillError::PlatformUnsupported)
     }
 
     pub fn add_block_rule(_rule_name: &str, _target: &str) -> Result<(), String> {
@@ -628,6 +763,35 @@ mod tests {
             inbound_rule_name: format!("in-{path}"),
             outbound_rule_name: format!("out-{path}"),
             expires_at_unix,
+        }
+    }
+
+    fn conn(local: &str, remote: &str, status: &str) -> ConnInfo {
+        ConnInfo {
+            timestamp: "12:00:00".into(),
+            proc_name: "evil.exe".into(),
+            pid: 4242,
+            proc_path: "C:/Temp/evil.exe".into(),
+            proc_user: "user".into(),
+            parent_name: "cmd.exe".into(),
+            parent_pid: 123,
+            service_name: String::new(),
+            publisher: String::new(),
+            local_addr: local.into(),
+            remote_addr: remote.into(),
+            status: status.into(),
+            score: 9,
+            reasons: vec!["test".into()],
+            ancestor_chain: vec![("cmd.exe".into(), 123)],
+            pre_login: false,
+            hostname: None,
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
         }
     }
 
@@ -685,5 +849,50 @@ mod tests {
 
         assert!(process_block_matches(&rule, "C:/app.exe"));
         assert!(!process_block_matches(&rule, "C:/other.exe"));
+    }
+
+    #[test]
+    fn socket_kill_target_accepts_established_ipv4_connections() {
+        let parsed = socket_kill_target(&conn(
+            "192.168.1.10:50000",
+            "8.8.8.8:443",
+            "ESTABLISHED",
+        ))
+        .unwrap();
+        assert_eq!(parsed.local.to_string(), "192.168.1.10:50000");
+        assert_eq!(parsed.remote.to_string(), "8.8.8.8:443");
+    }
+
+    #[test]
+    fn socket_kill_target_rejects_listen_rows() {
+        let err = socket_kill_target(&conn(
+            "0.0.0.0:80",
+            "0.0.0.0:0",
+            "LISTEN",
+        ))
+        .unwrap_err();
+        assert!(matches!(err, SocketKillError::UnsupportedStatus(_)));
+    }
+
+    #[test]
+    fn socket_kill_target_rejects_invalid_remote() {
+        let err = socket_kill_target(&conn(
+            "192.168.1.10:50000",
+            "not-an-endpoint",
+            "ESTABLISHED",
+        ))
+        .unwrap_err();
+        assert!(matches!(err, SocketKillError::InvalidRemoteAddr(_)));
+    }
+
+    #[test]
+    fn socket_kill_target_rejects_ipv6_for_now() {
+        let err = socket_kill_target(&conn(
+            "[::1]:50000",
+            "[2606:4700:4700::1111]:443",
+            "ESTABLISHED",
+        ))
+        .unwrap_err();
+        assert!(matches!(err, SocketKillError::UnsupportedAddressFamily));
     }
 }
