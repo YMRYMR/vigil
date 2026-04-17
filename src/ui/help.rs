@@ -18,6 +18,7 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                    field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
 
                 ui.columns(2, |cols| {
@@ -49,19 +50,39 @@ pub fn show(ui: &mut egui::Ui) {
                                 "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
                             );
                         });
+
+                        card(ui, "Audit trail", |ui| {
+                            body(
+                                ui,
+                                "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, and endpoints.",
+                            );
+                        });
                     });
 
                     cols[1].vertical(|ui| {
                         card(ui, "Active response", |ui| {
                             body(
                                 ui,
-                                "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
+                                "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.",
                             );
                             ui.add_space(6.0);
-                            bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                            bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
+                            bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                             bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                             bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                             bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
+                        });
+
+                        card(ui, "Auto response", |ui| {
+                            body(
+                                ui,
+                                "Automatic response is optional and disabled by default. Dry run is enabled by default, trusted processes suppress automation, and the engine requires strong corroborating signals in addition to the score threshold.",
+                            );
+                            ui.add_space(6.0);
+                            bullet(ui, "Dry run", "Surface the planned action in the UI and audit log without executing containment.");
+                            bullet(ui, "Cooldown", "Suppress repeated automatic actions against the same target for the configured window.");
+                            bullet(ui, "Trusted processes", "Processes in the trusted list never receive automatic containment.");
+                            bullet(ui, "Escalation", "Enable connection kill first, then remote or process blocking only if you accept the higher blast radius.");
                         });
 
                         card(ui, "Telemetry and reputation", |ui| {
@@ -111,7 +132,7 @@ pub fn show(ui: &mut egui::Ui) {
                             bullet(
                                 ui,
                                 "Settings",
-                                "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                                "Trusted-process edits and auto-response settings auto-save, and the shipped defaults can be restored from the settings panel.",
                             );
                             bullet(
                                 ui,
@@ -151,17 +172,36 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                    field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
                 card(ui, "Active response", |ui| {
                     body(
                         ui,
-                        "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
+                        "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.",
                     );
                     ui.add_space(6.0);
-                    bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                    bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
+                    bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                     bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                     bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                     bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
+                });
+                card(ui, "Auto response", |ui| {
+                    body(
+                        ui,
+                        "Automatic response is optional and disabled by default. Dry run is enabled by default, trusted processes suppress automation, and the engine requires strong corroborating signals in addition to the score threshold.",
+                    );
+                    ui.add_space(6.0);
+                    bullet(ui, "Dry run", "Surface the planned action in the UI and audit log without executing containment.");
+                    bullet(ui, "Cooldown", "Suppress repeated automatic actions against the same target for the configured window.");
+                    bullet(ui, "Trusted processes", "Processes in the trusted list never receive automatic containment.");
+                    bullet(ui, "Escalation", "Enable connection kill first, then remote or process blocking only if you accept the higher blast radius.");
+                });
+                card(ui, "Audit trail", |ui| {
+                    body(
+                        ui,
+                        "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs.",
+                    );
                 });
                 card(ui, "Persistence signals", |ui| {
                     body(
@@ -215,7 +255,7 @@ pub fn show(ui: &mut egui::Ui) {
                     bullet(
                         ui,
                         "Settings",
-                        "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                        "Trusted-process edits and auto-response settings auto-save, and the shipped defaults can be restored from the settings panel.",
                     );
                     bullet(
                         ui,
@@ -260,11 +300,12 @@ fn hero(ui: &mut egui::Ui) {
                 chip(ui, "Real-time monitoring");
                 chip(ui, "Offline enrichment");
                 chip(ui, "High-signal triage");
+                chip(ui, "Audit trail");
             });
             ui.add_space(10.0);
             ui.label(
                 RichText::new(
-                    "A quick operational guide: what Vigil watches, how the score is built, and where the important controls live.",
+                    "A quick operational guide: what Vigil watches, how the score is built, where the important controls live, and what gets recorded when you respond.",
                 )
                 .color(theme::TEXT2)
                 .size(12.0),
