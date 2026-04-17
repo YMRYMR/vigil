@@ -1,12 +1,9 @@
 //! Active response: reversible, auditable intervention actions.
 //!
-//! Phase 11 starts with three practical controls:
-//! - block a remote IP or CIDR with a temporary Windows firewall rule
-//! - block all traffic for a process by executable path
-//! - isolate / restore the machine with paired firewall rules
-//!
-//! The module persists a tiny state file so rules can be reconciled and
-//! expired later, and so the UI can reflect the current status after restarts.
+//! Phase 11 starts with practical controls for blocking traffic, killing a
+//! live socket, suspending a suspicious process, and isolating the machine.
+//! The module persists a tiny state file so rules can be reconciled and the UI
+//! can reflect the current status after restarts.
 
 use crate::{audit, types::ConnInfo};
 use serde::{Deserialize, Serialize};
@@ -26,6 +23,7 @@ const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 pub struct Status {
     pub blocked_rules: usize,
     pub blocked_processes: usize,
+    pub suspended_processes: usize,
     pub isolated: bool,
 }
 
@@ -34,6 +32,8 @@ struct State {
     blocked: Vec<BlockedTarget>,
     #[serde(default)]
     blocked_processes: Vec<BlockedProcess>,
+    #[serde(default)]
+    suspended_processes: Vec<SuspendedProcess>,
     isolated: bool,
 }
 
@@ -52,6 +52,14 @@ struct BlockedProcess {
     inbound_rule_name: String,
     outbound_rule_name: String,
     expires_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SuspendedProcess {
+    pid: u32,
+    path: String,
+    proc_name: String,
+    suspended_at_unix: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,6 +130,7 @@ pub fn status() -> Status {
     Status {
         blocked_rules: state.blocked.len() + state.blocked_processes.len(),
         blocked_processes: state.blocked_processes.len(),
+        suspended_processes: state.suspended_processes.len(),
         isolated: state.isolated,
     }
 }
@@ -135,6 +144,10 @@ pub fn can_kill_connection(conn: &ConnInfo) -> bool {
         return false;
     }
     socket_kill_target(conn).is_ok()
+}
+
+pub fn can_suspend_process(pid: u32) -> bool {
+    platform::is_supported() && platform::is_elevated() && pid != 0
 }
 
 pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
@@ -155,6 +168,77 @@ pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
             "remote_addr": target.remote.to_string(),
             "pid": conn.pid,
             "proc_name": conn.proc_name,
+        }),
+    );
+    Ok(message)
+}
+
+pub fn suspend_process(pid: u32, path: &str, proc_name: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    if pid == 0 {
+        return Err("Cannot suspend PID 0.".into());
+    }
+    platform::suspend_process(pid)?;
+
+    let path = path.trim().to_string();
+    let proc_name = proc_name.trim().to_string();
+    let mut state = load_state().unwrap_or_default();
+    state
+        .suspended_processes
+        .retain(|entry| !suspended_process_matches(entry, pid, &path));
+    state.suspended_processes.push(SuspendedProcess {
+        pid,
+        path: path.clone(),
+        proc_name: proc_name.clone(),
+        suspended_at_unix: unix_now(),
+    });
+    save_state(&state)?;
+
+    let message = if path.is_empty() {
+        format!("Suspended PID {pid}.")
+    } else {
+        format!("Suspended PID {pid} ({path}).")
+    };
+    audit::record(
+        "suspend_process",
+        "success",
+        json!({
+            "pid": pid,
+            "path": path,
+            "proc_name": proc_name,
+        }),
+    );
+    Ok(message)
+}
+
+pub fn resume_process(pid: u32, path: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    if pid == 0 {
+        return Err("Cannot resume PID 0.".into());
+    }
+    platform::resume_process(pid)?;
+
+    let path = path.trim().to_string();
+    let mut state = load_state().unwrap_or_default();
+    let before = state.suspended_processes.len();
+    state
+        .suspended_processes
+        .retain(|entry| !suspended_process_matches(entry, pid, &path));
+    let removed = before.saturating_sub(state.suspended_processes.len());
+    save_state(&state)?;
+
+    let message = if path.is_empty() {
+        format!("Resumed PID {pid}.")
+    } else {
+        format!("Resumed PID {pid} ({path}).")
+    };
+    audit::record(
+        "resume_process",
+        if removed > 0 { "success" } else { "noop" },
+        json!({
+            "pid": pid,
+            "path": path,
+            "removed_entries": removed,
         }),
     );
     Ok(message)
@@ -440,6 +524,18 @@ pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+pub fn is_process_suspended(pid: u32, path: &str) -> bool {
+    load_state()
+        .ok()
+        .map(|state| {
+            state
+                .suspended_processes
+                .iter()
+                .any(|entry| suspended_process_matches(entry, pid, path))
+        })
+        .unwrap_or(false)
+}
+
 pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
     if let Ok(addr) = socket_addr_from_text(remote_addr) {
         return Some(addr.ip().to_string());
@@ -512,6 +608,10 @@ fn normalise_target(target: &str) -> Result<String, String> {
 
 fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
     rule.path == path
+}
+
+fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool {
+    entry.pid == pid && (path.is_empty() || entry.path == path)
 }
 
 fn rule_name_for_target(target: &str) -> String {
@@ -608,6 +708,15 @@ where
         }
     });
 
+    state.suspended_processes.retain(|entry| {
+        if platform::process_exists(entry.pid) {
+            true
+        } else {
+            changed = true;
+            false
+        }
+    });
+
     changed
 }
 
@@ -621,14 +730,20 @@ fn unix_now() -> u64 {
 #[cfg(windows)]
 mod platform {
     use super::*;
-    use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_ACCESS_DENIED, NO_ERROR};
+    use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, NO_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{
         SetTcpEntry, MIB_TCP_STATE_DELETE_TCB, MIB_TCPROW,
     };
     use windows::Win32::Security::{
         GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY,
     };
-    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
+    };
+    use windows::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, OpenProcessToken, OpenThread, ResumeThread, SuspendThread,
+        PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME,
+    };
 
     pub fn is_supported() -> bool {
         true
@@ -653,6 +768,102 @@ mod platform {
             .is_ok();
             let _ = CloseHandle(token);
             ok && elevation.TokenIsElevated != 0
+        }
+    }
+
+    pub fn process_exists(pid: u32) -> bool {
+        unsafe {
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(handle) => {
+                    let _ = CloseHandle(handle);
+                    true
+                }
+                Err(_) => false,
+            }
+        }
+    }
+
+    pub fn suspend_process(pid: u32) -> Result<(), String> {
+        let snapshot = unsafe {
+            CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+                .map_err(|e| format!("failed to snapshot threads for PID {pid}: {e}"))?
+        };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!("failed to snapshot threads for PID {pid}"));
+        }
+
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut success_count = 0usize;
+        let first = unsafe { Thread32First(snapshot, &mut entry).as_bool() };
+        if first {
+            loop {
+                if entry.th32OwnerProcessID == pid {
+                    unsafe {
+                        if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
+                            let result = SuspendThread(thread);
+                            let _ = CloseHandle(thread);
+                            if result != u32::MAX {
+                                success_count += 1;
+                            }
+                        }
+                    }
+                }
+                if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } {
+                    break;
+                }
+            }
+        }
+        let _ = unsafe { CloseHandle(snapshot) };
+
+        if success_count == 0 {
+            Err(format!("no suspendable threads were found for PID {pid}"))
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn resume_process(pid: u32) -> Result<(), String> {
+        let snapshot = unsafe {
+            CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0)
+                .map_err(|e| format!("failed to snapshot threads for PID {pid}: {e}"))?
+        };
+        if snapshot == INVALID_HANDLE_VALUE {
+            return Err(format!("failed to snapshot threads for PID {pid}"));
+        }
+
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut success_count = 0usize;
+        let first = unsafe { Thread32First(snapshot, &mut entry).as_bool() };
+        if first {
+            loop {
+                if entry.th32OwnerProcessID == pid {
+                    unsafe {
+                        if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
+                            let result = ResumeThread(thread);
+                            let _ = CloseHandle(thread);
+                            if result != u32::MAX {
+                                success_count += 1;
+                            }
+                        }
+                    }
+                }
+                if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } {
+                    break;
+                }
+            }
+        }
+        let _ = unsafe { CloseHandle(snapshot) };
+
+        if success_count == 0 {
+            Err(format!("no resumable threads were found for PID {pid}"))
+        } else {
+            Ok(())
         }
     }
 
@@ -784,6 +995,18 @@ mod platform {
         false
     }
 
+    pub fn process_exists(_pid: u32) -> bool {
+        false
+    }
+
+    pub fn suspend_process(_pid: u32) -> Result<(), String> {
+        Err("Process suspension is not implemented on this platform.".into())
+    }
+
+    pub fn resume_process(_pid: u32) -> Result<(), String> {
+        Err("Process resume is not implemented on this platform.".into())
+    }
+
     pub fn kill_tcp_connection(_target: &SocketKillTarget) -> Result<(), SocketKillError> {
         Err(SocketKillError::PlatformUnsupported)
     }
@@ -831,6 +1054,15 @@ mod tests {
         }
     }
 
+    fn suspended_process(pid: u32, path: &str) -> SuspendedProcess {
+        SuspendedProcess {
+            pid,
+            path: path.to_string(),
+            proc_name: "app.exe".into(),
+            suspended_at_unix: 10,
+        }
+    }
+
     fn conn(local: &str, remote: &str, status: &str) -> ConnInfo {
         ConnInfo {
             timestamp: "12:00:00".into(),
@@ -865,6 +1097,7 @@ mod tests {
         let mut state = State {
             blocked: vec![blocked_target("10.0.0.1", Some(10))],
             blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            suspended_processes: vec![suspended_process(1234, "C:/app.exe")],
             isolated: false,
         };
 
@@ -881,6 +1114,7 @@ mod tests {
         let mut state = State {
             blocked: vec![blocked_target("10.0.0.1", Some(10))],
             blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            suspended_processes: vec![],
             isolated: false,
         };
 
@@ -914,6 +1148,14 @@ mod tests {
 
         assert!(process_block_matches(&rule, "C:/app.exe"));
         assert!(!process_block_matches(&rule, "C:/other.exe"));
+    }
+
+    #[test]
+    fn suspended_processes_match_on_pid_and_optional_path() {
+        let entry = suspended_process(1234, "C:/app.exe");
+        assert!(suspended_process_matches(&entry, 1234, "C:/app.exe"));
+        assert!(suspended_process_matches(&entry, 1234, ""));
+        assert!(!suspended_process_matches(&entry, 9999, "C:/app.exe"));
     }
 
     #[test]
