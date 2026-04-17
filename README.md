@@ -32,10 +32,12 @@ notification, and a full GUI — the moment something looks wrong.
   Inspector, auto-save Settings, persisted grid sort/window state, a
   polished Help screen, and a header that clearly shows whether Vigil is
   elevated
-- **Active response** — reversible Windows firewall actions for blocking a
-  remote IP for 1 hour, 24 hours, or permanently, blocking a process by
-  executable path, or isolating the machine, with confirmation prompts,
-  live countdowns for temporary blocks, and one-click unblock buttons
+- **Active response** — reversible Windows actions for killing a live TCP
+  connection, suspending or resuming a process during investigation,
+  blocking a remote IP for 1 hour, 24 hours, or permanently, blocking a
+  process by executable path, or isolating the machine, with confirmation
+  prompts, live countdowns for temporary blocks, and one-click unblock
+  buttons
 - **Rolling daily log** at the per-user Vigil data directory under `logs/vigil.YYYY-MM-DD`
 - **Autostart at login** enabled on first run (configurable in Settings);
   if Vigil is launched elevated on Windows, future autostart uses a
@@ -183,6 +185,8 @@ UAC if it is not.
 When Vigil is running with administrator privileges on Windows, the Inspector
 can now take reversible action:
 
+- **Kill connection** immediately tears down the selected live TCP socket.
+- **Suspend process** freezes the selected PID without killing it; **Resume process** continues it later.
 - **Block remote** lets you choose a 1 hour, 24 hour, or permanent outbound
   firewall rule for the selected connection's remote IP. Temporary blocks show
   a live countdown and an inline unblock button.
@@ -191,7 +195,7 @@ can now take reversible action:
   show a live countdown and an inline unblock button.
 - **Isolate network** adds reversible firewall rules that block inbound and
   outbound traffic for the machine.
-- Both actions require confirmation and can be undone from the same UI.
+- All actions require confirmation and can be undone from the same UI.
 
 ---
 
