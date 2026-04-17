@@ -92,27 +92,8 @@ pub fn reconcile() {
     };
 
     let now = unix_now();
-    let mut changed = false;
-    state.blocked.retain(|rule| {
-        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
-        if expired {
-            let _ = platform::delete_rule(&rule.rule_name);
-            changed = true;
-            false
-        } else {
-            true
-        }
-    });
-    state.blocked_processes.retain(|rule| {
-        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
-        if expired {
-            let _ = platform::delete_rule(&rule.inbound_rule_name);
-            let _ = platform::delete_rule(&rule.outbound_rule_name);
-            changed = true;
-            false
-        } else {
-            true
-        }
+    let changed = reconcile_state(&mut state, now, |rule_name| {
+        platform::delete_rule(rule_name).is_ok()
     });
 
     if changed {
@@ -187,7 +168,7 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     let mut state = load_state().unwrap_or_default();
     state
         .blocked_processes
-        .retain(|rule| rule.pid != pid || rule.path != path);
+        .retain(|rule| !process_block_matches(rule, &path));
     state.blocked_processes.push(BlockedProcess {
         pid,
         path: path.clone(),
@@ -210,7 +191,7 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     let mut state = load_state().unwrap_or_default();
     let mut removed = 0usize;
     state.blocked_processes.retain(|rule| {
-        if (rule.pid == pid && rule.path == path) || (rule.pid == 0 && rule.path == path) {
+        if process_block_matches(rule, &path) {
             let _ = platform::delete_rule(&rule.inbound_rule_name);
             let _ = platform::delete_rule(&rule.outbound_rule_name);
             removed += 1;
@@ -283,7 +264,7 @@ pub fn remote_block_remaining(target: &str) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
-pub fn is_process_blocked(pid: u32, path: &str) -> bool {
+pub fn is_process_blocked(_pid: u32, path: &str) -> bool {
     let Ok(path) = normalise_target(path) else {
         return false;
     };
@@ -293,12 +274,12 @@ pub fn is_process_blocked(pid: u32, path: &str) -> bool {
             state
                 .blocked_processes
                 .iter()
-                .any(|r| (r.pid == pid && r.path == path) || (r.pid == 0 && r.path == path))
+                .any(|r| process_block_matches(r, &path))
         })
         .unwrap_or(false)
 }
 
-pub fn process_block_remaining(pid: u32, path: &str) -> Option<Duration> {
+pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
     let path = normalise_target(path).ok()?;
     let now = unix_now();
     load_state()
@@ -307,7 +288,7 @@ pub fn process_block_remaining(pid: u32, path: &str) -> Option<Duration> {
             state
                 .blocked_processes
                 .into_iter()
-                .find(|r| (r.pid == pid && r.path == path) || (r.pid == 0 && r.path == path))
+                .find(|r| process_block_matches(r, &path))
                 .and_then(|rule| rule.expires_at_unix)
         })
         .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
@@ -338,6 +319,10 @@ fn normalise_target(target: &str) -> Result<String, String> {
         return Err("Target cannot be empty.".into());
     }
     Ok(target.to_string())
+}
+
+fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
+    rule.path == path
 }
 
 fn rule_name_for_target(target: &str) -> String {
@@ -395,6 +380,45 @@ fn save_state(state: &State) -> Result<(), String> {
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+fn reconcile_state<F>(state: &mut State, now: u64, mut delete_rule: F) -> bool
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut changed = false;
+
+    state.blocked.retain(|rule| {
+        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
+        if expired {
+            if delete_rule(&rule.rule_name) {
+                changed = true;
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    });
+
+    state.blocked_processes.retain(|rule| {
+        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
+        if expired {
+            let inbound_deleted = delete_rule(&rule.inbound_rule_name);
+            let outbound_deleted = delete_rule(&rule.outbound_rule_name);
+            if inbound_deleted && outbound_deleted {
+                changed = true;
+                false
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    });
+
+    changed
 }
 
 fn unix_now() -> u64 {
@@ -551,5 +575,84 @@ mod platform {
 
     pub fn delete_rule(_rule_name: &str) -> Result<(), String> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget {
+        BlockedTarget {
+            target: target.to_string(),
+            rule_name: format!("rule-{target}"),
+            expires_at_unix,
+        }
+    }
+
+    fn blocked_process(path: &str, expires_at_unix: Option<u64>) -> BlockedProcess {
+        BlockedProcess {
+            pid: 1234,
+            path: path.to_string(),
+            inbound_rule_name: format!("in-{path}"),
+            outbound_rule_name: format!("out-{path}"),
+            expires_at_unix,
+        }
+    }
+
+    #[test]
+    fn reconcile_keeps_expired_entries_when_deletion_fails() {
+        let mut state = State {
+            blocked: vec![blocked_target("10.0.0.1", Some(10))],
+            blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            isolated: false,
+        };
+
+        let changed = reconcile_state(&mut state, 100, |_| false);
+
+        assert!(!changed);
+        assert_eq!(state.blocked.len(), 1);
+        assert_eq!(state.blocked_processes.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_removes_expired_entries_after_successful_deletion() {
+        let mut deleted = Vec::new();
+        let mut state = State {
+            blocked: vec![blocked_target("10.0.0.1", Some(10))],
+            blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            isolated: false,
+        };
+
+        let changed = reconcile_state(&mut state, 100, |rule| {
+            deleted.push(rule.to_string());
+            true
+        });
+
+        assert!(changed);
+        assert!(state.blocked.is_empty());
+        assert!(state.blocked_processes.is_empty());
+        assert_eq!(
+            deleted,
+            vec![
+                "rule-10.0.0.1".to_string(),
+                "in-C:/app.exe".to_string(),
+                "out-C:/app.exe".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn process_blocks_match_by_path_only() {
+        let rule = BlockedProcess {
+            pid: 1234,
+            path: "C:/app.exe".into(),
+            inbound_rule_name: "in".into(),
+            outbound_rule_name: "out".into(),
+            expires_at_unix: Some(200),
+        };
+
+        assert!(process_block_matches(&rule, "C:/app.exe"));
+        assert!(!process_block_matches(&rule, "C:/other.exe"));
     }
 }
