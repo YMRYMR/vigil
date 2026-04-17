@@ -26,6 +26,12 @@ pub struct SettingsDraft {
     pub auto_isolate_machine: bool,
     pub auto_response_min_score: u8,
     pub auto_response_cooldown_secs: u64,
+    pub allowlist_mode_enabled: bool,
+    pub allowlist_mode_dry_run: bool,
+    pub allowlist_processes_text: String,
+    pub response_rules_enabled: bool,
+    pub response_rules_dry_run: bool,
+    pub response_rules_path: String,
     pub scheduled_lockdown_enabled: bool,
     pub scheduled_lockdown_start_hour: u8,
     pub scheduled_lockdown_start_minute: u8,
@@ -41,6 +47,10 @@ pub struct SettingsDraft {
     pub pcap_cooldown_secs: u64,
     pub pcap_packet_size_bytes: u32,
     pub pcap_dir: String,
+    pub honeypot_decoys_enabled: bool,
+    pub honeypot_auto_isolate: bool,
+    pub honeypot_poll_secs: u64,
+    pub honeypot_decoy_names_text: String,
     pub break_glass_enabled: bool,
     pub break_glass_timeout_mins: u64,
     pub break_glass_heartbeat_secs: u64,
@@ -65,6 +75,12 @@ impl SettingsDraft {
             auto_isolate_machine: cfg.auto_isolate_machine,
             auto_response_min_score: cfg.auto_response_min_score,
             auto_response_cooldown_secs: cfg.auto_response_cooldown_secs,
+            allowlist_mode_enabled: cfg.allowlist_mode_enabled,
+            allowlist_mode_dry_run: cfg.allowlist_mode_dry_run,
+            allowlist_processes_text: cfg.allowlist_processes.join("\n"),
+            response_rules_enabled: cfg.response_rules_enabled,
+            response_rules_dry_run: cfg.response_rules_dry_run,
+            response_rules_path: cfg.response_rules_path.clone(),
             scheduled_lockdown_enabled: cfg.scheduled_lockdown_enabled,
             scheduled_lockdown_start_hour: cfg.scheduled_lockdown_start_hour,
             scheduled_lockdown_start_minute: cfg.scheduled_lockdown_start_minute,
@@ -80,6 +96,10 @@ impl SettingsDraft {
             pcap_cooldown_secs: cfg.pcap_cooldown_secs,
             pcap_packet_size_bytes: cfg.pcap_packet_size_bytes,
             pcap_dir: cfg.pcap_dir.clone(),
+            honeypot_decoys_enabled: cfg.honeypot_decoys_enabled,
+            honeypot_auto_isolate: cfg.honeypot_auto_isolate,
+            honeypot_poll_secs: cfg.honeypot_poll_secs,
+            honeypot_decoy_names_text: cfg.honeypot_decoy_names.join("\n"),
             break_glass_enabled: cfg.break_glass_enabled,
             break_glass_timeout_mins: cfg.break_glass_timeout_mins,
             break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
@@ -101,6 +121,12 @@ impl SettingsDraft {
         cfg.auto_isolate_machine = self.auto_isolate_machine;
         cfg.auto_response_min_score = self.auto_response_min_score;
         cfg.auto_response_cooldown_secs = self.auto_response_cooldown_secs;
+        cfg.allowlist_mode_enabled = self.allowlist_mode_enabled;
+        cfg.allowlist_mode_dry_run = self.allowlist_mode_dry_run;
+        cfg.allowlist_processes = split_lines(&self.allowlist_processes_text);
+        cfg.response_rules_enabled = self.response_rules_enabled;
+        cfg.response_rules_dry_run = self.response_rules_dry_run;
+        cfg.response_rules_path = self.response_rules_path.trim().to_string();
         cfg.scheduled_lockdown_enabled = self.scheduled_lockdown_enabled;
         cfg.scheduled_lockdown_start_hour = self.scheduled_lockdown_start_hour.min(23);
         cfg.scheduled_lockdown_start_minute = self.scheduled_lockdown_start_minute.min(59);
@@ -116,10 +142,25 @@ impl SettingsDraft {
         cfg.pcap_cooldown_secs = self.pcap_cooldown_secs;
         cfg.pcap_packet_size_bytes = self.pcap_packet_size_bytes;
         cfg.pcap_dir = self.pcap_dir.trim().to_string();
+        cfg.honeypot_decoys_enabled = self.honeypot_decoys_enabled;
+        cfg.honeypot_auto_isolate = self.honeypot_auto_isolate;
+        cfg.honeypot_poll_secs = self.honeypot_poll_secs.clamp(5, 300);
+        cfg.honeypot_decoy_names = split_lines(&self.honeypot_decoy_names_text);
         cfg.break_glass_enabled = self.break_glass_enabled;
         cfg.break_glass_timeout_mins = self.break_glass_timeout_mins.clamp(1, 240);
         cfg.break_glass_heartbeat_secs = self.break_glass_heartbeat_secs.clamp(5, 300);
     }
+}
+
+fn split_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() && !out.iter().any(|item: &String| item.eq_ignore_ascii_case(trimmed)) {
+            out.push(trimmed.to_string());
+        }
+    }
+    out
 }
 
 pub fn show(ui: &mut egui::Ui, draft: &mut SettingsDraft) -> bool {
@@ -200,6 +241,38 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     if !draft.auto_response_enabled {
         ui.label(RichText::new("Auto response is currently disabled, so Vigil will only surface recommendations and manual actions.").color(theme::TEXT3).size(10.8));
     }
+
+    ui.add_space(16.0);
+    section_header(ui, "Allowlist-only mode");
+    ui.label(RichText::new("Optional restrictive policy. When enabled, Vigil treats traffic from processes outside the trusted list, the custom allowlist, and Microsoft-signed system processes as containment candidates.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable allowlist mode", |ui| {
+        *changed |= ui.checkbox(&mut draft.allowlist_mode_enabled, RichText::new("enforce network allowlisting for processes").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Allowlist dry run", |ui| {
+        *changed |= ui.checkbox(&mut draft.allowlist_mode_dry_run, RichText::new("log planned allowlist containment without executing it").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Allowed processes", |ui| {
+        let resp = ui.add(egui::TextEdit::multiline(&mut draft.allowlist_processes_text).hint_text("one process name or full executable path per line").desired_width(420.0).desired_rows(5));
+        *changed |= resp.changed();
+    });
+    ui.label(RichText::new("Trusted processes are always treated as allowed. One entry per line; names are matched case-insensitively and .exe is ignored.").color(theme::TEXT3).size(10.8));
+
+    ui.add_space(16.0);
+    section_header(ui, "User-defined response rules");
+    ui.label(RichText::new("Optional YAML rule engine. Rules are evaluated in order, first match wins, and can dry-run or execute the same containment actions used elsewhere in Vigil.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable rules", |ui| {
+        *changed |= ui.checkbox(&mut draft.response_rules_enabled, RichText::new("load and evaluate a YAML response-rules file").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Rules dry run", |ui| {
+        *changed |= ui.checkbox(&mut draft.response_rules_dry_run, RichText::new("log matching rules without executing their actions").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Rules file", |ui| {
+        let resp = ui.add(egui::TextEdit::singleline(&mut draft.response_rules_path).hint_text("path to response-rules.yaml").desired_width(420.0));
+        *changed |= resp.changed();
+    });
+    ui.label(RichText::new("Supported rule actions currently include kill_connection, block_remote, block_process, and quarantine.").color(theme::TEXT3).size(10.8));
 
     ui.add_space(16.0);
     section_header(ui, "Scheduled lockdown");
@@ -333,6 +406,29 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     if !draft.pcap_on_alert {
         ui.label(RichText::new("PCAP capture on alert is currently disabled.").color(theme::TEXT3).size(10.8));
     }
+
+    ui.add_space(16.0);
+    section_header(ui, "Honeypot decoy files");
+    ui.label(RichText::new("Optional canary documents. Vigil plants decoy files in common user folders, watches for touches, raises a synthetic alert, and can optionally isolate the machine.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable decoys", |ui| {
+        *changed |= ui.checkbox(&mut draft.honeypot_decoys_enabled, RichText::new("create and monitor honeypot decoy files").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Auto isolate on touch", |ui| {
+        *changed |= ui.checkbox(&mut draft.honeypot_auto_isolate, RichText::new("automatically isolate the machine when a decoy is touched").color(theme::TEXT2).size(11.5)).changed();
+    });
+    setting_row(ui, label_w, "Poll interval", |ui| {
+        ui.horizontal(|ui| {
+            let resp = ui.add(egui::Slider::new(&mut draft.honeypot_poll_secs, 5_u64..=300_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+            *changed |= resp.changed();
+            ui.label(RichText::new("  how often Vigil checks decoy timestamps").color(theme::TEXT3).size(11.0));
+        });
+    });
+    setting_row(ui, label_w, "Decoy names", |ui| {
+        let resp = ui.add(egui::TextEdit::multiline(&mut draft.honeypot_decoy_names_text).hint_text("one decoy filename per line").desired_width(420.0).desired_rows(4));
+        *changed |= resp.changed();
+    });
+    ui.label(RichText::new("Desktop, Documents, Downloads, and Public Documents are used when available.").color(theme::TEXT3).size(10.8));
 
     ui.add_space(16.0);
     section_header(ui, "Startup");
