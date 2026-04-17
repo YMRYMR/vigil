@@ -121,6 +121,9 @@ enum PendingResponse {
         target: String,
         preset: active_response::DurationPreset,
     },
+    BlockDomain {
+        domain: String,
+    },
     BlockProcess {
         pid: u32,
         path: String,
@@ -137,6 +140,7 @@ enum PendingResponse {
     },
     KillConnection(ConnInfo),
     UnblockRemote(String),
+    UnblockDomain(String),
     UnblockProcess {
         pid: u32,
         path: String,
@@ -340,6 +344,15 @@ impl VigilApp {
                     }
                 }
             }
+            inspector::Action::BlockDomain => {
+                if let Some(info) = selected_info {
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(domain) = active_response::extract_domain_target(conn) {
+                            self.response_confirm = Some(PendingResponse::BlockDomain { domain });
+                        }
+                    }
+                }
+            }
             inspector::Action::BlockProcess(preset) => {
                 if let Some(info) = selected_info {
                     if has_known_location(&info) {
@@ -363,6 +376,15 @@ impl VigilApp {
                     if let Some(conn) = info.selected_connection.as_ref() {
                         if let Some(target) = active_response::extract_remote_target(&conn.remote_addr) {
                             self.response_confirm = Some(PendingResponse::UnblockRemote(target));
+                        }
+                    }
+                }
+            }
+            inspector::Action::UnblockDomain => {
+                if let Some(info) = selected_info {
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(domain) = active_response::extract_domain_target(conn) {
+                            self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
                         }
                     }
                 }
@@ -759,6 +781,11 @@ impl VigilApp {
                     label.to_string(),
                 )
             }
+            PendingResponse::BlockDomain { domain } => (
+                "Block domain",
+                format!("Redirect {domain} to the local machine through the Windows hosts file?"),
+                "Block domain".to_string(),
+            ),
             PendingResponse::BlockProcess { path, preset, .. } => {
                 let (duration, label) = match preset {
                     active_response::DurationPreset::OneHour => ("1 hour", "Block process"),
@@ -798,6 +825,11 @@ impl VigilApp {
                 "Remove remote block",
                 format!("Remove the temporary firewall rule for {target}?"),
                 "Unblock".to_string(),
+            ),
+            PendingResponse::UnblockDomain(domain) => (
+                "Remove domain block",
+                format!("Remove the local hosts-file block for {domain}?"),
+                "Unblock domain".to_string(),
             ),
             PendingResponse::UnblockProcess { path, .. } => (
                 "Remove process block",
@@ -868,6 +900,10 @@ impl VigilApp {
                 Ok(msg) => msg,
                 Err(err) => format!("Could not block {target}: {err}"),
             },
+            PendingResponse::BlockDomain { domain } => match active_response::block_domain(domain) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not block {domain}: {err}"),
+            },
             PendingResponse::BlockProcess { pid, path, preset } => match active_response::block_process(*pid, path, *preset) {
                 Ok(msg) => msg,
                 Err(err) => format!("Could not block {path}: {err}"),
@@ -887,6 +923,10 @@ impl VigilApp {
             PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target) {
                 Ok(msg) => msg,
                 Err(err) => format!("Could not unblock {target}: {err}"),
+            },
+            PendingResponse::UnblockDomain(domain) => match active_response::unblock_domain(domain) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not unblock {domain}: {err}"),
             },
             PendingResponse::UnblockProcess { pid, path } => match active_response::unblock_process(*pid, path) {
                 Ok(msg) => msg,
