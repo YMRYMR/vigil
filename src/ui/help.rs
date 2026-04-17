@@ -41,7 +41,7 @@ pub fn show(ui: &mut egui::Ui) {
                         body(ui, "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.");
                     });
                     card(ui, "Audit trail", |ui| {
-                        body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, dump paths, and containment warnings for partial presets.");
+                        body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, dump paths, packet-capture paths, break-glass arming or recovery events, and containment warnings for partial presets.");
                     });
                 });
 
@@ -56,17 +56,27 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                         bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                         bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
-                        bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                        bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic. Break-glass recovery can restore them if Vigil dies during containment.");
                         bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
                     });
 
                     card(ui, "Forensics on alert", |ui| {
-                        body(ui, "Optional process dump capture is available in Settings. Current Windows implementation writes a full user-mode process dump on high-score alerts, rate-limited per PID and logged to the audit trail.");
+                        body(ui, "Optional forensic capture is available in Settings. Current Windows implementation can write a full user-mode process dump and a short host-wide packet window on high-score alerts, both rate-limited and logged to the audit trail.");
                         ui.add_space(6.0);
                         bullet(ui, "Enable process dump", "Off by default. Turn it on only when you have disk space and a triage workflow for dump files.");
-                        bullet(ui, "Minimum score", "Sets how severe an alert must be before Vigil attempts a dump.");
-                        bullet(ui, "Cooldown", "Suppress repeated dumps for the same PID during the selected time window.");
-                        bullet(ui, "Dump directory", "Empty uses Vigil's per-user data folder under artifacts/process-dumps.");
+                        bullet(ui, "Enable PCAP capture", "Off by default. Captures a short pktmon window and converts it to pcapng for later packet analysis.");
+                        bullet(ui, "Minimum score", "Each forensic action has its own score threshold so you can gate heavier artifacts more aggressively.");
+                        bullet(ui, "Cooldown", "Suppress repeated dumps or captures for the same PID during the selected time window.");
+                        bullet(ui, "Artifact directory", "Empty uses Vigil's per-user data folder under artifacts/process-dumps or artifacts/pcap.");
+                    });
+
+                    card(ui, "Break-glass recovery", |ui| {
+                        body(ui, "Break-glass recovery reduces the risk of locking yourself out during machine isolation. When enabled, Vigil arms a watchdog task while isolation is active, keeps a heartbeat file fresh, and restores networking if the heartbeat goes stale past the timeout.");
+                        ui.add_space(6.0);
+                        bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
+                        bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
+                        bullet(ui, "Watchdog task", "Current Windows implementation uses a scheduled task that runs the same Vigil binary with --break-glass-recover.");
+                        bullet(ui, "Disarm", "Restoring the network normally disarms the watchdog and removes the task and heartbeat state.");
                     });
 
                     card(ui, "Auto response", |ui| {
@@ -91,7 +101,7 @@ pub fn show(ui: &mut egui::Ui) {
                     card(ui, "UI tips", |ui| {
                         bullet(ui, "Activity", "Use the filter to narrow process cards by name, host, status, or reason text.");
                         bullet(ui, "Alerts", "Alerts are the high-signal cards; the stacked connections show the traffic behind the score.");
-                        bullet(ui, "Settings", "Trusted-process edits, forensic controls, and auto-response settings auto-save.");
+                        bullet(ui, "Settings", "Trusted-process edits, forensic controls, break-glass recovery, and auto-response settings auto-save.");
                         bullet(ui, "Privilege state", "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.");
                         bullet(ui, "Keyboard", "The app is built for mouse-first triage, but the controls are intentionally compact and predictable.");
                     });
@@ -130,16 +140,25 @@ pub fn show(ui: &mut egui::Ui) {
                 bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                 bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                 bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
-                bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
+                bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic. Break-glass recovery can restore them if Vigil dies during containment.");
                 bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
             });
             card(ui, "Forensics on alert", |ui| {
-                body(ui, "Optional process dump capture is available in Settings. Current Windows implementation writes a full user-mode process dump on high-score alerts, rate-limited per PID and logged to the audit trail.");
+                body(ui, "Optional forensic capture is available in Settings. Current Windows implementation can write a full user-mode process dump and a short host-wide packet window on high-score alerts, both rate-limited and logged to the audit trail.");
                 ui.add_space(6.0);
                 bullet(ui, "Enable process dump", "Off by default. Turn it on only when you have disk space and a triage workflow for dump files.");
-                bullet(ui, "Minimum score", "Sets how severe an alert must be before Vigil attempts a dump.");
-                bullet(ui, "Cooldown", "Suppress repeated dumps for the same PID during the selected time window.");
-                bullet(ui, "Dump directory", "Empty uses Vigil's per-user data folder under artifacts/process-dumps.");
+                bullet(ui, "Enable PCAP capture", "Off by default. Captures a short pktmon window and converts it to pcapng for later packet analysis.");
+                bullet(ui, "Minimum score", "Each forensic action has its own score threshold so you can gate heavier artifacts more aggressively.");
+                bullet(ui, "Cooldown", "Suppress repeated dumps or captures for the same PID during the selected time window.");
+                bullet(ui, "Artifact directory", "Empty uses Vigil's per-user data folder under artifacts/process-dumps or artifacts/pcap.");
+            });
+            card(ui, "Break-glass recovery", |ui| {
+                body(ui, "Break-glass recovery reduces the risk of locking yourself out during machine isolation. When enabled, Vigil arms a watchdog task while isolation is active, keeps a heartbeat file fresh, and restores networking if the heartbeat goes stale past the timeout.");
+                ui.add_space(6.0);
+                bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
+                bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
+                bullet(ui, "Watchdog task", "Current Windows implementation uses a scheduled task that runs the same Vigil binary with --break-glass-recover.");
+                bullet(ui, "Disarm", "Restoring the network normally disarms the watchdog and removes the task and heartbeat state.");
             });
             card(ui, "Auto response", |ui| {
                 body(ui, "Automatic response is optional and disabled by default. Dry run is enabled by default, trusted processes suppress automation, and the engine requires strong corroborating signals in addition to the score threshold.");
@@ -149,7 +168,7 @@ pub fn show(ui: &mut egui::Ui) {
                 bullet(ui, "Trusted processes", "Processes in the trusted list never receive automatic containment.");
                 bullet(ui, "Escalation", "Repeated offences can escalate from connection kill to remote or process blocking when those actions are enabled.");
             });
-            card(ui, "Audit trail", |ui| { body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs."); });
+            card(ui, "Audit trail", |ui| { body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Records include forensic artifact paths and break-glass lifecycle events where applicable."); });
             card(ui, "Persistence signals", |ui| { body(ui, "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold."); });
             card(ui, "Telemetry and reputation", |ui| {
                 body(ui, "Offline enrichment is optional. Point the config at MaxMind GeoLite2 databases for country and ASN lookups, add blocklists for reputation hits, and enable reverse DNS only if you accept that the OS resolver may observe the lookups.");
@@ -163,7 +182,7 @@ pub fn show(ui: &mut egui::Ui) {
             card(ui, "UI tips", |ui| {
                 bullet(ui, "Activity", "Use the filter to narrow process cards by name, host, status, or reason text.");
                 bullet(ui, "Alerts", "Alerts are the high-signal cards; the stacked connections show the traffic behind the score.");
-                bullet(ui, "Settings", "Trusted-process edits, forensic controls, and auto-response settings auto-save.");
+                bullet(ui, "Settings", "Trusted-process edits, forensic controls, break-glass recovery, and auto-response settings auto-save.");
                 bullet(ui, "Privilege state", "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.");
                 bullet(ui, "Keyboard", "The app is built for mouse-first triage, but the controls are intentionally compact and predictable.");
             });
