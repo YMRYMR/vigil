@@ -19,6 +19,7 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                     field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                    field_row(ui, "Quarantine", "Apply the initial containment preset for the selected process. Current Windows implementation isolates the network, blocks the executable path when known, and suspends the process when possible.");
                     field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
                     field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
@@ -45,16 +46,17 @@ pub fn show(ui: &mut egui::Ui) {
                         });
 
                         card(ui, "Audit trail", |ui| {
-                            body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, and domains.");
+                            body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, and containment warnings for partial presets.");
                         });
                     });
 
                     cols[1].vertical(|ui| {
                         card(ui, "Active response", |ui| {
-                            body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
+                            body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, apply a quarantine preset, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
                             ui.add_space(6.0);
                             bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
                             bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
+                            bullet(ui, "Quarantine profile", "Initial Windows preset: isolate the network, block the selected executable path permanently when known, and suspend the process when possible. Clear quarantine attempts to reverse those same steps.");
                             bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                             bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                             bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
@@ -110,14 +112,16 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                     field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                    field_row(ui, "Quarantine", "Apply the initial containment preset for the selected process. Current Windows implementation isolates the network, blocks the executable path when known, and suspends the process when possible.");
                     field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
                     field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
                 card(ui, "Active response", |ui| {
-                    body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
+                    body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, apply a quarantine preset, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
                     ui.add_space(6.0);
                     bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
                     bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
+                    bullet(ui, "Quarantine profile", "Initial Windows preset: isolate the network, block the selected executable path permanently when known, and suspend the process when possible. Clear quarantine attempts to reverse those same steps.");
                     bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                     bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                     bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
