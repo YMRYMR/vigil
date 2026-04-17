@@ -445,8 +445,14 @@ Make Vigil useful beyond a single endpoint.
 
 Vigil must resist tampering to be trustworthy.
 
+- [ ] **Protected policy store** — split UI preferences from security policy; keep
+      trusted-processes, allowlists, blocklists, thresholds, and response defaults
+      in an admin-owned location that normal user-mode malware cannot edit
+- [ ] **Policy integrity verification** — sign the security policy and reject
+      tampered or unsigned policy files on load; surface a visible tamper warning
+- [ ] **Privilege-gated policy edits** — changes that weaken protection require
+      elevation and are only committed by the privileged service / admin context
 - [ ] **Self-protection** — prevent non-admin processes from killing Vigil (Windows: PPL / protected process light; Linux: `PR_SET_DUMPABLE=0` + seccomp)
-- [ ] **Config signing** — require signed config changes; reject tampered `config.json`
 - [ ] **Tamper-evident audit log** — hash-chained append-only log of every alert and user action; detect truncation
 - [ ] **Secure update channel** — signed release bundles (minisign / cosign); auto-verify before replacing binary
 - [ ] **Sandboxed providers** — move file-watcher and DLL-enumeration helpers into separate low-privilege worker processes; IPC over a pipe
@@ -471,4 +477,4 @@ Vigil must resist tampering to be trustworthy.
 | 3.0.0 | 11  | Active response: per-process block, machine isolation, rule engine | 🔲 Backlog |
 | 3.x   | 12  | Detection depth: behavioural baselines, script inspection, JA3 | 🔲 Backlog |
 | 4.x   | 13  | Integration & fleet: SIEM, webhooks, central server | 🔲 Backlog |
-| 4.x   | 14  | Hardening & self-defence | 🔲 Backlog |
+| 4.x   | 14  | Hardening & self-defence, protected policy store, signed policy | 🔲 Backlog |
