@@ -19,6 +19,7 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                     field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                    field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
                     field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
 
@@ -44,17 +45,18 @@ pub fn show(ui: &mut egui::Ui) {
                         });
 
                         card(ui, "Audit trail", |ui| {
-                            body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, and endpoints.");
+                            body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, and domains.");
                         });
                     });
 
                     cols[1].vertical(|ui| {
                         card(ui, "Active response", |ui| {
-                            body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
+                            body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
                             ui.add_space(6.0);
                             bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
                             bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
                             bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
+                            bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                             bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                             bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                             bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
@@ -66,7 +68,7 @@ pub fn show(ui: &mut egui::Ui) {
                             bullet(ui, "Dry run", "Surface the planned action in the UI and audit log without executing containment.");
                             bullet(ui, "Cooldown", "Suppress repeated automatic actions against the same target for the configured window.");
                             bullet(ui, "Trusted processes", "Processes in the trusted list never receive automatic containment.");
-                            bullet(ui, "Escalation", "Enable connection kill first, then remote or process blocking only if you accept the higher blast radius.");
+                            bullet(ui, "Escalation", "Repeated offences can escalate from connection kill to remote or process blocking when those actions are enabled.");
                         });
 
                         card(ui, "Telemetry and reputation", |ui| {
@@ -108,14 +110,16 @@ pub fn show(ui: &mut egui::Ui) {
                     field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
                     field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
                     field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                    field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
                     field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
                 });
                 card(ui, "Active response", |ui| {
-                    body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
+                    body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
                     ui.add_space(6.0);
                     bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
                     bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
                     bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
+                    bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                     bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                     bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                     bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
@@ -126,7 +130,7 @@ pub fn show(ui: &mut egui::Ui) {
                     bullet(ui, "Dry run", "Surface the planned action in the UI and audit log without executing containment.");
                     bullet(ui, "Cooldown", "Suppress repeated automatic actions against the same target for the configured window.");
                     bullet(ui, "Trusted processes", "Processes in the trusted list never receive automatic containment.");
-                    bullet(ui, "Escalation", "Enable connection kill first, then remote or process blocking only if you accept the higher blast radius.");
+                    bullet(ui, "Escalation", "Repeated offences can escalate from connection kill to remote or process blocking when those actions are enabled.");
                 });
                 card(ui, "Audit trail", |ui| {
                     body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs.");
@@ -223,7 +227,7 @@ fn body(ui: &mut egui::Ui, text: &str) {
 
 fn bullet(ui: &mut egui::Ui, key: &str, text: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new(">") .color(theme::ACCENT).size(11.0));
+        ui.label(RichText::new(">").color(theme::ACCENT).size(11.0));
         ui.add_space(2.0);
         ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong());
         ui.add_space(6.0);
