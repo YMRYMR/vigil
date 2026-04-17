@@ -155,16 +155,6 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 - [x] Alerts tab resets unseen counter + sends `TrayCmd::ResetOk` on open
 - [x] Trust / Kill / Open Location inspector actions wired to config + sysinfo + open crate
 
-**Key API notes (eframe 0.34 / egui 0.34):**
-- `eframe::App::ui(&mut self, ui: &mut Ui, frame: &mut Frame)` — NOT `update(ctx, frame)`;
-  access Context via `ui.ctx().clone()`
-- Panels use `.show_inside(ui, …)` instead of `.show(ctx, …)`; order determines layout
-- `Rounding` → `CornerRadius`; `Button::rounding` → `Button::corner_radius`
-- `Margin::same/symmetric` takes `i8`, not `f32`; use `Margin::ZERO` for zero margin
-- `ctx.style()` → `ctx.global_style()`, `ctx.set_style()` → `ctx.set_global_style()`
-- `Slider::clamp_to_range(true)` → `Slider::clamping(SliderClamping::Always)`
-- `sysinfo 0.38`: `System::refresh_process(pid)` → `System::refresh_processes(ProcessesToUpdate::Some(&[pid]), false)`
-
 **Verified:** `cargo build` clean (warnings only); 19/19 tests pass.
 
 ---
@@ -182,16 +172,19 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 **Files written/changed:** `src/logger.rs`, `build.rs`, `src/tray.rs`, `src/monitor/mod.rs`,
 `src/main.rs`, `Cargo.toml`
 
-**Key notes:**
-- `tracing_subscriber::fmt::time::FormatTime` trait — implement on a unit struct with `chrono::Local::now()`
-- `tracing_appender::rolling::daily(dir, "vigil")` → files named `vigil.YYYY-MM-DD`
-- `WorkerGuard` returned by `non_blocking()` must be kept alive for the process lifetime (drop = flush + close)
-- `winres` is a `[build-dependencies]` entry (not target-specific); build.rs checks `CARGO_CFG_TARGET_OS` before calling it
-- ICO generated programmatically in `build.rs` (ICONDIR + ICONDIRENTRYs + BITMAPINFOHEADER + BGRA bottom-to-top + AND mask); no binary asset in repo
-- `SetCurrentProcessExplicitAppUserModelID(w!("Vigil.App.1"))` from `Win32_UI_Shell` feature (added to `windows` crate features)
-- `logger::init()` must be called before any `tracing::info!/warn!` calls — returns `(PathBuf, LogGuard)`
+**Verified:** `cargo build` clean; 19/19 tests pass.
 
-**Verified:** `cargo build` clean (pre-existing warnings only); 19/19 tests pass.
+### Installer (post-Phase-7 addition)
+
+Cross-platform installers via **`cargo-dist`**:
+
+- **Windows** — Inno Setup wizard EXE (`Vigil-Setup-<ver>-x86_64.exe`)
+- **macOS** — drag-to-Applications DMG (`Vigil-<ver>-aarch64.dmg`)
+- **Linux** — portable AppImage (`Vigil-<ver>-x86_64.AppImage`)
+
+Release workflow in `.github/workflows/release.yml` (fires on every `v*` tag push).
+All three platforms build in parallel; a final `publish` job creates a GitHub Release
+with all three installers attached.
 
 ---
 
@@ -216,20 +209,6 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 - `Swatinem/rust-cache@v2` with `key: ${{ matrix.target }}` keeps caches separate per target
 
 **Verified:** `cargo build` clean; 19/19 tests pass.
-
-### Installer (post-Phase-7 addition)
-
-Cross-platform installers via **`cargo-dist`**:
-
-- **Windows** — Inno Setup wizard EXE (`Vigil-Setup-<ver>-x86_64.exe`)
-- **macOS** — drag-to-Applications DMG (`Vigil-<ver>-aarch64.dmg`)
-- **Linux** — portable AppImage (`Vigil-<ver>-x86_64.AppImage`)
-
-Release workflow in `.github/workflows/release.yml` (fires on every `v*` tag push).
-All three platforms build in parallel; a final `publish` job creates a GitHub Release
-with all three installers attached.
-
----
 
 ## Phase 8 — UX, Detection & Quality Overhaul ✅ COMPLETE
 
@@ -372,8 +351,8 @@ all off-by-default and configurable in `vigil.json`.
 Move Vigil from passive observer to intervening defender. All actions must be explicit, reversible, and auditable.
 
 ### Per-connection and per-process blocking
-- [ ] **Block single connection** — kill one socket without killing the owning process
-  - Windows: `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
+- [x] **Block single connection** — kill one socket without killing the owning process
+  - Windows: implemented via `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
   - Linux: `ss -K dst <ip> dport = <port>` (needs `CONFIG_INET_DIAG_DESTROY`) or `conntrack -D`
   - macOS: `pfctl` rule injection + state flush (no native socket-kill API)
 - [x] **Block all connections from a process** (without killing it) — Windows implementation uses reversible firewall rules scoped to the executable path, with duration presets and cleanup on expiry
@@ -384,8 +363,8 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 - [x] **Active-response UX** — temporary blocks show live countdowns and inline unblock buttons; the header reflects privilege state with `Admin` / `Run as Admin`
 - [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
 - [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
-- [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation
-- [ ] **Suspend process** — freeze the process (Windows: `NtSuspendProcess`, Unix: `SIGSTOP`) while the user investigates; resumable
+- [x] **Kill process** — one-click terminate in the inspector with confirmation
+- [x] **Suspend process** — Windows implementation freezes each thread in the selected PID via ToolHelp + `SuspendThread`, tracks suspended state in the UI, and supports explicit resume
 
 ### Machine-wide lockdown
 - [x] **Panic button — full network isolation** — reversible Windows firewall rules added from the UI, with a matching restore action and confirmation prompt
@@ -399,7 +378,7 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - YAML rule file with condition DSL (same fields as `ScoreInput`)
   - Dry-run mode that logs what would have been blocked
 - [ ] **Threshold escalation** — first offence notify, second block connection, third quarantine process
-- [ ] **Time-boxed blocks** — every block has an expiry; auto-revert at TTL
+- [x] **Time-boxed blocks** — every block has an expiry; auto-revert at TTL
 - [ ] **Scheduled lockdown** — isolate machine automatically during specified hours (e.g. overnight)
 
 ### Containment and forensics
