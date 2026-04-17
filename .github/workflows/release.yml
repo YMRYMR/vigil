@@ -8,6 +8,7 @@ name: Release
 #   Windows  →  Vigil-Setup-<ver>-x86_64.exe   (Inno Setup wizard)
 #   macOS    →  Vigil-<ver>-aarch64.dmg         (drag-to-Applications DMG)
 #   Linux    →  Vigil-<ver>-x86_64.AppImage     (portable, double-click to run)
+#   Bundle   →  Vigil-<ver>-all-supported-os.zip (all three installers together)
 on:
   push:
     tags: ["v*"]
@@ -201,6 +202,19 @@ jobs:
           pattern: installer-*
           path: dist/
           merge-multiple: true
+
+      - name: Build all-platforms bundle
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          mkdir -p dist/bundle
+          cp dist/*.exe dist/bundle/ 2>/dev/null || true
+          cp dist/*.dmg dist/bundle/ 2>/dev/null || true
+          cp dist/*.AppImage dist/bundle/ 2>/dev/null || true
+          (
+            cd dist/bundle
+            zip -r "../Vigil-${VERSION}-all-supported-os.zip" .
+          )
 
       - name: List release assets
         run: ls -lh dist/
