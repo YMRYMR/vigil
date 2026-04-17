@@ -99,7 +99,7 @@ struct SocketKillTarget {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurationPreset {
     OneHour,
     OneDay,
@@ -605,7 +605,7 @@ mod platform {
             SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily),
         };
 
-        let mut row = MIB_TCPROW {
+        let row = MIB_TCPROW {
             dwState: MIB_TCP_STATE_DELETE_TCB,
             dwLocalAddr: u32::from_be_bytes(local.ip().octets()),
             dwLocalPort: u32::from(local.port().to_be()),
