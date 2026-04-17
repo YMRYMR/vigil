@@ -186,11 +186,16 @@ mod platform {
         current_exe().map(|p| format!("\"{}\"", p.display()))
     }
 
+    fn schtasks_exe() -> PathBuf {
+        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
+        PathBuf::from(windir).join("System32").join("schtasks.exe")
+    }
+
     fn create_high_privilege_task() -> bool {
         let Some(tr) = quoted_exe() else {
             return false;
         };
-        Command::new("schtasks")
+        Command::new(schtasks_exe())
             .args([
                 "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
             ])
@@ -200,7 +205,7 @@ mod platform {
     }
 
     fn delete_high_privilege_task() -> bool {
-        Command::new("schtasks")
+        Command::new(schtasks_exe())
             .args(["/Delete", "/TN", TASK_NAME, "/F"])
             .status()
             .map(|s| s.success())
@@ -208,7 +213,7 @@ mod platform {
     }
 
     fn high_privilege_task_exists() -> bool {
-        Command::new("schtasks")
+        Command::new(schtasks_exe())
             .args(["/Query", "/TN", TASK_NAME])
             .status()
             .map(|s| s.success())
