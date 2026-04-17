@@ -370,7 +370,10 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 - [x] **Panic button — full network isolation** — reversible Windows firewall rules added from the UI, with a matching restore action and confirmation prompt
   - Linux/macOS-specific adapter / pf / nft equivalents remain backlog
 - [ ] **Allowlist-only mode** — invert the firewall: only signed Microsoft processes, or a user-curated list, may talk to the network; everything else blocked
-- [ ] **Quarantine profile** — preset combining: lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
+- [ ] **Quarantine profile** — roadmap target is lockdown + disable USB storage (Windows: `USBSTOR` registry) + pause scheduled tasks
+  - Initial Windows preset implemented: isolate network + block executable path when known + suspend process when possible
+  - Clear-quarantine path implemented: restore network + unblock executable path + resume process when possible
+  - USB-storage disable and scheduled-task pause remain backlog
 - [ ] **Break-glass recovery** — if Vigil crashes while network is locked down, a watchdog timer (separate service) restores connectivity after N minutes unless a heartbeat file is touched
 
 ### Rule engine and automation
