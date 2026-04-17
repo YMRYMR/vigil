@@ -26,6 +26,7 @@ pub struct Status {
     pub blocked_processes: usize,
     pub blocked_domains: usize,
     pub suspended_processes: usize,
+    pub frozen_autoruns: bool,
     pub isolated: bool,
 }
 
@@ -38,6 +39,8 @@ struct State {
     blocked_domains: Vec<BlockedDomain>,
     #[serde(default)]
     suspended_processes: Vec<SuspendedProcess>,
+    #[serde(default)]
+    autorun_snapshot: Option<AutorunSnapshot>,
     isolated: bool,
 }
 
@@ -70,6 +73,20 @@ struct SuspendedProcess {
     path: String,
     proc_name: String,
     suspended_at_unix: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct AutorunSnapshot {
+    captured_at_unix: u64,
+    entries: Vec<AutorunEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct AutorunEntry {
+    hive: String,
+    key_path: String,
+    value_name: String,
+    value_data: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,8 +149,13 @@ pub fn status() -> Status {
         blocked_processes: state.blocked_processes.len(),
         blocked_domains: state.blocked_domains.len(),
         suspended_processes: state.suspended_processes.len(),
+        frozen_autoruns: state.autorun_snapshot.is_some(),
         isolated: state.isolated,
     }
+}
+
+pub fn has_frozen_autoruns() -> bool {
+    load_state().ok().and_then(|s| s.autorun_snapshot).is_some()
 }
 
 pub fn can_modify_firewall() -> bool {
@@ -157,6 +179,39 @@ pub fn can_block_domain() -> bool {
 
 pub fn can_apply_quarantine_profile(pid: u32, path: &str) -> bool {
     platform::is_supported() && platform::is_elevated() && (pid != 0 || !path.trim().is_empty())
+}
+
+pub fn freeze_autoruns() -> Result<String, String> {
+    ensure_modifiable()?;
+    let snapshot = platform::snapshot_autoruns()?;
+    let mut state = load_state().unwrap_or_default();
+    let count = snapshot.entries.len();
+    state.autorun_snapshot = Some(snapshot);
+    save_state(&state)?;
+    audit::record("freeze_autoruns", "success", json!({ "entries": count }));
+    Ok(format!("Captured autorun baseline with {count} entr{}.", if count == 1 { "y" } else { "ies" }))
+}
+
+pub fn revert_frozen_autoruns() -> Result<String, String> {
+    ensure_modifiable()?;
+    let mut state = load_state().unwrap_or_default();
+    let Some(snapshot) = state.autorun_snapshot.clone() else {
+        return Err("No autorun baseline has been captured yet.".into());
+    };
+    let result = platform::revert_autorun_changes(&snapshot.entries)?;
+    state.autorun_snapshot = None;
+    save_state(&state)?;
+    audit::record("revert_frozen_autoruns", "success", json!({
+        "removed_additions": result.removed_additions,
+        "restored_entries": result.restored_entries,
+    }));
+    Ok(format!(
+        "Reverted autorun changes: removed {} added entr{} and restored {} baseline entr{}.",
+        result.removed_additions,
+        if result.removed_additions == 1 { "y" } else { "ies" },
+        result.restored_entries,
+        if result.restored_entries == 1 { "y" } else { "ies" }
+    ))
 }
 
 pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
@@ -184,14 +239,12 @@ pub fn suspend_process(pid: u32, path: &str, proc_name: &str) -> Result<String, 
         return Err("Cannot suspend PID 0.".into());
     }
     platform::suspend_process(pid)?;
-
     let path = path.trim().to_string();
     let proc_name = proc_name.trim().to_string();
     let mut state = load_state().unwrap_or_default();
     state.suspended_processes.retain(|entry| !suspended_process_matches(entry, pid, &path));
     state.suspended_processes.push(SuspendedProcess { pid, path: path.clone(), proc_name: proc_name.clone(), suspended_at_unix: unix_now() });
     save_state(&state)?;
-
     let message = if path.is_empty() { format!("Suspended PID {pid}.") } else { format!("Suspended PID {pid} ({path}).") };
     audit::record("suspend_process", "success", json!({ "pid": pid, "path": path, "proc_name": proc_name }));
     Ok(message)
@@ -203,14 +256,12 @@ pub fn resume_process(pid: u32, path: &str) -> Result<String, String> {
         return Err("Cannot resume PID 0.".into());
     }
     platform::resume_process(pid)?;
-
     let path = path.trim().to_string();
     let mut state = load_state().unwrap_or_default();
     let before = state.suspended_processes.len();
     state.suspended_processes.retain(|entry| !suspended_process_matches(entry, pid, &path));
     let removed = before.saturating_sub(state.suspended_processes.len());
     save_state(&state)?;
-
     let message = if path.is_empty() { format!("Resumed PID {pid}.") } else { format!("Resumed PID {pid} ({path}).") };
     audit::record("resume_process", if removed > 0 { "success" } else { "noop" }, json!({ "pid": pid, "path": path, "removed_entries": removed }));
     Ok(message)
@@ -221,12 +272,10 @@ pub fn block_domain(domain: &str) -> Result<String, String> {
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
     platform::add_domain_block(&domain, &marker)?;
-
     let mut state = load_state().unwrap_or_default();
     state.blocked_domains.retain(|entry| entry.domain != domain);
     state.blocked_domains.push(BlockedDomain { domain: domain.clone(), marker: marker.clone() });
     save_state(&state)?;
-
     audit::record("block_domain", "success", json!({ "domain": domain, "marker": marker }));
     Ok(format!("Blocked domain {domain} via the local hosts file."))
 }
@@ -236,13 +285,11 @@ pub fn unblock_domain(domain: &str) -> Result<String, String> {
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
     platform::remove_domain_block(&domain, &marker)?;
-
     let mut state = load_state().unwrap_or_default();
     let before = state.blocked_domains.len();
     state.blocked_domains.retain(|entry| entry.domain != domain);
     let removed = before.saturating_sub(state.blocked_domains.len());
     save_state(&state)?;
-
     audit::record("unblock_domain", if removed > 0 { "success" } else { "noop" }, json!({ "domain": domain, "marker": marker, "removed_entries": removed }));
     Ok(if removed > 0 { format!("Removed the hosts-file block for {domain}.") } else { format!("No hosts-file block found for {domain}.") })
 }
@@ -252,49 +299,29 @@ pub fn apply_quarantine_profile(pid: u32, path: &str, proc_name: &str) -> Result
     if pid == 0 && path.trim().is_empty() {
         return Err("Quarantine profile requires a real PID or a known executable path.".into());
     }
-
     let mut applied = Vec::new();
     let mut warnings = Vec::new();
-
     match isolate_machine() {
         Ok(_) => applied.push("network isolated".to_string()),
         Err(err) => warnings.push(format!("network isolation failed: {err}")),
     }
-
     if !path.trim().is_empty() {
         match block_process(pid, path, DurationPreset::Permanent) {
             Ok(_) => applied.push("process traffic blocked".to_string()),
             Err(err) => warnings.push(format!("process block failed: {err}")),
         }
     }
-
     if pid != 0 {
         match suspend_process(pid, path, proc_name) {
             Ok(_) => applied.push("process suspended".to_string()),
             Err(err) => warnings.push(format!("process suspend failed: {err}")),
         }
     }
-
     if applied.is_empty() {
-        return Err(if warnings.is_empty() {
-            "Quarantine profile could not apply any containment step.".into()
-        } else {
-            warnings.join("; ")
-        });
+        return Err(if warnings.is_empty() { "Quarantine profile could not apply any containment step.".into() } else { warnings.join("; ") });
     }
-
-    let message = if warnings.is_empty() {
-        format!("Applied quarantine profile: {}.", applied.join(", "))
-    } else {
-        format!("Applied quarantine profile: {}. Warnings: {}.", applied.join(", "), warnings.join("; "))
-    };
-    audit::record("quarantine_profile", if warnings.is_empty() { "success" } else { "partial" }, json!({
-        "pid": pid,
-        "path": path,
-        "proc_name": proc_name,
-        "applied": applied,
-        "warnings": warnings,
-    }));
+    let message = if warnings.is_empty() { format!("Applied quarantine profile: {}.", applied.join(", ")) } else { format!("Applied quarantine profile: {}. Warnings: {}.", applied.join(", "), warnings.join("; ")) };
+    audit::record("quarantine_profile", if warnings.is_empty() { "success" } else { "partial" }, json!({ "pid": pid, "path": path, "proc_name": proc_name, "applied": applied, "warnings": warnings }));
     Ok(message)
 }
 
@@ -302,45 +329,27 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
     ensure_modifiable()?;
     let mut cleared = Vec::new();
     let mut warnings = Vec::new();
-
     match restore_machine() {
         Ok(_) => cleared.push("network restored".to_string()),
         Err(err) => warnings.push(format!("network restore failed: {err}")),
     }
-
     if !path.trim().is_empty() {
         match unblock_process(pid, path) {
             Ok(_) => cleared.push("process block removed".to_string()),
             Err(err) => warnings.push(format!("process unblock failed: {err}")),
         }
     }
-
     if pid != 0 {
         match resume_process(pid, path) {
             Ok(_) => cleared.push("process resumed".to_string()),
             Err(err) => warnings.push(format!("process resume failed: {err}")),
         }
     }
-
     if cleared.is_empty() {
-        return Err(if warnings.is_empty() {
-            "Quarantine clear did not change any containment step.".into()
-        } else {
-            warnings.join("; ")
-        });
+        return Err(if warnings.is_empty() { "Quarantine clear did not change any containment step.".into() } else { warnings.join("; ") });
     }
-
-    let message = if warnings.is_empty() {
-        format!("Cleared quarantine profile: {}.", cleared.join(", "))
-    } else {
-        format!("Cleared quarantine profile: {}. Warnings: {}.", cleared.join(", "), warnings.join("; "))
-    };
-    audit::record("clear_quarantine_profile", if warnings.is_empty() { "success" } else { "partial" }, json!({
-        "pid": pid,
-        "path": path,
-        "cleared": cleared,
-        "warnings": warnings,
-    }));
+    let message = if warnings.is_empty() { format!("Cleared quarantine profile: {}.", cleared.join(", ")) } else { format!("Cleared quarantine profile: {}. Warnings: {}.", cleared.join(", "), warnings.join("; ")) };
+    audit::record("clear_quarantine_profile", if warnings.is_empty() { "success" } else { "partial" }, json!({ "pid": pid, "path": path, "cleared": cleared, "warnings": warnings }));
     Ok(message)
 }
 
@@ -348,14 +357,9 @@ pub fn reconcile() {
     if !platform::is_supported() || !platform::is_elevated() {
         return;
     }
-
-    let Ok(mut state) = load_state() else {
-        return;
-    };
-
+    let Ok(mut state) = load_state() else { return; };
     let now = unix_now();
     let changed = reconcile_state(&mut state, now, |rule_name| platform::delete_rule(rule_name).is_ok());
-
     if changed {
         let _ = save_state(&state);
     }
@@ -366,20 +370,13 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
     let target = normalise_target(target)?;
     let rule_name = rule_name_for_target(&target);
     let expires_at_unix = preset.ttl().map(|ttl| unix_now().saturating_add(ttl.as_secs()));
-
     let _ = platform::delete_rule(&rule_name);
     platform::add_block_rule(&rule_name, &target)?;
-
     let mut state = load_state().unwrap_or_default();
     state.blocked.retain(|rule| rule.target != target);
     state.blocked.push(BlockedTarget { target: target.clone(), rule_name: rule_name.clone(), expires_at_unix });
     save_state(&state)?;
-
-    let message = match preset {
-        DurationPreset::OneHour => format!("Blocked {target} for 1 hour."),
-        DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
-        DurationPreset::Permanent => format!("Blocked {target} until removed."),
-    };
+    let message = match preset { DurationPreset::OneHour => format!("Blocked {target} for 1 hour."), DurationPreset::OneDay => format!("Blocked {target} for 24 hours."), DurationPreset::Permanent => format!("Blocked {target} until removed.") };
     audit::record("block_remote", "success", json!({ "target": target, "duration": format!("{:?}", preset), "rule_name": rule_name }));
     Ok(message)
 }
@@ -393,12 +390,7 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     let mut delete_failed = false;
     for rule in state.blocked.drain(..) {
         if rule.target == target {
-            if platform::delete_rule(&rule.rule_name).is_ok() {
-                removed += 1;
-            } else {
-                delete_failed = true;
-                kept.push(rule);
-            }
+            if platform::delete_rule(&rule.rule_name).is_ok() { removed += 1; } else { delete_failed = true; kept.push(rule); }
         } else {
             kept.push(rule);
         }
@@ -407,12 +399,7 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     if delete_failed {
         return Err(format!("Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."));
     }
-    let message = if removed > 0 {
-        save_state(&state)?;
-        format!("Removed {removed} block rule(s) for {target}.")
-    } else {
-        format!("No active block rule found for {target}.")
-    };
+    let message = if removed > 0 { save_state(&state)?; format!("Removed {removed} block rule(s) for {target}.") } else { format!("No active block rule found for {target}.") };
     audit::record("unblock_remote", if removed > 0 { "success" } else { "noop" }, json!({ "target": target, "removed_rules": removed }));
     Ok(message)
 }
@@ -424,7 +411,6 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     let outbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} Out {rule_suffix}");
     let inbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} In {rule_suffix}");
     let expires_at_unix = preset.ttl().map(|ttl| unix_now().saturating_add(ttl.as_secs()));
-
     let _ = platform::delete_rule(&outbound_rule_name);
     let _ = platform::delete_rule(&inbound_rule_name);
     platform::add_block_program_rule(&outbound_rule_name, &path, "out")?;
@@ -432,24 +418,12 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         let _ = platform::delete_rule(&outbound_rule_name);
         return Err(err);
     }
-
     let mut state = load_state().unwrap_or_default();
     state.blocked_processes.retain(|rule| !process_block_matches(rule, &path));
     state.blocked_processes.push(BlockedProcess { pid, path: path.clone(), inbound_rule_name: inbound_rule_name.clone(), outbound_rule_name: outbound_rule_name.clone(), expires_at_unix });
     save_state(&state)?;
-
-    let message = match preset {
-        DurationPreset::OneHour => format!("Blocked {path} for 1 hour."),
-        DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
-        DurationPreset::Permanent => format!("Blocked {path} until removed."),
-    };
-    audit::record("block_process", "success", json!({
-        "pid": pid,
-        "path": path,
-        "duration": format!("{:?}", preset),
-        "inbound_rule_name": inbound_rule_name,
-        "outbound_rule_name": outbound_rule_name,
-    }));
+    let message = match preset { DurationPreset::OneHour => format!("Blocked {path} for 1 hour."), DurationPreset::OneDay => format!("Blocked {path} for 24 hours."), DurationPreset::Permanent => format!("Blocked {path} until removed.") };
+    audit::record("block_process", "success", json!({ "pid": pid, "path": path, "duration": format!("{:?}", preset), "inbound_rule_name": inbound_rule_name, "outbound_rule_name": outbound_rule_name }));
     Ok(message)
 }
 
@@ -464,12 +438,7 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
         if process_block_matches(&rule, &path) {
             let inbound_deleted = platform::delete_rule(&rule.inbound_rule_name).is_ok();
             let outbound_deleted = platform::delete_rule(&rule.outbound_rule_name).is_ok();
-            if inbound_deleted && outbound_deleted {
-                removed += 1;
-            } else {
-                delete_failed = true;
-                kept.push(rule);
-            }
+            if inbound_deleted && outbound_deleted { removed += 1; } else { delete_failed = true; kept.push(rule); }
         } else {
             kept.push(rule);
         }
@@ -478,12 +447,7 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     if delete_failed {
         return Err(format!("Could not remove the firewall rules for PID {pid} ({path}); they were kept in state so Vigil can retry."));
     }
-    let message = if removed > 0 {
-        save_state(&state)?;
-        format!("Removed {removed} process block(s) for PID {pid} ({path}).")
-    } else {
-        format!("No active process block found for PID {pid} ({path}).")
-    };
+    let message = if removed > 0 { save_state(&state)?; format!("Removed {removed} process block(s) for PID {pid} ({path}).") } else { format!("No active process block found for PID {pid} ({path}).") };
     audit::record("unblock_process", if removed > 0 { "success" } else { "noop" }, json!({ "pid": pid, "path": path, "removed_rules": removed }));
     Ok(message)
 }
@@ -494,11 +458,9 @@ pub fn isolate_machine() -> Result<String, String> {
     let _ = platform::delete_rule(ISOLATE_RULE_OUT);
     platform::add_block_all_rule(ISOLATE_RULE_IN, "in")?;
     platform::add_block_all_rule(ISOLATE_RULE_OUT, "out")?;
-
     let mut state = load_state().unwrap_or_default();
     state.isolated = true;
     save_state(&state)?;
-
     audit::record("isolate_machine", "success", json!({ "inbound_rule_name": ISOLATE_RULE_IN, "outbound_rule_name": ISOLATE_RULE_OUT }));
     Ok("Network isolation enabled.".into())
 }
@@ -510,11 +472,9 @@ pub fn restore_machine() -> Result<String, String> {
     if !(in_deleted && out_deleted) {
         return Err("Could not remove all isolation firewall rules; the state was kept for retry.".into());
     }
-
     let mut state = load_state().unwrap_or_default();
     state.isolated = false;
     save_state(&state)?;
-
     audit::record("restore_machine", "success", json!({}));
     Ok("Network isolation removed.".into())
 }
@@ -576,44 +536,19 @@ fn ensure_modifiable() -> Result<(), String> {
 }
 
 fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
-    if !conn.status.eq_ignore_ascii_case("ESTABLISHED")
-        && !conn.status.eq_ignore_ascii_case("SYN_SENT")
-        && !conn.status.eq_ignore_ascii_case("SYN_RECEIVED")
-        && !conn.status.eq_ignore_ascii_case("FIN_WAIT_1")
-        && !conn.status.eq_ignore_ascii_case("FIN_WAIT_2")
-        && !conn.status.eq_ignore_ascii_case("CLOSE_WAIT")
-        && !conn.status.eq_ignore_ascii_case("CLOSING")
-        && !conn.status.eq_ignore_ascii_case("LAST_ACK")
-        && !conn.status.eq_ignore_ascii_case("TIME_WAIT") {
+    if !conn.status.eq_ignore_ascii_case("ESTABLISHED") && !conn.status.eq_ignore_ascii_case("SYN_SENT") && !conn.status.eq_ignore_ascii_case("SYN_RECEIVED") && !conn.status.eq_ignore_ascii_case("FIN_WAIT_1") && !conn.status.eq_ignore_ascii_case("FIN_WAIT_2") && !conn.status.eq_ignore_ascii_case("CLOSE_WAIT") && !conn.status.eq_ignore_ascii_case("CLOSING") && !conn.status.eq_ignore_ascii_case("LAST_ACK") && !conn.status.eq_ignore_ascii_case("TIME_WAIT") {
         return Err(SocketKillError::UnsupportedStatus(conn.status.clone()));
     }
-
     let local = socket_addr_from_text(&conn.local_addr).map_err(|_| SocketKillError::InvalidLocalAddr(conn.local_addr.clone()))?;
     let remote = socket_addr_from_text(&conn.remote_addr).map_err(|_| SocketKillError::InvalidRemoteAddr(conn.remote_addr.clone()))?;
-
-    match (local.ip(), remote.ip()) {
-        (IpAddr::V4(_), IpAddr::V4(_)) => Ok(SocketKillTarget { local, remote }),
-        _ => Err(SocketKillError::UnsupportedAddressFamily),
-    }
+    match (local.ip(), remote.ip()) { (IpAddr::V4(_), IpAddr::V4(_)) => Ok(SocketKillTarget { local, remote }), _ => Err(SocketKillError::UnsupportedAddressFamily) }
 }
 
-fn socket_addr_from_text(text: &str) -> Result<SocketAddr, std::net::AddrParseError> {
-    text.trim().parse::<SocketAddr>()
-}
-
-fn normalise_target(target: &str) -> Result<String, String> {
-    let target = target.trim();
-    if target.is_empty() { return Err("Target cannot be empty.".into()); }
-    Ok(target.to_string())
-}
-
-fn normalise_domain(domain: &str) -> Result<String, String> {
-    extract_domain_from_hostname(domain).ok_or_else(|| "Domain is empty or invalid.".into())
-}
-
+fn socket_addr_from_text(text: &str) -> Result<SocketAddr, std::net::AddrParseError> { text.trim().parse::<SocketAddr>() }
+fn normalise_target(target: &str) -> Result<String, String> { let target = target.trim(); if target.is_empty() { Err("Target cannot be empty.".into()) } else { Ok(target.to_string()) } }
+fn normalise_domain(domain: &str) -> Result<String, String> { extract_domain_from_hostname(domain).ok_or_else(|| "Domain is empty or invalid.".into()) }
 fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool { rule.path == path }
 fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool { entry.pid == pid && (path.is_empty() || entry.path == path) }
-
 fn domain_marker(domain: &str) -> String { format!("{DOMAIN_MARKER_PREFIX}:{}", sanitise_rule_suffix(domain)) }
 fn rule_name_for_target(target: &str) -> String { format!("{BLOCK_RULE_PREFIX} {}", sanitise_rule_suffix(target)) }
 
@@ -628,62 +563,28 @@ fn sanitise_rule_suffix(text: &str) -> String {
 
 fn stable_hash(text: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
-    for b in text.as_bytes() {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
+    for b in text.as_bytes() { hash ^= u64::from(*b); hash = hash.wrapping_mul(0x100000001b3); }
     hash
 }
 
 fn state_path() -> PathBuf { crate::config::data_dir().join(STATE_FILE) }
-
-fn load_state() -> Result<State, String> {
-    let path = state_path();
-    if !path.exists() { return Ok(State::default()); }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
-}
-
-fn save_state(state: &State) -> Result<(), String> {
-    let path = state_path();
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?; }
-    let json = serde_json::to_string_pretty(state).map_err(|e| format!("failed to serialise active-response state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
-}
+fn load_state() -> Result<State, String> { let path = state_path(); if !path.exists() { return Ok(State::default()); } let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?; serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display())) }
+fn save_state(state: &State) -> Result<(), String> { let path = state_path(); if let Some(parent)=path.parent(){ std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?; } let json=serde_json::to_string_pretty(state).map_err(|e| format!("failed to serialise active-response state: {e}"))?; std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display())) }
 
 fn reconcile_state<F>(state: &mut State, now: u64, mut delete_rule: F) -> bool where F: FnMut(&str) -> bool {
     let mut changed = false;
-
-    state.blocked.retain(|rule| {
-        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
-        if expired {
-            if delete_rule(&rule.rule_name) { changed = true; false } else { true }
-        } else { true }
-    });
-
-    state.blocked_processes.retain(|rule| {
-        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
-        if expired {
-            let inbound_deleted = delete_rule(&rule.inbound_rule_name);
-            let outbound_deleted = delete_rule(&rule.outbound_rule_name);
-            if inbound_deleted && outbound_deleted { changed = true; false } else { true }
-        } else { true }
-    });
-
-    state.suspended_processes.retain(|entry| {
-        if platform::process_exists(entry.pid) { true } else { changed = true; false }
-    });
-
+    state.blocked.retain(|rule| { let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now); if expired { if delete_rule(&rule.rule_name) { changed = true; false } else { true } } else { true } });
+    state.blocked_processes.retain(|rule| { let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now); if expired { let inbound_deleted = delete_rule(&rule.inbound_rule_name); let outbound_deleted = delete_rule(&rule.outbound_rule_name); if inbound_deleted && outbound_deleted { changed = true; false } else { true } } else { true } });
+    state.suspended_processes.retain(|entry| { if platform::process_exists(entry.pid) { true } else { changed = true; false } });
     changed
 }
 
-fn unix_now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
-}
+fn unix_now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
 
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use std::collections::BTreeMap;
     use std::fs;
     use windows::Win32::Foundation::{CloseHandle, HANDLE, ERROR_ACCESS_DENIED, INVALID_HANDLE_VALUE, NO_ERROR};
     use windows::Win32::NetworkManagement::IpHelper::{SetTcpEntry, MIB_TCP_STATE_DELETE_TCB, MIB_TCPROW};
@@ -691,9 +592,22 @@ mod platform {
     use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
     use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
     use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, OpenThread, ResumeThread, SuspendThread, PROCESS_QUERY_LIMITED_INFORMATION, THREAD_SUSPEND_RESUME};
+    use winreg::enums::{HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    use winreg::RegKey;
+
+    pub struct AutorunRevertResult {
+        pub removed_additions: usize,
+        pub restored_entries: usize,
+    }
+
+    const RUN_KEYS: [(&str, HKEY, &str); 4] = [
+        ("HKCU", HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Run"),
+        ("HKLM", HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Run"),
+        ("HKCU", HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\RunOnce"),
+        ("HKLM", HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\RunOnce"),
+    ];
 
     pub fn is_supported() -> bool { true }
-
     pub fn is_elevated() -> bool {
         unsafe {
             let mut token = HANDLE::default();
@@ -705,64 +619,79 @@ mod platform {
             ok && elevation.TokenIsElevated != 0
         }
     }
-
     pub fn process_exists(pid: u32) -> bool {
         unsafe {
-            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
-                Ok(handle) => { let _ = CloseHandle(handle); true }
-                Err(_) => false,
-            }
+            match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) { Ok(handle) => { let _ = CloseHandle(handle); true } Err(_) => false }
         }
     }
-
+    pub fn snapshot_autoruns() -> Result<AutorunSnapshot, String> {
+        let mut entries = Vec::new();
+        for (label, hive, key_path) in RUN_KEYS {
+            let root = RegKey::predef(hive);
+            let key = match root.open_subkey(key_path) { Ok(k) => k, Err(_) => continue };
+            for item in key.enum_values() {
+                let Ok((name, _value)) = item else { continue; };
+                let value_data = key.get_value::<String, _>(&name).unwrap_or_default();
+                entries.push(AutorunEntry { hive: label.to_string(), key_path: key_path.to_string(), value_name: name, value_data });
+            }
+        }
+        entries.sort_by(|a, b| (&a.hive, &a.key_path, &a.value_name).cmp(&(&b.hive, &b.key_path, &b.value_name)));
+        Ok(AutorunSnapshot { captured_at_unix: unix_now(), entries })
+    }
+    pub fn revert_autorun_changes(baseline: &[AutorunEntry]) -> Result<AutorunRevertResult, String> {
+        let current = snapshot_autoruns()?;
+        let mut baseline_map: BTreeMap<(String, String, String), String> = BTreeMap::new();
+        for entry in baseline { baseline_map.insert((entry.hive.clone(), entry.key_path.clone(), entry.value_name.clone()), entry.value_data.clone()); }
+        let mut current_map: BTreeMap<(String, String, String), String> = BTreeMap::new();
+        for entry in &current.entries { current_map.insert((entry.hive.clone(), entry.key_path.clone(), entry.value_name.clone()), entry.value_data.clone()); }
+        let mut removed_additions = 0usize;
+        let mut restored_entries = 0usize;
+        for (label, hive, key_path) in RUN_KEYS {
+            let root = RegKey::predef(hive);
+            let key = match root.create_subkey(key_path) { Ok((k, _)) => k, Err(e) => return Err(format!("failed to open autorun key {}\\{}: {e}", label, key_path)) };
+            for ((entry_hive, entry_path, value_name), current_value) in current_map.iter() {
+                if entry_hive != label || entry_path != key_path { continue; }
+                let lookup = (entry_hive.clone(), entry_path.clone(), value_name.clone());
+                if !baseline_map.contains_key(&lookup) {
+                    key.delete_value(value_name).map_err(|e| format!("failed to delete autorun value {}\\{}\\{}: {e}", label, key_path, value_name))?;
+                    removed_additions += 1;
+                } else if baseline_map.get(&lookup) != Some(current_value) {
+                    let baseline_value = baseline_map.get(&lookup).cloned().unwrap_or_default();
+                    key.set_value(value_name, &baseline_value).map_err(|e| format!("failed to restore autorun value {}\\{}\\{}: {e}", label, key_path, value_name))?;
+                    restored_entries += 1;
+                }
+            }
+            for ((entry_hive, entry_path, value_name), baseline_value) in baseline_map.iter() {
+                if entry_hive != label || entry_path != key_path { continue; }
+                let lookup = (entry_hive.clone(), entry_path.clone(), value_name.clone());
+                if !current_map.contains_key(&lookup) {
+                    key.set_value(value_name, baseline_value).map_err(|e| format!("failed to restore missing autorun value {}\\{}\\{}: {e}", label, key_path, value_name))?;
+                    restored_entries += 1;
+                }
+            }
+        }
+        Ok(AutorunRevertResult { removed_additions, restored_entries })
+    }
     pub fn suspend_process(pid: u32) -> Result<(), String> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).map_err(|e| format!("failed to snapshot threads for PID {pid}: {e}"))? };
         if snapshot == INVALID_HANDLE_VALUE { return Err(format!("failed to snapshot threads for PID {pid}")); }
         let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
         let mut success_count = 0usize;
         let first = unsafe { Thread32First(snapshot, &mut entry).as_bool() };
-        if first {
-            loop {
-                if entry.th32OwnerProcessID == pid {
-                    unsafe {
-                        if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
-                            let result = SuspendThread(thread);
-                            let _ = CloseHandle(thread);
-                            if result != u32::MAX { success_count += 1; }
-                        }
-                    }
-                }
-                if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } { break; }
-            }
-        }
+        if first { loop { if entry.th32OwnerProcessID == pid { unsafe { if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) { let result = SuspendThread(thread); let _ = CloseHandle(thread); if result != u32::MAX { success_count += 1; } } } } if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } { break; } } }
         let _ = unsafe { CloseHandle(snapshot) };
         if success_count == 0 { Err(format!("no suspendable threads were found for PID {pid}")) } else { Ok(()) }
     }
-
     pub fn resume_process(pid: u32) -> Result<(), String> {
         let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0).map_err(|e| format!("failed to snapshot threads for PID {pid}: {e}"))? };
         if snapshot == INVALID_HANDLE_VALUE { return Err(format!("failed to snapshot threads for PID {pid}")); }
         let mut entry = THREADENTRY32 { dwSize: std::mem::size_of::<THREADENTRY32>() as u32, ..Default::default() };
         let mut success_count = 0usize;
         let first = unsafe { Thread32First(snapshot, &mut entry).as_bool() };
-        if first {
-            loop {
-                if entry.th32OwnerProcessID == pid {
-                    unsafe {
-                        if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) {
-                            let result = ResumeThread(thread);
-                            let _ = CloseHandle(thread);
-                            if result != u32::MAX { success_count += 1; }
-                        }
-                    }
-                }
-                if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } { break; }
-            }
-        }
+        if first { loop { if entry.th32OwnerProcessID == pid { unsafe { if let Ok(thread) = OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) { let result = ResumeThread(thread); let _ = CloseHandle(thread); if result != u32::MAX { success_count += 1; } } } } if !unsafe { Thread32Next(snapshot, &mut entry).as_bool() } { break; } } }
         let _ = unsafe { CloseHandle(snapshot) };
         if success_count == 0 { Err(format!("no resumable threads were found for PID {pid}")) } else { Ok(()) }
     }
-
     pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
         let path = hosts_path()?;
         let existing = fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -772,7 +701,6 @@ mod platform {
         let _ = flush_dns();
         Ok(())
     }
-
     pub fn remove_domain_block(domain: &str, marker: &str) -> Result<(), String> {
         let path = hosts_path()?;
         let existing = fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
@@ -791,17 +719,8 @@ mod platform {
         let _ = flush_dns();
         Ok(())
     }
-
-    fn flush_dns() -> Result<(), String> {
-        let status = Command::new("ipconfig").arg("/flushdns").status().map_err(|e| format!("failed to spawn ipconfig: {e}"))?;
-        if status.success() { Ok(()) } else { Err("ipconfig /flushdns failed".into()) }
-    }
-
-    fn hosts_path() -> Result<PathBuf, String> {
-        let windows_dir = windows_directory().ok_or_else(|| "failed to resolve the Windows directory".to_string())?;
-        Ok(windows_dir.join("System32").join("drivers").join("etc").join("hosts"))
-    }
-
+    fn flush_dns() -> Result<(), String> { let status = Command::new("ipconfig").arg("/flushdns").status().map_err(|e| format!("failed to spawn ipconfig: {e}"))?; if status.success() { Ok(()) } else { Err("ipconfig /flushdns failed".into()) } }
+    fn hosts_path() -> Result<PathBuf, String> { let windows_dir = windows_directory().ok_or_else(|| "failed to resolve the Windows directory".to_string())?; Ok(windows_dir.join("System32").join("drivers").join("etc").join("hosts")) }
     fn windows_directory() -> Option<PathBuf> {
         let mut buffer = vec![0u16; 260];
         unsafe {
@@ -817,7 +736,6 @@ mod platform {
             Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
         }
     }
-
     pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
         let local = match target.local { SocketAddr::V4(local) => local, SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily) };
         let remote = match target.remote { SocketAddr::V4(remote) => remote, SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily) };
@@ -825,34 +743,21 @@ mod platform {
         let status = unsafe { SetTcpEntry(&row) };
         if status == NO_ERROR { Ok(()) } else if status == ERROR_ACCESS_DENIED.0 { Err(SocketKillError::PermissionDenied) } else { Err(SocketKillError::OsError(status)) }
     }
-
-    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
-        let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), "dir=out", "action=block", &format!("remoteip={target}"), "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("failed to add firewall rule for {target}")) }
-    }
-
-    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
-        let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), &format!("dir={dir}"), "action=block", "remoteip=any", "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("failed to add isolation rule {rule_name}")) }
-    }
-
-    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
-        let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), &format!("dir={dir}"), "action=block", &format!("program={path}"), "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("failed to add process firewall rule {rule_name}")) }
-    }
-
-    pub fn delete_rule(rule_name: &str) -> Result<(), String> {
-        let status = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={rule_name}")]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("failed to delete firewall rule {rule_name}")) }
-    }
+    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> { let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), "dir=out", "action=block", &format!("remoteip={target}"), "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?; if status.success() { Ok(()) } else { Err(format!("failed to add firewall rule for {target}")) } }
+    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> { let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), &format!("dir={dir}"), "action=block", "remoteip=any", "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?; if status.success() { Ok(()) } else { Err(format!("failed to add isolation rule {rule_name}")) } }
+    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> { let status = Command::new("netsh").args(["advfirewall", "firewall", "add", "rule", &format!("name={rule_name}"), &format!("dir={dir}"), "action=block", &format!("program={path}"), "profile=any", "enable=yes"]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?; if status.success() { Ok(()) } else { Err(format!("failed to add process firewall rule {rule_name}")) } }
+    pub fn delete_rule(rule_name: &str) -> Result<(), String> { let status = Command::new("netsh").args(["advfirewall", "firewall", "delete", "rule", &format!("name={rule_name}")]).status().map_err(|e| format!("failed to spawn netsh: {e}"))?; if status.success() { Ok(()) } else { Err(format!("failed to delete firewall rule {rule_name}")) } }
 }
 
 #[cfg(not(windows))]
 mod platform {
     use super::*;
+    pub struct AutorunRevertResult { pub removed_additions: usize, pub restored_entries: usize }
     pub fn is_supported() -> bool { false }
     pub fn is_elevated() -> bool { false }
     pub fn process_exists(_pid: u32) -> bool { false }
+    pub fn snapshot_autoruns() -> Result<AutorunSnapshot, String> { Err("Autorun freezing is not implemented on this platform.".into()) }
+    pub fn revert_autorun_changes(_baseline: &[AutorunEntry]) -> Result<AutorunRevertResult, String> { Err("Autorun revert is not implemented on this platform.".into()) }
     pub fn suspend_process(_pid: u32) -> Result<(), String> { Err("Process suspension is not implemented on this platform.".into()) }
     pub fn resume_process(_pid: u32) -> Result<(), String> { Err("Process resume is not implemented on this platform.".into()) }
     pub fn add_domain_block(_domain: &str, _marker: &str) -> Result<(), String> { Err("Domain blocking is not implemented on this platform.".into()) }
@@ -867,90 +772,44 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget { BlockedTarget { target: target.to_string(), rule_name: format!("rule-{target}"), expires_at_unix } }
     fn blocked_process(path: &str, expires_at_unix: Option<u64>) -> BlockedProcess { BlockedProcess { pid: 1234, path: path.to_string(), inbound_rule_name: format!("in-{path}"), outbound_rule_name: format!("out-{path}"), expires_at_unix } }
     fn blocked_domain(domain: &str) -> BlockedDomain { BlockedDomain { domain: domain.to_string(), marker: domain_marker(domain) } }
     fn suspended_process(pid: u32, path: &str) -> SuspendedProcess { SuspendedProcess { pid, path: path.to_string(), proc_name: "app.exe".into(), suspended_at_unix: 10 } }
-
-    fn conn(local: &str, remote: &str, status: &str) -> ConnInfo {
-        ConnInfo {
-            timestamp: "12:00:00".into(), proc_name: "evil.exe".into(), pid: 4242, proc_path: "C:/Temp/evil.exe".into(), proc_user: "user".into(), parent_name: "cmd.exe".into(), parent_pid: 123, service_name: String::new(), publisher: String::new(), local_addr: local.into(), remote_addr: remote.into(), status: status.into(), score: 9, reasons: vec!["test".into()], ancestor_chain: vec![("cmd.exe".into(), 123)], pre_login: false, hostname: Some("c2.bad.example".into()), country: None, asn: None, asn_org: None, reputation_hit: None, recently_dropped: false, long_lived: false, dga_like: false,
-        }
-    }
-
+    fn conn(local: &str, remote: &str, status: &str) -> ConnInfo { ConnInfo { timestamp: "12:00:00".into(), proc_name: "evil.exe".into(), pid: 4242, proc_path: "C:/Temp/evil.exe".into(), proc_user: "user".into(), parent_name: "cmd.exe".into(), parent_pid: 123, service_name: String::new(), publisher: String::new(), local_addr: local.into(), remote_addr: remote.into(), status: status.into(), score: 9, reasons: vec!["test".into()], ancestor_chain: vec![("cmd.exe".into(), 123)], pre_login: false, hostname: Some("c2.bad.example".into()), country: None, asn: None, asn_org: None, reputation_hit: None, recently_dropped: false, long_lived: false, dga_like: false } }
     #[test]
     fn reconcile_keeps_expired_entries_when_deletion_fails() {
-        let mut state = State { blocked: vec![blocked_target("10.0.0.1", Some(10))], blocked_processes: vec![blocked_process("C:/app.exe", Some(10))], blocked_domains: vec![blocked_domain("bad.example")], suspended_processes: vec![suspended_process(1234, "C:/app.exe")], isolated: false };
+        let mut state = State { blocked: vec![blocked_target("10.0.0.1", Some(10))], blocked_processes: vec![blocked_process("C:/app.exe", Some(10))], blocked_domains: vec![blocked_domain("bad.example")], suspended_processes: vec![suspended_process(1234, "C:/app.exe")], autorun_snapshot: None, isolated: false };
         let changed = reconcile_state(&mut state, 100, |_| false);
         assert!(!changed);
         assert_eq!(state.blocked.len(), 1);
         assert_eq!(state.blocked_processes.len(), 1);
         assert_eq!(state.blocked_domains.len(), 1);
     }
-
     #[test]
     fn reconcile_removes_expired_entries_after_successful_deletion() {
         let mut deleted = Vec::new();
-        let mut state = State { blocked: vec![blocked_target("10.0.0.1", Some(10))], blocked_processes: vec![blocked_process("C:/app.exe", Some(10))], blocked_domains: vec![], suspended_processes: vec![], isolated: false };
+        let mut state = State { blocked: vec![blocked_target("10.0.0.1", Some(10))], blocked_processes: vec![blocked_process("C:/app.exe", Some(10))], blocked_domains: vec![], suspended_processes: vec![], autorun_snapshot: None, isolated: false };
         let changed = reconcile_state(&mut state, 100, |rule| { deleted.push(rule.to_string()); true });
         assert!(changed);
         assert!(state.blocked.is_empty());
         assert!(state.blocked_processes.is_empty());
         assert_eq!(deleted, vec!["rule-10.0.0.1".to_string(), "in-C:/app.exe".to_string(), "out-C:/app.exe".to_string()]);
     }
-
     #[test]
-    fn process_blocks_match_by_path_only() {
-        let rule = BlockedProcess { pid: 1234, path: "C:/app.exe".into(), inbound_rule_name: "in".into(), outbound_rule_name: "out".into(), expires_at_unix: Some(200) };
-        assert!(process_block_matches(&rule, "C:/app.exe"));
-        assert!(!process_block_matches(&rule, "C:/other.exe"));
-    }
-
+    fn process_blocks_match_by_path_only() { let rule = BlockedProcess { pid: 1234, path: "C:/app.exe".into(), inbound_rule_name: "in".into(), outbound_rule_name: "out".into(), expires_at_unix: Some(200) }; assert!(process_block_matches(&rule, "C:/app.exe")); assert!(!process_block_matches(&rule, "C:/other.exe")); }
     #[test]
-    fn suspended_processes_match_on_pid_and_optional_path() {
-        let entry = suspended_process(1234, "C:/app.exe");
-        assert!(suspended_process_matches(&entry, 1234, "C:/app.exe"));
-        assert!(suspended_process_matches(&entry, 1234, ""));
-        assert!(!suspended_process_matches(&entry, 9999, "C:/app.exe"));
-    }
-
+    fn suspended_processes_match_on_pid_and_optional_path() { let entry = suspended_process(1234, "C:/app.exe"); assert!(suspended_process_matches(&entry, 1234, "C:/app.exe")); assert!(suspended_process_matches(&entry, 1234, "")); assert!(!suspended_process_matches(&entry, 9999, "C:/app.exe")); }
     #[test]
-    fn socket_kill_target_accepts_established_ipv4_connections() {
-        let parsed = socket_kill_target(&conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED")).unwrap();
-        assert_eq!(parsed.local.to_string(), "192.168.1.10:50000");
-        assert_eq!(parsed.remote.to_string(), "8.8.8.8:443");
-    }
-
+    fn socket_kill_target_accepts_established_ipv4_connections() { let parsed = socket_kill_target(&conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED")).unwrap(); assert_eq!(parsed.local.to_string(), "192.168.1.10:50000"); assert_eq!(parsed.remote.to_string(), "8.8.8.8:443"); }
     #[test]
-    fn socket_kill_target_rejects_listen_rows() {
-        let err = socket_kill_target(&conn("0.0.0.0:80", "0.0.0.0:0", "LISTEN")).unwrap_err();
-        assert!(matches!(err, SocketKillError::UnsupportedStatus(_)));
-    }
-
+    fn socket_kill_target_rejects_listen_rows() { let err = socket_kill_target(&conn("0.0.0.0:80", "0.0.0.0:0", "LISTEN")).unwrap_err(); assert!(matches!(err, SocketKillError::UnsupportedStatus(_))); }
     #[test]
-    fn socket_kill_target_rejects_invalid_remote() {
-        let err = socket_kill_target(&conn("192.168.1.10:50000", "not-an-endpoint", "ESTABLISHED")).unwrap_err();
-        assert!(matches!(err, SocketKillError::InvalidRemoteAddr(_)));
-    }
-
+    fn socket_kill_target_rejects_invalid_remote() { let err = socket_kill_target(&conn("192.168.1.10:50000", "not-an-endpoint", "ESTABLISHED")).unwrap_err(); assert!(matches!(err, SocketKillError::InvalidRemoteAddr(_))); }
     #[test]
-    fn socket_kill_target_rejects_ipv6_for_now() {
-        let err = socket_kill_target(&conn("[::1]:50000", "[2606:4700:4700::1111]:443", "ESTABLISHED")).unwrap_err();
-        assert!(matches!(err, SocketKillError::UnsupportedAddressFamily));
-    }
-
+    fn socket_kill_target_rejects_ipv6_for_now() { let err = socket_kill_target(&conn("[::1]:50000", "[2606:4700:4700::1111]:443", "ESTABLISHED")).unwrap_err(); assert!(matches!(err, SocketKillError::UnsupportedAddressFamily)); }
     #[test]
-    fn extract_remote_target_supports_ipv4_and_ipv6() {
-        assert_eq!(extract_remote_target("8.8.8.8:443").as_deref(), Some("8.8.8.8"));
-        assert_eq!(extract_remote_target("[2606:4700:4700::1111]:443").as_deref(), Some("2606:4700:4700::1111"));
-        assert_eq!(extract_remote_target("2606:4700:4700::1111:443").as_deref(), Some("2606:4700:4700::1111"));
-    }
-
+    fn extract_remote_target_supports_ipv4_and_ipv6() { assert_eq!(extract_remote_target("8.8.8.8:443").as_deref(), Some("8.8.8.8")); assert_eq!(extract_remote_target("[2606:4700:4700::1111]:443").as_deref(), Some("2606:4700:4700::1111")); assert_eq!(extract_remote_target("2606:4700:4700::1111:443").as_deref(), Some("2606:4700:4700::1111")); }
     #[test]
-    fn extract_domain_target_uses_hostname() {
-        let sample = conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED");
-        assert_eq!(extract_domain_target(&sample).as_deref(), Some("c2.bad.example"));
-        assert_eq!(extract_domain_from_hostname("8.8.8.8"), None);
-    }
+    fn extract_domain_target_uses_hostname() { let sample = conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED"); assert_eq!(extract_domain_target(&sample).as_deref(), Some("c2.bad.example")); assert_eq!(extract_domain_from_hostname("8.8.8.8"), None); }
 }
