@@ -33,7 +33,9 @@ pub struct BeaconTracker {
 
 impl BeaconTracker {
     pub fn new() -> Self {
-        Self { history: HashMap::new() }
+        Self {
+            history: HashMap::new(),
+        }
     }
 
     /// Record one connection from `pid` to `remote_ip` (may include port).
@@ -68,13 +70,12 @@ impl BeaconTracker {
         let mean: f64 = intervals.iter().sum::<f64>() / n;
 
         // Outside the "interesting" mean interval range → not regular C2 beaconing
-        if mean < MIN_MEAN_SECS || mean > MAX_MEAN_SECS {
+        if !(MIN_MEAN_SECS..=MAX_MEAN_SECS).contains(&mean) {
             return false;
         }
 
         // Population standard deviation
-        let variance: f64 =
-            intervals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
+        let variance: f64 = intervals.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / n;
         let stddev = variance.sqrt();
 
         stddev < MAX_STDDEV_SECS

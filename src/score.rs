@@ -10,11 +10,16 @@
 //!   +3  executable running from a suspicious directory
 //!   +3  suspicious parent process (Office → shell, etc.)
 //!   +3  beaconing pattern detected (C2 callback timing signature)
+//!   +3  IP matched a user-supplied reputation blocklist (Phase 10)
+//!   +3  executable was dropped into a watched dir just before connecting (Phase 10)
 //!   +2  process not in trusted list
 //!   +2  no publisher / unsigned binary making an external connection
 //!   +2  DNS query from a non-DNS process (possible DNS tunneling)
 //!   +2  connection observed before any interactive user login (boot-time
 //!        persistence — classic rootkit / dropper signal)
+//!   +2  connection to an unexpected country (Phase 10, requires allowed_countries)
+//!   +2  long-lived connection past threshold for untrusted process (Phase 10)
+//!   +2  hostname looks DGA-generated (high Shannon entropy) (Phase 10)
 //!   +1  unusual destination port (not in common_ports) for untrusted process
 
 use crate::config::Config;
@@ -44,6 +49,19 @@ pub struct ScoreInput<'a> {
     /// was captured by Vigil running as a boot-time service / daemon before
     /// anyone logged in.
     pub pre_login: bool,
+
+    // ── Phase 10 inputs ──────────────────────────────────────────────────────
+    /// Name of the matching blocklist file (stem), or `None` if no match.
+    pub reputation_hit: Option<&'a str>,
+    /// ISO country code for the remote IP, uppercase (e.g. "US"), when known.
+    pub country: Option<&'a str>,
+    /// Reverse-DNS hostname for the remote IP, when resolved.
+    pub hostname: Option<&'a str>,
+    /// `true` when the executable at `path` was dropped into a watched dir
+    /// within the configured correlation window.
+    pub recently_dropped: bool,
+    /// `true` when the connection has been open past the long-lived threshold.
+    pub long_lived: bool,
 }
 
 // ── Suspicious parent rules ───────────────────────────────────────────────────
@@ -51,22 +69,66 @@ pub struct ScoreInput<'a> {
 /// Office / document apps that should never spawn network-active shells.
 const SUSPICIOUS_PARENTS: &[(&str, &[&str])] = &[
     // Office apps spawning any shell / scripting engine
-    ("winword",    &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "wmic", "regsvr32", "rundll32"]),
-    ("excel",      &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta", "wmic", "regsvr32", "rundll32"]),
-    ("powerpnt",   &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta"]),
-    ("outlook",    &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta"]),
-    ("onenote",    &["cmd", "powershell", "pwsh", "wscript", "cscript"]),
+    (
+        "winword",
+        &[
+            "cmd",
+            "powershell",
+            "pwsh",
+            "wscript",
+            "cscript",
+            "mshta",
+            "wmic",
+            "regsvr32",
+            "rundll32",
+        ],
+    ),
+    (
+        "excel",
+        &[
+            "cmd",
+            "powershell",
+            "pwsh",
+            "wscript",
+            "cscript",
+            "mshta",
+            "wmic",
+            "regsvr32",
+            "rundll32",
+        ],
+    ),
+    (
+        "powerpnt",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta"],
+    ),
+    (
+        "outlook",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript", "mshta"],
+    ),
+    (
+        "onenote",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript"],
+    ),
     // PDF / browser spawning shells
-    ("acrord32",   &["cmd", "powershell", "pwsh", "wscript", "cscript"]),
-    ("acrobat",    &["cmd", "powershell", "pwsh", "wscript", "cscript"]),
+    (
+        "acrord32",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript"],
+    ),
+    (
+        "acrobat",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript"],
+    ),
     // Shells spawning shells (lateral movement)
-    ("cmd",        &["powershell", "pwsh"]),
+    ("cmd", &["powershell", "pwsh"]),
     ("powershell", &["cmd", "pwsh"]),
     // WMI provider host spawning shells (common malware vector)
-    ("wmiprvse",   &["cmd", "powershell", "pwsh", "wscript", "cscript"]),
+    (
+        "wmiprvse",
+        &["cmd", "powershell", "pwsh", "wscript", "cscript"],
+    ),
     // Task scheduler spawning unusual children
-    ("taskeng",    &["cmd", "powershell", "pwsh", "wscript"]),
-    ("schtasks",   &["cmd", "powershell", "pwsh", "wscript"]),
+    ("taskeng", &["cmd", "powershell", "pwsh", "wscript"]),
+    ("schtasks", &["cmd", "powershell", "pwsh", "wscript"]),
 ];
 
 // ── Scorer ────────────────────────────────────────────────────────────────────
@@ -84,14 +146,15 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
     }
 
     // ── Build lookup sets ─────────────────────────────────────────────────────
-    let trusted: std::collections::HashSet<String> =
-        cfg.trusted_processes.iter().map(|s| s.to_lowercase()).collect();
+    let trusted: std::collections::HashSet<String> = cfg
+        .trusted_processes
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
     let lolbins: std::collections::HashSet<String> =
         cfg.lolbins.iter().map(|s| s.to_lowercase()).collect();
-    let common_ports: std::collections::HashSet<u16> =
-        cfg.common_ports.iter().copied().collect();
-    let malware_ports: std::collections::HashSet<u16> =
-        cfg.malware_ports.iter().copied().collect();
+    let common_ports: std::collections::HashSet<u16> = cfg.common_ports.iter().copied().collect();
+    let malware_ports: std::collections::HashSet<u16> = cfg.malware_ports.iter().copied().collect();
 
     let is_trusted = trusted.contains(input.name);
 
@@ -108,10 +171,7 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
     //     the UI and we don't want to double-count the lack-of-path.
     const SAFE_NO_PATH: &[&str] = &["system", "kernel", "registry"];
     let is_ghost = input.name.starts_with('<') && input.name.ends_with('>');
-    if input.path.is_empty()
-        && !SAFE_NO_PATH.contains(&input.name)
-        && !is_ghost
-    {
+    if input.path.is_empty() && !SAFE_NO_PATH.contains(&input.name) && !is_ghost {
         s = s.saturating_add(3);
         reasons.push("No executable path (possible process injection / hollowing)".into());
     }
@@ -156,9 +216,7 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
     // +3  Beaconing pattern (regular C2 callback intervals)
     if input.beaconing {
         s = s.saturating_add(3);
-        reasons.push(
-            "Beaconing pattern detected (regular C2 callback timing signature)".into(),
-        );
+        reasons.push("Beaconing pattern detected (regular C2 callback timing signature)".into());
     }
 
     // +2  Pre-login / boot-time activity
@@ -166,21 +224,70 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>) {
     // classic rootkit / dropper callback signal.
     if input.pre_login {
         s = s.saturating_add(2);
-        reasons.push(
-            "Connection observed before user login (boot-time persistence)".into(),
-        );
+        reasons.push("Connection observed before user login (boot-time persistence)".into());
+    }
+
+    // ── Phase 10 rules ───────────────────────────────────────────────────────
+
+    // +3  IP reputation hit
+    if let Some(src) = input.reputation_hit {
+        s = s.saturating_add(3);
+        reasons.push(format!(
+            "Reputation hit: {} is in blocklist '{}'",
+            input.remote_ip, src
+        ));
+    }
+
+    // +3  Executable dropped into a watched dir right before connecting
+    if input.recently_dropped {
+        s = s.saturating_add(3);
+        reasons
+            .push("Executable was just dropped into a watched directory (possible dropper)".into());
+    }
+
+    // +2  Unexpected country (only when allowed_countries is non-empty)
+    if let Some(country) = input.country {
+        if !cfg.allowed_countries.is_empty()
+            && !cfg
+                .allowed_countries
+                .iter()
+                .any(|a| a.eq_ignore_ascii_case(country))
+        {
+            s = s.saturating_add(2);
+            reasons.push(format!("Connection to unexpected country: {country}"));
+        }
+    }
+
+    // +2  Long-lived connection from an untrusted process
+    if input.long_lived && !is_trusted {
+        s = s.saturating_add(2);
+        reasons.push(format!(
+            "Long-lived connection held open past {}s by untrusted process",
+            cfg.long_lived_secs,
+        ));
+    }
+
+    // +2  DGA-like hostname (Shannon entropy over leftmost label)
+    if let Some(host) = input.hostname {
+        if !host.is_empty() && crate::entropy::is_dga_like(host, cfg.dga_entropy_threshold) {
+            s = s.saturating_add(2);
+            reasons.push(format!("Hostname looks DGA-generated: {host}"));
+        }
     }
 
     // +2  DNS query from a non-DNS process (possible DNS tunneling / exfiltration)
     // System DNS resolvers are exempt; anything else querying port 53 is suspicious.
     const DNS_NATIVE: &[&str] = &[
-        "svchost", "dnscache", "dns", "systemd-resolved",
-        "resolved", "named", "unbound", "dnsmasq",
+        "svchost",
+        "dnscache",
+        "dns",
+        "systemd-resolved",
+        "resolved",
+        "named",
+        "unbound",
+        "dnsmasq",
     ];
-    if input.remote_port == 53
-        && !DNS_NATIVE.contains(&input.name)
-        && !is_trusted
-    {
+    if input.remote_port == 53 && !DNS_NATIVE.contains(&input.name) && !is_trusted {
         s = s.saturating_add(2);
         reasons.push(format!(
             "DNS query from non-DNS process: {} (possible DNS tunneling)",
@@ -225,7 +332,9 @@ mod tests {
     use super::*;
     use crate::config::Config;
 
-    fn cfg() -> Config { Config::default() }
+    fn cfg() -> Config {
+        Config::default()
+    }
 
     fn input<'a>(
         name: &'a str,
@@ -235,32 +344,54 @@ mod tests {
         status: &'a str,
     ) -> ScoreInput<'a> {
         ScoreInput {
-            name, path, publisher: "", remote_ip, remote_port, status,
-            ancestors: &[], beaconing: false, pre_login: false,
+            name,
+            path,
+            publisher: "",
+            remote_ip,
+            remote_port,
+            status,
+            ancestors: &[],
+            beaconing: false,
+            pre_login: false,
+            reputation_hit: None,
+            country: None,
+            hostname: None,
+            recently_dropped: false,
+            long_lived: false,
         }
     }
 
     #[test]
     fn listen_no_remote_is_zero() {
         let (s, r) = score(&input("vigil", "", "", 0, "LISTEN"), &cfg());
-        assert_eq!(s, 0); assert!(r.is_empty());
+        assert_eq!(s, 0);
+        assert!(r.is_empty());
     }
 
     #[test]
     fn loopback_127_is_zero() {
-        let (s, _) = score(&input("unknown", "/bin/unknown", "127.0.0.1", 8080, "ESTABLISHED"), &cfg());
+        let (s, _) = score(
+            &input("unknown", "/bin/unknown", "127.0.0.1", 8080, "ESTABLISHED"),
+            &cfg(),
+        );
         assert_eq!(s, 0);
     }
 
     #[test]
     fn loopback_ipv6_is_zero() {
-        let (s, _) = score(&input("unknown", "/bin/unknown", "::1", 9000, "ESTABLISHED"), &cfg());
+        let (s, _) = score(
+            &input("unknown", "/bin/unknown", "::1", 9000, "ESTABLISHED"),
+            &cfg(),
+        );
         assert_eq!(s, 0);
     }
 
     #[test]
     fn no_path_adds_three() {
-        let (s, r) = score(&input("strangething", "", "1.2.3.4", 443, "ESTABLISHED"), &cfg());
+        let (s, r) = score(
+            &input("strangething", "", "1.2.3.4", 443, "ESTABLISHED"),
+            &cfg(),
+        );
         // +3 no path  +2 untrusted  +2 unsigned(skip — path empty)  (port 443 common)
         assert_eq!(s, 5);
         assert!(r.iter().any(|r| r.contains("injection")));
@@ -275,7 +406,13 @@ mod tests {
     #[test]
     fn suspicious_path_adds_three() {
         let (s, r) = score(
-            &input("myapp", r"C:\Users\raul\AppData\Roaming\myapp.exe", "8.8.8.8", 443, "ESTABLISHED"),
+            &input(
+                "myapp",
+                r"C:\Users\raul\AppData\Roaming\myapp.exe",
+                "8.8.8.8",
+                443,
+                "ESTABLISHED",
+            ),
             &cfg(),
         );
         // +3 path  +2 untrusted  +2 unsigned  (port 443 common)
@@ -296,6 +433,11 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None,
+                country: None,
+                hostname: None,
+                recently_dropped: false,
+                long_lived: false,
             },
             &cfg(),
         );
@@ -307,7 +449,13 @@ mod tests {
     #[test]
     fn malware_port_adds_five() {
         let (s, r) = score(
-            &input("badthing", r"C:\Windows\Temp\badthing.exe", "198.51.100.1", 4444, "ESTABLISHED"),
+            &input(
+                "badthing",
+                r"C:\Windows\Temp\badthing.exe",
+                "198.51.100.1",
+                4444,
+                "ESTABLISHED",
+            ),
             &cfg(),
         );
         // +3 suspicious path  +5 malware port  +2 untrusted  +2 unsigned
@@ -329,6 +477,11 @@ mod tests {
                 ancestors: &ancestors,
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None,
+                country: None,
+                hostname: None,
+                recently_dropped: false,
+                long_lived: false,
             },
             &cfg(),
         );
@@ -340,8 +493,13 @@ mod tests {
     #[test]
     fn trusted_on_common_port_is_zero() {
         let (s, _) = score(
-            &input("chrome", r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                   "142.250.80.46", 443, "ESTABLISHED"),
+            &input(
+                "chrome",
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                "142.250.80.46",
+                443,
+                "ESTABLISHED",
+            ),
             &cfg(),
         );
         assert_eq!(s, 0);
@@ -360,6 +518,11 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: false,
+                reputation_hit: None,
+                country: None,
+                hostname: None,
+                recently_dropped: false,
+                long_lived: false,
             },
             &cfg(),
         );
@@ -381,6 +544,11 @@ mod tests {
                 ancestors: &[],
                 beaconing: true,
                 pre_login: false,
+                reputation_hit: None,
+                country: None,
+                hostname: None,
+                recently_dropped: false,
+                long_lived: false,
             },
             &cfg(),
         );
@@ -392,7 +560,13 @@ mod tests {
     #[test]
     fn dns_query_from_untrusted_process_adds_two() {
         let (s, r) = score(
-            &input("strangething", r"C:\Temp\strangething.exe", "8.8.8.8", 53, "ESTABLISHED"),
+            &input(
+                "strangething",
+                r"C:\Temp\strangething.exe",
+                "8.8.8.8",
+                53,
+                "ESTABLISHED",
+            ),
             &cfg(),
         );
         // +3 suspicious path  +2 untrusted  +2 unsigned  +2 DNS tunneling
@@ -425,6 +599,11 @@ mod tests {
                 ancestors: &[],
                 beaconing: false,
                 pre_login: true,
+                reputation_hit: None,
+                country: None,
+                hostname: None,
+                recently_dropped: false,
+                long_lived: false,
             },
             &cfg(),
         );
@@ -433,11 +612,154 @@ mod tests {
         assert!(r.iter().any(|r| r.contains("before user login")));
     }
 
+    // ── Phase 10 tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn reputation_hit_adds_three() {
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "45.141.84.15",
+            443,
+            "ESTABLISHED",
+        );
+        inp.reputation_hit = Some("abuseipdb");
+        let (s, r) = score(&inp, &cfg());
+        // chrome trusted, port 443 common, +3 blocklist
+        assert_eq!(s, 3);
+        assert!(r.iter().any(|r| r.contains("abuseipdb")));
+    }
+
+    #[test]
+    fn unexpected_country_adds_two_when_allowlist_set() {
+        let mut cfg = cfg();
+        cfg.allowed_countries = vec!["US".into(), "GB".into()];
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.country = Some("RU");
+        let (s, r) = score(&inp, &cfg);
+        assert_eq!(s, 2);
+        assert!(r.iter().any(|r| r.contains("unexpected country")));
+    }
+
+    #[test]
+    fn allowed_country_does_not_score() {
+        let mut cfg = cfg();
+        cfg.allowed_countries = vec!["US".into()];
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.country = Some("US");
+        let (s, _) = score(&inp, &cfg);
+        assert_eq!(s, 0);
+    }
+
+    #[test]
+    fn empty_allowlist_skips_country_rule() {
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.country = Some("RU");
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
+    }
+
+    #[test]
+    fn recently_dropped_adds_three() {
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.recently_dropped = true;
+        let (s, r) = score(&inp, &cfg());
+        assert_eq!(s, 3);
+        assert!(r.iter().any(|r| r.contains("dropped")));
+    }
+
+    #[test]
+    fn long_lived_adds_two_only_for_untrusted() {
+        // Trusted: skipped
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.long_lived = true;
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
+
+        // Untrusted: +2
+        let mut inp = input(
+            "unknownthing",
+            r"C:\Program Files\Unknown\u.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.long_lived = true;
+        let (s, _) = score(&inp, &cfg());
+        // +2 untrusted + 2 unsigned + 2 long-lived
+        assert_eq!(s, 6);
+    }
+
+    #[test]
+    fn dga_hostname_adds_two() {
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.hostname = Some("xj4k8s9qzr.example.com");
+        let (s, r) = score(&inp, &cfg());
+        assert_eq!(s, 2);
+        assert!(r.iter().any(|r| r.contains("DGA-generated")));
+    }
+
+    #[test]
+    fn normal_hostname_does_not_score_dga() {
+        let mut inp = input(
+            "chrome",
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            "1.2.3.4",
+            443,
+            "ESTABLISHED",
+        );
+        inp.hostname = Some("www.google.com");
+        let (s, _) = score(&inp, &cfg());
+        assert_eq!(s, 0);
+    }
+
     #[test]
     fn svchost_dns_query_not_penalised() {
         // svchost is trusted, so no DNS tunneling penalty
         let (s, _) = score(
-            &input("svchost", r"C:\Windows\System32\svchost.exe", "8.8.8.8", 53, "ESTABLISHED"),
+            &input(
+                "svchost",
+                r"C:\Windows\System32\svchost.exe",
+                "8.8.8.8",
+                53,
+                "ESTABLISHED",
+            ),
             &cfg(),
         );
         assert_eq!(s, 0); // svchost trusted

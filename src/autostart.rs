@@ -20,6 +20,7 @@ pub fn disable() -> bool {
 }
 
 /// Check whether autostart is currently enabled.
+#[allow(dead_code)]
 pub fn is_enabled() -> bool {
     with_builder(|al| al.is_enabled().unwrap_or(false))
 }

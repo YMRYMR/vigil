@@ -18,17 +18,11 @@ pub enum Tab {
 }
 
 impl Tab {
-    /// Human-readable label, optionally with a badge count for Alerts.
-    pub fn label(self, unseen: usize) -> String {
+    /// Human-readable label with live row counts.
+    pub fn label(self, activity_count: usize, alerts_count: usize) -> String {
         match self {
-            Tab::Activity => "Activity".into(),
-            Tab::Alerts => {
-                if unseen > 0 {
-                    format!("Alerts  ({unseen})")
-                } else {
-                    "Alerts".into()
-                }
-            }
+            Tab::Activity => format!("Activity ({activity_count})"),
+            Tab::Alerts => format!("Alerts ({alerts_count})"),
             Tab::Settings => "Settings".into(),
             Tab::Help => "Help".into(),
         }
@@ -39,7 +33,7 @@ impl Tab {
 
 /// Draw the tab bar and return the newly-active tab (same as `active` if
 /// no tab was clicked).
-pub fn tab_bar(ui: &mut Ui, active: Tab, unseen_alerts: usize) -> Tab {
+pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: usize) -> Tab {
     let all = [Tab::Activity, Tab::Alerts, Tab::Settings, Tab::Help];
     let mut result = active;
 
@@ -56,15 +50,13 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, unseen_alerts: usize) -> Tab {
 
         for tab in all {
             let is_active = tab == active;
-            let badge_count = if tab == Tab::Alerts { unseen_alerts } else { 0 };
-            let label_str = tab.label(badge_count);
+            let label_str = tab.label(activity_count, alerts_count);
 
-            let text_color = if is_active {
-                theme::TEXT
-            } else {
-                theme::TEXT2
-            };
-            let text = RichText::new(&label_str).color(text_color).size(12.0);
+            let text_color = if is_active { theme::TEXT } else { theme::TEXT2 };
+            let text = RichText::new(&label_str)
+                .color(text_color)
+                .size(12.5)
+                .strong();
 
             let btn = egui::Button::new(text)
                 .fill(Color32::TRANSPARENT)
@@ -72,7 +64,7 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, unseen_alerts: usize) -> Tab {
                 .corner_radius(0.0)
                 .min_size(egui::vec2(0.0, 30.0));
 
-            let resp = ui.add(btn);
+            let resp = ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand);
 
             // 2 px ACCENT underline for the active tab
             if is_active {

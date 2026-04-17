@@ -15,12 +15,18 @@
 
 mod autostart;
 mod beacon;
+mod blocklist;
 mod config;
+mod entropy;
+mod fswatch;
+mod geoip;
 mod logger;
+mod longlived;
 mod monitor;
 mod notifier;
 mod process;
 mod registry;
+mod revdns;
 mod score;
 mod service;
 mod session;
@@ -94,6 +100,29 @@ fn main() {
     // ── Config ────────────────────────────────────────────────────────────────
     let cfg = Arc::new(RwLock::new(Config::load()));
 
+    // ── Phase 10 services ─────────────────────────────────────────────────────
+    // Each is a no-op when the relevant config entry is empty / disabled.
+    {
+        let c = cfg.read().unwrap();
+        geoip::init(&c.geoip_city_db, &c.geoip_asn_db);
+        blocklist::init(&c.blocklist_paths);
+        if c.fswatch_enabled {
+            fswatch::start();
+        }
+        if c.reverse_dns_enabled {
+            revdns::start();
+        }
+        let (n_lists, n_entries) = blocklist::stats();
+        tracing::info!(
+            "Phase 10: geoip={}, blocklists={} ({} entries), fswatch={}, revdns={}",
+            geoip::is_loaded(),
+            n_lists,
+            n_entries,
+            c.fswatch_enabled,
+            c.reverse_dns_enabled,
+        );
+    }
+
     // First-run: silently enable autostart
     {
         let mut w = cfg.write().unwrap();
@@ -120,13 +149,13 @@ fn main() {
     //                 when the user clicks a notification; cleared by VigilApp.
     // `pending_nav`:  filled with the ConnInfo from a clicked notification so
     //                 the UI can switch to Alerts and select the right row.
-    let show_window  = Arc::new(AtomicBool::new(false));
+    let show_window = Arc::new(AtomicBool::new(false));
     let show_window_tray = show_window.clone();
 
     let pending_nav: Arc<std::sync::Mutex<Option<crate::types::ConnInfo>>> =
         Arc::new(std::sync::Mutex::new(None));
     let pending_nav_tray = pending_nav.clone();
-    let pending_nav_ui   = pending_nav.clone();
+    let pending_nav_ui = pending_nav.clone();
 
     let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<tray::TrayCmd>(64);
 

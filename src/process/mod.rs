@@ -10,24 +10,24 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 /// All process context attached to a connection.
 #[derive(Debug, Clone, Default)]
 pub struct ProcessInfo {
-    pub name:         String,   // "chrome.exe"
-    pub name_key:     String,   // "chrome"   (lowercase, .exe stripped — for scoring)
-    pub path:         String,   // full exe path, empty if inaccessible
-    pub user:         String,
-    pub parent_name:  String,
-    pub parent_pid:   u32,
+    pub name: String,     // "chrome.exe"
+    pub name_key: String, // "chrome"   (lowercase, .exe stripped — for scoring)
+    pub path: String,     // full exe path, empty if inaccessible
+    pub user: String,
+    pub parent_name: String,
+    pub parent_pid: u32,
     /// Full ancestor chain: [(name, pid), …] from immediate parent to root.
     /// Capped at 8 levels to avoid runaway walks on deep trees.
-    pub ancestors:    Vec<(String, u32)>,
-    pub service_name: String,   // Windows SCM service name, if any
-    pub publisher:    String,   // PE CompanyName, Windows only
+    pub ancestors: Vec<(String, u32)>,
+    pub service_name: String, // Windows SCM service name, if any
+    pub publisher: String,    // PE CompanyName, Windows only
 }
 
 impl ProcessInfo {
     /// Fallback when the process is inaccessible.
     pub fn unknown(pid: u32) -> Self {
         Self {
-            name:     format!("<{pid}>"),
+            name: format!("<{pid}>"),
             name_key: format!("<{pid}>"),
             ..Default::default()
         }
@@ -78,10 +78,7 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
     // Walk the ancestor chain up to 8 levels.
     // We re-use the same System to avoid re-scanning the process table.
     let ancestors = walk_ancestors(proc.parent(), &mut sys);
-    let (parent_name, parent_pid) = ancestors
-        .first()
-        .cloned()
-        .unwrap_or_default();
+    let (parent_name, parent_pid) = ancestors.first().cloned().unwrap_or_default();
 
     let service_name = svc_map.get(&pid).cloned().unwrap_or_default();
     let publisher = publisher::get_publisher(&path);
@@ -101,10 +98,7 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
 
 /// Walk up the process tree starting from `start_pid`, returning
 /// `[(name, pid), …]` from immediate parent to root, capped at 8 levels.
-fn walk_ancestors(
-    start_pid: Option<Pid>,
-    sys: &mut System,
-) -> Vec<(String, u32)> {
+fn walk_ancestors(start_pid: Option<Pid>, sys: &mut System) -> Vec<(String, u32)> {
     const MAX_DEPTH: usize = 8;
     let mut chain = Vec::new();
     let mut current = start_pid;
@@ -146,9 +140,8 @@ pub fn build_service_map() -> std::collections::HashMap<u32, String> {
 #[cfg(windows)]
 fn windows_service_map() -> std::collections::HashMap<u32, String> {
     use windows::Win32::System::Services::{
-        EnumServicesStatusExW, OpenSCManagerW, SC_ENUM_PROCESS_INFO,
+        EnumServicesStatusExW, OpenSCManagerW, ENUM_SERVICE_STATUS_PROCESSW, SC_ENUM_PROCESS_INFO,
         SC_MANAGER_ENUMERATE_SERVICE, SERVICE_STATE_ALL, SERVICE_WIN32,
-        ENUM_SERVICE_STATUS_PROCESSW,
     };
 
     let mut map = std::collections::HashMap::new();
@@ -177,9 +170,8 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
         );
 
         if bytes_needed == 0 {
-            let _ = windows::Win32::Foundation::CloseHandle(
-                windows::Win32::Foundation::HANDLE(scm.0)
-            );
+            let _ =
+                windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
             return map;
         }
 
@@ -213,9 +205,7 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
             }
         }
 
-        let _ = windows::Win32::Foundation::CloseHandle(
-            windows::Win32::Foundation::HANDLE(scm.0)
-        );
+        let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
     }
 
     map

@@ -1,6 +1,6 @@
 [package]
 name        = "vigil"
-version     = "0.1.0"
+version     = "1.3.0"
 edition     = "2021"
 description = "Real-time network threat monitor"
 license     = "MIT"
@@ -50,6 +50,19 @@ dashmap = "5"
 
 # Autostart at login (cross-platform)
 auto-launch = "0.6.0"
+
+# ── Phase 10: Reputation & Telemetry ─────────────────────────────────────────
+# MaxMind GeoLite2 offline geolocation + ASN lookup (pure-rust, no network I/O).
+# The DB files are not shipped with Vigil; users download them from MaxMind and
+# point the config at them.  When the paths are empty, geoip scoring is a no-op.
+maxminddb = "0.24"
+# Cross-platform file-system watcher for correlating new .exe/.dll drops in
+# Temp/AppData/Downloads with network connections.
+notify = "6"
+# Cross-platform reverse-DNS via the OS resolver (thin wrapper over getnameinfo).
+dns-lookup = "2"
+# CIDR parsing for blocklists
+ipnetwork = "0.20"
 
 # ── Windows-only dependencies ─────────────────────────────────────────────────
 

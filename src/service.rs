@@ -25,8 +25,8 @@
 pub type CmdResult = Result<String, String>;
 
 pub fn install() -> CmdResult {
-    let exe = std::env::current_exe()
-        .map_err(|e| format!("could not resolve current exe path: {e}"))?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("could not resolve current exe path: {e}"))?;
     platform::install(&exe)
 }
 
@@ -49,19 +49,21 @@ mod platform {
         let bin_path = format!("\"{}\"", exe.display());
         let status = Command::new("sc")
             .args([
-                "create", SVC_NAME,
-                "binPath=", &bin_path,
-                "start=", "auto",
-                "DisplayName=", "Vigil Network Monitor",
+                "create",
+                SVC_NAME,
+                "binPath=",
+                &bin_path,
+                "start=",
+                "auto",
+                "DisplayName=",
+                "Vigil Network Monitor",
             ])
             .status()
             .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
         if !status.success() {
-            return Err(
-                "`sc create` failed.  Open an *elevated* Command Prompt \
+            return Err("`sc create` failed.  Open an *elevated* Command Prompt \
                  (Run as Administrator) and re-run `vigil --install-service`."
-                    .into(),
-            );
+                .into());
         }
 
         let _ = Command::new("sc").args(["start", SVC_NAME]).status();
@@ -79,10 +81,7 @@ mod platform {
             .status()
             .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
         if !status.success() {
-            return Err(
-                "`sc delete` failed.  Re-run from an elevated Command Prompt."
-                    .into(),
-            );
+            return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
         }
         Ok(format!("Removed Windows service `{SVC_NAME}`."))
     }
@@ -104,12 +103,10 @@ mod platform {
 
     pub fn install(exe: &Path) -> CmdResult {
         if !is_root() {
-            return Err(
-                "launchd daemons must be installed as root.  Re-run with:\n\
+            return Err("launchd daemons must be installed as root.  Re-run with:\n\
                  \n\
                  \u{00a0}\u{00a0}sudo vigil --install-service"
-                    .into(),
-            );
+                .into());
         }
 
         let plist = format!(
@@ -132,8 +129,12 @@ mod platform {
         std::fs::write(&path, plist.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         // Permissions: root:wheel 0644
-        let _ = Command::new("chown").args(["root:wheel", &path.display().to_string()]).status();
-        let _ = Command::new("chmod").args(["644", &path.display().to_string()]).status();
+        let _ = Command::new("chown")
+            .args(["root:wheel", &path.display().to_string()])
+            .status();
+        let _ = Command::new("chmod")
+            .args(["644", &path.display().to_string()])
+            .status();
 
         let status = Command::new("launchctl")
             .args(["load", "-w", &path.display().to_string()])
@@ -152,9 +153,7 @@ mod platform {
 
     pub fn uninstall() -> CmdResult {
         if !is_root() {
-            return Err(
-                "Re-run with:  sudo vigil --uninstall-service".into(),
-            );
+            return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
         let path = plist_path();
         if path.exists() {
@@ -193,12 +192,10 @@ mod platform {
 
     pub fn install(exe: &Path) -> CmdResult {
         if !is_root() {
-            return Err(
-                "systemd units must be installed as root.  Re-run with:\n\
+            return Err("systemd units must be installed as root.  Re-run with:\n\
                  \n\
                  \u{00a0}\u{00a0}sudo vigil --install-service"
-                    .into(),
-            );
+                .into());
         }
 
         let unit = format!(
@@ -269,7 +266,7 @@ mod platform {
 
 pub fn run_cmd(cmd: &str) -> i32 {
     let res = match cmd {
-        "install"   => install(),
+        "install" => install(),
         "uninstall" => uninstall(),
         _ => return 2,
     };
