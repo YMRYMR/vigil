@@ -187,8 +187,7 @@ mod platform {
     }
 
     fn schtasks_exe() -> PathBuf {
-        let windir = std::env::var_os("WINDIR").unwrap_or_else(|| "C:\\Windows".into());
-        PathBuf::from(windir).join("System32").join("schtasks.exe")
+        PathBuf::from(r"C:\Windows\System32\schtasks.exe")
     }
 
     fn create_high_privilege_task() -> bool {
