@@ -16,6 +16,7 @@ pub mod theme;
 use crate::active_response;
 use crate::auto_response;
 use crate::config::Config;
+use crate::response_rules;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
 use chrono::{Local, Timelike};
@@ -27,23 +28,8 @@ use tab_bar::Tab;
 use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TableState {
-    pub filter: String,
-    pub sort_col: usize,
-    pub sort_asc: bool,
-    #[serde(default)]
-    pub collapsed_pids: HashSet<u32>,
-}
-
-impl TableState {
-    pub fn new(default_col: usize, default_asc: bool) -> Self {
-        Self { filter: String::new(), sort_col: default_col, sort_asc: default_asc, collapsed_pids: HashSet::new() }
-    }
-    pub fn toggle(&mut self, col: usize) { if self.sort_col == col { self.sort_asc = !self.sort_asc; } else { self.sort_col = col; self.sort_asc = true; } }
-    pub fn arrow(&self, col: usize) -> &'static str { if self.sort_col == col { if self.sort_asc { " ^" } else { " v" } } else { "" } }
-    pub fn is_collapsed(&self, pid: u32) -> bool { self.collapsed_pids.contains(&pid) }
-    pub fn toggle_collapsed(&mut self, pid: u32) { if !self.collapsed_pids.insert(pid) { self.collapsed_pids.remove(&pid); } }
-}
+pub struct TableState { pub filter: String, pub sort_col: usize, pub sort_asc: bool, #[serde(default)] pub collapsed_pids: HashSet<u32> }
+impl TableState { pub fn new(default_col: usize, default_asc: bool) -> Self { Self { filter: String::new(), sort_col: default_col, sort_asc: default_asc, collapsed_pids: HashSet::new() } } pub fn toggle(&mut self, col: usize) { if self.sort_col == col { self.sort_asc = !self.sort_asc; } else { self.sort_col = col; self.sort_asc = true; } } pub fn arrow(&self, col: usize) -> &'static str { if self.sort_col == col { if self.sort_asc { " ^" } else { " v" } } else { "" } } pub fn is_collapsed(&self, pid: u32) -> bool { self.collapsed_pids.contains(&pid) } pub fn toggle_collapsed(&mut self, pid: u32) { if !self.collapsed_pids.insert(pid) { self.collapsed_pids.remove(&pid); } } }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct UiState { active_tab: Tab, activity_table: TableState, alerts_table: TableState }
@@ -51,69 +37,30 @@ impl Default for UiState { fn default() -> Self { Self { active_tab: Tab::Activi
 
 #[derive(Clone)]
 pub struct ProcessSelection {
-    pub pid: u32,
-    pub proc_name: String,
-    pub proc_path: String,
-    pub proc_user: String,
-    pub parent_name: String,
-    pub parent_pid: u32,
-    pub service_name: String,
-    pub publisher: String,
-    pub score: u8,
-    pub reasons: Vec<String>,
-    pub timestamp: String,
-    pub status: String,
-    pub remote_addr: String,
-    pub connection_count: usize,
-    pub distinct_ports: usize,
-    pub distinct_remotes: usize,
-    pub statuses: Vec<String>,
-    pub selected_connection: Option<ConnInfo>,
+    pub pid: u32, pub proc_name: String, pub proc_path: String, pub proc_user: String, pub parent_name: String, pub parent_pid: u32, pub service_name: String, pub publisher: String, pub score: u8, pub reasons: Vec<String>, pub timestamp: String, pub status: String, pub remote_addr: String, pub connection_count: usize, pub distinct_ports: usize, pub distinct_remotes: usize, pub statuses: Vec<String>, pub selected_connection: Option<ConnInfo>,
 }
 
 #[derive(Clone)]
-enum PendingResponse {
-    BlockRemote { target: String, preset: active_response::DurationPreset },
-    BlockDomain { domain: String },
-    BlockProcess { pid: u32, path: String, preset: active_response::DurationPreset },
-    SuspendProcess { pid: u32, path: String, proc_name: String },
-    ResumeProcess { pid: u32, path: String },
-    FreezeAutoruns,
-    RevertAutoruns,
-    QuarantineProfile { pid: u32, path: String, proc_name: String },
-    ClearQuarantineProfile { pid: u32, path: String },
-    KillConnection(ConnInfo),
-    UnblockRemote(String),
-    UnblockDomain(String),
-    UnblockProcess { pid: u32, path: String },
-    IsolateMachine,
-    RestoreNetwork,
-}
+enum PendingResponse { BlockRemote { target: String, preset: active_response::DurationPreset }, BlockDomain { domain: String }, BlockProcess { pid: u32, path: String, preset: active_response::DurationPreset }, SuspendProcess { pid: u32, path: String, proc_name: String }, ResumeProcess { pid: u32, path: String }, FreezeAutoruns, RevertAutoruns, QuarantineProfile { pid: u32, path: String, proc_name: String }, ClearQuarantineProfile { pid: u32, path: String }, KillConnection(ConnInfo), UnblockRemote(String), UnblockDomain(String), UnblockProcess { pid: u32, path: String }, IsolateMachine, RestoreNetwork }
 
-pub fn is_ghost_process_name(name: &str) -> bool {
-    let Some(inner) = name.trim().strip_prefix('<').and_then(|s| s.strip_suffix('>')) else { return false; };
-    !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit())
-}
+pub fn is_ghost_process_name(name: &str) -> bool { let Some(inner) = name.trim().strip_prefix('<').and_then(|s| s.strip_suffix('>')) else { return false; }; !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit()) }
 pub fn has_known_location(sel: &ProcessSelection) -> bool { !sel.proc_path.is_empty() && !is_ghost_process_name(&sel.proc_name) }
 
 pub struct VigilApp {
     activity: VecDeque<ConnInfo>, alerts: VecDeque<ConnInfo>, selected_activity: Option<ProcessSelection>, selected_alert: Option<ProcessSelection>, active_tab: Tab, unseen_alerts: usize,
     event_rx: broadcast::Receiver<ConnEvent>, tray_tx: std::sync::mpsc::SyncSender<TrayCmd>, show_window: Arc<AtomicBool>, pending_nav: Arc<Mutex<Option<ConnInfo>>>, cfg: Arc<RwLock<Config>>, settings: settings::SettingsDraft,
-    kill_confirm: bool, response_confirm: Option<PendingResponse>, response_status: active_response::Status, response_message: Option<(String, std::time::Instant)>, admin_message: Option<(String, std::time::Instant)>, auto_response_state: auto_response::EngineState,
+    kill_confirm: bool, response_confirm: Option<PendingResponse>, response_status: active_response::Status, response_message: Option<(String, std::time::Instant)>, admin_message: Option<(String, std::time::Instant)>, auto_response_state: auto_response::EngineState, response_rule_state: response_rules::EngineState,
     exit_requested: bool, last_response_reconcile: std::time::Instant, last_schedule_check: std::time::Instant, scheduled_lockdown_active: bool, paused: bool, activity_table: TableState, alerts_table: TableState,
 }
 const ACTIVITY_CAP: usize = 4096; const ALERTS_CAP: usize = 2048;
 
 impl VigilApp {
     pub fn new(cc: &eframe::CreationContext<'_>, cfg: Arc<RwLock<Config>>, event_rx: broadcast::Receiver<ConnEvent>, tray_tx: std::sync::mpsc::SyncSender<TrayCmd>, show_window: Arc<AtomicBool>, pending_nav: Arc<Mutex<Option<ConnInfo>>>) -> Self {
-        theme::apply(&cc.egui_ctx);
-        let settings = { let c = cfg.read().unwrap(); settings::SettingsDraft::from_config(&c) };
-        let persisted = cc.storage.and_then(|storage| eframe::get_value::<UiState>(storage, "ui")).unwrap_or_default();
-        cc.egui_ctx.request_repaint_after(std::time::Duration::from_millis(16));
-        Self { activity: VecDeque::new(), alerts: VecDeque::new(), selected_activity: None, selected_alert: None, active_tab: persisted.active_tab, unseen_alerts: 0, event_rx, tray_tx, show_window, pending_nav, cfg, settings, kill_confirm: false, response_confirm: None, response_status: active_response::status(), response_message: None, admin_message: None, auto_response_state: auto_response::EngineState::default(), exit_requested: false, last_response_reconcile: std::time::Instant::now(), last_schedule_check: std::time::Instant::now() - std::time::Duration::from_secs(60), scheduled_lockdown_active: false, paused: false, activity_table: persisted.activity_table, alerts_table: persisted.alerts_table }
+        theme::apply(&cc.egui_ctx); let settings = { let c = cfg.read().unwrap(); settings::SettingsDraft::from_config(&c) }; let persisted = cc.storage.and_then(|storage| eframe::get_value::<UiState>(storage, "ui")).unwrap_or_default(); cc.egui_ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        Self { activity: VecDeque::new(), alerts: VecDeque::new(), selected_activity: None, selected_alert: None, active_tab: persisted.active_tab, unseen_alerts: 0, event_rx, tray_tx, show_window, pending_nav, cfg, settings, kill_confirm: false, response_confirm: None, response_status: active_response::status(), response_message: None, admin_message: None, auto_response_state: auto_response::EngineState::default(), response_rule_state: response_rules::EngineState::default(), exit_requested: false, last_response_reconcile: std::time::Instant::now(), last_schedule_check: std::time::Instant::now() - std::time::Duration::from_secs(60), scheduled_lockdown_active: false, paused: false, activity_table: persisted.activity_table, alerts_table: persisted.alerts_table }
     }
     fn drain_events(&mut self) -> bool { use broadcast::error::TryRecvError; let mut handled=false; loop { match self.event_rx.try_recv() { Ok(event)=>{ handled=true; if self.paused { continue; } match event { ConnEvent::Alert(info)=>{ push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP); push_capped(&mut self.alerts, info.clone(), ALERTS_CAP); self.unseen_alerts += 1; let _ = self.tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone()))); self.maybe_apply_auto_response(&info); } ConnEvent::New(info)=>{ push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP); self.maybe_apply_auto_response(&info); } ConnEvent::Closed { .. }=>{} } } Err(TryRecvError::Empty)=>break, Err(TryRecvError::Lagged(n))=>tracing::warn!("UI dropped {n} broadcast events"), Err(TryRecvError::Closed)=>break } } handled }
-    fn maybe_apply_auto_response(&mut self, info: &ConnInfo) { let cfg = self.cfg.read().unwrap().clone(); if let Some(message) = auto_response::maybe_apply(info, &cfg, &mut self.auto_response_state) { self.response_message = Some((message, std::time::Instant::now())); self.response_status = active_response::status(); } }
+    fn maybe_apply_auto_response(&mut self, info: &ConnInfo) { let cfg = self.cfg.read().unwrap().clone(); if let Some(message) = auto_response::maybe_apply(info, &cfg, &mut self.auto_response_state) { self.response_message = Some((message, std::time::Instant::now())); self.response_status = active_response::status(); } if let Some(message) = response_rules::maybe_apply(info, &cfg, &mut self.response_rule_state) { self.response_message = Some((message, std::time::Instant::now())); self.response_status = active_response::status(); } }
     fn handle_inspector_action(&mut self, action: inspector::Action, ctx: &egui::Context) {
         let selected_info: Option<ProcessSelection> = match self.active_tab { Tab::Activity => self.selected_activity.clone(), Tab::Alerts => self.selected_alert.clone(), _ => None };
         match action {
@@ -140,11 +87,7 @@ impl VigilApp {
             inspector::Action::KillCancelled => self.kill_confirm=false,
         }
     }
-    fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
-        let mut action=None; ui.horizontal_centered(|ui| { ui.add_space(12.0); ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(16.0).strong()); ui.add_space(10.0);
-            let admin=crate::autostart::is_elevated(); let (label,color,filled)=if self.paused { ("Paused", theme::TEXT2, false) } else { ("Monitoring", theme::ACCENT, true) };
-            ui.horizontal_wrapped(|ui| { let (dot_rect,_) = ui.allocate_exact_size(egui::vec2(8.0,8.0), egui::Sense::hover()); if filled { ui.painter().circle_filled(dot_rect.center(),4.0,color); } else { ui.painter().circle_stroke(dot_rect.center(),4.0,egui::Stroke::new(1.4,color)); } ui.add_space(4.0); ui.label(egui::RichText::new(label).color(color).size(11.5)); ui.add_space(6.0); if admin { admin_chip(ui); } else { let relaunch=ui.add(admin_btn("Run as Admin")).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Relaunch Vigil with administrator privileges so it can inspect more network activity."); if relaunch.clicked() { action=Some(inspector::Action::RequestAdmin); } } if self.settings.scheduled_lockdown_enabled { let schedule_label=if self.scheduled_lockdown_active { format!(" Scheduled {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute) } else { format!(" Schedule {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute) }; ui.label(egui::RichText::new(schedule_label).color(if self.scheduled_lockdown_active { theme::DANGER } else { theme::TEXT2 }).background_color(if self.scheduled_lockdown_active { theme::DANGER_BG } else { theme::SURFACE2 }).size(10.0).strong()); } if self.response_status.frozen_autoruns { ui.label(egui::RichText::new(" Autoruns frozen ").color(theme::WARN).background_color(theme::WARN_BG).size(10.0).strong()); } });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(12.0); let btn_label=if self.paused { "Resume" } else { "Pause" }; let btn=egui::Button::new(egui::RichText::new(btn_label).color(theme::TEXT2).size(11.0)).fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(4.0); let resp=ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand); if resp.clicked() { self.paused=!self.paused; if !self.paused { let _=self.tray_tx.try_send(TrayCmd::ResetOk); } } ui.add_space(8.0); let isolate_label=if self.response_status.isolated { "Restore Net" } else { "Isolate Net" }; let can_act=active_response::can_modify_firewall(); let resp_btn=ui.add_enabled(can_act, egui::Button::new(egui::RichText::new(isolate_label).color(theme::DANGER).size(11.0)).fill(theme::DANGER_BG).stroke(egui::Stroke::new(1.0, theme::DANGER)).corner_radius(4.0)); let resp_btn=if can_act { resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp_btn.on_hover_text("Administrator privileges are required for network isolation.") }; if resp_btn.clicked() { action=Some(if self.response_status.isolated { inspector::Action::RestoreNetwork } else { inspector::Action::IsolateMachine }); } }); }); action }
+    fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> { let mut action=None; ui.horizontal_centered(|ui| { ui.add_space(12.0); ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(16.0).strong()); ui.add_space(10.0); let admin=crate::autostart::is_elevated(); let (label,color,filled)=if self.paused { ("Paused", theme::TEXT2, false) } else { ("Monitoring", theme::ACCENT, true) }; ui.horizontal_wrapped(|ui| { let (dot_rect,_) = ui.allocate_exact_size(egui::vec2(8.0,8.0), egui::Sense::hover()); if filled { ui.painter().circle_filled(dot_rect.center(),4.0,color); } else { ui.painter().circle_stroke(dot_rect.center(),4.0,egui::Stroke::new(1.4,color)); } ui.add_space(4.0); ui.label(egui::RichText::new(label).color(color).size(11.5)); ui.add_space(6.0); if admin { admin_chip(ui); } else { let relaunch=ui.add(admin_btn("Run as Admin")).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Relaunch Vigil with administrator privileges so it can inspect more network activity."); if relaunch.clicked() { action=Some(inspector::Action::RequestAdmin); } } if self.settings.scheduled_lockdown_enabled { let schedule_label=if self.scheduled_lockdown_active { format!(" Scheduled {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute) } else { format!(" Schedule {:02}:{:02}-{:02}:{:02} ", self.settings.scheduled_lockdown_start_hour, self.settings.scheduled_lockdown_start_minute, self.settings.scheduled_lockdown_end_hour, self.settings.scheduled_lockdown_end_minute) }; ui.label(egui::RichText::new(schedule_label).color(if self.scheduled_lockdown_active { theme::DANGER } else { theme::TEXT2 }).background_color(if self.scheduled_lockdown_active { theme::DANGER_BG } else { theme::SURFACE2 }).size(10.0).strong()); } if self.response_status.frozen_autoruns { ui.label(egui::RichText::new(" Autoruns frozen ").color(theme::WARN).background_color(theme::WARN_BG).size(10.0).strong()); } }); ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| { ui.add_space(12.0); let btn_label=if self.paused { "Resume" } else { "Pause" }; let btn=egui::Button::new(egui::RichText::new(btn_label).color(theme::TEXT2).size(11.0)).fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(4.0); let resp=ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand); if resp.clicked() { self.paused=!self.paused; if !self.paused { let _=self.tray_tx.try_send(TrayCmd::ResetOk); } } ui.add_space(8.0); let isolate_label=if self.response_status.isolated { "Restore Net" } else { "Isolate Net" }; let can_act=active_response::can_modify_firewall(); let resp_btn=ui.add_enabled(can_act, egui::Button::new(egui::RichText::new(isolate_label).color(theme::DANGER).size(11.0)).fill(theme::DANGER_BG).stroke(egui::Stroke::new(1.0, theme::DANGER)).corner_radius(4.0)); let resp_btn=if can_act { resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand) } else { resp_btn.on_hover_text("Administrator privileges are required for network isolation.") }; if resp_btn.clicked() { action=Some(if self.response_status.isolated { inspector::Action::RestoreNetwork } else { inspector::Action::IsolateMachine }); } }); }); action }
 }
 
 impl eframe::App for VigilApp {
