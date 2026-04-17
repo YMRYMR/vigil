@@ -15,6 +15,7 @@ mod auto_response;
 mod autostart;
 mod beacon;
 mod blocklist;
+mod break_glass;
 mod config;
 mod entropy;
 mod forensics;
@@ -46,8 +47,9 @@ fn main() {
         match a.as_str() {
             "--install-service" => std::process::exit(service::run_cmd("install")),
             "--uninstall-service" => std::process::exit(service::run_cmd("uninstall")),
+            "--break-glass-recover" => std::process::exit(break_glass::recover_if_stale()),
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service     register Vigil as a boot-time service\n  --uninstall-service   remove the boot-time service\n  -h, --help            show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service      register Vigil as a boot-time service\n  --uninstall-service    remove the boot-time service\n  --break-glass-recover  watchdog entrypoint for network recovery\n  -h, --help             show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
@@ -81,6 +83,7 @@ fn main() {
     }
 
     active_response::reconcile();
+    break_glass::start_heartbeat_loop(cfg.clone());
 
     {
         let mut w = cfg.write().unwrap();
