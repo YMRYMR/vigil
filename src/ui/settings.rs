@@ -29,6 +29,11 @@ pub struct SettingsDraft {
     pub auto_isolate_machine: bool,
     pub auto_response_min_score: u8,
     pub auto_response_cooldown_secs: u64,
+    pub scheduled_lockdown_enabled: bool,
+    pub scheduled_lockdown_start_hour: u8,
+    pub scheduled_lockdown_start_minute: u8,
+    pub scheduled_lockdown_end_hour: u8,
+    pub scheduled_lockdown_end_minute: u8,
     pub status_msg: Option<(String, std::time::Instant)>,
 }
 
@@ -50,6 +55,11 @@ impl SettingsDraft {
             auto_isolate_machine: cfg.auto_isolate_machine,
             auto_response_min_score: cfg.auto_response_min_score,
             auto_response_cooldown_secs: cfg.auto_response_cooldown_secs,
+            scheduled_lockdown_enabled: cfg.scheduled_lockdown_enabled,
+            scheduled_lockdown_start_hour: cfg.scheduled_lockdown_start_hour,
+            scheduled_lockdown_start_minute: cfg.scheduled_lockdown_start_minute,
+            scheduled_lockdown_end_hour: cfg.scheduled_lockdown_end_hour,
+            scheduled_lockdown_end_minute: cfg.scheduled_lockdown_end_minute,
             status_msg: None,
         }
     }
@@ -68,6 +78,11 @@ impl SettingsDraft {
         cfg.auto_isolate_machine = self.auto_isolate_machine;
         cfg.auto_response_min_score = self.auto_response_min_score;
         cfg.auto_response_cooldown_secs = self.auto_response_cooldown_secs;
+        cfg.scheduled_lockdown_enabled = self.scheduled_lockdown_enabled;
+        cfg.scheduled_lockdown_start_hour = self.scheduled_lockdown_start_hour.min(23);
+        cfg.scheduled_lockdown_start_minute = self.scheduled_lockdown_start_minute.min(59);
+        cfg.scheduled_lockdown_end_hour = self.scheduled_lockdown_end_hour.min(23);
+        cfg.scheduled_lockdown_end_minute = self.scheduled_lockdown_end_minute.min(59);
         // trusted_filter is intentionally not persisted
     }
 }
@@ -258,6 +273,93 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         );
     }
 
+    // ── Scheduled lockdown ───────────────────────────────────────────────────
+    ui.add_space(16.0);
+    section_header(ui, "Scheduled lockdown");
+    ui.label(
+        RichText::new(
+            "Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible firewall rules as the panic button and is currently implemented on Windows.",
+        )
+        .color(theme::TEXT2)
+        .size(12.0),
+    );
+    ui.add_space(8.0);
+
+    setting_row(ui, label_w, "Enable schedule", |ui| {
+        *changed |= ui
+            .checkbox(
+                &mut draft.scheduled_lockdown_enabled,
+                RichText::new("automatically isolate the network during the selected hours")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
+    });
+
+    ui.add_enabled_ui(draft.scheduled_lockdown_enabled, |ui| {
+        setting_row(ui, label_w, "Start time", |ui| {
+            ui.horizontal(|ui| {
+                let hour = ui.add(
+                    egui::Slider::new(&mut draft.scheduled_lockdown_start_hour, 0_u8..=23_u8)
+                        .text("hour")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                let minute = ui.add(
+                    egui::Slider::new(&mut draft.scheduled_lockdown_start_minute, 0_u8..=59_u8)
+                        .text("minute")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                *changed |= hour.changed() || minute.changed();
+                ui.label(
+                    RichText::new(format!(
+                        "  starts at {:02}:{:02}",
+                        draft.scheduled_lockdown_start_hour, draft.scheduled_lockdown_start_minute
+                    ))
+                    .color(theme::TEXT3)
+                    .size(11.0),
+                );
+            });
+        });
+
+        setting_row(ui, label_w, "End time", |ui| {
+            ui.horizontal(|ui| {
+                let hour = ui.add(
+                    egui::Slider::new(&mut draft.scheduled_lockdown_end_hour, 0_u8..=23_u8)
+                        .text("hour")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                let minute = ui.add(
+                    egui::Slider::new(&mut draft.scheduled_lockdown_end_minute, 0_u8..=59_u8)
+                        .text("minute")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                *changed |= hour.changed() || minute.changed();
+                ui.label(
+                    RichText::new(format!(
+                        "  ends at {:02}:{:02}",
+                        draft.scheduled_lockdown_end_hour, draft.scheduled_lockdown_end_minute
+                    ))
+                    .color(theme::TEXT3)
+                    .size(11.0),
+                );
+            });
+        });
+
+        ui.label(
+            RichText::new("Overnight windows are supported. Example: 23:00 to 06:00 isolates overnight and restores in the morning.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
+    });
+
+    if !draft.scheduled_lockdown_enabled {
+        ui.label(
+            RichText::new("Scheduled lockdown is currently disabled.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
+    }
+
     // ── Startup ───────────────────────────────────────────────────────────────
     ui.add_space(16.0);
     section_header(ui, "Startup");
@@ -294,7 +396,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     );
     ui.add_space(10.0);
 
-    // ── Add / reset row ────────────────────────────────────────────────────────
     ui.horizontal(|ui| {
         let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
             .hint_text("process name…")
@@ -366,7 +467,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         }
     }
 
-    // ── Trusted list ──────────────────────────────────────────────────────────
     let mut remove_idx: Option<usize> = None;
 
     if draft.trusted_processes.is_empty() {
@@ -378,7 +478,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     } else {
         let total = draft.trusted_processes.len();
 
-        // Filter bar — only shown when there are more than 4 entries.
         if total > 4 {
             ui.horizontal(|ui| {
                 ui.add(
@@ -402,7 +501,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             ui.add_space(6.0);
         }
 
-        // Build the filtered index: (display_position → original_index).
         let filter_lower = draft.trusted_filter.to_lowercase();
         let filtered: Vec<usize> = draft
             .trusted_processes
@@ -416,7 +514,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
 
         let visible = filtered.len();
 
-        // Count label above the table.
         let count_label = if filter_lower.is_empty() || visible == total {
             format!("{} process{}", total, if total == 1 { "" } else { "es" })
         } else {
@@ -425,7 +522,6 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         ui.label(RichText::new(&count_label).color(theme::TEXT3).size(11.5));
         ui.add_space(8.0);
 
-        // Framed list.
         egui::Frame::NONE
             .fill(theme::SURFACE3)
             .stroke(egui::Stroke::new(1.0, theme::BORDER))
@@ -522,14 +618,10 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
 
     if let Some(idx) = remove_idx {
         draft.trusted_processes.remove(idx);
-        // Keep filter valid; no index fixup needed since we remove by original index.
         *changed = true;
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Section header: 3 px accent bar + bold label.
 fn section_header(ui: &mut egui::Ui, title: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(3.0, 16.0), egui::Sense::hover());
@@ -540,7 +632,6 @@ fn section_header(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
 }
 
-/// Two-column row: fixed-width label on the left, control closure on the right.
 fn setting_row(ui: &mut egui::Ui, label_w: f32, label: &str, ctrl: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
         ui.add_sized(
