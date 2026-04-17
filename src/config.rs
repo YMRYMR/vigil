@@ -90,6 +90,13 @@ pub struct Config {
     pub pcap_packet_size_bytes: u32,
     #[serde(default)]
     pub pcap_dir: String,
+
+    #[serde(default = "default_true")]
+    pub break_glass_enabled: bool,
+    #[serde(default = "default_break_glass_timeout_mins")]
+    pub break_glass_timeout_mins: u64,
+    #[serde(default = "default_break_glass_heartbeat_secs")]
+    pub break_glass_heartbeat_secs: u64,
 }
 
 fn default_true() -> bool { true }
@@ -108,6 +115,8 @@ fn default_pcap_min_score() -> u8 { 12 }
 fn default_pcap_duration_secs() -> u64 { 15 }
 fn default_pcap_cooldown_secs() -> u64 { 300 }
 fn default_pcap_packet_size_bytes() -> u32 { 0 }
+fn default_break_glass_timeout_mins() -> u64 { 10 }
+fn default_break_glass_heartbeat_secs() -> u64 { 30 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -133,38 +142,12 @@ impl Default for Config {
             malware_ports: vec![4444, 1337, 31337, 6666, 6667, 6668, 6669, 9999, 1234, 54321, 12345, 23, 5900, 5901, 4899, 8888],
             suspicious_path_fragments: [r"\Temp\", r"\AppData\Local\Temp\", r"\AppData\Roaming\", r"\Downloads\", r"\Public\", "/tmp/", "/var/tmp/"].into_iter().map(|s| s.to_string()).collect(),
             lolbins: vec!["cmd","powershell","pwsh","wscript","cscript","mshta","regsvr32","rundll32","certutil","bitsadmin","wmic","msiexec","installutil","regasm","regsvcs","forfiles"].iter().map(|s| s.to_string()).collect(),
-            geoip_city_db: String::new(),
-            geoip_asn_db: String::new(),
-            allowed_countries: Vec::new(),
-            blocklist_paths: Vec::new(),
-            fswatch_enabled: true,
-            fswatch_window_secs: 600,
-            long_lived_secs: 3600,
-            reverse_dns_enabled: false,
-            dga_entropy_threshold: 3.2,
-            auto_response_enabled: false,
-            auto_response_dry_run: true,
-            auto_kill_connection: false,
-            auto_block_remote: false,
-            auto_block_process: false,
-            auto_isolate_machine: false,
-            auto_response_min_score: 10,
-            auto_response_cooldown_secs: 300,
-            scheduled_lockdown_enabled: false,
-            scheduled_lockdown_start_hour: 23,
-            scheduled_lockdown_start_minute: 0,
-            scheduled_lockdown_end_hour: 6,
-            scheduled_lockdown_end_minute: 0,
-            process_dump_on_alert: false,
-            process_dump_min_score: 12,
-            process_dump_cooldown_secs: 600,
-            process_dump_dir: String::new(),
-            pcap_on_alert: false,
-            pcap_min_score: 12,
-            pcap_duration_secs: 15,
-            pcap_cooldown_secs: 300,
-            pcap_packet_size_bytes: 0,
-            pcap_dir: String::new(),
+            geoip_city_db: String::new(), geoip_asn_db: String::new(), allowed_countries: Vec::new(), blocklist_paths: Vec::new(), fswatch_enabled: true, fswatch_window_secs: 600, long_lived_secs: 3600, reverse_dns_enabled: false, dga_entropy_threshold: 3.2,
+            auto_response_enabled: false, auto_response_dry_run: true, auto_kill_connection: false, auto_block_remote: false, auto_block_process: false, auto_isolate_machine: false, auto_response_min_score: 10, auto_response_cooldown_secs: 300,
+            scheduled_lockdown_enabled: false, scheduled_lockdown_start_hour: 23, scheduled_lockdown_start_minute: 0, scheduled_lockdown_end_hour: 6, scheduled_lockdown_end_minute: 0,
+            process_dump_on_alert: false, process_dump_min_score: 12, process_dump_cooldown_secs: 600, process_dump_dir: String::new(),
+            pcap_on_alert: false, pcap_min_score: 12, pcap_duration_secs: 15, pcap_cooldown_secs: 300, pcap_packet_size_bytes: 0, pcap_dir: String::new(),
+            break_glass_enabled: true, break_glass_timeout_mins: 10, break_glass_heartbeat_secs: 30,
         }
     }
 }
@@ -191,42 +174,16 @@ pub fn config_path() -> PathBuf { data_dir().join("vigil.json") }
 
 impl Config {
     pub fn load() -> Self {
-        let path = config_path();
-        if !path.exists() { return Self::default(); }
+        let path = config_path(); if !path.exists() { return Self::default(); }
         std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<Config>(&s).ok()).unwrap_or_default()
     }
-
     pub fn save(&self) {
-        let path = config_path();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!("failed to create config directory: {e}");
-                return;
-            }
-        }
-        match serde_json::to_string_pretty(self) {
-            Ok(json) => { if let Err(e) = std::fs::write(&path, json) { tracing::warn!("failed to save config: {e}"); } }
-            Err(e) => tracing::warn!("failed to serialise config: {e}"),
-        }
+        let path = config_path(); if let Some(parent)=path.parent(){ if let Err(e)=std::fs::create_dir_all(parent){ tracing::warn!("failed to create config directory: {e}"); return; } }
+        match serde_json::to_string_pretty(self) { Ok(json)=>{ if let Err(e)=std::fs::write(&path, json){ tracing::warn!("failed to save config: {e}"); } } Err(e)=>tracing::warn!("failed to serialise config: {e}"), }
     }
-
-    #[allow(dead_code)]
-    pub fn get_trusted(&self) -> &[String] { &self.trusted_processes }
-
-    pub fn add_trusted(&mut self, name: &str) -> bool {
-        let key = normalise_name(name);
-        if key.is_empty() { return false; }
-        if self.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key)) { return false; }
-        self.trusted_processes.push(key);
-        true
-    }
-
-    #[allow(dead_code)]
-    pub fn remove_trusted(&mut self, name: &str) -> bool {
-        let before = self.trusted_processes.len();
-        self.trusted_processes.retain(|t| !t.eq_ignore_ascii_case(name));
-        self.trusted_processes.len() < before
-    }
+    #[allow(dead_code)] pub fn get_trusted(&self) -> &[String] { &self.trusted_processes }
+    pub fn add_trusted(&mut self, name: &str) -> bool { let key = normalise_name(name); if key.is_empty(){return false;} if self.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key)){return false;} self.trusted_processes.push(key); true }
+    #[allow(dead_code)] pub fn remove_trusted(&mut self, name: &str) -> bool { let before=self.trusted_processes.len(); self.trusted_processes.retain(|t| !t.eq_ignore_ascii_case(name)); self.trusted_processes.len() < before }
 }
 
 pub fn normalise_name(name: &str) -> String { name.trim().to_lowercase().trim_end_matches(".exe").to_string() }
@@ -243,4 +200,5 @@ mod tests {
     #[test] fn scheduled_lockdown_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.scheduled_lockdown_enabled); assert_eq!(cfg.scheduled_lockdown_start_hour, 23); assert_eq!(cfg.scheduled_lockdown_start_minute, 0); assert_eq!(cfg.scheduled_lockdown_end_hour, 6); assert_eq!(cfg.scheduled_lockdown_end_minute, 0); }
     #[test] fn process_dump_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.process_dump_on_alert); assert_eq!(cfg.process_dump_min_score, 12); assert_eq!(cfg.process_dump_cooldown_secs, 600); assert!(cfg.process_dump_dir.is_empty()); }
     #[test] fn pcap_defaults_are_safe() { let cfg = Config::default(); assert!(!cfg.pcap_on_alert); assert_eq!(cfg.pcap_min_score, 12); assert_eq!(cfg.pcap_duration_secs, 15); assert_eq!(cfg.pcap_cooldown_secs, 300); assert_eq!(cfg.pcap_packet_size_bytes, 0); assert!(cfg.pcap_dir.is_empty()); }
+    #[test] fn break_glass_defaults_are_safe() { let cfg = Config::default(); assert!(cfg.break_glass_enabled); assert_eq!(cfg.break_glass_timeout_mins, 10); assert_eq!(cfg.break_glass_heartbeat_secs, 30); }
 }
