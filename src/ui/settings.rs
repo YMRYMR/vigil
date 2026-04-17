@@ -21,6 +21,14 @@ pub struct SettingsDraft {
     pub new_trusted_input: String,
     /// UI-only filter string for the trusted processes table; never persisted.
     pub trusted_filter: String,
+    pub auto_response_enabled: bool,
+    pub auto_response_dry_run: bool,
+    pub auto_kill_connection: bool,
+    pub auto_block_remote: bool,
+    pub auto_block_process: bool,
+    pub auto_isolate_machine: bool,
+    pub auto_response_min_score: u8,
+    pub auto_response_cooldown_secs: u64,
     pub status_msg: Option<(String, std::time::Instant)>,
 }
 
@@ -34,6 +42,14 @@ impl SettingsDraft {
             trusted_processes: cfg.trusted_processes.clone(),
             new_trusted_input: String::new(),
             trusted_filter: String::new(),
+            auto_response_enabled: cfg.auto_response_enabled,
+            auto_response_dry_run: cfg.auto_response_dry_run,
+            auto_kill_connection: cfg.auto_kill_connection,
+            auto_block_remote: cfg.auto_block_remote,
+            auto_block_process: cfg.auto_block_process,
+            auto_isolate_machine: cfg.auto_isolate_machine,
+            auto_response_min_score: cfg.auto_response_min_score,
+            auto_response_cooldown_secs: cfg.auto_response_cooldown_secs,
             status_msg: None,
         }
     }
@@ -44,6 +60,14 @@ impl SettingsDraft {
         cfg.log_all_connections = self.log_all_connections;
         cfg.autostart = self.autostart;
         cfg.trusted_processes = self.trusted_processes.clone();
+        cfg.auto_response_enabled = self.auto_response_enabled;
+        cfg.auto_response_dry_run = self.auto_response_dry_run;
+        cfg.auto_kill_connection = self.auto_kill_connection;
+        cfg.auto_block_remote = self.auto_block_remote;
+        cfg.auto_block_process = self.auto_block_process;
+        cfg.auto_isolate_machine = self.auto_isolate_machine;
+        cfg.auto_response_min_score = self.auto_response_min_score;
+        cfg.auto_response_cooldown_secs = self.auto_response_cooldown_secs;
         // trusted_filter is intentionally not persisted
     }
 }
@@ -118,6 +142,122 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             .changed();
     });
 
+    // ── Auto response ─────────────────────────────────────────────────────────
+    ui.add_space(16.0);
+    section_header(ui, "Auto response");
+    ui.label(
+        RichText::new(
+            "Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.",
+        )
+        .color(theme::TEXT2)
+        .size(12.0),
+    );
+    ui.add_space(8.0);
+
+    setting_row(ui, label_w, "Enable auto response", |ui| {
+        *changed |= ui
+            .checkbox(
+                &mut draft.auto_response_enabled,
+                RichText::new("allow Vigil to take automated containment actions")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
+    });
+
+    setting_row(ui, label_w, "Dry run", |ui| {
+        *changed |= ui
+            .checkbox(
+                &mut draft.auto_response_dry_run,
+                RichText::new("log and surface planned actions without executing them")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
+    });
+
+    ui.add_enabled_ui(draft.auto_response_enabled, |ui| {
+        setting_row(ui, label_w, "Minimum score", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::Slider::new(&mut draft.auto_response_min_score, 6_u8..=20_u8)
+                        .clamping(egui::SliderClamping::Always),
+                );
+                *changed |= resp.changed();
+                ui.label(
+                    RichText::new(format!("  auto-response threshold: {}", draft.auto_response_min_score))
+                        .color(theme::TEXT3)
+                        .size(11.0),
+                );
+            });
+        });
+
+        setting_row(ui, label_w, "Cooldown", |ui| {
+            ui.horizontal(|ui| {
+                let resp = ui.add(
+                    egui::Slider::new(&mut draft.auto_response_cooldown_secs, 30_u64..=3600_u64)
+                        .suffix(" s")
+                        .clamping(egui::SliderClamping::Always),
+                );
+                *changed |= resp.changed();
+                ui.label(
+                    RichText::new("  suppress duplicate actions for the same target")
+                        .color(theme::TEXT3)
+                        .size(11.0),
+                );
+            });
+        });
+
+        setting_row(ui, label_w, "Auto kill connection", |ui| {
+            *changed |= ui
+                .checkbox(
+                    &mut draft.auto_kill_connection,
+                    RichText::new("terminate a live IPv4 TCP connection when high-confidence signals match")
+                        .color(theme::TEXT2)
+                        .size(11.5),
+                )
+                .changed();
+        });
+
+        setting_row(ui, label_w, "Auto block remote", |ui| {
+            *changed |= ui
+                .checkbox(
+                    &mut draft.auto_block_remote,
+                    RichText::new("optionally add a temporary 1-hour firewall rule for a suspicious remote IP")
+                        .color(theme::TEXT2)
+                        .size(11.5),
+                )
+                .changed();
+        });
+
+        setting_row(ui, label_w, "Auto block process", |ui| {
+            *changed |= ui
+                .checkbox(
+                    &mut draft.auto_block_process,
+                    RichText::new("optionally add temporary process firewall rules for stronger high-confidence matches")
+                        .color(theme::TEXT2)
+                        .size(11.5),
+                )
+                .changed();
+        });
+
+        setting_row(ui, label_w, "Auto isolate machine", |ui| {
+            ui.label(
+                RichText::new("reserved for future policy expansion; kept disabled in the current release")
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
+        });
+    });
+
+    if !draft.auto_response_enabled {
+        ui.label(
+            RichText::new("Auto response is currently disabled, so Vigil will only surface recommendations and manual actions.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
+    }
+
     // ── Startup ───────────────────────────────────────────────────────────────
     ui.add_space(16.0);
     section_header(ui, "Startup");
@@ -147,7 +287,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.add_space(6.0);
     ui.label(
         RichText::new(
-            "Trusted processes are exempt from routine penalties. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.",
+            "Trusted processes are exempt from routine penalties and automatic response. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.",
         )
         .color(theme::TEXT2)
         .size(12.0),
@@ -343,7 +483,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                                                 );
                                                 ui.label(
                                                     RichText::new(
-                                                        "Trusted for routine connections",
+                                                        "Trusted for routine connections and automation suppression",
                                                     )
                                                     .color(theme::TEXT3)
                                                     .size(9.6),
