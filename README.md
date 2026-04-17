@@ -157,8 +157,9 @@ editable in-app via the **Settings** tab:
 Vigil ships with a curated list of common trusted processes (browsers,
 Windows system services, antivirus, communication apps, etc.) so you get
 useful alerts out of the box without tuning. On first run that list is
-written into `vigil.json` as the starting config, and any later edits you
-make in-app persist immediately. You can add or remove entries in the
+written into `vigil.json` in the per-user Vigil data directory as the
+starting config, and any later edits you make in-app persist immediately.
+You can add or remove entries in the
 **Settings → Trusted Processes** grid, or click **Trust** in the Inspector
 panel while a real process with a known executable location is selected.
 The Settings tab also includes a `Reset shipped defaults` button if you want
