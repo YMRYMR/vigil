@@ -376,11 +376,12 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - Windows: `SetTcpEntry` with `MIB_TCP_STATE_DELETE_TCB` (requires admin)
   - Linux: `ss -K dst <ip> dport = <port>` (needs `CONFIG_INET_DIAG_DESTROY`) or `conntrack -D`
   - macOS: `pfctl` rule injection + state flush (no native socket-kill API)
-- [ ] **Block all connections from a process** (without killing it) — the user's explicit request
-  - Windows: add a transient WFP (Windows Filtering Platform) filter scoped to the process image path or PID; requires a signed WFP callout driver for PID scope, or a user-mode filter via `FwpmFilterAdd` for image-path scope
+- [x] **Block all connections from a process** (without killing it) — Windows implementation uses reversible firewall rules scoped to the executable path, with duration presets and cleanup on expiry
+  - Windows: implemented via temporary firewall rules bound to the process image path
   - Linux: `nftables` rule matching `meta skuid` / cgroup v2 `net_cls` — Vigil moves the offending PID into a quarantine cgroup that has a deny-all netfilter rule; process continues running but all new sockets are dropped
   - macOS: `pf` anchor per-process via `pfctl` + Network Extension content-filter (needs entitlement)
-  - UI: new "Quarantine process" button in inspector; shows countdown + "Release" button
+  - UI: inspector shows `Block process` / `Unblock process` with duration presets
+- [x] **Active-response UX** — temporary blocks show live countdowns and inline unblock buttons; the header reflects privilege state with `Admin` / `Run as Admin`
 - [x] **Block remote IP / CIDR** system-wide — temporary Windows firewall rule with confirmation, persisted state, and cleanup on expiry
 - [ ] **Block remote domain** — inject into `hosts` file or local DNS sinkhole
 - [ ] **Kill process** (current: manual) — add one-click "Terminate" in inspector with confirmation

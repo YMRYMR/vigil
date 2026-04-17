@@ -1,7 +1,8 @@
 //! Active response: reversible, auditable intervention actions.
 //!
-//! Phase 11 starts with two practical controls:
+//! Phase 11 starts with three practical controls:
 //! - block a remote IP or CIDR with a temporary Windows firewall rule
+//! - block all traffic for a process by executable path
 //! - isolate / restore the machine with paired firewall rules
 //!
 //! The module persists a tiny state file so rules can be reconciled and
@@ -14,18 +15,22 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
+const PROCESS_BLOCK_RULE_PREFIX: &str = "Vigil Proc Block";
 const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Status {
     pub blocked_rules: usize,
+    pub blocked_processes: usize,
     pub isolated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct State {
     blocked: Vec<BlockedTarget>,
+    #[serde(default)]
+    blocked_processes: Vec<BlockedProcess>,
     isolated: bool,
 }
 
@@ -33,6 +38,16 @@ struct State {
 struct BlockedTarget {
     target: String,
     rule_name: String,
+    expires_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BlockedProcess {
+    #[serde(default)]
+    pid: u32,
+    path: String,
+    inbound_rule_name: String,
+    outbound_rule_name: String,
     expires_at_unix: Option<u64>,
 }
 
@@ -57,7 +72,8 @@ impl DurationPreset {
 pub fn status() -> Status {
     let state = load_state().unwrap_or_default();
     Status {
-        blocked_rules: state.blocked.len(),
+        blocked_rules: state.blocked.len() + state.blocked_processes.len(),
+        blocked_processes: state.blocked_processes.len(),
         isolated: state.isolated,
     }
 }
@@ -81,6 +97,17 @@ pub fn reconcile() {
         let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
         if expired {
             let _ = platform::delete_rule(&rule.rule_name);
+            changed = true;
+            false
+        } else {
+            true
+        }
+    });
+    state.blocked_processes.retain(|rule| {
+        let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
+        if expired {
+            let _ = platform::delete_rule(&rule.inbound_rule_name);
+            let _ = platform::delete_rule(&rule.outbound_rule_name);
             changed = true;
             false
         } else {
@@ -142,6 +169,68 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     }
 }
 
+pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<String, String> {
+    ensure_modifiable()?;
+    let path = normalise_target(path)?;
+    let rule_suffix = rule_suffix_for_process(&path);
+    let outbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} Out {rule_suffix}");
+    let inbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} In {rule_suffix}");
+    let expires_at_unix = preset
+        .ttl()
+        .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
+
+    let _ = platform::delete_rule(&outbound_rule_name);
+    let _ = platform::delete_rule(&inbound_rule_name);
+    platform::add_block_program_rule(&outbound_rule_name, &path, "out")?;
+    platform::add_block_program_rule(&inbound_rule_name, &path, "in")?;
+
+    let mut state = load_state().unwrap_or_default();
+    state
+        .blocked_processes
+        .retain(|rule| rule.pid != pid || rule.path != path);
+    state.blocked_processes.push(BlockedProcess {
+        pid,
+        path: path.clone(),
+        inbound_rule_name,
+        outbound_rule_name,
+        expires_at_unix,
+    });
+    save_state(&state)?;
+
+    Ok(match preset {
+        DurationPreset::OneHour => format!("Blocked {path} for 1 hour."),
+        DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
+        DurationPreset::Permanent => format!("Blocked {path} until removed."),
+    })
+}
+
+pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let path = normalise_target(path)?;
+    let mut state = load_state().unwrap_or_default();
+    let mut removed = 0usize;
+    state.blocked_processes.retain(|rule| {
+        if (rule.pid == pid && rule.path == path) || (rule.pid == 0 && rule.path == path) {
+            let _ = platform::delete_rule(&rule.inbound_rule_name);
+            let _ = platform::delete_rule(&rule.outbound_rule_name);
+            removed += 1;
+            false
+        } else {
+            true
+        }
+    });
+    if removed > 0 {
+        save_state(&state)?;
+        Ok(format!(
+            "Removed {removed} process block(s) for PID {pid} ({path})."
+        ))
+    } else {
+        Ok(format!(
+            "No active process block found for PID {pid} ({path})."
+        ))
+    }
+}
+
 pub fn isolate_machine() -> Result<String, String> {
     ensure_modifiable()?;
     let _ = platform::delete_rule(ISOLATE_RULE_IN);
@@ -178,6 +267,53 @@ pub fn is_blocked(target: &str) -> bool {
         .unwrap_or(false)
 }
 
+pub fn remote_block_remaining(target: &str) -> Option<Duration> {
+    let target = normalise_target(target).ok()?;
+    let now = unix_now();
+    load_state()
+        .ok()
+        .and_then(|state| {
+            state
+                .blocked
+                .into_iter()
+                .find(|r| r.target == target)
+                .and_then(|rule| rule.expires_at_unix)
+        })
+        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+        .map(Duration::from_secs)
+}
+
+pub fn is_process_blocked(pid: u32, path: &str) -> bool {
+    let Ok(path) = normalise_target(path) else {
+        return false;
+    };
+    load_state()
+        .ok()
+        .map(|state| {
+            state
+                .blocked_processes
+                .iter()
+                .any(|r| (r.pid == pid && r.path == path) || (r.pid == 0 && r.path == path))
+        })
+        .unwrap_or(false)
+}
+
+pub fn process_block_remaining(pid: u32, path: &str) -> Option<Duration> {
+    let path = normalise_target(path).ok()?;
+    let now = unix_now();
+    load_state()
+        .ok()
+        .and_then(|state| {
+            state
+                .blocked_processes
+                .into_iter()
+                .find(|r| (r.pid == pid && r.path == path) || (r.pid == 0 && r.path == path))
+                .and_then(|rule| rule.expires_at_unix)
+        })
+        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+        .map(Duration::from_secs)
+}
+
 pub fn extract_remote_target(remote_addr: &str) -> Option<String> {
     let (host, port) = remote_addr.rsplit_once(':')?;
     if host.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
@@ -208,6 +344,14 @@ fn rule_name_for_target(target: &str) -> String {
     format!("{BLOCK_RULE_PREFIX} {}", sanitise_rule_suffix(target))
 }
 
+fn rule_suffix_for_process(path: &str) -> String {
+    let base = std::path::Path::new(path)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("process");
+    format!("{}-{:016x}", sanitise_rule_suffix(base), stable_hash(path))
+}
+
 fn sanitise_rule_suffix(text: &str) -> String {
     text.chars()
         .map(|c| {
@@ -218,6 +362,15 @@ fn sanitise_rule_suffix(text: &str) -> String {
             }
         })
         .collect()
+}
+
+fn stable_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for b in text.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn state_path() -> PathBuf {
@@ -332,6 +485,29 @@ mod platform {
         }
     }
 
+    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
+        let status = Command::new("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                &format!("dir={dir}"),
+                "action=block",
+                &format!("program={path}"),
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add process firewall rule {rule_name}"))
+        }
+    }
+
     pub fn delete_rule(rule_name: &str) -> Result<(), String> {
         let status = Command::new("netsh")
             .args([
@@ -366,6 +542,10 @@ mod platform {
     }
 
     pub fn add_block_all_rule(_rule_name: &str, _dir: &str) -> Result<(), String> {
+        Err("Active response is not implemented on this platform.".into())
+    }
+
+    pub fn add_block_program_rule(_rule_name: &str, _path: &str, _dir: &str) -> Result<(), String> {
         Err("Active response is not implemented on this platform.".into())
     }
 

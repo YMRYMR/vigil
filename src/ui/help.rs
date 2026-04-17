@@ -13,6 +13,13 @@ pub fn show(ui: &mut egui::Ui) {
             ui.add_space(16.0);
 
             if ui.available_width() > 780.0 {
+                card(ui, "Operator workflow", |ui| {
+                    field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
+                    field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
+                    field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
+                    field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                });
+
                 ui.columns(2, |cols| {
                     cols[0].vertical(|ui| {
                         card(ui, "What Vigil does", |ui| {
@@ -22,20 +29,37 @@ pub fn show(ui: &mut egui::Ui) {
                             );
                         });
 
-                        card(ui, "Operator workflow", |ui| {
-                            field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
-                            field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
-                            field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
-                            field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                        card(ui, "How scoring works", |ui| {
+                            body(
+                                ui,
+                                "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.",
+                            );
+                            ui.add_space(6.0);
+                            score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
+                            score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection");
+                            score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, or recent file-drop");
+                            score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, or DGA-like hostname");
+                            score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
+                            score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
                         });
 
+                        card(ui, "Persistence signals", |ui| {
+                            body(
+                                ui,
+                                "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
+                            );
+                        });
+                    });
+
+                    cols[1].vertical(|ui| {
                         card(ui, "Active response", |ui| {
                             body(
                                 ui,
-                                "Phase 11 starts with reversible intervention: block a remote IP temporarily or isolate the machine with firewall rules. Both actions require administrator privileges on Windows and always ask for confirmation.",
+                                "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
                             );
                             ui.add_space(6.0);
-                            bullet(ui, "Block remote 1h", "Temporarily block the selected connection's remote IP through the Windows firewall.");
+                            bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                            bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                             bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                             bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
                         });
@@ -72,29 +96,6 @@ pub fn show(ui: &mut egui::Ui) {
                                 "Off by default because it leaks inspection activity.",
                             );
                         });
-                    });
-
-                    cols[1].vertical(|ui| {
-                        card(ui, "How scoring works", |ui| {
-                            body(
-                                ui,
-                                "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.",
-                            );
-                            ui.add_space(6.0);
-                            score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
-                            score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection");
-                            score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, or recent file-drop");
-                            score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, or DGA-like hostname");
-                            score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
-                            score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
-                        });
-
-                        card(ui, "Persistence signals", |ui| {
-                            body(
-                                ui,
-                                "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, and long-lived connections that stay open past the configured threshold.",
-                            );
-                        });
 
                         card(ui, "UI tips", |ui| {
                             bullet(
@@ -111,6 +112,11 @@ pub fn show(ui: &mut egui::Ui) {
                                 ui,
                                 "Settings",
                                 "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                            );
+                            bullet(
+                                ui,
+                                "Privilege state",
+                                "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.",
                             );
                             bullet(
                                 ui,
@@ -149,10 +155,11 @@ pub fn show(ui: &mut egui::Ui) {
                 card(ui, "Active response", |ui| {
                     body(
                         ui,
-                        "Phase 11 starts with reversible intervention: block a remote IP temporarily or isolate the machine with firewall rules. Both actions require administrator privileges on Windows and always ask for confirmation.",
+                        "Phase 11 starts with reversible intervention: block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and always ask for confirmation.",
                     );
                     ui.add_space(6.0);
-                    bullet(ui, "Block remote 1h", "Temporarily block the selected connection's remote IP through the Windows firewall.");
+                    bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall.");
+                    bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                     bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic.");
                     bullet(ui, "Restore network", "Remove the isolation rules and return to normal traffic flow.");
                 });
@@ -209,6 +216,11 @@ pub fn show(ui: &mut egui::Ui) {
                         ui,
                         "Settings",
                         "Trusted-process edits auto-save, and the shipped defaults can be restored from the settings panel.",
+                    );
+                    bullet(
+                        ui,
+                        "Privilege state",
+                        "The header shows an Admin badge when Vigil is elevated, or a Run as Admin button otherwise.",
                     );
                     bullet(
                         ui,
@@ -290,7 +302,7 @@ fn body(ui: &mut egui::Ui, text: &str) {
 
 fn bullet(ui: &mut egui::Ui, key: &str, text: &str) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("▸").color(theme::ACCENT).size(11.0));
+        ui.label(RichText::new(">").color(theme::ACCENT).size(11.0));
         ui.add_space(2.0);
         ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong());
         ui.add_space(6.0);

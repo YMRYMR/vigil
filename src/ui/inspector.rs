@@ -17,8 +17,11 @@ pub enum Action {
     Trust,
     OpenLocation,
     Kill,
-    BlockRemote,
+    RequestAdmin,
+    BlockRemote(active_response::DurationPreset),
+    BlockProcess(active_response::DurationPreset),
     UnblockRemote,
+    UnblockProcess,
     IsolateMachine,
     RestoreNetwork,
     KillConfirmed,
@@ -60,6 +63,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
     let firewall_enabled = active_response::can_modify_firewall();
+    let response_status = active_response::status();
     let remote_target = sel
         .selected_connection
         .as_ref()
@@ -67,7 +71,12 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let remote_blocked = remote_target
         .as_deref()
         .is_some_and(active_response::is_blocked);
-    let isolated = active_response::status().isolated;
+    let remote_remaining = remote_target
+        .as_deref()
+        .and_then(active_response::remote_block_remaining);
+    let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
+    let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
+    let isolated = response_status.isolated;
 
     egui::ScrollArea::vertical()
         .id_salt("inspector_scroll")
@@ -95,63 +104,13 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             kv(ui, "Distinct ports", &format!("{}", sel.distinct_ports));
             kv(ui, "Distinct remotes", &format!("{}", sel.distinct_remotes));
             let statuses = if sel.statuses.is_empty() {
-                "—".to_string()
+                "n/a".to_string()
             } else {
-                sel.statuses.join(" · ")
+                sel.statuses.join(", ")
             };
-            kv(
-                ui,
-                "Statuses",
-                statuses.as_str(),
-            );
+            kv(ui, "Statuses", statuses.as_str());
 
             ui.add_space(8.0);
-            separator(ui);
-            ui.add_space(8.0);
-
-            section_header(ui, "Why it scored");
-            if sel.reasons.is_empty() {
-                ui.label(RichText::new("No score reasons recorded.").color(theme::TEXT3).size(11.0));
-            } else {
-                for reason in &sel.reasons {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("▸").color(theme::WARN).size(10.0));
-                        ui.add(
-                            egui::Label::new(RichText::new(reason).color(theme::TEXT2).size(11.0))
-                                .wrap(),
-                        );
-                    });
-                    ui.add_space(2.0);
-                }
-            }
-
-            if let Some(conn) = sel.selected_connection.as_ref() {
-                ui.add_space(8.0);
-                separator(ui);
-                ui.add_space(8.0);
-
-                section_header(ui, "Selected connection");
-                kv_mono(ui, "Local", &conn.local_addr);
-                kv_mono(ui, "Remote", &conn.remote_addr);
-                kv(ui, "Status", &conn.status);
-                kv(ui, "Time", &conn.timestamp);
-                if !conn.reasons.is_empty() {
-                    ui.add_space(4.0);
-                    for reason in &conn.reasons {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("•").color(theme::TEXT3).size(10.0));
-                            ui.add(
-                                egui::Label::new(
-                                    RichText::new(reason).color(theme::TEXT2).size(10.6),
-                                )
-                                .wrap(),
-                            );
-                        });
-                    }
-                }
-            }
-
-            ui.add_space(12.0);
             separator(ui);
             ui.add_space(8.0);
 
@@ -159,29 +118,91 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             if firewall_enabled {
                 ui.horizontal_wrapped(|ui| {
                     if let Some(target) = remote_target.as_ref() {
-                        let label = if remote_blocked {
-                            "Unblock remote"
+                        if remote_blocked {
+                            blocked_status_row(
+                                ui,
+                                "Remote blocked",
+                                remote_remaining,
+                                &format!("Temporary firewall rule for {target}"),
+                                Action::UnblockRemote,
+                                &mut action,
+                            );
                         } else {
-                            "Block remote 1h"
-                        };
-                        let resp = ui.add_enabled(remote_target.is_some(), accent_btn(label));
-                        let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(
-                            if remote_blocked {
-                                format!("Remove the temporary firewall rule for {target}.")
-                            } else {
-                                format!("Temporarily block outbound traffic to {target}.")
-                            },
-                        );
-                        if resp.clicked() {
-                            action = Some(if remote_blocked {
-                                Action::UnblockRemote
-                            } else {
-                                Action::BlockRemote
-                            });
+                            for preset in [
+                                active_response::DurationPreset::OneHour,
+                                active_response::DurationPreset::OneDay,
+                                active_response::DurationPreset::Permanent,
+                            ] {
+                                let (label, hover) = match preset {
+                                    active_response::DurationPreset::OneHour => (
+                                        "Block 1h",
+                                        format!("Temporarily block outbound traffic to {target} for 1 hour."),
+                                    ),
+                                    active_response::DurationPreset::OneDay => (
+                                        "Block 24h",
+                                        format!("Temporarily block outbound traffic to {target} for 24 hours."),
+                                    ),
+                                    active_response::DurationPreset::Permanent => (
+                                        "Block permanent",
+                                        format!("Block outbound traffic to {target} until you remove the rule."),
+                                    ),
+                                };
+                                let resp = ui.add_enabled(true, block_btn(preset, label));
+                                let resp = resp
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(hover);
+                                if resp.clicked() {
+                                    action = Some(Action::BlockRemote(preset));
+                                }
+                            }
                         }
                     } else {
-                        ui.add_enabled(false, accent_btn("Block remote 1h"))
+                        ui.add_enabled(false, accent_btn("Block 1h"))
                             .on_hover_text("Select a concrete connection row to block its remote IP.");
+                    }
+
+                    if process_blocked {
+                        blocked_status_row(
+                            ui,
+                            "Process blocked",
+                            process_remaining,
+                            "Temporary firewall rules for this executable path",
+                            Action::UnblockProcess,
+                            &mut action,
+                        );
+                    } else {
+                        for preset in [
+                            active_response::DurationPreset::OneHour,
+                            active_response::DurationPreset::OneDay,
+                            active_response::DurationPreset::Permanent,
+                        ] {
+                            let (label, hover) = match preset {
+                                active_response::DurationPreset::OneHour => (
+                                    "Block process 1h",
+                                    "Temporarily block inbound and outbound traffic for this executable path for 1 hour.",
+                                ),
+                                active_response::DurationPreset::OneDay => (
+                                    "Block process 24h",
+                                    "Temporarily block inbound and outbound traffic for this executable path for 24 hours.",
+                                ),
+                                active_response::DurationPreset::Permanent => (
+                                    "Block process permanent",
+                                    "Block inbound and outbound traffic for this executable path until you remove the rule.",
+                                ),
+                            };
+                            let resp = ui.add_enabled(known_location, block_btn(preset, label));
+                            let resp = if known_location {
+                                resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(hover)
+                            } else {
+                                resp.on_hover_text(
+                                    "Block process is disabled because Vigil does not know the executable location.",
+                                )
+                            };
+                            if resp.clicked() {
+                                action = Some(Action::BlockProcess(preset));
+                            }
+                        }
                     }
 
                     let isolate_label = if isolated {
@@ -213,6 +234,77 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                 );
             }
 
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                chip(ui, &format!("{} blocked target{}", response_status.blocked_rules, if response_status.blocked_rules == 1 { "" } else { "s" }));
+                chip(
+                    ui,
+                    if response_status.isolated {
+                        "Network isolated"
+                    } else {
+                        "Network open"
+                    },
+                );
+                chip(
+                    ui,
+                    &format!(
+                        "{} process block{}",
+                        response_status.blocked_processes,
+                        if response_status.blocked_processes == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
+                    ),
+                );
+            });
+
+            ui.add_space(8.0);
+            separator(ui);
+            ui.add_space(8.0);
+
+            section_header(ui, "Why it scored");
+            if sel.reasons.is_empty() {
+                ui.label(RichText::new("No score reasons recorded.").color(theme::TEXT3).size(11.0));
+            } else {
+                for reason in &sel.reasons {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(">").color(theme::WARN).size(10.0));
+                        ui.add(
+                            egui::Label::new(RichText::new(reason).color(theme::TEXT2).size(11.0))
+                                .wrap(),
+                        );
+                    });
+                    ui.add_space(2.0);
+                }
+            }
+
+            if let Some(conn) = sel.selected_connection.as_ref() {
+                ui.add_space(8.0);
+                separator(ui);
+                ui.add_space(8.0);
+
+                section_header(ui, "Selected connection");
+                kv_mono(ui, "Local", &conn.local_addr);
+                kv_mono(ui, "Remote", &conn.remote_addr);
+                kv(ui, "Status", &conn.status);
+                kv(ui, "Time", &conn.timestamp);
+                if !conn.reasons.is_empty() {
+                    ui.add_space(4.0);
+                    for reason in &conn.reasons {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("-").color(theme::TEXT3).size(10.0));
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(reason).color(theme::TEXT2).size(10.6),
+                                )
+                                .wrap(),
+                            );
+                        });
+                    }
+                }
+            }
+
             if kill_confirm {
                 ui.label(
                     RichText::new("Really kill this process?")
@@ -221,7 +313,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                 );
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
-                    let kill_resp = ui.add_enabled(kill_enabled, accent_btn("✕  Kill"));
+                    let kill_resp = ui.add_enabled(kill_enabled, accent_btn("Kill"));
                     let kill_resp = if kill_enabled {
                         kill_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
                     } else {
@@ -242,7 +334,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                 });
             } else {
                 ui.horizontal_wrapped(|ui| {
-                    let trust_resp = ui.add_enabled(trust_enabled, accent_btn("✓  Trust"));
+                    let trust_resp = ui.add_enabled(trust_enabled, accent_btn("Trust"));
                     let trust_resp = if trust_enabled {
                         trust_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
                     } else {
@@ -253,8 +345,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                     if trust_resp.clicked() {
                         action = Some(Action::Trust);
                     }
-                    let open_resp =
-                        ui.add_enabled(open_location_enabled, muted_btn("Open Loc"));
+                    let open_resp = ui.add_enabled(open_location_enabled, muted_btn("Open Loc"));
                     let open_resp = if open_location_enabled {
                         open_resp.on_hover_cursor(egui::CursorIcon::PointingHand)
                     } else {
@@ -302,12 +393,12 @@ fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
                             .strong(),
                     );
                     ui.label(
-                        RichText::new(format!("PID {}  ·  {}", sel.pid, sel.timestamp))
+                        RichText::new(format!("PID {} | {}", sel.pid, sel.timestamp))
                             .color(theme::TEXT2)
                             .size(10.5),
                     );
                     ui.label(
-                        RichText::new(format!("Latest: {}  →  {}", sel.status, sel.remote_addr))
+                        RichText::new(format!("Latest: {} to {}", sel.status, sel.remote_addr))
                             .color(theme::TEXT3)
                             .size(10.0),
                     );
@@ -402,9 +493,34 @@ fn chip(ui: &mut Ui, text: &str) {
     );
 }
 
+fn blocked_status_row(
+    ui: &mut Ui,
+    label: &str,
+    remaining: Option<std::time::Duration>,
+    hover_prefix: &str,
+    unblock_action: Action,
+    action: &mut Option<Action>,
+) {
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        let status = match remaining {
+            Some(duration) => format!("{label} {}", format_remaining(duration)),
+            None => format!("{label} permanently"),
+        };
+        chip(ui, &status);
+        let unblock = ui.add(accent_btn("Unblock"));
+        let unblock = unblock
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("{}.", hover_prefix));
+        if unblock.clicked() {
+            *action = Some(unblock_action);
+        }
+    });
+}
+
 fn nonempty(text: &str) -> &str {
     if text.is_empty() {
-        "—"
+        "n/a"
     } else {
         text
     }
@@ -414,6 +530,22 @@ fn accent_btn(text: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(text).color(theme::ACCENT).size(11.5))
         .fill(theme::ACCENT_BG)
         .stroke(egui::Stroke::new(1.0, theme::ACCENT))
+        .corner_radius(6.0)
+}
+
+fn block_btn(preset: active_response::DurationPreset, text: &str) -> egui::Button<'_> {
+    let (fg, bg, border) = match preset {
+        active_response::DurationPreset::OneHour => {
+            (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT)
+        }
+        active_response::DurationPreset::OneDay => (theme::WARN, theme::WARN_BG, theme::WARN),
+        active_response::DurationPreset::Permanent => {
+            (theme::DANGER, theme::DANGER_BG, theme::DANGER)
+        }
+    };
+    egui::Button::new(RichText::new(text).color(fg).size(11.5))
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
         .corner_radius(6.0)
 }
 
@@ -429,4 +561,16 @@ fn danger_btn(text: &str) -> egui::Button<'_> {
         .fill(theme::DANGER_BG)
         .stroke(egui::Stroke::new(1.0, theme::DANGER))
         .corner_radius(6.0)
+}
+
+fn format_remaining(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    let hours = secs / 3_600;
+    let mins = (secs % 3_600) / 60;
+    let secs = secs % 60;
+    if hours > 0 {
+        format!("{hours:02}:{mins:02}:{secs:02}")
+    } else {
+        format!("{mins:02}:{secs:02}")
+    }
 }

@@ -77,7 +77,7 @@ impl Monitor {
     /// Create a new monitor.  Subscribe to events via `subscribe()` **before**
     /// calling `start()` or events emitted during startup may be missed.
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
-        let (tx, _) = broadcast::channel(512);
+        let (tx, _) = broadcast::channel(4096);
         let (cmd_tx, _) = mpsc::channel(32);
         Self {
             config,

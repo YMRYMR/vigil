@@ -84,7 +84,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             );
             *changed |= resp.changed();
             ui.label(
-                RichText::new(format!("  score ≥ {} → alert", draft.alert_threshold))
+                RichText::new(format!("  score >= {} => alert", draft.alert_threshold))
                     .color(theme::TEXT3)
                     .size(11.0),
             );
@@ -249,7 +249,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                 if !draft.trusted_filter.is_empty()
                     && ui
                         .add(
-                            egui::Button::new(RichText::new("✕").color(theme::TEXT2).size(11.0))
+                            egui::Button::new(RichText::new("x").color(theme::TEXT2).size(11.0))
                                 .fill(egui::Color32::TRANSPARENT)
                                 .stroke(egui::Stroke::NONE),
                         )

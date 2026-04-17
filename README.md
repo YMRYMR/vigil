@@ -6,6 +6,8 @@ Vigil watches every TCP/UDP connection on your machine, scores each one for
 suspicious behaviour, and alerts you — via a system tray icon, desktop
 notification, and a full GUI — the moment something looks wrong.
 
+![Vigil current UI](docs/images/vigil-current.png)
+
 ---
 
 ## Features
@@ -20,10 +22,13 @@ notification, and a full GUI — the moment something looks wrong.
 - **Clickable notifications** — clicking a desktop alert opens Vigil and
   navigates directly to the triggering connection
 - **Full GUI** — process-grouped Activity and Alerts views, a process-first
-  Inspector, auto-save Settings, persisted grid sort/window state, and a
-  polished Help screen
+  Inspector, auto-save Settings, persisted grid sort/window state, a
+  polished Help screen, and a header that clearly shows whether Vigil is
+  elevated
 - **Active response** — reversible Windows firewall actions for blocking a
-  remote IP temporarily or isolating the machine, with confirmation prompts
+  remote IP for 1 hour, 24 hours, or permanently, blocking a process by
+  executable path, or isolating the machine, with confirmation prompts,
+  live countdowns for temporary blocks, and one-click unblock buttons
 - **Rolling daily log** at `<install-dir>/logs/vigil.YYYY-MM-DD`
 - **Autostart at login** enabled on first run (configurable in Settings);
   if Vigil is launched elevated on Windows, future autostart uses a
@@ -163,11 +168,19 @@ unknown, and disables `Kill` for unresolved PID placeholder rows like
 
 ### Active response
 
+The top bar also reflects privilege state: it shows an `Admin` badge when
+Vigil is elevated, or a `Run as Admin` button that relaunches the app with
+UAC if it is not.
+
 When Vigil is running with administrator privileges on Windows, the Inspector
 can now take reversible action:
 
-- **Block remote 1h** adds a temporary outbound firewall rule for the selected
-  connection's remote IP.
+- **Block remote** lets you choose a 1 hour, 24 hour, or permanent outbound
+  firewall rule for the selected connection's remote IP. Temporary blocks show
+  a live countdown and an inline unblock button.
+- **Block process** lets you choose a 1 hour, 24 hour, or permanent firewall
+  rule for all traffic from the selected executable path. Temporary blocks
+  show a live countdown and an inline unblock button.
 - **Isolate network** adds reversible firewall rules that block inbound and
   outbound traffic for the machine.
 - Both actions require confirmation and can be undone from the same UI.
