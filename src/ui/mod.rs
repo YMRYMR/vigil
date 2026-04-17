@@ -25,8 +25,6 @@ use std::sync::{Arc, Mutex, RwLock};
 use tab_bar::Tab;
 use tokio::sync::broadcast;
 
-// ── Table sort / filter state ─────────────────────────────────────────────────
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableState {
     pub filter: String,
@@ -46,8 +44,6 @@ impl TableState {
         }
     }
 
-    /// Called when a column header is clicked.
-    /// Toggles direction if same column; resets to ascending on a new column.
     pub fn toggle(&mut self, col: usize) {
         if self.sort_col == col {
             self.sort_asc = !self.sort_asc;
@@ -57,7 +53,6 @@ impl TableState {
         }
     }
 
-    /// Arrow indicator appended to the active sort column header label.
     pub fn arrow(&self, col: usize) -> &'static str {
         if self.sort_col == col {
             if self.sort_asc {
@@ -98,11 +93,6 @@ impl Default for UiState {
     }
 }
 
-/// Current selection in the Activity / Alerts views.
-///
-/// `selected_connection` is optional so the inspector can show the whole
-/// process summary when the card header is clicked, or a specific socket when
-/// a stacked connection row is clicked.
 #[derive(Clone)]
 pub struct ProcessSelection {
     pub pid: u32,
@@ -136,6 +126,15 @@ enum PendingResponse {
         path: String,
         preset: active_response::DurationPreset,
     },
+    SuspendProcess {
+        pid: u32,
+        path: String,
+        proc_name: String,
+    },
+    ResumeProcess {
+        pid: u32,
+        path: String,
+    },
     KillConnection(ConnInfo),
     UnblockRemote(String),
     UnblockProcess {
@@ -146,8 +145,6 @@ enum PendingResponse {
     RestoreNetwork,
 }
 
-/// Returns `true` when the process name is just a resolved-PID placeholder
-/// like `<11540>` rather than a real executable name.
 pub fn is_ghost_process_name(name: &str) -> bool {
     let Some(inner) = name
         .trim()
@@ -159,17 +156,13 @@ pub fn is_ghost_process_name(name: &str) -> bool {
     !inner.is_empty() && inner.chars().all(|c| c.is_ascii_digit())
 }
 
-/// Returns `true` when the UI knows enough about the process to offer path
-/// based actions such as Open Loc or Trust.
 pub fn has_known_location(sel: &ProcessSelection) -> bool {
     !sel.proc_path.is_empty() && !is_ghost_process_name(&sel.proc_name)
 }
 
-// ── App state ─────────────────────────────────────────────────────────────────
-
 pub struct VigilApp {
-    activity: VecDeque<ConnInfo>, // all connections, newest first, max 500
-    alerts: VecDeque<ConnInfo>,   // scored threats only, newest first, max 200
+    activity: VecDeque<ConnInfo>,
+    alerts: VecDeque<ConnInfo>,
     selected_activity: Option<ProcessSelection>,
     selected_alert: Option<ProcessSelection>,
     active_tab: Tab,
@@ -177,8 +170,6 @@ pub struct VigilApp {
     event_rx: broadcast::Receiver<ConnEvent>,
     tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
     show_window: Arc<AtomicBool>,
-    /// Set by the tray thread when the user clicks a notification.
-    /// Drained each frame: open window → Alerts tab → select row.
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
     cfg: Arc<RwLock<Config>>,
     settings: settings::SettingsDraft,
@@ -248,8 +239,6 @@ impl VigilApp {
         }
     }
 
-    // ── Event draining ────────────────────────────────────────────────────────
-
     fn drain_events(&mut self) -> bool {
         use broadcast::error::TryRecvError;
         let mut handled = false;
@@ -293,8 +282,6 @@ impl VigilApp {
         }
     }
 
-    // ── Inspector action handler ──────────────────────────────────────────────
-
     fn handle_inspector_action(&mut self, action: inspector::Action, ctx: &egui::Context) {
         let selected_info: Option<ProcessSelection> = match self.active_tab {
             Tab::Activity => self.selected_activity.clone(),
@@ -327,14 +314,28 @@ impl VigilApp {
             inspector::Action::Kill => {
                 self.kill_confirm = true;
             }
+            inspector::Action::SuspendProcess => {
+                if let Some(info) = selected_info {
+                    self.response_confirm = Some(PendingResponse::SuspendProcess {
+                        pid: info.pid,
+                        path: info.proc_path,
+                        proc_name: info.proc_name,
+                    });
+                }
+            }
+            inspector::Action::ResumeProcess => {
+                if let Some(info) = selected_info {
+                    self.response_confirm = Some(PendingResponse::ResumeProcess {
+                        pid: info.pid,
+                        path: info.proc_path,
+                    });
+                }
+            }
             inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
                     if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
-                            self.response_confirm =
-                                Some(PendingResponse::BlockRemote { target, preset });
+                        if let Some(target) = active_response::extract_remote_target(&conn.remote_addr) {
+                            self.response_confirm = Some(PendingResponse::BlockRemote { target, preset });
                         }
                     }
                 }
@@ -360,9 +361,7 @@ impl VigilApp {
             inspector::Action::UnblockRemote => {
                 if let Some(info) = selected_info {
                     if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
+                        if let Some(target) = active_response::extract_remote_target(&conn.remote_addr) {
                             self.response_confirm = Some(PendingResponse::UnblockRemote(target));
                         }
                     }
@@ -406,18 +405,10 @@ impl VigilApp {
                         kill_process(info.pid);
                         remove_pid(&mut self.activity, info.pid);
                         remove_pid(&mut self.alerts, info.pid);
-                        if self
-                            .selected_activity
-                            .as_ref()
-                            .is_some_and(|sel| sel.pid == info.pid)
-                        {
+                        if self.selected_activity.as_ref().is_some_and(|sel| sel.pid == info.pid) {
                             self.selected_activity = None;
                         }
-                        if self
-                            .selected_alert
-                            .as_ref()
-                            .is_some_and(|sel| sel.pid == info.pid)
-                        {
+                        if self.selected_alert.as_ref().is_some_and(|sel| sel.pid == info.pid) {
                             self.selected_alert = None;
                         }
                         if self.alerts.is_empty() {
@@ -433,8 +424,6 @@ impl VigilApp {
             }
         }
     }
-
-    // ── Header ────────────────────────────────────────────────────────────────
 
     fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
         let mut action = None;
@@ -456,16 +445,11 @@ impl VigilApp {
                 ("Monitoring", theme::ACCENT, true)
             };
             ui.horizontal_wrapped(|ui| {
-                let (dot_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                 if filled {
                     ui.painter().circle_filled(dot_rect.center(), 4.0, color);
                 } else {
-                    ui.painter().circle_stroke(
-                        dot_rect.center(),
-                        4.0,
-                        egui::Stroke::new(1.4, color),
-                    );
+                    ui.painter().circle_stroke(dot_rect.center(), 4.0, egui::Stroke::new(1.4, color));
                 }
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(label).color(color).size(11.5));
@@ -486,14 +470,10 @@ impl VigilApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.add_space(12.0);
                 let btn_label = if self.paused { "Resume" } else { "Pause" };
-                let btn = egui::Button::new(
-                    egui::RichText::new(btn_label)
-                        .color(theme::TEXT2)
-                        .size(11.0),
-                )
-                .fill(theme::SURFACE2)
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                .corner_radius(4.0);
+                let btn = egui::Button::new(egui::RichText::new(btn_label).color(theme::TEXT2).size(11.0))
+                    .fill(theme::SURFACE2)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(4.0);
 
                 let resp = ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.clicked() {
@@ -512,21 +492,15 @@ impl VigilApp {
                 let can_act = active_response::can_modify_firewall();
                 let resp_btn = ui.add_enabled(
                     can_act,
-                    egui::Button::new(
-                        egui::RichText::new(isolate_label)
-                            .color(theme::DANGER)
-                            .size(11.0),
-                    )
-                    .fill(theme::DANGER_BG)
-                    .stroke(egui::Stroke::new(1.0, theme::DANGER))
-                    .corner_radius(4.0),
+                    egui::Button::new(egui::RichText::new(isolate_label).color(theme::DANGER).size(11.0))
+                        .fill(theme::DANGER_BG)
+                        .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                        .corner_radius(4.0),
                 );
                 let resp_btn = if can_act {
                     resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand)
                 } else {
-                    resp_btn.on_hover_text(
-                        "Administrator privileges are required for network isolation.",
-                    )
+                    resp_btn.on_hover_text("Administrator privileges are required for network isolation.")
                 };
                 if resp_btn.clicked() {
                     action = Some(if self.response_status.isolated {
@@ -542,26 +516,20 @@ impl VigilApp {
     }
 }
 
-// ── eframe::App impl ──────────────────────────────────────────────────────────
-
 impl eframe::App for VigilApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
         self.refresh_active_response_state();
 
-        // ── Tray "Open Vigil" signal ──────────────────────────────────────────
         if self.show_window.swap(false, Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        // ── Notification click → navigate to alert ────────────────────────────
         if let Some(nav) = self.pending_nav.lock().unwrap().take() {
-            // Show and focus the window
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            // Switch to Alerts tab
             self.active_tab = Tab::Alerts;
             self.kill_confirm = false;
             self.unseen_alerts = 0;
@@ -578,25 +546,21 @@ impl eframe::App for VigilApp {
             );
         }
 
-        // ── Hide to tray on window close ──────────────────────────────────────
         if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
 
-        // ── Drain monitor events ──────────────────────────────────────────────
         let handled_events = self.drain_events();
         if handled_events {
             ctx.request_repaint();
         }
 
-        // ── Clear unseen_alerts counter when on the Alerts tab ────────────────
         if self.active_tab == Tab::Alerts && self.unseen_alerts > 0 {
             self.unseen_alerts = 0;
             let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
         }
 
-        // ── Header panel ──────────────────────────────────────────────────────
         let header_action = egui::Panel::top("header")
             .exact_size(48.0)
             .frame(egui::Frame::NONE.fill(theme::SURFACE))
@@ -605,7 +569,6 @@ impl eframe::App for VigilApp {
             self.handle_inspector_action(action, &ctx);
         }
 
-        // ── Tab bar panel ─────────────────────────────────────────────────────
         let new_tab = egui::Panel::top("tabs")
             .exact_size(36.0)
             .frame(egui::Frame::NONE.fill(theme::SURFACE))
@@ -624,7 +587,6 @@ impl eframe::App for VigilApp {
             self.kill_confirm = false;
         }
 
-        // ── Inspector side panel (Activity / Alerts only) ─────────────────────
         let mut inspector_action: Option<inspector::Action> = None;
 
         if matches!(self.active_tab, Tab::Activity | Tab::Alerts) {
@@ -694,7 +656,6 @@ impl eframe::App for VigilApp {
 
         self.show_response_confirm(ctx.clone());
 
-        // ── Central content ───────────────────────────────────────────────────
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -703,23 +664,13 @@ impl eframe::App for VigilApp {
             )
             .show_inside(ui, |ui| match self.active_tab {
                 Tab::Activity => {
-                    if activity::show(
-                        ui,
-                        &self.activity,
-                        &mut self.selected_activity,
-                        &mut self.activity_table,
-                    ) {
+                    if activity::show(ui, &self.activity, &mut self.selected_activity, &mut self.activity_table) {
                         self.activity.clear();
                         self.selected_activity = None;
                     }
                 }
                 Tab::Alerts => {
-                    if alerts::show(
-                        ui,
-                        &self.alerts,
-                        &mut self.selected_alert,
-                        &mut self.alerts_table,
-                    ) {
+                    if alerts::show(ui, &self.alerts, &mut self.selected_alert, &mut self.alerts_table) {
                         self.alerts.clear();
                         self.selected_alert = None;
                         self.unseen_alerts = 0;
@@ -739,8 +690,7 @@ impl eframe::App for VigilApp {
                             crate::autostart::disable();
                         }
                         cfg.save();
-                        self.settings.status_msg =
-                            Some(("Settings auto-saved.".into(), std::time::Instant::now()));
+                        self.settings.status_msg = Some(("Settings auto-saved.".into(), std::time::Instant::now()));
                     }
                 }
                 Tab::Help => {
@@ -752,12 +702,7 @@ impl eframe::App for VigilApp {
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [
-            0x14 as f32 / 255.0,
-            0x15 as f32 / 255.0,
-            0x1A as f32 / 255.0,
-            1.0,
-        ]
+        [0x14 as f32 / 255.0, 0x15 as f32 / 255.0, 0x1A as f32 / 255.0, 1.0]
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -806,9 +751,7 @@ impl VigilApp {
                 let (duration, label) = match preset {
                     active_response::DurationPreset::OneHour => ("1 hour", "Block 1h"),
                     active_response::DurationPreset::OneDay => ("24 hours", "Block 24h"),
-                    active_response::DurationPreset::Permanent => {
-                        ("an unlimited duration", "Block permanent")
-                    }
+                    active_response::DurationPreset::Permanent => ("an unlimited duration", "Block permanent"),
                 };
                 (
                     "Block remote IP",
@@ -820,24 +763,35 @@ impl VigilApp {
                 let (duration, label) = match preset {
                     active_response::DurationPreset::OneHour => ("1 hour", "Block process"),
                     active_response::DurationPreset::OneDay => ("24 hours", "Block process"),
-                    active_response::DurationPreset::Permanent => {
-                        ("an unlimited duration", "Block process")
-                    }
+                    active_response::DurationPreset::Permanent => ("an unlimited duration", "Block process"),
                 };
                 (
                     "Block process",
-                    format!(
-                        "Temporarily block inbound and outbound traffic for {path} for {duration}?"
-                    ),
+                    format!("Temporarily block inbound and outbound traffic for {path} for {duration}?"),
                     label.to_string(),
                 )
             }
+            PendingResponse::SuspendProcess { pid, path, .. } => (
+                "Suspend process",
+                if path.is_empty() {
+                    format!("Freeze PID {pid} until you explicitly resume it?")
+                } else {
+                    format!("Freeze PID {pid} ({path}) until you explicitly resume it?")
+                },
+                "Suspend".to_string(),
+            ),
+            PendingResponse::ResumeProcess { pid, path } => (
+                "Resume process",
+                if path.is_empty() {
+                    format!("Resume every suspended thread in PID {pid}?")
+                } else {
+                    format!("Resume every suspended thread in PID {pid} ({path})?")
+                },
+                "Resume".to_string(),
+            ),
             PendingResponse::KillConnection(conn) => (
                 "Kill connection",
-                format!(
-                    "Immediately terminate the live TCP connection {} -> {}?",
-                    conn.local_addr, conn.remote_addr
-                ),
+                format!("Immediately terminate the live TCP connection {} -> {}?", conn.local_addr, conn.remote_addr),
                 "Kill connection".to_string(),
             ),
             PendingResponse::UnblockRemote(target) => (
@@ -852,8 +806,7 @@ impl VigilApp {
             ),
             PendingResponse::IsolateMachine => (
                 "Isolate machine",
-                "Temporarily block inbound and outbound traffic with reversible firewall rules."
-                    .to_string(),
+                "Temporarily block inbound and outbound traffic with reversible firewall rules.".to_string(),
                 "Isolate".to_string(),
             ),
             PendingResponse::RestoreNetwork => (
@@ -881,14 +834,10 @@ impl VigilApp {
                 ui.horizontal(|ui| {
                     let confirm = ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new(confirm_label.as_str())
-                                    .color(theme::DANGER)
-                                    .size(11.0),
-                            )
-                            .fill(theme::DANGER_BG)
-                            .stroke(egui::Stroke::new(1.0, theme::DANGER))
-                            .corner_radius(6.0),
+                            egui::Button::new(egui::RichText::new(confirm_label.as_str()).color(theme::DANGER).size(11.0))
+                                .fill(theme::DANGER_BG)
+                                .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                                .corner_radius(6.0),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if confirm.clicked() {
@@ -899,12 +848,10 @@ impl VigilApp {
                     }
                     if ui
                         .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel").color(theme::TEXT2).size(11.0),
-                            )
-                            .fill(theme::SURFACE3)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                            .corner_radius(6.0),
+                            egui::Button::new(egui::RichText::new("Cancel").color(theme::TEXT2).size(11.0))
+                                .fill(theme::SURFACE3)
+                                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                                .corner_radius(6.0),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
                         .clicked()
@@ -917,35 +864,34 @@ impl VigilApp {
 
     fn execute_pending_response(&mut self, pending: &PendingResponse) -> String {
         match pending {
-            PendingResponse::BlockRemote { target, preset } => {
-                match active_response::block_remote(target, *preset) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not block {target}: {err}"),
-                }
-            }
-            PendingResponse::BlockProcess { pid, path, preset } => {
-                match active_response::block_process(*pid, path, *preset) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not block {path}: {err}"),
-                }
-            }
-            PendingResponse::KillConnection(conn) => {
-                match active_response::kill_connection(conn) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not kill {} -> {}: {err}", conn.local_addr, conn.remote_addr),
-                }
-            }
-            PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target)
-            {
+            PendingResponse::BlockRemote { target, preset } => match active_response::block_remote(target, *preset) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not block {target}: {err}"),
+            },
+            PendingResponse::BlockProcess { pid, path, preset } => match active_response::block_process(*pid, path, *preset) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not block {path}: {err}"),
+            },
+            PendingResponse::SuspendProcess { pid, path, proc_name } => match active_response::suspend_process(*pid, path, proc_name) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not suspend PID {pid}: {err}"),
+            },
+            PendingResponse::ResumeProcess { pid, path } => match active_response::resume_process(*pid, path) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not resume PID {pid}: {err}"),
+            },
+            PendingResponse::KillConnection(conn) => match active_response::kill_connection(conn) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not kill {} -> {}: {err}", conn.local_addr, conn.remote_addr),
+            },
+            PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target) {
                 Ok(msg) => msg,
                 Err(err) => format!("Could not unblock {target}: {err}"),
             },
-            PendingResponse::UnblockProcess { pid, path } => {
-                match active_response::unblock_process(*pid, path) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not unblock {path}: {err}"),
-                }
-            }
+            PendingResponse::UnblockProcess { pid, path } => match active_response::unblock_process(*pid, path) {
+                Ok(msg) => msg,
+                Err(err) => format!("Could not unblock {path}: {err}"),
+            },
             PendingResponse::IsolateMachine => match active_response::isolate_machine() {
                 Ok(msg) => msg,
                 Err(err) => format!("Could not isolate the machine: {err}"),
@@ -957,8 +903,6 @@ impl VigilApp {
         }
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn push_capped<T>(deque: &mut VecDeque<T>, item: T, cap: usize) {
     deque.push_front(item);
@@ -983,10 +927,7 @@ fn remove_pid(rows: &mut VecDeque<ConnInfo>, pid: u32) {
 
 fn process_count(rows: &VecDeque<ConnInfo>) -> usize {
     use std::collections::HashSet;
-    rows.iter()
-        .map(|info| info.pid)
-        .collect::<HashSet<_>>()
-        .len()
+    rows.iter().map(|info| info.pid).collect::<HashSet<_>>().len()
 }
 
 fn kill_process(pid: u32) {
