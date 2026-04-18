@@ -203,9 +203,9 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 - [x] **MITRE ATT&CK mapping** — process groups and selected connections carry ATT&CK-style tags into the UI and inspector
 - [x] **Operator surface** — Activity / Alerts cards show Phase 12 badges (`SCR`, `BASE`) and the inspector exposes Phase 12 heuristic chips and ATT&CK mappings
 - [x] **TLS SNI / JA3 fingerprinting** — ClientHello parsing, pcapng-sidecar extraction, audit trail, and near-live cache reuse back into later matching connection records
+- [x] **Visibility / tamper blind-spot heuristics** — ETW downgrade, unresolved live-networking PIDs, and service/system metadata gaps now raise explainable defense-evasion-style signals
 
 ### Still remaining before Phase 12 can be called complete
-- [ ] **Driver-backed / kernel-assisted tampering signals** beyond current user-mode ancestry heuristics
 - [ ] **Fresh validation pass** — build, tests, and false-positive review for the new detection-depth signals
 - [ ] **Final docs / release notes polish** once the implementation stabilises
 
@@ -213,12 +213,16 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 
 ---
 
-## Phase 13 — Integration & Fleet (backlog)
+## Phase 13 — Optimization & Efficiency (backlog)
 
-- [ ] SIEM export
-- [ ] Webhook alerts
-- [ ] Fleet mode / remote lockdown
-- [ ] Shared intel sync and STIX/TAXII
+Security remains paramount, but Vigil must stay light enough to protect a workstation without becoming the problem.
+
+- [ ] ETW / polling / enrichment pipeline profiling under normal desktop load
+- [ ] Memory and cache budgeting for baselines, TLS metadata, DNS, GeoIP, and reputation data
+- [ ] Smarter sampling / throttling for expensive enrichments and forensic capture paths
+- [ ] UI rendering efficiency for large activity / alert histories
+- [ ] Low-noise defaults that reduce needless CPU wakeups and disk churn
+- [ ] Performance test fixtures and regression budgets for CPU, RAM, disk, and startup time
 
 ---
 
@@ -229,6 +233,28 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 - [ ] Privilege-gated policy edits
 - [ ] Self-protection and tamper evidence
 - [ ] Secure update channel
+
+---
+
+## Phase 15 — File Integrity & Anti-Tamper (backlog)
+
+Make sure no file used by Vigil can be silently tampered with without detection, recovery, or operator visibility.
+
+- [ ] Signed or cryptographically verified policy / configuration files
+- [ ] Integrity verification for blocklists, rules, caches, and generated state
+- [ ] Secure audit-log chaining or append-only protections
+- [ ] Forensic artifact provenance and checksum manifests
+- [ ] Startup integrity scan with clear operator-visible failure modes
+- [ ] Recovery / quarantine path for corrupted or untrusted Vigil-owned files
+
+---
+
+## Phase 16 — Integration & Fleet (backlog)
+
+- [ ] SIEM export
+- [ ] Webhook alerts
+- [ ] Fleet mode / remote lockdown
+- [ ] Shared intel sync and STIX/TAXII
 
 ---
 
@@ -247,5 +273,7 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 | 1.3.0 | 10 | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
 | 3.x | 12 | Detection depth | 🚧 In progress |
-| 4.x | 13 | Integration & fleet | 🔲 Backlog |
+| 4.x | 13 | Optimization & efficiency | 🔲 Backlog |
 | 4.x | 14 | Hardening & self-defence | 🔲 Backlog |
+| 5.x | 15 | File integrity & anti-tamper | 🔲 Backlog |
+| 5.x | 16 | Integration & fleet | 🔲 Backlog |
