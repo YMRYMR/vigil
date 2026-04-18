@@ -40,6 +40,7 @@ mod revdns;
 mod score;
 mod service;
 mod session;
+mod tamper;
 mod tls;
 mod tls_artifacts;
 mod tray;
