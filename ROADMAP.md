@@ -202,9 +202,9 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 - [x] **Parent / token anomaly heuristics** — sensitive system ancestry plus script-capable children now raise explicit reasons and ATT&CK-style tags
 - [x] **MITRE ATT&CK mapping** — process groups and selected connections carry ATT&CK-style tags into the UI and inspector
 - [x] **Operator surface** — Activity / Alerts cards show Phase 12 badges (`SCR`, `BASE`) and the inspector exposes Phase 12 heuristic chips and ATT&CK mappings
+- [x] **TLS SNI / JA3 fingerprinting** — ClientHello parsing, pcapng-sidecar extraction, audit trail, and near-live cache reuse back into later matching connection records
 
 ### Still remaining before Phase 12 can be called complete
-- [ ] **TLS SNI / JA3 fingerprinting**
 - [ ] **Driver-backed / kernel-assisted tampering signals** beyond current user-mode ancestry heuristics
 - [ ] **Fresh validation pass** — build, tests, and false-positive review for the new detection-depth signals
 - [ ] **Final docs / release notes polish** once the implementation stabilises
