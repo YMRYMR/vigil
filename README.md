@@ -2,7 +2,7 @@
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
-<span style="color: red;">WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</span> 
+<code style="color : red">WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</code> 
 
 ## Download the latest build
 
