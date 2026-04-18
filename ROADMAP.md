@@ -190,15 +190,26 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 
 ---
 
-## Phase 12 — Detection Depth (backlog)
+## Phase 12 — Detection Depth 🚧 IN PROGRESS
 
-- [ ] Behavioural baselines
-- [ ] Script-host inspection
-- [ ] Signed-but-malicious detection
-- [ ] LOLBAS expansion
-- [ ] Driver / token / parent-spoofing monitoring
-- [ ] TLS SNI / JA3 fingerprinting
-- [ ] MITRE ATT&CK mapping
+Goal: deepen confidence on suspicious process behaviour while keeping scoring explainable, operator-auditable, and conservative enough for a workstation defender.
+
+### Implemented in this branch
+- [x] **Behavioural baselines** — per-process remote / port / country novelty tracking with persisted baseline state and maturity gating
+- [x] **Script-host inspection** — PowerShell / WSH / mshta / regsvr32 / rundll32 / cmd heuristics for encoded, stealthy, or remote-execution style command lines
+- [x] **Signed-but-malicious detection** — signed binaries can still receive extra score when strong corroboration signals stack
+- [x] **LoLBAS / script proxy expansion** — more signed-binary proxy-execution and script-launch patterns feed the scorer
+- [x] **Parent / token anomaly heuristics** — sensitive system ancestry plus script-capable children now raise explicit reasons and ATT&CK-style tags
+- [x] **MITRE ATT&CK mapping** — process groups and selected connections carry ATT&CK-style tags into the UI and inspector
+- [x] **Operator surface** — Activity / Alerts cards show Phase 12 badges (`SCR`, `BASE`) and the inspector exposes Phase 12 heuristic chips and ATT&CK mappings
+
+### Still remaining before Phase 12 can be called complete
+- [ ] **TLS SNI / JA3 fingerprinting**
+- [ ] **Driver-backed / kernel-assisted tampering signals** beyond current user-mode ancestry heuristics
+- [ ] **Fresh validation pass** — build, tests, and false-positive review for the new detection-depth signals
+- [ ] **Final docs / release notes polish** once the implementation stabilises
+
+**Important note:** this branch now contains a substantial Phase 12 implementation, but it should still be treated as in-progress until the new paths are validated end-to-end.
 
 ---
 
@@ -235,6 +246,6 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 | 1.2.0 | 9 | Beaconing, DNS, registry, pre-login, service mode | ✅ Done |
 | 1.3.0 | 10 | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
-| 3.x | 12 | Detection depth | 🔲 Backlog |
+| 3.x | 12 | Detection depth | 🚧 In progress |
 | 4.x | 13 | Integration & fleet | 🔲 Backlog |
 | 4.x | 14 | Hardening & self-defence | 🔲 Backlog |
