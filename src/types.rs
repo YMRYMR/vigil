@@ -54,6 +54,10 @@ pub struct ConnInfo {
     pub baseline_deviation: bool,
     #[serde(default)]
     pub script_host_suspicious: bool,
+    #[serde(default)]
+    pub tls_sni: Option<String>,
+    #[serde(default)]
+    pub tls_ja3: Option<String>,
 }
 
 #[allow(dead_code)]
