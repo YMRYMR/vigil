@@ -102,7 +102,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let quarantine_active = isolated || process_blocked || process_suspended;
     let autoruns_frozen = active_response::has_frozen_autoruns();
 
-    egui::ScrollArea::vertical().id_salt("inspector_scroll").show(ui, |ui| {
+    egui::ScrollArea::vertical().id_salt("help_scroll").show(ui, |ui| {
         ui.add_space(8.0);
         process_hero(ui, sel);
         ui.add_space(10.0);
@@ -113,8 +113,12 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         kv(ui, "PID", &sel.pid.to_string());
         kv(ui, "User", nonempty(&sel.proc_user));
         kv(ui, "Parent", &format!("{} ({})", nonempty(&sel.parent_name), sel.parent_pid));
+        kv(ui, "Parent usr", nonempty(&sel.parent_user));
         kv(ui, "Service", nonempty(&sel.service_name));
         kv(ui, "Publisher", nonempty(&sel.publisher));
+        if !sel.command_line.is_empty() {
+            kv(ui, "Cmdline", &sel.command_line);
+        }
 
         ui.add_space(8.0);
         separator(ui);
@@ -126,6 +130,34 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         kv(ui, "Distinct remotes", &format!("{}", sel.distinct_remotes));
         let statuses = if sel.statuses.is_empty() { "n/a".to_string() } else { sel.statuses.join(", ") };
         kv(ui, "Statuses", statuses.as_str());
+
+        ui.add_space(8.0);
+        separator(ui);
+        ui.add_space(8.0);
+
+        section_header(ui, "Phase 12 heuristics");
+        ui.horizontal_wrapped(|ui| {
+            if sel.script_host_suspicious {
+                chip(ui, "Script-host abuse");
+            }
+            if sel.baseline_deviation {
+                chip(ui, "Behaviour drift");
+            }
+            if !sel.attack_tags.is_empty() {
+                chip(ui, &format!("{} ATT&CK tag{}", sel.attack_tags.len(), if sel.attack_tags.len() == 1 { "" } else { "s" }));
+            }
+        });
+        if !sel.attack_tags.is_empty() {
+            ui.add_space(4.0);
+            for tag in &sel.attack_tags {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("> ").color(theme::ACCENT).size(10.0));
+                    ui.add(egui::Label::new(RichText::new(tag).color(theme::TEXT2).size(10.8)).wrap());
+                });
+            }
+        } else {
+            ui.label(RichText::new("No ATT&CK mappings recorded for this process group.").color(theme::TEXT3).size(10.6));
+        }
 
         ui.add_space(8.0);
         separator(ui);
@@ -286,8 +318,13 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             kv_mono(ui, "Local", &conn.local_addr);
             kv_mono(ui, "Remote", &conn.remote_addr);
             if let Some(host) = domain_target.as_deref() { kv(ui, "Hostname", host); }
+            if let Some(sni) = conn.tls_sni.as_deref() { kv(ui, "TLS SNI", sni); }
+            if let Some(ja3) = conn.tls_ja3.as_deref() { kv_mono(ui, "TLS JA3", ja3); }
             kv(ui, "Status", &conn.status);
             kv(ui, "Time", &conn.timestamp);
+            if !conn.attack_tags.is_empty() {
+                kv(ui, "ATT&CK", &conn.attack_tags.join(", "));
+            }
             if !conn.reasons.is_empty() {
                 ui.add_space(4.0);
                 for reason in &conn.reasons {
@@ -378,6 +415,12 @@ fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
                 }
                 if sel.proc_path.is_empty() {
                     chip(ui, "No location");
+                }
+                if sel.script_host_suspicious {
+                    chip(ui, "Script host");
+                }
+                if sel.baseline_deviation {
+                    chip(ui, "Baseline drift");
                 }
                 if sel.selected_connection.is_some() {
                     chip(ui, "Connection selected");

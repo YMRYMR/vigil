@@ -26,6 +26,8 @@ struct ProcessGroup<'a> {
     proc_name: &'a str,
     proc_path: &'a str,
     proc_user: &'a str,
+    parent_user: &'a str,
+    command_line: &'a str,
     parent_name: &'a str,
     parent_pid: u32,
     service_name: &'a str,
@@ -40,6 +42,10 @@ struct ProcessGroup<'a> {
     distinct_remotes: usize,
     statuses: Vec<String>,
     reasons: Vec<String>,
+    attack_tags: Vec<String>,
+    baseline_deviation: bool,
+    script_host_suspicious: bool,
+    tls_enriched: bool,
 }
 
 #[allow(deprecated)]
@@ -184,6 +190,15 @@ pub fn show(
                                                 theme::SURFACE2,
                                                 theme::BORDER,
                                             );
+                                        }
+                                        if group.script_host_suspicious {
+                                            pill(ui, "Script host", theme::WARN, theme::WARN_BG, theme::WARN);
+                                        }
+                                        if group.baseline_deviation {
+                                            pill(ui, "Baseline drift", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                        }
+                                        if group.tls_enriched {
+                                            pill(ui, "TLS", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
                                         }
                                     });
 
@@ -330,8 +345,8 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Search").size(11.5).color(theme::TEXT3));
                 let hint = match kind {
-                    Kind::Activity => "filter by process, host, status, or reason…",
-                    Kind::Alerts => "filter alerts by process, host, status, or reason…",
+                    Kind::Activity => "filter by process, host, status, reason, or TLS…",
+                    Kind::Alerts => "filter alerts by process, host, status, reason, or TLS…",
                 };
                 let te = egui::TextEdit::singleline(&mut state.filter)
                     .hint_text(hint)
@@ -409,6 +424,8 @@ fn grouped_rows<'a>(
                 proc_name: &info.proc_name,
                 proc_path: &info.proc_path,
                 proc_user: &info.proc_user,
+                parent_user: &info.parent_user,
+                command_line: &info.command_line,
                 parent_name: &info.parent_name,
                 parent_pid: info.parent_pid,
                 service_name: &info.service_name,
@@ -423,6 +440,10 @@ fn grouped_rows<'a>(
                 distinct_remotes: 0,
                 statuses: Vec::new(),
                 reasons: Vec::new(),
+                attack_tags: Vec::new(),
+                baseline_deviation: false,
+                script_host_suspicious: false,
+                tls_enriched: false,
             }
         });
 
@@ -445,6 +466,7 @@ fn grouped_rows<'a>(
             let mut remotes = HashSet::new();
             let mut statuses = Vec::new();
             let mut reasons = Vec::new();
+            let mut attack_tags = Vec::new();
 
             for conn in &group.connections {
                 if conn.remote_addr != "LISTEN" {
@@ -457,12 +479,17 @@ fn grouped_rows<'a>(
                     statuses.push(conn.status.clone());
                 }
                 reasons.extend(conn.reasons.iter().cloned());
+                attack_tags.extend(conn.attack_tags.iter().cloned());
+                group.baseline_deviation |= conn.baseline_deviation;
+                group.script_host_suspicious |= conn.script_host_suspicious;
+                group.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
             }
 
             group.distinct_ports = ports.len();
             group.distinct_remotes = remotes.len();
             group.statuses = statuses;
             group.reasons = dedup_reasons(reasons);
+            group.attack_tags = dedup_reasons(attack_tags);
             if group.conn_count > 1 {
                 group.reasons.push(format!(
                     "{} connections from the same process",
@@ -509,12 +536,17 @@ fn selection_from_group(
         proc_name: group.proc_name.to_string(),
         proc_path: group.proc_path.to_string(),
         proc_user: group.proc_user.to_string(),
+        parent_user: group.parent_user.to_string(),
+        command_line: group.command_line.to_string(),
         parent_name: group.parent_name.to_string(),
         parent_pid: group.parent_pid,
         service_name: group.service_name.to_string(),
         publisher: group.publisher.to_string(),
         score: group.score,
         reasons: group.reasons.clone(),
+        attack_tags: group.attack_tags.clone(),
+        baseline_deviation: group.baseline_deviation,
+        script_host_suspicious: group.script_host_suspicious,
         timestamp: group.latest_timestamp.to_string(),
         status: group.latest_status.to_string(),
         remote_addr: selected_connection
@@ -694,6 +726,15 @@ fn badge_row(ui: &mut egui::Ui, info: &ConnInfo) {
     if info.dga_like {
         badge(ui, "DGA");
     }
+    if info.script_host_suspicious {
+        badge(ui, "SCR");
+    }
+    if info.baseline_deviation {
+        badge(ui, "BASE");
+    }
+    if info.tls_sni.is_some() || info.tls_ja3.is_some() {
+        badge(ui, "TLS");
+    }
 }
 
 fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
@@ -702,7 +743,18 @@ fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
         || info.remote_addr.to_lowercase().contains(lower)
         || info.status.to_lowercase().contains(lower)
         || info.proc_path.to_lowercase().contains(lower)
-        || info.local_addr.to_lowercase().contains(lower);
+        || info.local_addr.to_lowercase().contains(lower)
+        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower))
+        || info
+            .tls_sni
+            .as_deref()
+            .map(|s| s.to_lowercase().contains(lower))
+            .unwrap_or(false)
+        || info
+            .tls_ja3
+            .as_deref()
+            .map(|s| s.to_lowercase().contains(lower))
+            .unwrap_or(false);
 
     if lower.is_empty() {
         return true;
@@ -713,22 +765,7 @@ fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
     }
 
     match kind {
-        Kind::Activity => {
-            info.reasons
-                .iter()
-                .any(|s| s.to_lowercase().contains(lower))
-                || info
-                    .hostname
-                    .as_deref()
-                    .map(|h| h.to_lowercase().contains(lower))
-                    .unwrap_or(false)
-                || info
-                    .country
-                    .as_deref()
-                    .map(|c| c.to_lowercase().contains(lower))
-                    .unwrap_or(false)
-        }
-        Kind::Alerts => {
+        Kind::Activity | Kind::Alerts => {
             info.reasons
                 .iter()
                 .any(|s| s.to_lowercase().contains(lower))

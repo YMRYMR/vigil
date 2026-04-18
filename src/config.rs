@@ -303,6 +303,11 @@ impl Default for Config {
                 "regasm",
                 "regsvcs",
                 "forfiles",
+                "msbuild",
+                "odbcconf",
+                "desktopimgdownldr",
+                "control",
+                "ieexec",
             ]
             .iter()
             .map(|s| s.to_string())
@@ -506,5 +511,12 @@ mod tests {
         assert!(!cfg.honeypot_auto_isolate);
         assert_eq!(cfg.honeypot_poll_secs, 10);
         assert!(cfg.break_glass_enabled);
+    }
+    #[test]
+    fn defaults_include_extended_lolbas_entries() {
+        let cfg = Config::default();
+        assert!(cfg.lolbins.contains(&"msbuild".to_string()));
+        assert!(cfg.lolbins.contains(&"odbcconf".to_string()));
+        assert!(cfg.lolbins.contains(&"ieexec".to_string()));
     }
 }
