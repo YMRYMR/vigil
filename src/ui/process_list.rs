@@ -45,6 +45,7 @@ struct ProcessGroup<'a> {
     attack_tags: Vec<String>,
     baseline_deviation: bool,
     script_host_suspicious: bool,
+    tls_enriched: bool,
 }
 
 #[allow(deprecated)]
@@ -196,6 +197,9 @@ pub fn show(
                                         if group.baseline_deviation {
                                             pill(ui, "Baseline drift", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
                                         }
+                                        if group.tls_enriched {
+                                            pill(ui, "TLS", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                        }
                                     });
 
                                     ui.add_space(2.0);
@@ -341,8 +345,8 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Search").size(11.5).color(theme::TEXT3));
                 let hint = match kind {
-                    Kind::Activity => "filter by process, host, status, or reason…",
-                    Kind::Alerts => "filter alerts by process, host, status, or reason…",
+                    Kind::Activity => "filter by process, host, status, reason, or TLS…",
+                    Kind::Alerts => "filter alerts by process, host, status, reason, or TLS…",
                 };
                 let te = egui::TextEdit::singleline(&mut state.filter)
                     .hint_text(hint)
@@ -439,6 +443,7 @@ fn grouped_rows<'a>(
                 attack_tags: Vec::new(),
                 baseline_deviation: false,
                 script_host_suspicious: false,
+                tls_enriched: false,
             }
         });
 
@@ -477,6 +482,7 @@ fn grouped_rows<'a>(
                 attack_tags.extend(conn.attack_tags.iter().cloned());
                 group.baseline_deviation |= conn.baseline_deviation;
                 group.script_host_suspicious |= conn.script_host_suspicious;
+                group.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
             }
 
             group.distinct_ports = ports.len();
@@ -726,6 +732,9 @@ fn badge_row(ui: &mut egui::Ui, info: &ConnInfo) {
     if info.baseline_deviation {
         badge(ui, "BASE");
     }
+    if info.tls_sni.is_some() || info.tls_ja3.is_some() {
+        badge(ui, "TLS");
+    }
 }
 
 fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
@@ -735,7 +744,17 @@ fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
         || info.status.to_lowercase().contains(lower)
         || info.proc_path.to_lowercase().contains(lower)
         || info.local_addr.to_lowercase().contains(lower)
-        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower));
+        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower))
+        || info
+            .tls_sni
+            .as_deref()
+            .map(|s| s.to_lowercase().contains(lower))
+            .unwrap_or(false)
+        || info
+            .tls_ja3
+            .as_deref()
+            .map(|s| s.to_lowercase().contains(lower))
+            .unwrap_or(false);
 
     if lower.is_empty() {
         return true;
