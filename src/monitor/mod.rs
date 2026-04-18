@@ -24,6 +24,7 @@ use crate::registry;
 use crate::revdns;
 use crate::score::{score, ScoreInput};
 use crate::session;
+use crate::tls_artifacts;
 use crate::types::{ConnEvent, ConnInfo, MonitorCmd};
 use chrono::Local;
 use poll::RawConn;
@@ -232,8 +233,9 @@ fn process_conn(
         raw_conn.remote_port,
         geo.country.as_deref(),
     );
-    let tls_sni: Option<String> = None;
-    let tls_ja3: Option<String> = None;
+    let cached_tls = tls_artifacts::lookup_remote(&raw_conn.remote_ip, raw_conn.remote_port);
+    let tls_sni = cached_tls.as_ref().and_then(|meta| meta.tls_sni.clone());
+    let tls_ja3 = cached_tls.as_ref().and_then(|meta| meta.tls_ja3.clone());
 
     let (score_value, reasons, attack_tags) = {
         let cfg = config.read().unwrap();
