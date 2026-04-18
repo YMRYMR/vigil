@@ -165,6 +165,7 @@ mod platform {
     }
     pub fn create_recovery_task(name: &str) -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+        ensure_safe_task_binary_path(&exe)?;
         let command = format!("\"{}\" --break-glass-recover", exe.display());
         let start = (Local::now() + ChronoDuration::minutes(1)).format("%H:%M").to_string();
         let status = schtasks()
@@ -195,6 +196,39 @@ mod platform {
             }
             Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
         }
+    }
+
+    fn ensure_safe_task_binary_path(exe: &std::path::Path) -> Result<(), String> {
+        let exe = exe.canonicalize().map_err(|e| format!("failed to canonicalize executable path {}: {e}", exe.display()))?;
+        if trusted_install_roots().into_iter().filter_map(|dir| dir.canonicalize().ok()).any(|root| is_path_within(&exe, &root)) {
+            return Ok(());
+        }
+        Err(format!("refusing to create SYSTEM recovery task for executable outside trusted install roots: {}", exe.display()))
+    }
+
+    fn trusted_install_roots() -> Vec<PathBuf> {
+        let mut roots = vec![];
+        for var in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)", "SystemRoot"] {
+            if let Some(value) = std::env::var_os(var) {
+                if !value.is_empty() {
+                    roots.push(PathBuf::from(value));
+                }
+            }
+        }
+        roots
+    }
+
+    fn is_path_within(path: &std::path::Path, root: &std::path::Path) -> bool {
+        let path = normalize(path);
+        let mut root = normalize(root);
+        if !root.ends_with('\\') {
+            root.push('\\');
+        }
+        path == root.trim_end_matches('\\') || path.starts_with(&root)
+    }
+
+    fn normalize(path: &std::path::Path) -> String {
+        path.to_string_lossy().replace('/', "\\").to_ascii_lowercase()
     }
 }
 
