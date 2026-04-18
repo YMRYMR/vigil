@@ -65,7 +65,17 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
             match result {
                 Ok(path) => {
                     let tls_sidecar = match tls_artifacts::analyze_capture(&info, &path) {
-                        Ok(sidecar) => sidecar,
+                        Ok(sidecar) => {
+                            if let Some(sidecar_path) = sidecar.as_ref() {
+                                audit::record("tls_client_hello_extract", "success", json!({
+                                    "pid": info.pid,
+                                    "proc_name": info.proc_name,
+                                    "pcap_path": path.display().to_string(),
+                                    "tls_sidecar": sidecar_path.display().to_string(),
+                                }));
+                            }
+                            sidecar
+                        }
                         Err(err) => {
                             audit::record("tls_client_hello_extract", "error", json!({
                                 "pid": info.pid,
