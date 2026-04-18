@@ -23,6 +23,7 @@ use chrono::{Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use tab_bar::Tab;
 use tokio::sync::broadcast;
@@ -87,6 +88,32 @@ impl Default for UiState {
             alerts_table: TableState::new(4, false),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotificationKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+struct Notification {
+    id: u64,
+    kind: NotificationKind,
+    text: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NetworkOperationKind {
+    Isolate,
+    Restore,
+}
+
+struct NetworkOperation {
+    kind: NetworkOperationKind,
+    rx: mpsc::Receiver<String>,
 }
 
 #[derive(Clone)]
@@ -186,8 +213,9 @@ pub struct VigilApp {
     kill_confirm: bool,
     response_confirm: Option<PendingResponse>,
     response_status: active_response::Status,
-    response_message: Option<(String, std::time::Instant)>,
-    admin_message: Option<(String, std::time::Instant)>,
+    network_operation: Option<NetworkOperation>,
+    notifications: VecDeque<Notification>,
+    next_notification_id: u64,
     auto_response_state: auto_response::EngineState,
     response_rule_state: response_rules::EngineState,
     exit_requested: bool,
@@ -237,8 +265,9 @@ impl VigilApp {
             kill_confirm: false,
             response_confirm: None,
             response_status: active_response::status(),
-            response_message: None,
-            admin_message: None,
+            network_operation: None,
+            notifications: VecDeque::new(),
+            next_notification_id: 1,
             auto_response_state: auto_response::EngineState::default(),
             response_rule_state: response_rules::EngineState::default(),
             exit_requested: false,
@@ -288,13 +317,13 @@ impl VigilApp {
         let cfg = self.cfg.read().unwrap().clone();
         if let Some(message) = auto_response::maybe_apply(info, &cfg, &mut self.auto_response_state)
         {
-            self.response_message = Some((message, std::time::Instant::now()));
+            self.push_notification(NotificationKind::Info, message);
             self.response_status = active_response::status();
         }
         if let Some(message) =
             response_rules::maybe_apply(info, &cfg, &mut self.response_rule_state)
         {
-            self.response_message = Some((message, std::time::Instant::now()));
+            self.push_notification(NotificationKind::Info, message);
             self.response_status = active_response::status();
         }
     }
@@ -438,26 +467,25 @@ impl VigilApp {
                 }
             }
             inspector::Action::IsolateMachine => {
-                self.response_confirm = Some(PendingResponse::IsolateMachine)
+                self.start_network_operation(NetworkOperationKind::Isolate);
             }
             inspector::Action::RestoreNetwork => {
-                self.scheduled_lockdown_active = false;
-                self.response_confirm = Some(PendingResponse::RestoreNetwork);
+                self.start_network_operation(NetworkOperationKind::Restore);
             }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
                 Ok(()) => {
                     self.exit_requested = true;
-                    self.admin_message = Some((
-                        "Reopened Vigil as administrator.".into(),
-                        std::time::Instant::now(),
-                    ));
+                    self.push_notification(
+                        NotificationKind::Info,
+                        "Reopened Vigil as administrator.",
+                    );
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 Err(err) => {
-                    self.admin_message = Some((
+                    self.push_notification(
+                        NotificationKind::Error,
                         format!("Could not relaunch as admin: {err}"),
-                        std::time::Instant::now(),
-                    ));
+                    );
                 }
             },
             inspector::Action::KillConfirmed => {
@@ -493,6 +521,7 @@ impl VigilApp {
     }
     fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
         let mut action = None;
+        let network_busy = self.network_operation.is_some();
 
         ui.horizontal_centered(|ui| {
             ui.add_space(12.0);
@@ -591,7 +620,9 @@ impl VigilApp {
                 .fill(theme::SURFACE2)
                 .stroke(egui::Stroke::new(1.0, theme::BORDER))
                 .corner_radius(4.0);
-                let resp = ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let resp = ui
+                    .add_enabled(!network_busy, btn)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
                 if resp.clicked() {
                     self.paused = !self.paused;
                     if !self.paused {
@@ -606,9 +637,9 @@ impl VigilApp {
                 } else {
                     "Isolate Net"
                 };
-                let can_act = active_response::can_modify_firewall();
+                let can_act = active_response::can_isolate_network();
                 let resp_btn = ui.add_enabled(
-                    can_act,
+                    can_act && !network_busy,
                     egui::Button::new(
                         egui::RichText::new(isolate_label)
                             .color(theme::DANGER)
@@ -618,7 +649,9 @@ impl VigilApp {
                     .stroke(egui::Stroke::new(1.0, theme::DANGER))
                     .corner_radius(4.0),
                 );
-                let resp_btn = if can_act {
+                let resp_btn = if network_busy {
+                    resp_btn.on_hover_text("A network action is already in progress.")
+                } else if can_act {
                     resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand)
                 } else {
                     resp_btn.on_hover_text("Administrator privileges are required for network isolation.")
@@ -640,6 +673,7 @@ impl eframe::App for VigilApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.refresh_active_response_state();
+        self.poll_network_operation();
         if self.show_window.swap(false, Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -720,45 +754,8 @@ impl eframe::App for VigilApp {
         if let Some(action) = inspector_action {
             self.handle_inspector_action(action, &ctx);
         }
-        if let Some(message) = self.response_message.as_ref() {
-            if message.1.elapsed().as_secs() < 4 {
-                egui::Panel::top("active_response_message")
-                    .exact_size(28.0)
-                    .frame(egui::Frame::NONE.fill(theme::BG))
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&message.0)
-                                    .color(theme::DANGER)
-                                    .size(10.8)
-                                    .strong(),
-                            );
-                        });
-                    });
-            } else {
-                self.response_message = None;
-            }
-        }
-        if let Some(message) = self.admin_message.as_ref() {
-            if message.1.elapsed().as_secs() < 4 {
-                egui::Panel::top("admin_message")
-                    .exact_size(28.0)
-                    .frame(egui::Frame::NONE.fill(theme::BG))
-                    .show_inside(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(&message.0)
-                                    .color(theme::ACCENT)
-                                    .size(10.8)
-                                    .strong(),
-                            );
-                        });
-                    });
-            } else {
-                self.admin_message = None;
-            }
-        }
         self.show_response_confirm(ctx.clone());
+        self.show_notifications(ui);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -809,6 +806,7 @@ impl eframe::App for VigilApp {
                 }
                 Tab::Help => help::show(ui),
             });
+        self.show_network_operation_overlay(&ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -858,12 +856,15 @@ impl VigilApp {
         }
     }
     fn apply_scheduled_lockdown(&mut self) {
+        if self.network_operation.is_some() {
+            return;
+        }
         let cfg = self.cfg.read().unwrap().clone();
         if !cfg.scheduled_lockdown_enabled {
             self.scheduled_lockdown_active = false;
             return;
         }
-        if !active_response::can_modify_firewall() {
+        if !active_response::can_isolate_network() {
             return;
         }
         let now = Local::now();
@@ -883,35 +884,31 @@ impl VigilApp {
             match active_response::isolate_machine() {
                 Ok(msg) => {
                     self.scheduled_lockdown_active = true;
-                    self.response_message = Some((
+                    self.push_notification(
+                        NotificationKind::Success,
                         format!("Scheduled lockdown: {msg}"),
-                        std::time::Instant::now(),
-                    ));
+                    );
                     self.response_status = active_response::status();
                 }
-                Err(err) => {
-                    self.response_message = Some((
-                        format!("Scheduled lockdown failed: {err}"),
-                        std::time::Instant::now(),
-                    ))
-                }
+                Err(err) => self.push_notification(
+                    NotificationKind::Error,
+                    format!("Scheduled lockdown failed: {err}"),
+                ),
             }
         } else if !should_lock && self.scheduled_lockdown_active {
             match active_response::restore_machine() {
                 Ok(msg) => {
                     self.scheduled_lockdown_active = false;
-                    self.response_message = Some((
+                    self.push_notification(
+                        NotificationKind::Success,
                         format!("Scheduled lockdown ended: {msg}"),
-                        std::time::Instant::now(),
-                    ));
+                    );
                     self.response_status = active_response::status();
                 }
-                Err(err) => {
-                    self.response_message = Some((
-                        format!("Scheduled restore failed: {err}"),
-                        std::time::Instant::now(),
-                    ))
-                }
+                Err(err) => self.push_notification(
+                    NotificationKind::Error,
+                    format!("Scheduled restore failed: {err}"),
+                ),
             }
         }
     }
@@ -949,8 +946,9 @@ impl VigilApp {
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     if confirm.clicked() {
-                        let result = self.execute_pending_response(&pending);
-                        self.response_message = Some((result, std::time::Instant::now()));
+                        let result = Self::execute_pending_response(&pending);
+                        let kind = Self::kind_from_message(&result);
+                        self.push_notification(kind, result);
                         self.response_status = active_response::status();
                         self.response_confirm = None;
                     }
@@ -971,7 +969,7 @@ impl VigilApp {
                 });
             });
     }
-    fn execute_pending_response(&mut self, pending: &PendingResponse) -> String {
+    fn execute_pending_response(pending: &PendingResponse) -> String {
         match pending {
             PendingResponse::BlockRemote { target, preset } => {
                 match active_response::block_remote(target, *preset) {
@@ -1061,6 +1059,251 @@ impl VigilApp {
                 Err(err) => format!("Could not restore the network: {err}"),
             },
         }
+    }
+    fn start_network_operation(&mut self, kind: NetworkOperationKind) {
+        if self.network_operation.is_some() {
+            return;
+        }
+        let pending = match kind {
+            NetworkOperationKind::Isolate => PendingResponse::IsolateMachine,
+            NetworkOperationKind::Restore => PendingResponse::RestoreNetwork,
+        };
+        let (tx, rx) = mpsc::channel();
+        let thread_name = match kind {
+            NetworkOperationKind::Isolate => "vigil-isolate-machine",
+            NetworkOperationKind::Restore => "vigil-restore-network",
+        };
+        match std::thread::Builder::new()
+            .name(thread_name.into())
+            .spawn(move || {
+                let result = Self::execute_pending_response(&pending);
+                let _ = tx.send(result);
+            }) {
+            Ok(_) => {
+                self.network_operation = Some(NetworkOperation { kind, rx });
+                if matches!(kind, NetworkOperationKind::Restore) {
+                    self.scheduled_lockdown_active = false;
+                }
+            }
+            Err(err) => self.push_notification(
+                NotificationKind::Error,
+                format!("Could not start network action: {err}"),
+            ),
+        }
+    }
+    fn poll_network_operation(&mut self) {
+        let Some(operation) = self.network_operation.as_ref() else {
+            return;
+        };
+        match operation.rx.try_recv() {
+            Ok(message) => {
+                self.network_operation = None;
+                let kind = Self::kind_from_message(&message);
+                self.push_notification(kind, message);
+                self.response_status = active_response::status();
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.network_operation = None;
+                self.push_notification(
+                    NotificationKind::Error,
+                    "Network action worker stopped unexpectedly.",
+                );
+                self.response_status = active_response::status();
+            }
+        }
+    }
+    fn show_network_operation_overlay(&self, ctx: &egui::Context) {
+        let Some(operation) = self.network_operation.as_ref() else {
+            return;
+        };
+        let screen = ctx.content_rect();
+        egui::Area::new(egui::Id::new("network_operation_blocker"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen.min)
+            .show(ctx, |ui| {
+                ui.set_min_size(screen.size());
+                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.size());
+                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
+                ui.painter()
+                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(170));
+                response.on_hover_cursor(egui::CursorIcon::Progress);
+            });
+        let label = match operation.kind {
+            NetworkOperationKind::Isolate => "Isolating...",
+            NetworkOperationKind::Restore => "Restoring network...",
+        };
+        egui::Area::new(egui::Id::new("network_operation_modal"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(theme::SURFACE2)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(12.0)
+                    .inner_margin(egui::Margin::symmetric(18, 14))
+                    .show(ui, |ui| {
+                        ui.set_min_width(280.0);
+                        ui.vertical_centered(|ui| {
+                            ui.add(egui::Spinner::new().size(24.0).color(theme::ACCENT));
+                            ui.add_space(10.0);
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .color(theme::TEXT)
+                                    .size(12.0)
+                                    .strong(),
+                            );
+                            ui.add_space(4.0);
+                            ui.label(
+                                egui::RichText::new(
+                                    "Applying containment rules and validating connectivity.",
+                                )
+                                .color(theme::TEXT3)
+                                .size(10.8),
+                            );
+                        });
+                    });
+            });
+    }
+    fn push_notification(&mut self, kind: NotificationKind, text: impl Into<String>) {
+        self.notifications.push_back(Notification {
+            id: self.next_notification_id,
+            kind,
+            text: text.into(),
+        });
+        self.next_notification_id = self.next_notification_id.saturating_add(1);
+        while self.notifications.len() > 8 {
+            self.notifications.pop_front();
+        }
+    }
+    fn kind_from_message(text: &str) -> NotificationKind {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("enabled with warnings")
+            || lower.contains("removed with warnings")
+            || lower.contains("with warnings:")
+        {
+            NotificationKind::Warning
+        } else if lower.contains("could not")
+            || lower.contains("failed")
+            || lower.contains("error")
+            || lower.contains("denied")
+        {
+            NotificationKind::Error
+        } else if lower.contains("warning") {
+            NotificationKind::Warning
+        } else {
+            NotificationKind::Success
+        }
+    }
+    fn show_notifications(&mut self, ui: &mut egui::Ui) {
+        if self.notifications.is_empty() {
+            return;
+        }
+        let count = self.notifications.len().min(4);
+        let height = (count as f32 * 52.0 + 20.0).min(220.0);
+        egui::Panel::bottom("notifications")
+            .exact_size(height)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER)),
+            )
+            .show_inside(ui, |ui| {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Notifications")
+                            .color(theme::TEXT2)
+                            .size(10.5)
+                            .strong(),
+                    );
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(format!("{} open", self.notifications.len()))
+                            .color(theme::TEXT3)
+                            .size(10.0),
+                    );
+                });
+                ui.add_space(6.0);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        let ids: Vec<u64> = self.notifications.iter().map(|n| n.id).collect();
+                        for id in ids {
+                            let Some(index) = self.notifications.iter().position(|n| n.id == id)
+                            else {
+                                continue;
+                            };
+                            let (kind, text) = {
+                                let n = &self.notifications[index];
+                                (n.kind, n.text.clone())
+                            };
+                            let (accent, label) = match kind {
+                                NotificationKind::Info => (theme::ACCENT, "Info"),
+                                NotificationKind::Success => (theme::ACCENT, "Success"),
+                                NotificationKind::Warning => (theme::WARN, "Warning"),
+                                NotificationKind::Error => (theme::DANGER, "Error"),
+                            };
+                            egui::Frame::NONE
+                                .fill(theme::SURFACE2)
+                                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                                .corner_radius(10.0)
+                                .inner_margin(egui::Margin::symmetric(12, 10))
+                                .show(ui, |ui| {
+                                    ui.horizontal_top(|ui| {
+                                        let (bar_rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(4.0, 34.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        ui.painter().rect_filled(bar_rect, 2.0, accent);
+                                        ui.add_space(8.0);
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(label)
+                                                    .color(accent)
+                                                    .size(10.0)
+                                                    .strong(),
+                                            );
+                                            ui.add(
+                                                egui::Label::new(
+                                                    egui::RichText::new(text)
+                                                        .color(theme::TEXT)
+                                                        .size(11.0),
+                                                )
+                                                .wrap(),
+                                            );
+                                        });
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::TOP),
+                                            |ui| {
+                                                let close = ui
+                                                    .add(
+                                                        egui::Button::new(
+                                                            egui::RichText::new("x")
+                                                                .color(theme::TEXT2)
+                                                                .size(10.5),
+                                                        )
+                                                        .fill(theme::SURFACE3)
+                                                        .stroke(egui::Stroke::new(
+                                                            1.0,
+                                                            theme::BORDER,
+                                                        ))
+                                                        .corner_radius(4.0),
+                                                    )
+                                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                    .on_hover_text("Dismiss this notification.");
+                                                if close.clicked() {
+                                                    self.notifications.remove(index);
+                                                }
+                                            },
+                                        );
+                                    });
+                                });
+                            ui.add_space(8.0);
+                        }
+                    });
+                ui.add_space(4.0);
+            });
     }
 }
 

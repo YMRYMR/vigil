@@ -69,6 +69,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let kill_enabled = !ghost;
     let suspend_enabled = active_response::can_suspend_process(sel.pid) && !ghost;
     let response_enabled = active_response::can_modify_firewall();
+    let isolation_enabled = active_response::can_isolate_network();
     let domain_enabled = active_response::can_block_domain();
     let response_status = active_response::status();
     let remote_target = sel
@@ -191,13 +192,36 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                     }
                 }
 
-                let isolate_label = if isolated { "Restore network" } else { "Isolate network" };
-                let iso_resp = ui.add_enabled(true, danger_btn(isolate_label));
-                let iso_resp = iso_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(if isolated { "Remove the temporary network-isolation firewall rules." } else { "Temporarily block inbound and outbound traffic with reversible firewall rules." });
-                if iso_resp.clicked() { action = Some(if isolated { Action::RestoreNetwork } else { Action::IsolateMachine }); }
             });
-        } else {
-            ui.label(RichText::new("Administrator privileges are required for active response.").color(theme::TEXT3).size(10.5));
+        }
+        if isolation_enabled {
+            ui.add_space(6.0);
+            let isolate_label = if isolated {
+                "Restore network"
+            } else {
+                "Isolate network"
+            };
+            let iso_resp = ui
+                .add_enabled(true, danger_btn(isolate_label))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(if isolated {
+                    "Restore the saved firewall profile state and any adapter snapshot from before isolation."
+                } else {
+                    "Immediately isolate the machine. Vigil hardens firewall policy first and falls back to emergency adapter cutoff if connectivity is still reachable."
+                });
+            if iso_resp.clicked() {
+                action = Some(if isolated {
+                    Action::RestoreNetwork
+                } else {
+                    Action::IsolateMachine
+                });
+            }
+        } else if !response_enabled {
+            ui.label(
+                RichText::new("Administrator privileges are required for active response.")
+                    .color(theme::TEXT3)
+                    .size(10.5),
+            );
         }
 
         ui.add_space(6.0);

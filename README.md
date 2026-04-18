@@ -2,6 +2,8 @@
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
+<p><strong><font color="red">WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</font></strong></p>
+
 ## Download the latest build
 
 - [Windows installer](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-windows-x86_64.exe)
@@ -193,20 +195,27 @@ The top bar also reflects privilege state: it shows an `Admin` badge when
 Vigil is elevated, or a `Run as Admin` button that relaunches the app with
 UAC if it is not.
 
-When Vigil is running with administrator privileges on Windows, the Inspector
-can now take reversible action:
+When Vigil is running with administrator privileges, the Inspector can take
+reversible action:
 
 - **Kill connection** immediately tears down the selected live TCP socket.
 - **Suspend process** freezes the selected PID without killing it; **Resume process** continues it later.
-- **Block remote** lets you choose a 1 hour, 24 hour, or permanent outbound
+- **Block remote** (Windows) lets you choose a 1 hour, 24 hour, or permanent outbound
   firewall rule for the selected connection's remote IP. Temporary blocks show
   a live countdown and an inline unblock button.
-- **Block process** lets you choose a 1 hour, 24 hour, or permanent firewall
+- **Block process** (Windows) lets you choose a 1 hour, 24 hour, or permanent firewall
   rule for all traffic from the selected executable path. Temporary blocks
   show a live countdown and an inline unblock button.
-- **Isolate network** adds reversible firewall rules that block inbound and
-  outbound traffic for the machine.
-- All actions require confirmation and can be undone from the same UI.
+- **Isolate network** (Windows, Linux, macOS) now uses strict containment:
+  it first applies firewall-level isolation and verifies outbound reachability.
+  If outbound traffic is still possible, Vigil falls back to emergency adapter
+  cutoff and keeps snapshot state for restore.
+- **Restore network** restores the saved firewall and adapter state.
+- **Isolation failsafe**: isolation always carries an auto-restore deadline,
+  and Vigil always arms break-glass recovery while isolation is active so a
+  crash can restore networking from saved state.
+- Isolation/restore run immediately from the panic button; confirmation remains
+  for destructive process/connection actions.
 
 ---
 

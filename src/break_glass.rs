@@ -28,8 +28,8 @@ pub fn start_heartbeat_loop(cfg: Arc<RwLock<Config>>) {
         .name("vigil-break-glass-heartbeat".into())
         .spawn(move || loop {
             let snapshot = cfg.read().map(|c| c.clone()).unwrap_or_default();
-            sync_watchdog(&snapshot);
-            if snapshot.break_glass_enabled && active_response::status().isolated {
+            let _ = sync_watchdog(&snapshot);
+            if active_response::status().isolated {
                 let _ = touch_heartbeat();
             }
             std::thread::sleep(std::time::Duration::from_secs(
@@ -39,23 +39,17 @@ pub fn start_heartbeat_loop(cfg: Arc<RwLock<Config>>) {
         .ok();
 }
 
-pub fn sync_watchdog(cfg: &Config) {
-    if !cfg.break_glass_enabled {
-        let _ = disarm();
-        return;
-    }
+pub fn sync_watchdog(cfg: &Config) -> Result<(), String> {
+    // Isolation always requires a crash-recovery path, even if the user disabled
+    // recurring break-glass while the system is in a normal state.
     if active_response::status().isolated {
-        let _ = arm(cfg);
+        arm(cfg)
     } else {
-        let _ = disarm();
+        disarm()
     }
 }
 
 pub fn recover_if_stale() -> i32 {
-    let cfg = crate::config::Config::load();
-    if !cfg.break_glass_enabled {
-        return 0;
-    }
     let Some(state) = load_state().ok().flatten() else {
         return 0;
     };
@@ -109,13 +103,21 @@ fn arm(cfg: &Config) -> Result<(), String> {
     }
     platform::create_recovery_task(TASK_NAME)?;
     let deadline_unix = now.saturating_add(cfg.break_glass_timeout_mins.clamp(1, 240) * 60);
-    save_state(&RecoveryState {
+    let state = RecoveryState {
         armed_at_unix: now,
         deadline_unix,
         heartbeat_max_age_secs: cfg.break_glass_heartbeat_secs.clamp(5, 300) * 2,
         task_name: TASK_NAME.to_string(),
-    })?;
-    touch_heartbeat()?;
+    };
+    if let Err(err) = save_state(&state) {
+        let _ = platform::delete_recovery_task(TASK_NAME);
+        return Err(err);
+    }
+    if let Err(err) = touch_heartbeat() {
+        let _ = platform::delete_recovery_task(TASK_NAME);
+        let _ = std::fs::remove_file(state_path());
+        return Err(err);
+    }
     audit::record(
         "break_glass_arm",
         "success",
@@ -191,9 +193,12 @@ fn save_state(state: &RecoveryState) -> Result<(), String> {
 #[cfg(windows)]
 mod platform {
     use chrono::{Duration as ChronoDuration, Local};
+    use std::ffi::OsStr;
+    use std::os::windows::process::CommandExt;
     use std::path::PathBuf;
     use std::process::Command;
     use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     pub fn task_exists(name: &str) -> bool {
         schtasks()
@@ -240,7 +245,12 @@ mod platform {
             .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
             .join("System32")
             .join("schtasks.exe");
-        Command::new(path)
+        hidden_command(path)
+    }
+    fn hidden_command<S: AsRef<OsStr>>(program: S) -> Command {
+        let mut cmd = Command::new(program);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        cmd
     }
     fn windows_directory() -> Option<PathBuf> {
         let mut buffer = vec![0u16; 260];
@@ -267,13 +277,169 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
+    #[cfg(target_os = "linux")]
+    mod imp {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        const CRON_MARKER: &str = "# Vigil Break Glass Recovery";
+
+        pub fn task_exists() -> bool {
+            read_crontab()
+                .map(|content| content.lines().any(|line| line.contains(CRON_MARKER)))
+                .unwrap_or(false)
+        }
+        pub fn create_recovery_task() -> Result<(), String> {
+            let mut lines: Vec<String> = read_crontab()?
+                .lines()
+                .filter(|line| !line.contains(CRON_MARKER))
+                .map(|line| line.to_string())
+                .collect();
+            lines.push(recovery_cron_line()?);
+            write_crontab(&lines.join("\n"))
+        }
+        pub fn delete_recovery_task() -> Result<(), String> {
+            let lines: Vec<String> = read_crontab()?
+                .lines()
+                .filter(|line| !line.contains(CRON_MARKER))
+                .map(|line| line.to_string())
+                .collect();
+            write_crontab(&lines.join("\n"))
+        }
+        fn recovery_cron_line() -> Result<String, String> {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("failed to resolve current exe: {e}"))?;
+            let exe = exe.display().to_string().replace('"', "\\\"");
+            Ok(format!(
+                "* * * * * \"{exe}\" --break-glass-recover {CRON_MARKER}"
+            ))
+        }
+        fn read_crontab() -> Result<String, String> {
+            let output = Command::new("crontab")
+                .arg("-l")
+                .output()
+                .map_err(|e| format!("failed to spawn crontab -l: {e}"))?;
+            if output.status.success() {
+                Ok(String::from_utf8_lossy(&output.stdout).to_string())
+            } else {
+                let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+                if stderr.contains("no crontab") {
+                    Ok(String::new())
+                } else {
+                    Err(format!("crontab -l failed: {stderr}"))
+                }
+            }
+        }
+        fn write_crontab(content: &str) -> Result<(), String> {
+            let mut child = Command::new("crontab")
+                .arg("-")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| format!("failed to spawn crontab -: {e}"))?;
+            if let Some(stdin) = child.stdin.as_mut() {
+                if !content.trim().is_empty() {
+                    stdin
+                        .write_all(content.as_bytes())
+                        .map_err(|e| format!("failed to write crontab content: {e}"))?;
+                }
+                stdin
+                    .write_all(b"\n")
+                    .map_err(|e| format!("failed to finalise crontab content: {e}"))?;
+            }
+            let output = child
+                .wait_with_output()
+                .map_err(|e| format!("failed to wait for crontab -: {e}"))?;
+            if output.status.success() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "crontab - failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ))
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    mod imp {
+        use std::path::PathBuf;
+        use std::process::Command;
+
+        const PLIST_LABEL: &str = "com.vigil.break-glass-recovery";
+
+        pub fn task_exists() -> bool {
+            plist_path().exists()
+        }
+        pub fn create_recovery_task() -> Result<(), String> {
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("failed to resolve current exe: {e}"))?;
+            let plist = format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{PLIST_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--break-glass-recover</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>60</integer>\n</dict>\n</plist>\n",
+                xml_escape(&exe.display().to_string())
+            );
+            std::fs::write(plist_path(), plist)
+                .map_err(|e| format!("failed to write launchd plist: {e}"))?;
+            let _ = Command::new("launchctl")
+                .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
+                .status();
+            let status = Command::new("launchctl")
+                .args([
+                    "bootstrap",
+                    "system",
+                    plist_path().to_string_lossy().as_ref(),
+                ])
+                .status()
+                .map_err(|e| format!("failed to spawn launchctl bootstrap: {e}"))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(format!("launchctl bootstrap failed with status {status}"))
+            }
+        }
+        pub fn delete_recovery_task() -> Result<(), String> {
+            let _ = Command::new("launchctl")
+                .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
+                .status();
+            if plist_path().exists() {
+                std::fs::remove_file(plist_path())
+                    .map_err(|e| format!("failed to remove launchd plist: {e}"))?;
+            }
+            Ok(())
+        }
+        fn plist_path() -> PathBuf {
+            PathBuf::from(format!("/Library/LaunchDaemons/{PLIST_LABEL}.plist"))
+        }
+        fn xml_escape(text: &str) -> String {
+            text.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+                .replace('"', "&quot;")
+                .replace('\'', "&apos;")
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    mod imp {
+        pub fn task_exists() -> bool {
+            false
+        }
+        pub fn create_recovery_task() -> Result<(), String> {
+            Err("break-glass recovery is not implemented on this platform".into())
+        }
+        pub fn delete_recovery_task() -> Result<(), String> {
+            Ok(())
+        }
+    }
+
     pub fn task_exists(_name: &str) -> bool {
-        false
+        imp::task_exists()
     }
     pub fn create_recovery_task(_name: &str) -> Result<(), String> {
-        Err("break-glass recovery is not implemented on this platform".into())
+        imp::create_recovery_task()
     }
     pub fn delete_recovery_task(_name: &str) -> Result<(), String> {
-        Ok(())
+        imp::delete_recovery_task()
     }
 }

@@ -47,7 +47,7 @@ pub fn show(ui: &mut egui::Ui) {
 
                 cols[1].vertical(|ui| {
                     card(ui, "Active response", |ui| {
-                        body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, freeze autorun keys for later rollback, apply a quarantine preset, or isolate the machine with firewall rules. Active blocks show a countdown and a quick unblock action. All actions require administrator privileges on Windows and ask for confirmation.");
+                        body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, freeze autorun keys for later rollback, apply a quarantine preset, or isolate the machine. Active blocks show a countdown and a quick unblock action. Isolation is immediate and confirmed by connectivity checks; other destructive actions keep confirmation.");
                         ui.add_space(6.0);
                         bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
                         bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
@@ -56,7 +56,7 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
                         bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                         bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
-                        bullet(ui, "Isolate network", "Add reversible firewall rules that block inbound and outbound traffic. Break-glass recovery can restore them if Vigil dies during containment.");
+                        bullet(ui, "Isolate network", "Apply strict containment immediately: first harden firewall policy, then verify outbound reachability. If traffic is still reachable, Vigil falls back to emergency adapter cutoff. Break-glass and failsafe recovery restore saved state if the app dies.");
                     });
 
                     card(ui, "Auto response and allowlisting", |ui| {
@@ -86,11 +86,11 @@ pub fn show(ui: &mut egui::Ui) {
                     });
 
                     card(ui, "Break-glass recovery", |ui| {
-                        body(ui, "Break-glass recovery reduces the risk of locking yourself out during machine isolation. When enabled, Vigil arms a watchdog task while isolation is active, keeps a heartbeat file fresh, and restores networking if the heartbeat goes stale past the timeout.");
+                        body(ui, "Break-glass recovery reduces the risk of locking yourself out during machine isolation. Vigil always arms a watchdog task while isolation is active, keeps a heartbeat file fresh, and restores networking if the heartbeat goes stale past the timeout.");
                         ui.add_space(6.0);
                         bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
                         bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
-                        bullet(ui, "Watchdog task", "Current Windows implementation uses a scheduled task that runs the same Vigil binary with --break-glass-recover.");
+                        bullet(ui, "Watchdog task", "Vigil uses an OS scheduler entry to run the same binary with --break-glass-recover (Windows Task Scheduler, Linux cron, macOS launchd).");
                     });
 
                     card(ui, "Telemetry and reputation", |ui| {
@@ -106,7 +106,7 @@ pub fn show(ui: &mut egui::Ui) {
             });
         } else {
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
-            card(ui, "Active response", |ui| { body(ui, "Active response includes connection kill, remote and process blocking, domain blocking, suspension, autorun freeze / revert, full quarantine, and machine isolation on Windows."); });
+            card(ui, "Active response", |ui| { body(ui, "Active response includes connection kill, remote and process blocking, domain blocking, suspension, autorun freeze / revert, full quarantine, and machine isolation. Isolation is strict and reversible across supported platforms."); });
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
             card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
             card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, and decoy-file touches are optional and configurable in Settings."); });
