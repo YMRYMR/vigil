@@ -6,11 +6,13 @@
 //! small JSON sidecar next to the packet capture.
 
 use crate::{tls, types::ConnInfo};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TlsArtifactMeta {
     pub remote_ip: String,
     pub remote_port: u16,
@@ -23,6 +25,14 @@ pub struct TlsArtifactMeta {
     pub ec_point_formats: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedTlsMeta {
+    observed_unix: u64,
+    meta: TlsArtifactMeta,
+}
+
+const CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+
 pub fn analyze_capture(info: &ConnInfo, pcapng: &Path) -> Result<Option<PathBuf>, String> {
     let Some((remote_ip, remote_port)) = parse_remote_endpoint(&info.remote_addr) else {
         return Ok(None);
@@ -33,12 +43,50 @@ pub fn analyze_capture(info: &ConnInfo, pcapng: &Path) -> Result<Option<PathBuf>
         return Ok(None);
     };
 
+    remember(meta.clone());
     let sidecar = sidecar_path(pcapng);
     let json = serde_json::to_string_pretty(&meta)
         .map_err(|e| format!("failed to serialize TLS metadata: {e}"))?;
     std::fs::write(&sidecar, json)
         .map_err(|e| format!("failed to write {}: {e}", sidecar.display()))?;
     Ok(Some(sidecar))
+}
+
+pub fn lookup_remote(remote_ip: &str, remote_port: u16) -> Option<TlsArtifactMeta> {
+    let cache = cache();
+    let mut guard = cache.lock().ok()?;
+    prune_stale_locked(&mut guard);
+    let key = cache_key(remote_ip, remote_port);
+    guard.get(&key).map(|entry| entry.meta.clone())
+}
+
+fn remember(meta: TlsArtifactMeta) {
+    let cache = cache();
+    if let Ok(mut guard) = cache.lock() {
+        prune_stale_locked(&mut guard);
+        let key = cache_key(&meta.remote_ip, meta.remote_port);
+        guard.insert(
+            key,
+            CachedTlsMeta {
+                observed_unix: unix_now(),
+                meta,
+            },
+        );
+    }
+}
+
+fn cache() -> &'static Mutex<HashMap<String, CachedTlsMeta>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, CachedTlsMeta>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn prune_stale_locked(cache: &mut HashMap<String, CachedTlsMeta>) {
+    let now = unix_now();
+    cache.retain(|_, entry| now.saturating_sub(entry.observed_unix) <= CACHE_TTL_SECS);
+}
+
+fn cache_key(remote_ip: &str, remote_port: u16) -> String {
+    format!("{}:{}", remote_ip.trim().to_ascii_lowercase(), remote_port)
 }
 
 fn sidecar_path(pcapng: &Path) -> PathBuf {
@@ -190,6 +238,13 @@ fn read_u32_le(bytes: &[u8], off: usize) -> Option<u32> {
     Some(u32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,5 +307,14 @@ mod tests {
             .expect("tls meta");
         assert_eq!(meta.tls_sni.as_deref(), Some("example.org"));
         assert_eq!(meta.tls_ja3.as_deref(), Some("771,4865-4866,0,,"));
+    }
+
+    #[test]
+    fn remembered_tls_metadata_is_reusable() {
+        let meta = extract_client_hello(&sample_pcapng(), "93.184.216.34".parse().unwrap(), 443)
+            .expect("tls meta");
+        remember(meta);
+        let cached = lookup_remote("93.184.216.34", 443).expect("cached meta");
+        assert_eq!(cached.tls_sni.as_deref(), Some("example.org"));
     }
 }
