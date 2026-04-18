@@ -6,7 +6,7 @@
 use crate::{
     baseline::BaselineSignal,
     config::Config,
-    detection_depth::{self, DetectionAdditions},
+    detection_depth::{self},
 };
 
 /// Everything the scorer needs from one connection snapshot.
@@ -26,6 +26,8 @@ pub struct ScoreInput<'a> {
     pub reputation_hit: Option<&'a str>,
     pub country: Option<&'a str>,
     pub hostname: Option<&'a str>,
+    pub tls_sni: Option<&'a str>,
+    pub tls_ja3: Option<&'a str>,
     pub recently_dropped: bool,
     pub long_lived: bool,
     pub baseline_signal: BaselineSignal,
@@ -140,11 +142,13 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>, Vec<Stri
         attack_tags.push("T1071 Application Layer Protocol / Long-Lived Channel (heuristic)".into());
     }
 
-    let dga_like = input.hostname.map(|host| !host.is_empty() && crate::entropy::is_dga_like(host, cfg.dga_entropy_threshold)).unwrap_or(false);
-    if let Some(host) = input.hostname {
+    let name_source = input.hostname.or(input.tls_sni);
+    let dga_like = name_source.map(|host| !host.is_empty() && crate::entropy::is_dga_like(host, cfg.dga_entropy_threshold)).unwrap_or(false);
+    if let Some(host) = name_source {
         if dga_like {
+            let host_kind = if input.hostname.is_some() { "hostname" } else { "TLS SNI" };
             s = s.saturating_add(2);
-            reasons.push(format!("Hostname looks DGA-generated: {host}"));
+            reasons.push(format!("{host_kind} looks DGA-generated: {host}"));
             attack_tags.push("T1568.002 Dynamic Resolution / DGA (heuristic)".into());
         }
     }
@@ -196,6 +200,15 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>, Vec<Stri
         script_host_suspicious,
     ).merge_into(&mut s, &mut reasons, &mut attack_tags);
 
+    if let Some(sni) = input.tls_sni {
+        if input.hostname.is_none() {
+            reasons.push(format!("TLS SNI observed: {sni}"));
+        }
+    }
+    if let Some(ja3) = input.tls_ja3 {
+        reasons.push(format!("TLS JA3 fingerprint observed: {ja3}"));
+    }
+
     detection_depth::dedup(&mut attack_tags);
     let mut seen = std::collections::BTreeSet::new();
     reasons.retain(|r| seen.insert(r.to_ascii_lowercase()));
@@ -227,6 +240,8 @@ mod tests {
             reputation_hit: None,
             country: None,
             hostname: None,
+            tls_sni: None,
+            tls_ja3: None,
             recently_dropped: false,
             long_lived: false,
             baseline_signal: BaselineSignal::default(),
@@ -257,5 +272,13 @@ mod tests {
         let (s, reasons, _) = score(&inp, &cfg());
         assert!(s >= 4);
         assert!(reasons.iter().any(|r| r.contains("Behavioural baseline deviation")));
+    }
+
+    #[test]
+    fn tls_sni_can_drive_dga_detection_when_hostname_is_missing() {
+        let mut inp = input("updater", "/opt/updater", "203.0.113.5", 443, "ESTABLISHED");
+        inp.tls_sni = Some("xj3kq9z2a.example");
+        let (_s, reasons, _tags) = score(&inp, &cfg());
+        assert!(reasons.iter().any(|r| r.contains("TLS SNI") || r.contains("xj3kq9z2a.example")));
     }
 }
