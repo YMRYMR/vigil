@@ -4,7 +4,11 @@
 //! poll them for timestamp changes. Any touch triggers a synthetic high-score
 //! alert and can optionally auto-isolate the machine.
 
-use crate::{active_response, audit, config::Config, types::{ConnEvent, ConnInfo}};
+use crate::{
+    active_response, audit,
+    config::Config,
+    types::{ConnEvent, ConnInfo},
+};
 use chrono::Local;
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -39,7 +43,11 @@ pub fn start(cfg: Arc<RwLock<Config>>, tx: broadcast::Sender<ConnEvent>, thresho
                         decoy.modified_unix = updated;
                         let info = synthetic_alert(&decoy.path, threshold.max(10));
                         let _ = tx.send(ConnEvent::Alert(info.clone()));
-                        audit::record("honeypot_decoy", "success", json!({"path": decoy.path.display().to_string(), "score": info.score}));
+                        audit::record(
+                            "honeypot_decoy",
+                            "success",
+                            json!({"path": decoy.path.display().to_string(), "score": info.score}),
+                        );
                         if current_cfg.honeypot_auto_isolate {
                             let _ = active_response::isolate_machine();
                         }
@@ -89,7 +97,10 @@ fn ensure_decoys(cfg: &Config) -> Vec<DecoyEntry> {
             if !path.exists() {
                 let _ = std::fs::write(&path, decoy_contents(name));
             }
-            out.push(DecoyEntry { modified_unix: modified_unix(&path).unwrap_or(0), path });
+            out.push(DecoyEntry {
+                modified_unix: modified_unix(&path).unwrap_or(0),
+                path,
+            });
         }
     }
     out
@@ -101,7 +112,10 @@ fn decoy_contents(name: &str) -> String {
 
 fn watched_dirs() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(home) = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from) {
+    if let Some(home) = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+    {
         out.push(home.join("Desktop"));
         out.push(home.join("Documents"));
         out.push(home.join("Downloads"));
@@ -117,5 +131,8 @@ fn watched_dirs() -> Vec<PathBuf> {
 
 fn modified_unix(path: &Path) -> Option<u64> {
     let modified = std::fs::metadata(path).ok()?.modified().ok()?;
-    modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
 }

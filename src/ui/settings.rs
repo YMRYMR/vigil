@@ -51,7 +51,6 @@ pub struct SettingsDraft {
     pub honeypot_auto_isolate: bool,
     pub honeypot_poll_secs: u64,
     pub honeypot_decoy_names_text: String,
-    pub break_glass_enabled: bool,
     pub break_glass_timeout_mins: u64,
     pub break_glass_heartbeat_secs: u64,
     pub status_msg: Option<(String, std::time::Instant)>,
@@ -100,7 +99,6 @@ impl SettingsDraft {
             honeypot_auto_isolate: cfg.honeypot_auto_isolate,
             honeypot_poll_secs: cfg.honeypot_poll_secs,
             honeypot_decoy_names_text: cfg.honeypot_decoy_names.join("\n"),
-            break_glass_enabled: cfg.break_glass_enabled,
             break_glass_timeout_mins: cfg.break_glass_timeout_mins,
             break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
             status_msg: None,
@@ -146,7 +144,7 @@ impl SettingsDraft {
         cfg.honeypot_auto_isolate = self.honeypot_auto_isolate;
         cfg.honeypot_poll_secs = self.honeypot_poll_secs.clamp(5, 300);
         cfg.honeypot_decoy_names = split_lines(&self.honeypot_decoy_names_text);
-        cfg.break_glass_enabled = self.break_glass_enabled;
+        cfg.break_glass_enabled = true;
         cfg.break_glass_timeout_mins = self.break_glass_timeout_mins.clamp(1, 240);
         cfg.break_glass_heartbeat_secs = self.break_glass_heartbeat_secs.clamp(5, 300);
     }
@@ -156,7 +154,11 @@ fn split_lines(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
         let trimmed = line.trim();
-        if !trimmed.is_empty() && !out.iter().any(|item: &String| item.eq_ignore_ascii_case(trimmed)) {
+        if !trimmed.is_empty()
+            && !out
+                .iter()
+                .any(|item: &String| item.eq_ignore_ascii_case(trimmed))
+        {
             out.push(trimmed.to_string());
         }
     }
@@ -165,16 +167,18 @@ fn split_lines(text: &str) -> Vec<String> {
 
 pub fn show(ui: &mut egui::Ui, draft: &mut SettingsDraft) -> bool {
     let mut changed = false;
-    egui::ScrollArea::vertical().id_salt("settings_scroll").show(ui, |ui| {
-        ui.add_space(16.0);
-        ui.vertical(|ui| {
-            let content_w = ui.available_width();
-            ui.set_max_width(content_w);
-            ui.set_width(content_w);
-            inner(ui, draft, &mut changed);
+    egui::ScrollArea::vertical()
+        .id_salt("settings_scroll")
+        .show(ui, |ui| {
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                let content_w = ui.available_width();
+                ui.set_max_width(content_w);
+                ui.set_width(content_w);
+                inner(ui, draft, &mut changed);
+            });
+            ui.add_space(18.0);
         });
-        ui.add_space(18.0);
-    });
     changed
 }
 
@@ -184,20 +188,42 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     section_header(ui, "Detection");
     setting_row(ui, label_w, "Alert threshold", |ui| {
         ui.horizontal(|ui| {
-            let resp = ui.add(egui::Slider::new(&mut draft.alert_threshold, 1_u8..=10_u8).clamping(egui::SliderClamping::Always));
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.alert_threshold, 1_u8..=10_u8)
+                    .clamping(egui::SliderClamping::Always),
+            );
             *changed |= resp.changed();
-            ui.label(RichText::new(format!("  score >= {} => alert", draft.alert_threshold)).color(theme::TEXT3).size(11.0));
+            ui.label(
+                RichText::new(format!("  score >= {} => alert", draft.alert_threshold))
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
         });
     });
     setting_row(ui, label_w, "Poll interval", |ui| {
         ui.horizontal(|ui| {
-            let resp = ui.add(egui::Slider::new(&mut draft.poll_interval_secs, 2_u64..=60_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.poll_interval_secs, 2_u64..=60_u64)
+                    .suffix(" s")
+                    .clamping(egui::SliderClamping::Always),
+            );
             *changed |= resp.changed();
-            ui.label(RichText::new("  (ETW uses longer interval)").color(theme::TEXT3).size(11.0));
+            ui.label(
+                RichText::new("  (ETW uses longer interval)")
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
         });
     });
     setting_row(ui, label_w, "Log all connections", |ui| {
-        *changed |= ui.checkbox(&mut draft.log_all_connections, RichText::new("include score-0 connections in the log and activity table").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.log_all_connections,
+                RichText::new("include score-0 connections in the log and activity table")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
 
     ui.add_space(16.0);
@@ -205,10 +231,24 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable auto response", |ui| {
-        *changed |= ui.checkbox(&mut draft.auto_response_enabled, RichText::new("allow Vigil to take automated containment actions").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.auto_response_enabled,
+                RichText::new("allow Vigil to take automated containment actions")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Dry run", |ui| {
-        *changed |= ui.checkbox(&mut draft.auto_response_dry_run, RichText::new("log and surface planned actions without executing them").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.auto_response_dry_run,
+                RichText::new("log and surface planned actions without executing them")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     ui.add_enabled_ui(draft.auto_response_enabled, |ui| {
         setting_row(ui, label_w, "Minimum score", |ui| {
@@ -247,13 +287,32 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional restrictive policy. When enabled, Vigil treats traffic from processes outside the trusted list, the custom allowlist, and Microsoft-signed system processes as containment candidates.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable allowlist mode", |ui| {
-        *changed |= ui.checkbox(&mut draft.allowlist_mode_enabled, RichText::new("enforce network allowlisting for processes").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.allowlist_mode_enabled,
+                RichText::new("enforce network allowlisting for processes")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Allowlist dry run", |ui| {
-        *changed |= ui.checkbox(&mut draft.allowlist_mode_dry_run, RichText::new("log planned allowlist containment without executing it").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.allowlist_mode_dry_run,
+                RichText::new("log planned allowlist containment without executing it")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Allowed processes", |ui| {
-        let resp = ui.add(egui::TextEdit::multiline(&mut draft.allowlist_processes_text).hint_text("one process name or full executable path per line").desired_width(420.0).desired_rows(5));
+        let resp = ui.add(
+            egui::TextEdit::multiline(&mut draft.allowlist_processes_text)
+                .hint_text("one process name or full executable path per line")
+                .desired_width(420.0)
+                .desired_rows(5),
+        );
         *changed |= resp.changed();
     });
     ui.label(RichText::new("Trusted processes are always treated as allowed. One entry per line; names are matched case-insensitively and .exe is ignored.").color(theme::TEXT3).size(10.8));
@@ -263,13 +322,31 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional YAML rule engine. Rules are evaluated in order, first match wins, and can dry-run or execute the same containment actions used elsewhere in Vigil.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable rules", |ui| {
-        *changed |= ui.checkbox(&mut draft.response_rules_enabled, RichText::new("load and evaluate a YAML response-rules file").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.response_rules_enabled,
+                RichText::new("load and evaluate a YAML response-rules file")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Rules dry run", |ui| {
-        *changed |= ui.checkbox(&mut draft.response_rules_dry_run, RichText::new("log matching rules without executing their actions").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.response_rules_dry_run,
+                RichText::new("log matching rules without executing their actions")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Rules file", |ui| {
-        let resp = ui.add(egui::TextEdit::singleline(&mut draft.response_rules_path).hint_text("path to response-rules.yaml").desired_width(420.0));
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut draft.response_rules_path)
+                .hint_text("path to response-rules.yaml")
+                .desired_width(420.0),
+        );
         *changed |= resp.changed();
     });
     ui.label(RichText::new("Supported rule actions currently include kill_connection, block_remote, block_process, and quarantine.").color(theme::TEXT3).size(10.8));
@@ -279,7 +356,14 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible firewall rules as the panic button and is currently implemented on Windows.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable schedule", |ui| {
-        *changed |= ui.checkbox(&mut draft.scheduled_lockdown_enabled, RichText::new("automatically isolate the network during the selected hours").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.scheduled_lockdown_enabled,
+                RichText::new("automatically isolate the network during the selected hours")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     ui.add_enabled_ui(draft.scheduled_lockdown_enabled, |ui| {
         setting_row(ui, label_w, "Start time", |ui| {
@@ -301,43 +385,69 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         ui.label(RichText::new("Overnight windows are supported. Example: 23:00 to 06:00 isolates overnight and restores in the morning.").color(theme::TEXT3).size(10.8));
     });
     if !draft.scheduled_lockdown_enabled {
-        ui.label(RichText::new("Scheduled lockdown is currently disabled.").color(theme::TEXT3).size(10.8));
+        ui.label(
+            RichText::new("Scheduled lockdown is currently disabled.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
     }
 
     ui.add_space(16.0);
     section_header(ui, "Break-glass recovery");
-    ui.label(RichText::new("When machine isolation is active, Vigil can arm a recovery watchdog. It keeps touching a heartbeat file while the app is alive, and a scheduled watchdog task restores the network if the heartbeat goes stale past the timeout.").color(theme::TEXT2).size(12.0));
+    ui.label(RichText::new("When machine isolation is active, Vigil always arms a recovery watchdog. It keeps touching a heartbeat file while the app is alive, and a scheduled watchdog task restores the network if the heartbeat goes stale past the timeout.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
-    setting_row(ui, label_w, "Enable break-glass", |ui| {
-        *changed |= ui.checkbox(&mut draft.break_glass_enabled, RichText::new("automatically recover from a stale isolation lockout").color(theme::TEXT2).size(11.5)).changed();
+    setting_row(ui, label_w, "Fail-safe mode", |ui| {
+        ui.label(
+            RichText::new("always on during isolation (safety override)")
+                .color(theme::TEXT2)
+                .size(11.5),
+        );
     });
-    ui.add_enabled_ui(draft.break_glass_enabled, |ui| {
-        setting_row(ui, label_w, "Recovery timeout", |ui| {
-            ui.horizontal(|ui| {
-                let resp = ui.add(egui::Slider::new(&mut draft.break_glass_timeout_mins, 1_u64..=240_u64).suffix(" min").clamping(egui::SliderClamping::Always));
-                *changed |= resp.changed();
-                ui.label(RichText::new("  restores networking after this timeout if the heartbeat is stale").color(theme::TEXT3).size(11.0));
-            });
+    setting_row(ui, label_w, "Recovery timeout", |ui| {
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.break_glass_timeout_mins, 1_u64..=240_u64)
+                    .suffix(" min")
+                    .clamping(egui::SliderClamping::Always),
+            );
+            *changed |= resp.changed();
+            ui.label(
+                RichText::new("  restores networking after this timeout if the heartbeat is stale")
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
         });
-        setting_row(ui, label_w, "Heartbeat interval", |ui| {
-            ui.horizontal(|ui| {
-                let resp = ui.add(egui::Slider::new(&mut draft.break_glass_heartbeat_secs, 5_u64..=300_u64).suffix(" s").clamping(egui::SliderClamping::Always));
-                *changed |= resp.changed();
-                ui.label(RichText::new("  Vigil refreshes the heartbeat at this cadence while running").color(theme::TEXT3).size(11.0));
-            });
-        });
-        ui.label(RichText::new("Current implementation is Windows-only and uses a scheduled task that runs the same Vigil binary with --break-glass-recover.").color(theme::TEXT3).size(10.8));
     });
-    if !draft.break_glass_enabled {
-        ui.label(RichText::new("Break-glass recovery is disabled, so an operator must manually restore networking after a crash during isolation.").color(theme::TEXT3).size(10.8));
-    }
+    setting_row(ui, label_w, "Heartbeat interval", |ui| {
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.break_glass_heartbeat_secs, 5_u64..=300_u64)
+                    .suffix(" s")
+                    .clamping(egui::SliderClamping::Always),
+            );
+            *changed |= resp.changed();
+            ui.label(
+                RichText::new("  Vigil refreshes the heartbeat at this cadence while running")
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
+        });
+    });
+    ui.label(RichText::new("Watchdog implementation uses the local OS scheduler (Windows Task Scheduler, Linux cron, macOS launchd) and runs the same Vigil binary with --break-glass-recover.").color(theme::TEXT3).size(10.8));
 
     ui.add_space(16.0);
     section_header(ui, "Forensics on alert");
     ui.label(RichText::new("Optional forensic capture for high-confidence alerts. Current implementation is Windows-only and can write process memory dumps and short packet captures when enabled.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable process dump", |ui| {
-        *changed |= ui.checkbox(&mut draft.process_dump_on_alert, RichText::new("capture a process memory dump on sufficiently high-score alerts").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.process_dump_on_alert,
+                RichText::new("capture a process memory dump on sufficiently high-score alerts")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     ui.add_enabled_ui(draft.process_dump_on_alert, |ui| {
         setting_row(ui, label_w, "Dump minimum score", |ui| {
@@ -361,12 +471,23 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         ui.label(RichText::new("Windows implementation uses the built-in comsvcs MiniDump helper. Empty dump directory uses Vigil's per-user data folder.").color(theme::TEXT3).size(10.8));
     });
     if !draft.process_dump_on_alert {
-        ui.label(RichText::new("Process dump on alert is currently disabled.").color(theme::TEXT3).size(10.8));
+        ui.label(
+            RichText::new("Process dump on alert is currently disabled.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
     }
 
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable PCAP capture", |ui| {
-        *changed |= ui.checkbox(&mut draft.pcap_on_alert, RichText::new("capture a short packet window on sufficiently high-score alerts").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.pcap_on_alert,
+                RichText::new("capture a short packet window on sufficiently high-score alerts")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     ui.add_enabled_ui(draft.pcap_on_alert, |ui| {
         setting_row(ui, label_w, "PCAP minimum score", |ui| {
@@ -404,7 +525,11 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         ui.label(RichText::new("Windows implementation uses pktmon and converts the ETL trace to pcapng. Only one packet capture runs at a time.").color(theme::TEXT3).size(10.8));
     });
     if !draft.pcap_on_alert {
-        ui.label(RichText::new("PCAP capture on alert is currently disabled.").color(theme::TEXT3).size(10.8));
+        ui.label(
+            RichText::new("PCAP capture on alert is currently disabled.")
+                .color(theme::TEXT3)
+                .size(10.8),
+        );
     }
 
     ui.add_space(16.0);
@@ -412,31 +537,75 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional canary documents. Vigil plants decoy files in common user folders, watches for touches, raises a synthetic alert, and can optionally isolate the machine.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable decoys", |ui| {
-        *changed |= ui.checkbox(&mut draft.honeypot_decoys_enabled, RichText::new("create and monitor honeypot decoy files").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.honeypot_decoys_enabled,
+                RichText::new("create and monitor honeypot decoy files")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Auto isolate on touch", |ui| {
-        *changed |= ui.checkbox(&mut draft.honeypot_auto_isolate, RichText::new("automatically isolate the machine when a decoy is touched").color(theme::TEXT2).size(11.5)).changed();
+        *changed |= ui
+            .checkbox(
+                &mut draft.honeypot_auto_isolate,
+                RichText::new("automatically isolate the machine when a decoy is touched")
+                    .color(theme::TEXT2)
+                    .size(11.5),
+            )
+            .changed();
     });
     setting_row(ui, label_w, "Poll interval", |ui| {
         ui.horizontal(|ui| {
-            let resp = ui.add(egui::Slider::new(&mut draft.honeypot_poll_secs, 5_u64..=300_u64).suffix(" s").clamping(egui::SliderClamping::Always));
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.honeypot_poll_secs, 5_u64..=300_u64)
+                    .suffix(" s")
+                    .clamping(egui::SliderClamping::Always),
+            );
             *changed |= resp.changed();
-            ui.label(RichText::new("  how often Vigil checks decoy timestamps").color(theme::TEXT3).size(11.0));
+            ui.label(
+                RichText::new("  how often Vigil checks decoy timestamps")
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
         });
     });
     setting_row(ui, label_w, "Decoy names", |ui| {
-        let resp = ui.add(egui::TextEdit::multiline(&mut draft.honeypot_decoy_names_text).hint_text("one decoy filename per line").desired_width(420.0).desired_rows(4));
+        let resp = ui.add(
+            egui::TextEdit::multiline(&mut draft.honeypot_decoy_names_text)
+                .hint_text("one decoy filename per line")
+                .desired_width(420.0)
+                .desired_rows(4),
+        );
         *changed |= resp.changed();
     });
-    ui.label(RichText::new("Desktop, Documents, Downloads, and Public Documents are used when available.").color(theme::TEXT3).size(10.8));
+    ui.label(
+        RichText::new(
+            "Desktop, Documents, Downloads, and Public Documents are used when available.",
+        )
+        .color(theme::TEXT3)
+        .size(10.8),
+    );
 
     ui.add_space(16.0);
     section_header(ui, "Startup");
     setting_row(ui, label_w, "Run at login", |ui| {
         ui.vertical(|ui| {
-            *changed |= ui.checkbox(&mut draft.autostart, RichText::new("start Vigil automatically when you log in").color(theme::TEXT2).size(11.5)).changed();
+            *changed |= ui
+                .checkbox(
+                    &mut draft.autostart,
+                    RichText::new("start Vigil automatically when you log in")
+                        .color(theme::TEXT2)
+                        .size(11.5),
+                )
+                .changed();
             ui.add_space(2.0);
-            ui.label(RichText::new("On Windows, elevated runs use a highest-privilege scheduled task.").color(theme::TEXT3).size(10.2));
+            ui.label(
+                RichText::new("On Windows, elevated runs use a highest-privilege scheduled task.")
+                    .color(theme::TEXT3)
+                    .size(10.2),
+            );
         });
     });
 
@@ -447,13 +616,28 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.add_space(10.0);
 
     ui.horizontal(|ui| {
-        let te = egui::TextEdit::singleline(&mut draft.new_trusted_input).hint_text("process name…").desired_width(280.0);
+        let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
+            .hint_text("process name…")
+            .desired_width(280.0);
         let resp = ui.add(te);
-        let add_clicked = ui.add(egui::Button::new(RichText::new("  Add  ").color(theme::TEXT).size(12.0)).fill(theme::ACCENT).stroke(egui::Stroke::new(1.0, theme::ACCENT)).corner_radius(4.0)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        let add_clicked = ui
+            .add(
+                egui::Button::new(RichText::new("  Add  ").color(theme::TEXT).size(12.0))
+                    .fill(theme::ACCENT)
+                    .stroke(egui::Stroke::new(1.0, theme::ACCENT))
+                    .corner_radius(4.0),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked();
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
             let key = normalise_name(draft.new_trusted_input.trim());
-            if !key.is_empty() && !draft.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key)) {
+            if !key.is_empty()
+                && !draft
+                    .trusted_processes
+                    .iter()
+                    .any(|t| t.eq_ignore_ascii_case(&key))
+            {
                 draft.trusted_processes.push(key);
                 draft.trusted_processes.sort_unstable();
                 *changed = true;
@@ -461,38 +645,89 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             draft.new_trusted_input.clear();
         }
         ui.add_space(10.0);
-        if ui.add(egui::Button::new(RichText::new("Reset shipped defaults").color(theme::TEXT2).size(11.0)).fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(4.0)).on_hover_text("Restore the trusted list that ships with Vigil").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if ui
+            .add(
+                egui::Button::new(
+                    RichText::new("Reset shipped defaults")
+                        .color(theme::TEXT2)
+                        .size(11.0),
+                )
+                .fill(theme::SURFACE2)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .corner_radius(4.0),
+            )
+            .on_hover_text("Restore the trusted list that ships with Vigil")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
             draft.trusted_processes = Config::default().trusted_processes;
             draft.trusted_filter.clear();
             draft.new_trusted_input.clear();
-            draft.status_msg = Some(("Restored shipped trusted defaults.".into(), std::time::Instant::now()));
+            draft.status_msg = Some((
+                "Restored shipped trusted defaults.".into(),
+                std::time::Instant::now(),
+            ));
             *changed = true;
         }
     });
 
     ui.add_space(10.0);
     if let Some((msg, at)) = &draft.status_msg {
-        if at.elapsed().as_secs() < 3 { ui.label(RichText::new(msg).color(theme::ACCENT).size(11.5)); ui.add_space(8.0); } else { draft.status_msg = None; }
+        if at.elapsed().as_secs() < 3 {
+            ui.label(RichText::new(msg).color(theme::ACCENT).size(11.5));
+            ui.add_space(8.0);
+        } else {
+            draft.status_msg = None;
+        }
     }
 
     let mut remove_idx: Option<usize> = None;
     if draft.trusted_processes.is_empty() {
-        ui.label(RichText::new("No trusted processes yet.").color(theme::TEXT3).size(11.5));
+        ui.label(
+            RichText::new("No trusted processes yet.")
+                .color(theme::TEXT3)
+                .size(11.5),
+        );
     } else {
         let total = draft.trusted_processes.len();
         if total > 4 {
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut draft.trusted_filter).hint_text("filter…").desired_width(180.0));
-                if !draft.trusted_filter.is_empty() && ui.add(egui::Button::new(RichText::new("x").color(theme::TEXT2).size(11.0)).fill(egui::Color32::TRANSPARENT).stroke(egui::Stroke::NONE)).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.trusted_filter)
+                        .hint_text("filter…")
+                        .desired_width(180.0),
+                );
+                if !draft.trusted_filter.is_empty()
+                    && ui
+                        .add(
+                            egui::Button::new(RichText::new("x").color(theme::TEXT2).size(11.0))
+                                .fill(egui::Color32::TRANSPARENT)
+                                .stroke(egui::Stroke::NONE),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                {
                     draft.trusted_filter.clear();
                 }
             });
             ui.add_space(6.0);
         }
         let filter_lower = draft.trusted_filter.to_lowercase();
-        let filtered: Vec<usize> = draft.trusted_processes.iter().enumerate().filter(|(_, name)| filter_lower.is_empty() || name.to_lowercase().contains(&filter_lower)).map(|(i, _)| i).collect();
+        let filtered: Vec<usize> = draft
+            .trusted_processes
+            .iter()
+            .enumerate()
+            .filter(|(_, name)| {
+                filter_lower.is_empty() || name.to_lowercase().contains(&filter_lower)
+            })
+            .map(|(i, _)| i)
+            .collect();
         let visible = filtered.len();
-        let count_label = if filter_lower.is_empty() || visible == total { format!("{} process{}", total, if total == 1 { "" } else { "es" }) } else { format!("{} / {} processes", visible, total) };
+        let count_label = if filter_lower.is_empty() || visible == total {
+            format!("{} process{}", total, if total == 1 { "" } else { "es" })
+        } else {
+            format!("{} / {} processes", visible, total)
+        };
         ui.label(RichText::new(&count_label).color(theme::TEXT3).size(11.5));
         ui.add_space(8.0);
         egui::Frame::NONE.fill(theme::SURFACE3).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(12.0).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
@@ -546,7 +781,10 @@ fn section_header(ui: &mut egui::Ui, title: &str) {
 
 fn setting_row(ui: &mut egui::Ui, label_w: f32, label: &str, ctrl: impl FnOnce(&mut egui::Ui)) {
     ui.horizontal(|ui| {
-        ui.add_sized([label_w, 20.0], egui::Label::new(RichText::new(label).color(theme::TEXT).size(12.0)));
+        ui.add_sized(
+            [label_w, 20.0],
+            egui::Label::new(RichText::new(label).color(theme::TEXT).size(12.0)),
+        );
         ui.add_space(8.0);
         ctrl(ui);
     });
