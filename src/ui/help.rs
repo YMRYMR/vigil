@@ -28,17 +28,24 @@ pub fn show(ui: &mut egui::Ui) {
                         body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.");
                     });
                     card(ui, "How scoring works", |ui| {
-                        body(ui, "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket.");
+                        body(ui, "Scores stack. A chatty process with many destinations or ports gets a higher row score than a single quiet socket. Phase 12 adds deeper but still explainable heuristics, so operators can see why a process crossed the line instead of trusting a black box.");
                         ui.add_space(6.0);
                         score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
-                        score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection");
-                        score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, or recent file-drop");
-                        score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, or DGA-like hostname");
-                        score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process");
-                        score_row(ui, "+1", theme::TEXT2, "Extra fan-out from the same process: more connections, more ports, more remote targets");
+                        score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection or a clearly abusive script-host pattern");
+                        score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, recent file-drop, or signed-but-malicious corroboration");
+                        score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, DGA-like hostname, or mature baseline drift");
+                        score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process or extra fan-out from the same process");
                     });
                     card(ui, "Persistence signals", |ui| {
                         body(ui, "Vigil also watches for persistence-style behaviour: autorun keys, pre-login connections, file drops in watched directories, long-lived connections that stay open past the configured threshold, and honeypot decoy touches.");
+                    });
+                    card(ui, "Phase 12 detection depth", |ui| {
+                        body(ui, "Phase 12 is about deeper confidence, not mystery scoring. Each new signal still lands as a readable reason or ATT&CK-style tag in the UI.");
+                        ui.add_space(6.0);
+                        bullet(ui, "Behavioural baselines", "Stable processes build a small persisted profile of previously seen remotes, ports, and countries. Once mature, true novelty adds score as baseline drift instead of silently changing the normal profile.");
+                        bullet(ui, "Script-host inspection", "PowerShell, cmd, WSH, mshta, regsvr32, and rundll32 command lines are inspected for encoded commands, stealth switches, download cradles, remote scriptlets, and similar abuse patterns.");
+                        bullet(ui, "Parent/token anomalies", "Sensitive system ancestry spawning script-capable children raises an explicit reason. This is heuristic and intentionally conservative, not a kernel anti-tamper claim.");
+                        bullet(ui, "ATT&CK mappings", "When a detection heuristic suggests a known technique family, Vigil attaches an operator-facing ATT&CK-style tag to the process group and selected connection.");
                     });
                     card(ui, "Audit trail", |ui| {
                         body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, dump paths, packet-capture paths, break-glass lifecycle events, honeypot touches, rule names, and quarantine warnings.");
@@ -107,6 +114,7 @@ pub fn show(ui: &mut egui::Ui) {
         } else {
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
             card(ui, "Active response", |ui| { body(ui, "Active response includes connection kill, remote and process blocking, domain blocking, suspension, autorun freeze / revert, full quarantine, and machine isolation. Isolation is strict and reversible across supported platforms."); });
+            card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
             card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
             card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, and decoy-file touches are optional and configurable in Settings."); });
