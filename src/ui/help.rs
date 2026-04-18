@@ -33,7 +33,7 @@ pub fn show(ui: &mut egui::Ui) {
                         score_row(ui, "+5", theme::DANGER, "Known malware or C2 port such as 4444, 1337, or 31337");
                         score_row(ui, "+4", theme::WARN, "LoLBin / system binary making a network connection or a clearly abusive script-host pattern");
                         score_row(ui, "+3", theme::WARN, "No executable path, suspicious directory, suspicious parent, beaconing, reputation hit, recent file-drop, or signed-but-malicious corroboration");
-                        score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, DGA-like hostname, or mature baseline drift");
+                        score_row(ui, "+2", theme::TEXT2, "Untrusted process, unsigned binary, DNS tunneling signal, pre-login activity, unexpected country, long-lived connection, DGA-like hostname or TLS SNI, or mature baseline drift");
                         score_row(ui, "+1", theme::TEXT2, "Unusual destination port for an untrusted process or extra fan-out from the same process");
                     });
                     card(ui, "Persistence signals", |ui| {
@@ -44,11 +44,12 @@ pub fn show(ui: &mut egui::Ui) {
                         ui.add_space(6.0);
                         bullet(ui, "Behavioural baselines", "Stable processes build a small persisted profile of previously seen remotes, ports, and countries. Once mature, true novelty adds score as baseline drift instead of silently changing the normal profile.");
                         bullet(ui, "Script-host inspection", "PowerShell, cmd, WSH, mshta, regsvr32, and rundll32 command lines are inspected for encoded commands, stealth switches, download cradles, remote scriptlets, and similar abuse patterns.");
+                        bullet(ui, "TLS ClientHello enrichment", "When an alert produces a packet capture, Vigil now extracts TLS ClientHello metadata such as SNI and the JA3 tuple into a sidecar file, audits the result, and reuses cached metadata for later matching connections to the same remote IP and port.");
                         bullet(ui, "Parent/token anomalies", "Sensitive system ancestry spawning script-capable children raises an explicit reason. This is heuristic and intentionally conservative, not a kernel anti-tamper claim.");
                         bullet(ui, "ATT&CK mappings", "When a detection heuristic suggests a known technique family, Vigil attaches an operator-facing ATT&CK-style tag to the process group and selected connection.");
                     });
                     card(ui, "Audit trail", |ui| {
-                        body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, dump paths, packet-capture paths, break-glass lifecycle events, honeypot touches, rule names, and quarantine warnings.");
+                        body(ui, "Manual and automatic response actions append JSON Lines to logs/vigil-audit.jsonl next to the normal daily logs. Each record includes a timestamp, action, outcome, and structured details such as PID, process name, endpoints, domains, dump paths, packet-capture paths, TLS sidecar extraction, break-glass lifecycle events, honeypot touches, rule names, and quarantine warnings.");
                     });
                 });
 
@@ -87,7 +88,7 @@ pub fn show(ui: &mut egui::Ui) {
                         body(ui, "Optional forensic capture is available in Settings. Current Windows implementation can write a full user-mode process dump and a short host-wide packet window on high-score alerts, both rate-limited and logged to the audit trail. Honeypot decoys can plant lure files into common user folders and raise synthetic alerts when touched.");
                         ui.add_space(6.0);
                         bullet(ui, "Enable process dump", "Off by default. Turn it on only when you have disk space and a triage workflow for dump files.");
-                        bullet(ui, "Enable PCAP capture", "Off by default. Captures a short pktmon window and converts it to pcapng for later packet analysis.");
+                        bullet(ui, "Enable PCAP capture", "Off by default. Captures a short pktmon window and converts it to pcapng for later packet analysis. Phase 12 can also derive TLS ClientHello sidecars from those captures.");
                         bullet(ui, "Honeypot decoys", "Canary files are placed in Desktop, Documents, Downloads, and Public Documents where available.");
                         bullet(ui, "Auto isolate on touch", "Optionally isolate the machine immediately after a decoy-touch alert.");
                     });
@@ -114,10 +115,10 @@ pub fn show(ui: &mut egui::Ui) {
         } else {
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
             card(ui, "Active response", |ui| { body(ui, "Active response includes connection kill, remote and process blocking, domain blocking, suspension, autorun freeze / revert, full quarantine, and machine isolation. Isolation is strict and reversible across supported platforms."); });
-            card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
+            card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, TLS ClientHello enrichment, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
             card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
-            card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, and decoy-file touches are optional and configurable in Settings."); });
+            card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings."); });
             card(ui, "Break-glass recovery", |ui| { body(ui, "Watchdog-based recovery can restore networking after an isolation lockout if Vigil dies and the heartbeat goes stale."); });
         }
 
