@@ -318,6 +318,8 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             kv_mono(ui, "Local", &conn.local_addr);
             kv_mono(ui, "Remote", &conn.remote_addr);
             if let Some(host) = domain_target.as_deref() { kv(ui, "Hostname", host); }
+            if let Some(sni) = conn.tls_sni.as_deref() { kv(ui, "TLS SNI", sni); }
+            if let Some(ja3) = conn.tls_ja3.as_deref() { kv_mono(ui, "TLS JA3", ja3); }
             kv(ui, "Status", &conn.status);
             kv(ui, "Time", &conn.timestamp);
             if !conn.attack_tags.is_empty() {
