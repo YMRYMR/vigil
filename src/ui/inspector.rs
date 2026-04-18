@@ -35,7 +35,11 @@ pub enum Action {
     KillCancelled,
 }
 
-pub fn show(ui: &mut Ui, selection: Option<&ProcessSelection>, kill_confirm: bool) -> Option<Action> {
+pub fn show(
+    ui: &mut Ui,
+    selection: Option<&ProcessSelection>,
+    kill_confirm: bool,
+) -> Option<Action> {
     match selection {
         Some(selection) => show_detail(ui, selection, kill_confirm),
         None => {
@@ -47,7 +51,13 @@ pub fn show(ui: &mut Ui, selection: Option<&ProcessSelection>, kill_confirm: boo
 
 fn show_placeholder(ui: &mut Ui) {
     let rect = ui.available_rect_before_wrap();
-    ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Select a process\nto inspect", egui::FontId::proportional(12.0), theme::TEXT3);
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Select a process\nto inspect",
+        egui::FontId::proportional(12.0),
+        theme::TEXT3,
+    );
 }
 
 fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Option<Action> {
@@ -61,17 +71,33 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let response_enabled = active_response::can_modify_firewall();
     let domain_enabled = active_response::can_block_domain();
     let response_status = active_response::status();
-    let remote_target = sel.selected_connection.as_ref().and_then(|conn| active_response::extract_remote_target(&conn.remote_addr));
-    let remote_blocked = remote_target.as_deref().is_some_and(active_response::is_blocked);
-    let remote_remaining = remote_target.as_deref().and_then(active_response::remote_block_remaining);
-    let domain_target = sel.selected_connection.as_ref().and_then(active_response::extract_domain_target);
-    let domain_blocked = domain_target.as_deref().is_some_and(active_response::is_domain_blocked);
+    let remote_target = sel
+        .selected_connection
+        .as_ref()
+        .and_then(|conn| active_response::extract_remote_target(&conn.remote_addr));
+    let remote_blocked = remote_target
+        .as_deref()
+        .is_some_and(active_response::is_blocked);
+    let remote_remaining = remote_target
+        .as_deref()
+        .and_then(active_response::remote_block_remaining);
+    let domain_target = sel
+        .selected_connection
+        .as_ref()
+        .and_then(active_response::extract_domain_target);
+    let domain_blocked = domain_target
+        .as_deref()
+        .is_some_and(active_response::is_domain_blocked);
     let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
     let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
     let process_suspended = active_response::is_process_suspended(sel.pid, &sel.proc_path);
-    let connection_kill_enabled = sel.selected_connection.as_ref().is_some_and(active_response::can_kill_connection);
+    let connection_kill_enabled = sel
+        .selected_connection
+        .as_ref()
+        .is_some_and(active_response::can_kill_connection);
     let isolated = response_status.isolated;
-    let quarantine_ready = active_response::can_apply_quarantine_profile(sel.pid, &sel.proc_path) && !ghost;
+    let quarantine_ready =
+        active_response::can_apply_quarantine_profile(sel.pid, &sel.proc_path) && !ghost;
     let quarantine_active = isolated || process_blocked || process_suspended;
     let autoruns_frozen = active_response::has_frozen_autoruns();
 
@@ -280,40 +306,187 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
 
 fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
     let ghost = is_ghost_process_name(&sel.proc_name);
-    egui::Frame::NONE.fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::ACCENT_BG)).corner_radius(12.0).inner_margin(egui::Margin::symmetric(14, 12)).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            score_badge(ui, sel.score);
+    egui::Frame::NONE
+        .fill(theme::SURFACE2)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT_BG))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                score_badge(ui, sel.score);
+                ui.add_space(8.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        RichText::new(&sel.proc_name)
+                            .color(theme::TEXT)
+                            .size(14.5)
+                            .strong(),
+                    );
+                    ui.label(
+                        RichText::new(format!("PID {} | {}", sel.pid, sel.timestamp))
+                            .color(theme::TEXT2)
+                            .size(10.5),
+                    );
+                    ui.label(
+                        RichText::new(format!("Latest: {} to {}", sel.status, sel.remote_addr))
+                            .color(theme::TEXT3)
+                            .size(10.0),
+                    );
+                });
+            });
             ui.add_space(8.0);
-            ui.vertical(|ui| {
-                ui.label(RichText::new(&sel.proc_name).color(theme::TEXT).size(14.5).strong());
-                ui.label(RichText::new(format!("PID {} | {}", sel.pid, sel.timestamp)).color(theme::TEXT2).size(10.5));
-                ui.label(RichText::new(format!("Latest: {} to {}", sel.status, sel.remote_addr)).color(theme::TEXT3).size(10.0));
+            ui.label(
+                RichText::new(if sel.proc_path.is_empty() {
+                    "No executable path available"
+                } else {
+                    sel.proc_path.as_str()
+                })
+                .color(theme::TEXT2)
+                .size(10.5),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                chip(ui, &format!("{} connections", sel.connection_count));
+                chip(ui, &format!("{} ports", sel.distinct_ports));
+                chip(ui, &format!("{} remotes", sel.distinct_remotes));
+                if ghost {
+                    chip(ui, "Unresolved PID");
+                }
+                if sel.proc_path.is_empty() {
+                    chip(ui, "No location");
+                }
+                if sel.selected_connection.is_some() {
+                    chip(ui, "Connection selected");
+                } else {
+                    chip(ui, "Process summary");
+                }
             });
         });
-        ui.add_space(8.0);
-        ui.label(RichText::new(if sel.proc_path.is_empty() { "No executable path available" } else { sel.proc_path.as_str() }).color(theme::TEXT2).size(10.5));
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            chip(ui, &format!("{} connections", sel.connection_count));
-            chip(ui, &format!("{} ports", sel.distinct_ports));
-            chip(ui, &format!("{} remotes", sel.distinct_remotes));
-            if ghost { chip(ui, "Unresolved PID"); }
-            if sel.proc_path.is_empty() { chip(ui, "No location"); }
-            if sel.selected_connection.is_some() { chip(ui, "Connection selected"); } else { chip(ui, "Process summary"); }
-        });
-    });
 }
 
-fn separator(ui: &mut Ui) { let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 1.0)); ui.painter().rect_filled(rect, 0.0, theme::BORDER); ui.advance_cursor_after_rect(rect); }
-fn section_header(ui: &mut Ui, title: &str) { ui.label(RichText::new(title).color(theme::TEXT2).size(10.5).strong()); ui.add_space(4.0); }
-fn kv(ui: &mut Ui, key: &str, val: &str) { ui.horizontal(|ui| { ui.add_sized([88.0, 16.0], egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0))); ui.add(egui::Label::new(RichText::new(val).color(theme::TEXT).size(11.0)).wrap()); }); ui.add_space(2.0); }
-fn kv_mono(ui: &mut Ui, key: &str, val: &str) { ui.horizontal(|ui| { ui.add_sized([88.0, 16.0], egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0))); ui.add(egui::Label::new(RichText::new(val).color(theme::TEXT).monospace().size(10.5)).wrap()); }); ui.add_space(2.0); }
-fn score_badge(ui: &mut Ui, score: u8) { let (fg, bg) = theme::score_colors(score); ui.label(RichText::new(format!(" {score:>2} ")).color(fg).background_color(bg).monospace().size(12.0).strong()); }
-fn chip(ui: &mut Ui, text: &str) { ui.label(RichText::new(format!(" {text} ")).color(theme::TEXT2).background_color(theme::SURFACE3).size(10.0).strong()); }
-fn blocked_status_row(ui: &mut Ui, label: &str, remaining: Option<std::time::Duration>, hover_prefix: &str, unblock_action: Action, action: &mut Option<Action>) { ui.add_space(4.0); ui.horizontal_wrapped(|ui| { let status = match remaining { Some(duration) => format!("{label} {}", format_remaining(duration)), None => format!("{label} permanently") }; chip(ui, &status); let unblock = ui.add(accent_btn("Unblock")); let unblock = unblock.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("{}.", hover_prefix)); if unblock.clicked() { *action = Some(unblock_action); } }); }
-fn nonempty(text: &str) -> &str { if text.is_empty() { "n/a" } else { text } }
-fn accent_btn(text: &str) -> egui::Button<'_> { egui::Button::new(RichText::new(text).color(theme::ACCENT).size(11.5)).fill(theme::ACCENT_BG).stroke(egui::Stroke::new(1.0, theme::ACCENT)).corner_radius(6.0) }
-fn block_btn(preset: active_response::DurationPreset, text: &str) -> egui::Button<'_> { let (fg, bg, border) = match preset { active_response::DurationPreset::OneHour => (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT), active_response::DurationPreset::OneDay => (theme::WARN, theme::WARN_BG, theme::WARN), active_response::DurationPreset::Permanent => (theme::DANGER, theme::DANGER_BG, theme::DANGER) }; egui::Button::new(RichText::new(text).color(fg).size(11.5)).fill(bg).stroke(egui::Stroke::new(1.0, border)).corner_radius(6.0) }
-fn muted_btn(text: &str) -> egui::Button<'_> { egui::Button::new(RichText::new(text).color(theme::TEXT2).size(11.5)).fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(6.0) }
-fn danger_btn(text: &str) -> egui::Button<'_> { egui::Button::new(RichText::new(text).color(theme::DANGER).size(11.5)).fill(theme::DANGER_BG).stroke(egui::Stroke::new(1.0, theme::DANGER)).corner_radius(6.0) }
-fn format_remaining(duration: std::time::Duration) -> String { let secs = duration.as_secs(); let hours = secs / 3_600; let mins = (secs % 3_600) / 60; let secs = secs % 60; if hours > 0 { format!("{hours:02}:{mins:02}:{secs:02}") } else { format!("{mins:02}:{secs:02}") } }
+fn separator(ui: &mut Ui) {
+    let rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 1.0));
+    ui.painter().rect_filled(rect, 0.0, theme::BORDER);
+    ui.advance_cursor_after_rect(rect);
+}
+fn section_header(ui: &mut Ui, title: &str) {
+    ui.label(RichText::new(title).color(theme::TEXT2).size(10.5).strong());
+    ui.add_space(4.0);
+}
+fn kv(ui: &mut Ui, key: &str, val: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [88.0, 16.0],
+            egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
+        );
+        ui.add(egui::Label::new(RichText::new(val).color(theme::TEXT).size(11.0)).wrap());
+    });
+    ui.add_space(2.0);
+}
+fn kv_mono(ui: &mut Ui, key: &str, val: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [88.0, 16.0],
+            egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
+        );
+        ui.add(
+            egui::Label::new(RichText::new(val).color(theme::TEXT).monospace().size(10.5)).wrap(),
+        );
+    });
+    ui.add_space(2.0);
+}
+fn score_badge(ui: &mut Ui, score: u8) {
+    let (fg, bg) = theme::score_colors(score);
+    ui.label(
+        RichText::new(format!(" {score:>2} "))
+            .color(fg)
+            .background_color(bg)
+            .monospace()
+            .size(12.0)
+            .strong(),
+    );
+}
+fn chip(ui: &mut Ui, text: &str) {
+    ui.label(
+        RichText::new(format!(" {text} "))
+            .color(theme::TEXT2)
+            .background_color(theme::SURFACE3)
+            .size(10.0)
+            .strong(),
+    );
+}
+fn blocked_status_row(
+    ui: &mut Ui,
+    label: &str,
+    remaining: Option<std::time::Duration>,
+    hover_prefix: &str,
+    unblock_action: Action,
+    action: &mut Option<Action>,
+) {
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        let status = match remaining {
+            Some(duration) => format!("{label} {}", format_remaining(duration)),
+            None => format!("{label} permanently"),
+        };
+        chip(ui, &status);
+        let unblock = ui.add(accent_btn("Unblock"));
+        let unblock = unblock
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text(format!("{}.", hover_prefix));
+        if unblock.clicked() {
+            *action = Some(unblock_action);
+        }
+    });
+}
+fn nonempty(text: &str) -> &str {
+    if text.is_empty() {
+        "n/a"
+    } else {
+        text
+    }
+}
+fn accent_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::ACCENT).size(11.5))
+        .fill(theme::ACCENT_BG)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT))
+        .corner_radius(6.0)
+}
+fn block_btn(preset: active_response::DurationPreset, text: &str) -> egui::Button<'_> {
+    let (fg, bg, border) = match preset {
+        active_response::DurationPreset::OneHour => {
+            (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT)
+        }
+        active_response::DurationPreset::OneDay => (theme::WARN, theme::WARN_BG, theme::WARN),
+        active_response::DurationPreset::Permanent => {
+            (theme::DANGER, theme::DANGER_BG, theme::DANGER)
+        }
+    };
+    egui::Button::new(RichText::new(text).color(fg).size(11.5))
+        .fill(bg)
+        .stroke(egui::Stroke::new(1.0, border))
+        .corner_radius(6.0)
+}
+fn muted_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::TEXT2).size(11.5))
+        .fill(theme::SURFACE2)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(6.0)
+}
+fn danger_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::DANGER).size(11.5))
+        .fill(theme::DANGER_BG)
+        .stroke(egui::Stroke::new(1.0, theme::DANGER))
+        .corner_radius(6.0)
+}
+fn format_remaining(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs();
+    let hours = secs / 3_600;
+    let mins = (secs % 3_600) / 60;
+    let secs = secs % 60;
+    if hours > 0 {
+        format!("{hours:02}:{mins:02}:{secs:02}")
+    } else {
+        format!("{mins:02}:{secs:02}")
+    }
+}

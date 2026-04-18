@@ -16,6 +16,10 @@ downloaded file with:
 gh attestation verify PATH/TO/FILE -R YMRYMR/vigil
 ```
 
+The release workflow also emits SLSA3 provenance for the published assets via
+the GitHub Actions SLSA generator. That provenance is attached to the release
+for users who prefer `slsa-verifier`-style supply-chain checks.
+
 Vigil watches every TCP/UDP connection on your machine, scores each one for
 suspicious behaviour, and alerts you — via a system tray icon, desktop
 notification, and a full GUI — the moment something looks wrong.

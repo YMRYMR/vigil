@@ -40,12 +40,16 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
         Err(_) => return,
     };
     if *active_guard {
-        audit::record("pcap_on_alert", "skipped", json!({
-            "pid": info.pid,
-            "proc_name": info.proc_name,
-            "reason": "capture already active",
-            "score": info.score,
-        }));
+        audit::record(
+            "pcap_on_alert",
+            "skipped",
+            json!({
+                "pid": info.pid,
+                "proc_name": info.proc_name,
+                "reason": "capture already active",
+                "score": info.score,
+            }),
+        );
         return;
     }
     *active_guard = true;
@@ -104,10 +108,20 @@ fn capture_root(cfg: &Config) -> PathBuf {
 fn safe_name(text: &str) -> String {
     let cleaned: String = text
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_matches('_');
-    if cleaned.is_empty() { "process".to_string() } else { cleaned.to_string() }
+    if cleaned.is_empty() {
+        "process".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 #[cfg(windows)]
@@ -117,10 +131,17 @@ mod platform {
 
     pub fn capture_window(info: &ConnInfo, cfg: &Config) -> Result<PathBuf, String> {
         let dir = capture_root(cfg);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-        let stem = format!("{}-pid{}-score{}-{}", stamp, info.pid, info.score, safe_name(&info.proc_name));
+        let stem = format!(
+            "{}-pid{}-score{}-{}",
+            stamp,
+            info.pid,
+            info.score,
+            safe_name(&info.proc_name)
+        );
         let etl = dir.join(format!("{stem}.etl"));
         let pcapng = dir.join(format!("{stem}.pcapng"));
 
@@ -128,29 +149,20 @@ mod platform {
         let _ = Command::new("pktmon.exe").arg("reset").status();
 
         let start = Command::new("pktmon.exe")
-            .args([
-                "start",
-                "--capture",
-                "--file-name",
-            ])
+            .args(["start", "--capture", "--file-name"])
             .arg(&etl)
-            .args([
-                "--pkt-size",
-            ])
+            .args(["--pkt-size"])
             .arg(cfg.pcap_packet_size_bytes.to_string())
-            .args([
-                "--file-size",
-                "64",
-                "--log-mode",
-                "memory",
-            ])
+            .args(["--file-size", "64", "--log-mode", "memory"])
             .status()
             .map_err(|e| format!("failed to spawn pktmon start: {e}"))?;
         if !start.success() {
             return Err(format!("pktmon start exited with status {start}"));
         }
 
-        std::thread::sleep(std::time::Duration::from_secs(cfg.pcap_duration_secs.max(1)));
+        std::thread::sleep(std::time::Duration::from_secs(
+            cfg.pcap_duration_secs.max(1),
+        ));
 
         let stop = Command::new("pktmon.exe")
             .arg("stop")
@@ -171,7 +183,10 @@ mod platform {
             return Err(format!("pktmon etl2pcap exited with status {convert}"));
         }
         if !pcapng.exists() {
-            return Err(format!("expected pcap file {} was not created", pcapng.display()));
+            return Err(format!(
+                "expected pcap file {} was not created",
+                pcapng.display()
+            ));
         }
 
         let _ = Command::new("pktmon.exe").arg("reset").status();

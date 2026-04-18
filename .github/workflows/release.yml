@@ -198,6 +198,8 @@ jobs:
     name: Publish release
     needs: [build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
     permissions:
       contents: write
       id-token: write
@@ -226,6 +228,11 @@ jobs:
           cp dist/Vigil-${VERSION}-x86_64.AppImage dist/Vigil-latest-linux-x86_64.AppImage
           cp dist/Vigil-${VERSION}-all-supported-os.zip dist/Vigil-latest-all-supported-os.zip
 
+      - name: Hash release assets
+        id: hash
+        shell: bash
+        run: echo "hashes=$(sha256sum dist/* | base64 -w0)" >> "$GITHUB_OUTPUT"
+
       - name: List release assets
         run: ls -lh dist/
 
@@ -241,3 +248,15 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: dist/*
+
+  slsa-provenance:
+    name: Generate SLSA provenance
+    needs: publish
+    permissions:
+      actions: read
+      contents: write
+      id-token: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: ${{ needs.publish.outputs.hashes }}
+      upload-assets: true

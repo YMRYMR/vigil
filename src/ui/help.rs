@@ -137,16 +137,65 @@ fn hero(ui: &mut egui::Ui) {
 }
 
 fn card(ui: &mut egui::Ui, title: &str, f: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::NONE.fill(theme::SURFACE).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(12.0).inner_margin(egui::Margin::symmetric(16, 14)).show(ui, |ui| {
-        ui.label(RichText::new(title).color(theme::TEXT).size(13.5).strong());
-        ui.add_space(10.0);
-        f(ui);
-    });
+    egui::Frame::NONE
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.label(RichText::new(title).color(theme::TEXT).size(13.5).strong());
+            ui.add_space(10.0);
+            f(ui);
+        });
     ui.add_space(12.0);
 }
 
-fn chip(ui: &mut egui::Ui, text: &str) { ui.label(RichText::new(format!(" {text} ")).color(theme::ACCENT).background_color(theme::ACCENT_BG).size(10.5).strong()); }
-fn body(ui: &mut egui::Ui, text: &str) { ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.7)).wrap()); }
-fn bullet(ui: &mut egui::Ui, key: &str, text: &str) { ui.horizontal(|ui| { ui.label(RichText::new(">").color(theme::ACCENT).size(11.0)); ui.add_space(2.0); ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong()); ui.add_space(6.0); ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.0)).wrap()); }); ui.add_space(4.0); }
-fn score_row(ui: &mut egui::Ui, points: &str, color: egui::Color32, description: &str) { ui.horizontal(|ui| { ui.add_sized([34.0, 18.0], egui::Label::new(RichText::new(points).color(color).monospace().size(11.7).strong())); ui.add_space(4.0); ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap()); }); ui.add_space(4.0); }
-fn field_row(ui: &mut egui::Ui, field: &str, description: &str) { ui.horizontal(|ui| { ui.add_sized([96.0, 18.0], egui::Label::new(RichText::new(field).color(theme::TEXT).size(11.7).strong())); ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap()); }); ui.add_space(4.0); }
+fn chip(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(format!(" {text} "))
+            .color(theme::ACCENT)
+            .background_color(theme::ACCENT_BG)
+            .size(10.5)
+            .strong(),
+    );
+}
+fn body(ui: &mut egui::Ui, text: &str) {
+    ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.7)).wrap());
+}
+fn bullet(ui: &mut egui::Ui, key: &str, text: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(">").color(theme::ACCENT).size(11.0));
+        ui.add_space(2.0);
+        ui.label(RichText::new(key).color(theme::TEXT).size(11.0).strong());
+        ui.add_space(6.0);
+        ui.add(egui::Label::new(RichText::new(text).color(theme::TEXT2).size(11.0)).wrap());
+    });
+    ui.add_space(4.0);
+}
+fn score_row(ui: &mut egui::Ui, points: &str, color: egui::Color32, description: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [34.0, 18.0],
+            egui::Label::new(
+                RichText::new(points)
+                    .color(color)
+                    .monospace()
+                    .size(11.7)
+                    .strong(),
+            ),
+        );
+        ui.add_space(4.0);
+        ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap());
+    });
+    ui.add_space(4.0);
+}
+fn field_row(ui: &mut egui::Ui, field: &str, description: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized(
+            [96.0, 18.0],
+            egui::Label::new(RichText::new(field).color(theme::TEXT).size(11.7).strong()),
+        );
+        ui.add(egui::Label::new(RichText::new(description).color(theme::TEXT2).size(11.2)).wrap());
+    });
+    ui.add_space(4.0);
+}

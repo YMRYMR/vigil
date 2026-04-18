@@ -35,21 +35,29 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
     match platform::capture_process_dump(info, cfg) {
         Ok(path) => {
             last.insert(info.pid, now);
-            audit::record("process_dump_on_alert", "success", json!({
-                "pid": info.pid,
-                "proc_name": info.proc_name,
-                "path": path.display().to_string(),
-                "score": info.score,
-            }));
+            audit::record(
+                "process_dump_on_alert",
+                "success",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": path.display().to_string(),
+                    "score": info.score,
+                }),
+            );
             tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %path.display(), "captured process dump on alert");
         }
         Err(err) => {
-            audit::record("process_dump_on_alert", "error", json!({
-                "pid": info.pid,
-                "proc_name": info.proc_name,
-                "score": info.score,
-                "error": err,
-            }));
+            audit::record(
+                "process_dump_on_alert",
+                "error",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "score": info.score,
+                    "error": err,
+                }),
+            );
             tracing::warn!(pid = info.pid, proc = %info.proc_name, %err, "failed to capture process dump on alert");
         }
     }
@@ -66,17 +74,29 @@ fn dump_root(cfg: &Config) -> PathBuf {
     if !cfg.process_dump_dir.trim().is_empty() {
         PathBuf::from(cfg.process_dump_dir.trim())
     } else {
-        crate::config::data_dir().join("artifacts").join("process-dumps")
+        crate::config::data_dir()
+            .join("artifacts")
+            .join("process-dumps")
     }
 }
 
 fn safe_name(text: &str) -> String {
     let cleaned: String = text
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let cleaned = cleaned.trim_matches('_');
-    if cleaned.is_empty() { "process".to_string() } else { cleaned.to_string() }
+    if cleaned.is_empty() {
+        "process".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 #[cfg(windows)]
@@ -86,10 +106,17 @@ mod platform {
 
     pub fn capture_process_dump(info: &ConnInfo, cfg: &Config) -> Result<PathBuf, String> {
         let dir = dump_root(cfg);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 
         let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
-        let filename = format!("{}-pid{}-score{}-{}.dmp", stamp, info.pid, info.score, safe_name(&info.proc_name));
+        let filename = format!(
+            "{}-pid{}-score{}-{}.dmp",
+            stamp,
+            info.pid,
+            info.score,
+            safe_name(&info.proc_name)
+        );
         let out = dir.join(filename);
 
         let status = Command::new("rundll32.exe")
@@ -104,7 +131,10 @@ mod platform {
             return Err(format!("rundll32 MiniDump exited with status {status}"));
         }
         if !out.exists() {
-            return Err(format!("expected dump file {} was not created", out.display()));
+            return Err(format!(
+                "expected dump file {} was not created",
+                out.display()
+            ));
         }
         Ok(out)
     }
