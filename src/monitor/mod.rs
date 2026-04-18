@@ -24,6 +24,7 @@ use crate::registry;
 use crate::revdns;
 use crate::score::{score, ScoreInput};
 use crate::session;
+use crate::tamper::{self, VisibilityContext};
 use crate::tls_artifacts;
 use crate::types::{ConnEvent, ConnInfo, MonitorCmd};
 use chrono::Local;
@@ -91,7 +92,7 @@ impl Monitor {
         honeypot::start(config.clone(), tx.clone(), threshold);
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
-            rt.block_on(poll_loop(config, tx, etw_rx))
+            rt.block_on(poll_loop(config, tx, etw_rx, using_etw))
         })
     }
 }
@@ -107,8 +108,9 @@ async fn poll_loop(
     config: Arc<RwLock<Config>>,
     tx: broadcast::Sender<ConnEvent>,
     mut etw_rx: Option<mpsc::UnboundedReceiver<RawConn>>,
+    etw_expected: bool,
 ) {
-    let using_etw = etw_rx.is_some();
+    let mut etw_active = etw_rx.is_some();
     let mut known: HashMap<ConnKey, ConnInfo> = HashMap::new();
     let mut beacon = BeaconTracker::new();
     let long_lived = std::sync::Arc::new(LongLivedTracker::new());
@@ -123,7 +125,7 @@ async fn poll_loop(
                 cfg.log_all_connections,
             )
         };
-        let poll_secs = if using_etw {
+        let poll_secs = if etw_active {
             (interval * 6).clamp(30, 60)
         } else {
             interval.max(1)
@@ -136,12 +138,13 @@ async fn poll_loop(
                         let key = ConnKey::from(&raw_conn);
                         if !known.contains_key(&key) {
                             let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
-                            process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived);
+                            process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
                         }
                     }
                     None => {
                         tracing::warn!("ETW channel closed; falling back to polling");
                         etw_rx = None;
+                        etw_active = false;
                     }
                 }
             }
@@ -167,7 +170,7 @@ async fn poll_loop(
                         continue;
                     }
                     let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
-                    process_conn(raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived);
+                    process_conn(raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
                 }
                 let active: HashSet<(u32, String)> = known.keys().map(|k| (k.pid, k.remote_ip.clone())).collect();
                 long_lived.retain_active(|pid, ip| active.contains(&(pid, ip.to_string())));
@@ -187,6 +190,8 @@ fn process_conn(
     threshold: u8,
     log_all: bool,
     long_lived: &LongLivedTracker,
+    etw_expected: bool,
+    etw_active: bool,
 ) {
     let proc = process::collect(raw_conn.pid, svc_map);
     let ancestors_norm: Vec<(String, u32)> = proc
@@ -195,6 +200,7 @@ fn process_conn(
         .map(|(n, pid)| (crate::config::normalise_name(n), *pid))
         .collect();
     let pre_login = session::is_pre_login();
+    let elevated = crate::autostart::is_elevated();
     let (fs_window, long_threshold, rev_enabled, reputation_enabled, forensic_cfg) = {
         let cfg = config.read().unwrap();
         (
@@ -237,7 +243,7 @@ fn process_conn(
     let tls_sni = cached_tls.as_ref().and_then(|meta| meta.tls_sni.clone());
     let tls_ja3 = cached_tls.as_ref().and_then(|meta| meta.tls_ja3.clone());
 
-    let (score_value, reasons, attack_tags) = {
+    let (mut score_value, mut reasons, mut attack_tags) = {
         let cfg = config.read().unwrap();
         score(
             &ScoreInput {
@@ -265,6 +271,16 @@ fn process_conn(
             &cfg,
         )
     };
+    tamper::inspect_visibility_gaps(
+        &proc,
+        VisibilityContext {
+            etw_expected,
+            etw_active,
+            elevated,
+            pre_login,
+        },
+    )
+    .merge_into(&mut score_value, &mut reasons, &mut attack_tags);
 
     let local_addr = format!("{}:{}", raw_conn.local_ip, raw_conn.local_port);
     let remote_addr = if raw_conn.remote_ip.is_empty() {
