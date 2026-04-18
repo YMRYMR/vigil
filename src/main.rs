@@ -41,6 +41,7 @@ mod score;
 mod service;
 mod session;
 mod tls;
+mod tls_artifacts;
 mod tray;
 mod types;
 mod ui;
