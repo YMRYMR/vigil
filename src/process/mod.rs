@@ -16,6 +16,8 @@ pub struct ProcessInfo {
     pub user: String,
     pub parent_name: String,
     pub parent_pid: u32,
+    pub parent_user: String,
+    pub command_line: String,
     /// Full ancestor chain: [(name, pid), …] from immediate parent to root.
     /// Capped at 8 levels to avoid runaway walks on deep trees.
     pub ancestors: Vec<(String, u32)>,
@@ -34,8 +36,6 @@ impl ProcessInfo {
     }
 }
 
-// ── Collector ─────────────────────────────────────────────────────────────────
-
 /// Collect process metadata for `pid`.
 ///
 /// `svc_map` maps pid → Windows service name (built once per poll cycle on
@@ -51,7 +51,6 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
     let spid = Pid::from_u32(pid);
     sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
 
-    // One retry after a short delay if the process isn't in the snapshot yet.
     if sys.process(spid).is_none() {
         std::thread::sleep(std::time::Duration::from_millis(100));
         sys.refresh_processes(ProcessesToUpdate::Some(&[spid]), true);
@@ -64,21 +63,20 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
 
     let name = proc.name().to_string_lossy().to_string();
     let name_key = crate::config::normalise_name(&name);
+    let path = proc.exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    let user = proc.user_id().map(|uid| uid.to_string()).unwrap_or_default();
+    let command_line = join_cmdline(proc.cmd());
 
-    let path = proc
-        .exe()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let user = proc
-        .user_id()
-        .map(|uid| uid.to_string())
-        .unwrap_or_default();
-
-    // Walk the ancestor chain up to 8 levels.
-    // We re-use the same System to avoid re-scanning the process table.
     let ancestors = walk_ancestors(proc.parent(), &mut sys);
     let (parent_name, parent_pid) = ancestors.first().cloned().unwrap_or_default();
+    let parent_user = proc
+        .parent()
+        .and_then(|ppid| {
+            sys.refresh_processes(ProcessesToUpdate::Some(&[ppid]), true);
+            sys.process(ppid)
+                .and_then(|pp| pp.user_id().map(|uid| uid.to_string()))
+        })
+        .unwrap_or_default();
 
     let service_name = svc_map.get(&pid).cloned().unwrap_or_default();
     let publisher = publisher::get_publisher(&path);
@@ -90,14 +88,14 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
         user,
         parent_name,
         parent_pid,
+        parent_user,
+        command_line,
         ancestors,
         service_name,
         publisher,
     }
 }
 
-/// Walk up the process tree starting from `start_pid`, returning
-/// `[(name, pid), …]` from immediate parent to root, capped at 8 levels.
 fn walk_ancestors(start_pid: Option<Pid>, sys: &mut System) -> Vec<(String, u32)> {
     const MAX_DEPTH: usize = 8;
     let mut chain = Vec::new();
@@ -112,7 +110,6 @@ fn walk_ancestors(start_pid: Option<Pid>, sys: &mut System) -> Vec<(String, u32)
             Some(pp) => {
                 let pname = pp.name().to_string_lossy().to_string();
                 let ppid_u32 = ppid.as_u32();
-                // Guard against cycles (pid == parent pid)
                 if chain.iter().any(|(_, id)| *id == ppid_u32) {
                     break;
                 }
@@ -125,10 +122,14 @@ fn walk_ancestors(start_pid: Option<Pid>, sys: &mut System) -> Vec<(String, u32)
     chain
 }
 
-// ── Windows service map ───────────────────────────────────────────────────────
+fn join_cmdline(parts: &[std::ffi::OsString]) -> String {
+    parts
+        .iter()
+        .map(|part| part.to_string_lossy().to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
-/// Build a `pid → service_name` map from the Windows SCM.
-/// Returns an empty map on non-Windows or if enumeration fails.
 pub fn build_service_map() -> std::collections::HashMap<u32, String> {
     #[cfg(windows)]
     return windows_service_map();
@@ -156,7 +157,6 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
         let mut services_returned: u32 = 0;
         let mut resume_handle: u32 = 0;
 
-        // First call: get required buffer size
         let _ = EnumServicesStatusExW(
             scm,
             SC_ENUM_PROCESS_INFO,
@@ -170,12 +170,10 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
         );
 
         if bytes_needed == 0 {
-            let _ =
-                windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
+            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
             return map;
         }
 
-        // Second call: fill buffer
         let mut buf: Vec<u8> = vec![0u8; bytes_needed as usize];
         resume_handle = 0;
 
