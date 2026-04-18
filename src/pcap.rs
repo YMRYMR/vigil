@@ -5,7 +5,7 @@
 //! fires. The capture is opt-in, audited, and globally serialized so multiple
 //! alerts do not race the capture session.
 
-use crate::{audit, config::Config, types::ConnInfo};
+use crate::{audit, config::Config, tls_artifacts, types::ConnInfo};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -64,14 +64,27 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
             let result = platform::capture_window(&info, &cfg);
             match result {
                 Ok(path) => {
+                    let tls_sidecar = match tls_artifacts::analyze_capture(&info, &path) {
+                        Ok(sidecar) => sidecar,
+                        Err(err) => {
+                            audit::record("tls_client_hello_extract", "error", json!({
+                                "pid": info.pid,
+                                "proc_name": info.proc_name,
+                                "pcap_path": path.display().to_string(),
+                                "error": err,
+                            }));
+                            None
+                        }
+                    };
                     audit::record("pcap_on_alert", "success", json!({
                         "pid": info.pid,
                         "proc_name": info.proc_name,
                         "path": path.display().to_string(),
+                        "tls_sidecar": tls_sidecar.as_ref().map(|p| p.display().to_string()),
                         "score": info.score,
                         "seconds": cfg.pcap_duration_secs,
                     }));
-                    tracing::warn!(pid = info.pid, proc = %info.proc_name, pcap = %path.display(), "captured pcap window on alert");
+                    tracing::warn!(pid = info.pid, proc = %info.proc_name, pcap = %path.display(), tls = ?tls_sidecar.as_ref().map(|p| p.display().to_string()), "captured pcap window on alert");
                 }
                 Err(err) => {
                     audit::record("pcap_on_alert", "error", json!({
