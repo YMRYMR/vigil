@@ -10,110 +10,53 @@ authors     = []
 name = "vigil"
 path = "src/main.rs"
 
-# ── Cross-platform dependencies ───────────────────────────────────────────────
-
 [dependencies]
-# Async runtime
 tokio = { version = "1", features = ["full"] }
-
-# GUI
 egui        = "0.34"
 eframe      = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
 egui_extras = { version = "0.34", features = ["all_loaders"] }
-
-# Tray icon + menu
 tray-icon = "0.22"
-
-# Desktop notifications
 notify-rust = "4"
-
-# Process / system info
 sysinfo = "0.38"
-
-# Config serialisation
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
-
-# Logging
+serde_yaml = "0.9"
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 tracing-appender    = "0.2"
-
-# Date / time
 chrono = { version = "0.4", features = ["serde"] }
-
-# Open a folder in the system file manager
 open = "5"
-
-# Lock-free concurrent map (publisher name cache)
 dashmap = "5"
-
-# Autostart at login (cross-platform)
 auto-launch = "0.6.0"
-
-# ── Phase 10: Reputation & Telemetry ─────────────────────────────────────────
-# MaxMind GeoLite2 offline geolocation + ASN lookup (pure-rust, no network I/O).
-# The DB files are not shipped with Vigil; users download them from MaxMind and
-# point the config at them.  When the paths are empty, geoip scoring is a no-op.
 maxminddb = "0.24"
-# Cross-platform file-system watcher for correlating new .exe/.dll drops in
-# Temp/AppData/Downloads with network connections.
 notify = "6"
-# Cross-platform reverse-DNS via the OS resolver (thin wrapper over getnameinfo).
 dns-lookup = "2"
-# CIDR parsing for blocklists
 ipnetwork = "0.20"
-
-# ── Windows-only dependencies ─────────────────────────────────────────────────
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
-    # ETW (Event Tracing for Windows) — Phase 3
     "Win32_System_Diagnostics_Etw",
-    # Required by OpenTraceW / EVENT_TRACE_LOGFILEW
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Time",
-    # Service enumeration
     "Win32_System_Services",
-    # Core types
     "Win32_Foundation",
-    # TCP/UDP connection tables
     "Win32_NetworkManagement_IpHelper",
-    # Process info
     "Win32_System_ProcessStatus",
     "Win32_System_Threading",
-    # File version info (publisher extraction)
+    "Win32_System_SystemInformation",
     "Win32_Storage_FileSystem",
-    # Token / security (kill process elevation check)
     "Win32_Security",
-    # Win32 message pump for tray icon thread
     "Win32_UI_WindowsAndMessaging",
-    # App User Model ID (taskbar / notification centre identity)
     "Win32_UI_Shell",
-    # WinRT toast notifications with click callback
     "Foundation",
     "UI_Notifications",
     "Data_Xml_Dom",
 ] }
 winreg = "0.56"
 
-# ── Build dependencies ────────────────────────────────────────────────────────
-
 [build-dependencies]
 winres = "0.1"
 png    = "0.17"
-
-# ── Distribution (cargo-dist) ────────────────────────────────────────────────
-#
-# cargo-dist manages cross-platform packaging:
-#   Windows : MSI installer  +  vigil-installer.ps1  +  .zip archive
-#   macOS   : vigil-installer.sh  +  .tar.xz archive
-#   Linux   : vigil-installer.sh  +  .tar.xz archive
-#
-# To regenerate the release CI after changing this section, run:
-#   cargo dist generate
-#
-# To preview what a local release build would produce, run:
-#   cargo dist plan
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.22.1"
@@ -124,10 +67,7 @@ targets            = [
     "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 ]
-# Don't run the release workflow on PRs — only on tag pushes.
 pr-run-mode        = "skip"
-
-# ── Build profiles ────────────────────────────────────────────────────────────
 
 [profile.dev]
 opt-level = 0

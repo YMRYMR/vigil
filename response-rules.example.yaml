@@ -1,0 +1,25 @@
+rules:
+  - name: quarantine_recent_drop
+    min_score: 10
+    require_recently_dropped: true
+    require_unsigned: true
+    action: quarantine
+
+  - name: block_known_bad_remote
+    min_score: 8
+    require_reputation_hit: true
+    action: block_remote
+    duration: 24h
+
+  - name: kill_dga_prelogin
+    min_score: 9
+    require_pre_login: true
+    require_dga: true
+    action: kill_connection
+
+  - name: block_suspicious_powershell
+    min_score: 7
+    process_name_contains: powershell
+    remote_contains: .example
+    action: block_process
+    duration: 1h

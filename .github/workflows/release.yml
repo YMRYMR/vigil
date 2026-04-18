@@ -200,6 +200,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@v4
 
@@ -233,3 +236,8 @@ jobs:
           name: Vigil ${{ github.ref_name }}
           generate_release_notes: true
           files: dist/*
+
+      - name: Generate artifact attestations
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/*
