@@ -32,7 +32,9 @@ pub fn start_heartbeat_loop(cfg: Arc<RwLock<Config>>) {
             if snapshot.break_glass_enabled && active_response::status().isolated {
                 let _ = touch_heartbeat();
             }
-            std::thread::sleep(std::time::Duration::from_secs(snapshot.break_glass_heartbeat_secs.clamp(5, 300)));
+            std::thread::sleep(std::time::Duration::from_secs(
+                snapshot.break_glass_heartbeat_secs.clamp(5, 300),
+            ));
         })
         .ok();
 }
@@ -54,7 +56,9 @@ pub fn recover_if_stale() -> i32 {
     if !cfg.break_glass_enabled {
         return 0;
     }
-    let Some(state) = load_state().ok().flatten() else { return 0; };
+    let Some(state) = load_state().ok().flatten() else {
+        return 0;
+    };
     if !active_response::status().isolated {
         let _ = disarm();
         return 0;
@@ -69,20 +73,28 @@ pub fn recover_if_stale() -> i32 {
     }
     match active_response::restore_machine() {
         Ok(message) => {
-            audit::record("break_glass_recovery", "success", json!({
-                "message": message,
-                "heartbeat_age_secs": heartbeat_age,
-                "deadline_unix": state.deadline_unix,
-            }));
+            audit::record(
+                "break_glass_recovery",
+                "success",
+                json!({
+                    "message": message,
+                    "heartbeat_age_secs": heartbeat_age,
+                    "deadline_unix": state.deadline_unix,
+                }),
+            );
             let _ = disarm();
             0
         }
         Err(err) => {
-            audit::record("break_glass_recovery", "error", json!({
-                "error": err,
-                "heartbeat_age_secs": heartbeat_age,
-                "deadline_unix": state.deadline_unix,
-            }));
+            audit::record(
+                "break_glass_recovery",
+                "error",
+                json!({
+                    "error": err,
+                    "heartbeat_age_secs": heartbeat_age,
+                    "deadline_unix": state.deadline_unix,
+                }),
+            );
             1
         }
     }
@@ -104,11 +116,15 @@ fn arm(cfg: &Config) -> Result<(), String> {
         task_name: TASK_NAME.to_string(),
     })?;
     touch_heartbeat()?;
-    audit::record("break_glass_arm", "success", json!({
-        "deadline_unix": deadline_unix,
-        "heartbeat_secs": cfg.break_glass_heartbeat_secs,
-        "task_name": TASK_NAME,
-    }));
+    audit::record(
+        "break_glass_arm",
+        "success",
+        json!({
+            "deadline_unix": deadline_unix,
+            "heartbeat_secs": cfg.break_glass_heartbeat_secs,
+            "task_name": TASK_NAME,
+        }),
+    );
     Ok(())
 }
 
@@ -122,9 +138,11 @@ pub fn disarm() -> Result<(), String> {
 fn touch_heartbeat() -> Result<(), String> {
     let path = heartbeat_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
     }
-    std::fs::write(&path, unix_now().to_string()).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    std::fs::write(&path, unix_now().to_string())
+        .map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
 fn heartbeat_age_secs() -> Option<u64> {
@@ -135,20 +153,38 @@ fn heartbeat_age_secs() -> Option<u64> {
     Some(age.as_secs())
 }
 
-fn state_path() -> PathBuf { crate::config::data_dir().join(STATE_FILE) }
-fn heartbeat_path() -> PathBuf { crate::config::data_dir().join(HEARTBEAT_FILE) }
-fn unix_now() -> u64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) }
+fn state_path() -> PathBuf {
+    crate::config::data_dir().join(STATE_FILE)
+}
+fn heartbeat_path() -> PathBuf {
+    crate::config::data_dir().join(HEARTBEAT_FILE)
+}
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 fn load_state() -> Result<Option<RecoveryState>, String> {
     let path = state_path();
-    if !path.exists() { return Ok(None); }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map(Some).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    if !path.exists() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+    serde_json::from_str(&text)
+        .map(Some)
+        .map_err(|e| format!("failed to parse {}: {e}", path.display()))
 }
 fn save_state(state: &RecoveryState) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(|e| format!("failed to create {}: {e}", parent.display()))?; }
-    let json = serde_json::to_string_pretty(state).map_err(|e| format!("failed to serialise break-glass state: {e}"))?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+    let json = serde_json::to_string_pretty(state)
+        .map_err(|e| format!("failed to serialise break-glass state: {e}"))?;
     std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
 }
 
@@ -156,42 +192,119 @@ fn save_state(state: &RecoveryState) -> Result<(), String> {
 mod platform {
     use super::*;
     use chrono::{Duration as ChronoDuration, Local};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 
     pub fn task_exists(name: &str) -> bool {
-        schtasks().arg("/Query").arg("/TN").arg(name).status().map(|s| s.success()).unwrap_or(false)
+        schtasks()
+            .arg("/Query")
+            .arg("/TN")
+            .arg(name)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
     }
     pub fn create_recovery_task(name: &str) -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+        let exe =
+            std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+        ensure_trusted_executable_path(&exe)?;
         let command = format!("\"{}\" --break-glass-recover", exe.display());
-        let start = (Local::now() + ChronoDuration::minutes(1)).format("%H:%M").to_string();
+        let start = (Local::now() + ChronoDuration::minutes(1))
+            .format("%H:%M")
+            .to_string();
         let status = schtasks()
-            .args(["/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", &command, "/ST", &start, "/RU", "SYSTEM", "/RL", "HIGHEST"])
+            .args([
+                "/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", &command, "/ST",
+                &start, "/RU", "SYSTEM", "/RL", "HIGHEST",
+            ])
             .status()
             .map_err(|e| format!("failed to spawn schtasks.exe: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("schtasks /Create failed with status {status}")) }
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("schtasks /Create failed with status {status}"))
+        }
     }
     pub fn delete_recovery_task(name: &str) -> Result<(), String> {
-        let status = schtasks().args(["/Delete", "/F", "/TN", name]).status().map_err(|e| format!("failed to spawn schtasks.exe: {e}"))?;
-        if status.success() { Ok(()) } else { Err(format!("schtasks /Delete failed with status {status}")) }
+        let status = schtasks()
+            .args(["/Delete", "/F", "/TN", name])
+            .status()
+            .map_err(|e| format!("failed to spawn schtasks.exe: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("schtasks /Delete failed with status {status}"))
+        }
     }
     fn schtasks() -> Command {
-        let path = windows_directory().unwrap_or_else(|| PathBuf::from(r"C:\Windows")).join("System32").join("schtasks.exe");
+        let path = windows_directory()
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"))
+            .join("System32")
+            .join("schtasks.exe");
         Command::new(path)
+    }
+    fn ensure_trusted_executable_path(exe: &Path) -> Result<(), String> {
+        if is_trusted_install_path(exe) {
+            Ok(())
+        } else {
+            Err(format!(
+                "refusing to create SYSTEM recovery task for executable in untrusted location: {}",
+                exe.display()
+            ))
+        }
+    }
+    fn is_trusted_install_path(exe: &Path) -> bool {
+        let exe_norm = normalise_for_prefix_compare(exe);
+        trusted_base_directories()
+            .into_iter()
+            .map(|p| normalise_for_prefix_compare(&p))
+            .any(|base| path_starts_with(&exe_norm, &base))
+    }
+    fn trusted_base_directories() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(windows_dir) = windows_directory() {
+            dirs.push(windows_dir);
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            dirs.push(PathBuf::from(program_files));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            dirs.push(PathBuf::from(program_files_x86));
+        }
+        if dirs.is_empty() {
+            dirs.push(PathBuf::from(r"C:\Windows"));
+            dirs.push(PathBuf::from(r"C:\Program Files"));
+            dirs.push(PathBuf::from(r"C:\Program Files (x86)"));
+        }
+        dirs
+    }
+    fn normalise_for_prefix_compare(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    fn path_starts_with(path: &str, base: &str) -> bool {
+        path == base || path.starts_with(&format!("{base}\\"))
     }
     fn windows_directory() -> Option<PathBuf> {
         let mut buffer = vec![0u16; 260];
         unsafe {
             let len = GetSystemWindowsDirectoryW(Some(&mut buffer));
-            if len == 0 { return None; }
+            if len == 0 {
+                return None;
+            }
             let len = len as usize;
             if len >= buffer.len() {
                 buffer.resize(len + 1, 0);
                 let retry_len = GetSystemWindowsDirectoryW(Some(&mut buffer));
-                if retry_len == 0 { return None; }
-                return Some(PathBuf::from(String::from_utf16_lossy(&buffer[..retry_len as usize])));
+                if retry_len == 0 {
+                    return None;
+                }
+                return Some(PathBuf::from(String::from_utf16_lossy(
+                    &buffer[..retry_len as usize],
+                )));
             }
             Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
         }
@@ -200,7 +313,13 @@ mod platform {
 
 #[cfg(not(windows))]
 mod platform {
-    pub fn task_exists(_name: &str) -> bool { false }
-    pub fn create_recovery_task(_name: &str) -> Result<(), String> { Err("break-glass recovery is not implemented on this platform".into()) }
-    pub fn delete_recovery_task(_name: &str) -> Result<(), String> { Ok(()) }
+    pub fn task_exists(_name: &str) -> bool {
+        false
+    }
+    pub fn create_recovery_task(_name: &str) -> Result<(), String> {
+        Err("break-glass recovery is not implemented on this platform".into())
+    }
+    pub fn delete_recovery_task(_name: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
