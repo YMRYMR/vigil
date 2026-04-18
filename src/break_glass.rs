@@ -195,7 +195,7 @@ mod platform {
     use chrono::{Duration as ChronoDuration, Local};
     use std::ffi::OsStr;
     use std::os::windows::process::CommandExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -212,6 +212,7 @@ mod platform {
     pub fn create_recovery_task(name: &str) -> Result<(), String> {
         let exe =
             std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
+        ensure_trusted_executable_path(&exe)?;
         let command = format!("\"{}\" --break-glass-recover", exe.display());
         let start = (Local::now() + ChronoDuration::minutes(1))
             .format("%H:%M")
@@ -251,6 +252,50 @@ mod platform {
         let mut cmd = Command::new(program);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
+    }
+    fn ensure_trusted_executable_path(exe: &Path) -> Result<(), String> {
+        if is_trusted_install_path(exe) {
+            Ok(())
+        } else {
+            Err(format!(
+                "refusing to create SYSTEM recovery task for executable in untrusted location: {}",
+                exe.display()
+            ))
+        }
+    }
+    fn is_trusted_install_path(exe: &Path) -> bool {
+        let exe_norm = normalise_for_prefix_compare(exe);
+        trusted_base_directories()
+            .into_iter()
+            .map(|p| normalise_for_prefix_compare(&p))
+            .any(|base| path_starts_with(&exe_norm, &base))
+    }
+    fn trusted_base_directories() -> Vec<PathBuf> {
+        let mut dirs = Vec::new();
+        if let Some(windows_dir) = windows_directory() {
+            dirs.push(windows_dir);
+        }
+        if let Ok(program_files) = std::env::var("ProgramFiles") {
+            dirs.push(PathBuf::from(program_files));
+        }
+        if let Ok(program_files_x86) = std::env::var("ProgramFiles(x86)") {
+            dirs.push(PathBuf::from(program_files_x86));
+        }
+        if dirs.is_empty() {
+            dirs.push(PathBuf::from(r"C:\Windows"));
+            dirs.push(PathBuf::from(r"C:\Program Files"));
+            dirs.push(PathBuf::from(r"C:\Program Files (x86)"));
+        }
+        dirs
+    }
+    fn normalise_for_prefix_compare(path: &Path) -> String {
+        path.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    fn path_starts_with(path: &str, base: &str) -> bool {
+        path == base || path.starts_with(&format!("{base}\\"))
     }
     fn windows_directory() -> Option<PathBuf> {
         let mut buffer = vec![0u16; 260];
