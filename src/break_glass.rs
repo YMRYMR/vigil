@@ -273,7 +273,7 @@ mod platform {
     fn trusted_base_directories() -> Vec<PathBuf> {
         let mut dirs = Vec::new();
         if let Some(windows_dir) = windows_directory() {
-            dirs.push(windows_dir);
+            dirs.push(windows_dir.join("System32"));
         }
         if let Ok(program_files) = std::env::var("ProgramFiles") {
             dirs.push(PathBuf::from(program_files));
@@ -282,7 +282,7 @@ mod platform {
             dirs.push(PathBuf::from(program_files_x86));
         }
         if dirs.is_empty() {
-            dirs.push(PathBuf::from(r"C:\Windows"));
+            dirs.push(PathBuf::from(r"C:\Windows\System32"));
             dirs.push(PathBuf::from(r"C:\Program Files"));
             dirs.push(PathBuf::from(r"C:\Program Files (x86)"));
         }
