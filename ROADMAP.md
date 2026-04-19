@@ -5,11 +5,11 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 ## Edition split
 
 Vigil will have two editions:
-- **FREE** — the open-source edition
-- **PRO** — the paid edition
+- **OPEN**
+- **PRO**
 
 The roadmap split is:
-- **Phases 0–13**: FREE roadmap
+- **Phases 0–13**: OPEN roadmap
 - **Phases 14 and beyond**: PRO roadmap
 
 ---
