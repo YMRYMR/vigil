@@ -292,11 +292,11 @@ impl Default for Config {
                 5901, 4899, 8888,
             ],
             suspicious_path_fragments: [
-                r"\\Temp\\",
-                r"\\AppData\\Local\\Temp\\",
-                r"\\AppData\\Roaming\\",
-                r"\\Downloads\\",
-                r"\\Public\\",
+                r"\Temp\",
+                r"\AppData\Local\Temp\",
+                r"\AppData\Roaming\",
+                r"\Downloads\",
+                r"\Public\",
                 "/tmp/",
                 "/var/tmp/",
             ]
