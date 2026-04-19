@@ -415,6 +415,8 @@ fn event_loop(
     let ctx = glib::MainContext::default();
     let mut in_alert = false;
     let mut in_lockdown = false;
+    let mut alert_since: Option<std::time::Instant> = None;
+    const ALERT_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
 
     loop {
         // Process pending GLib events (required for AppIndicator D-Bus).
@@ -455,13 +457,21 @@ fn event_loop(
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                     in_alert = true;
+                    alert_since = Some(std::time::Instant::now());
                     #[cfg(target_os = "linux")]
                     set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
                 }
                 TrayCmd::ResetOk => {
-                    in_alert = false;
-                    #[cfg(target_os = "linux")]
-                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
+                    // On Linux/AppIndicator, hold the alert icon for at
+                    // least ALERT_HOLD so the user can see the state change
+                    // (otherwise ResetOk arrives on the same frame and the
+                    // icon flashes too fast to notice).
+                    if alert_since.map_or(true, |t| t.elapsed() >= ALERT_HOLD) {
+                        in_alert = false;
+                        alert_since = None;
+                        #[cfg(target_os = "linux")]
+                        set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
+                    }
                 }
                 TrayCmd::SetLockdown(active) => {
                     in_lockdown = active;
