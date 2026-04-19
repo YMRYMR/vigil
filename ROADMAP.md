@@ -2,6 +2,16 @@
 
 Each phase ends with a working, runnable binary. No phase leaves the project broken.
 
+## Edition split
+
+Vigil will have two editions:
+- **FREE** — the open-source edition
+- **PRO** — the paid edition
+
+The roadmap split is:
+- **Phases 0–13**: FREE roadmap
+- **Phases 14 and beyond**: PRO roadmap
+
 ---
 
 ## Phase 0 — Scaffolding ✅ COMPLETE
@@ -232,7 +242,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 14 — Hardening & Self-defence (backlog)
+## Phase 14 — Hardening & Self-defence (PRO backlog)
 
 - [ ] Protected policy store
 - [ ] Policy integrity verification
@@ -242,7 +252,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 15 — File Integrity & Anti-Tamper (backlog)
+## Phase 15 — File Integrity & Anti-Tamper (PRO backlog)
 
 Make sure no file used by Vigil can be silently tampered with without detection, recovery, or operator visibility.
 
@@ -255,12 +265,29 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 
 ---
 
-## Phase 16 — Integration & Fleet (backlog)
+## Phase 16 — Integration & Fleet (PRO backlog)
 
 - [ ] SIEM export
 - [ ] Webhook alerts
 - [ ] Fleet mode / remote lockdown
 - [ ] Shared intel sync and STIX/TAXII
+
+---
+
+## Phase 17 — Protocol Expansion (PRO backlog)
+
+Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
+
+### Planned scope
+- [ ] **QUIC visibility** — add QUIC-aware monitoring as the highest-priority protocol expansion, including UDP-based flow visibility, protocol tagging, and conservative detection/scoring hooks where attribution is strong enough
+- [ ] **ICMP telemetry** — add ICMP as a separate diagnostics / network-signal stream rather than as fake connection rows, covering operator-useful events such as echo activity and other notable ICMP behaviour
+- [ ] **Protocol-aware core model** — generalise the internal event / connection model so protocol, confidence, and protocol-specific semantics are first-class instead of assuming every record behaves like TCP
+- [ ] **UI protocol surfacing** — show protocol identity and protocol-specific summaries clearly in the Activity / Alerts views and inspector
+- [ ] **Protocol-aware baselining and scoring** — keep QUIC and other future protocols separable from TCP baselines so novelty and risk remain explainable
+
+### Optional scope
+- [ ] **SCTP support (optional)** — add SCTP visibility only if a concrete deployment need justifies the extra protocol-specific complexity
+- [ ] **DCCP support (optional)** — add DCCP visibility only if a clear real-world use case appears; otherwise keep it out of the default scope
 
 ---
 
@@ -280,6 +307,7 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
 | 3.x | 12 | Detection depth | 🚧 In progress |
 | 4.x | 13 | Optimization & efficiency | 🚧 In progress |
-| 4.x | 14 | Hardening & self-defence | 🔲 Backlog |
-| 5.x | 15 | File integrity & anti-tamper | 🔲 Backlog |
-| 5.x | 16 | Integration & fleet | 🔲 Backlog |
+| PRO 1.x | 14 | Hardening & self-defence | 🔲 Backlog |
+| PRO 1.x | 15 | File integrity & anti-tamper | 🔲 Backlog |
+| PRO 1.x | 16 | Integration & fleet | 🔲 Backlog |
+| PRO 1.x | 17 | Protocol expansion | 🔲 Backlog |
