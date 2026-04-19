@@ -240,7 +240,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 - [x] **Forensic global rate limiting** — process dumps throttled to one per 30s globally (in addition to per-PID cooldown); PCAP captures throttled to one per 60s globally
 - [x] **Pipeline profiling instrumentation** — per-connection microsecond timing for each enrichment step (process collect, geoip, blocklist, revdns, fswatch, baseline, TLS, scoring, tamper); debug-level logging; last 100 entries stored for diagnostics
 - [x] **Low-noise defaults** — 5ms time budget on UI event drain prevents frame stalls under burst load
-- [x] **eBPF stub module** — `src/monitor/ebpf.rs` provides the Linux integration point; returns false on all platforms until full aya integration. Wired into `Monitor::start()` alongside ETW
+- [x] **eBPF module** — `src/monitor/ebpf.rs` with real `aya`-based TCP tracepoint on Linux (stub on other platforms); `Monitor::start()` attempts eBPF alongside ETW, merging into single receiver
 - [x] **Performance test fixtures** — scoring benchmark (1000 inputs under 50ms), baseline profile cap enforcement test
 
 ### Native kernel-level monitoring (Linux + macOS)
@@ -248,9 +248,9 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 Replace the polling fallback on non-Windows platforms with real-time, kernel-level connection monitoring — the same principle as Windows ETW but using each OS's native tracing subsystem. This is the single biggest latency and efficiency win for cross-platform deployments.
 
 **Linux — eBPF**
-- [ ] **eBPF TCP tracepoint module** — attach BPF programs to `tracepoint:sock:inet_sock_set_state` (and optionally `tracepoint:net:net_dev_xmit`) for sub-100ms connect / accept / close events with full process context (PID, UID, cgroup)
-- [ ] **libbpf / aya integration** — load and manage BPF objects from Rust via the `aya` crate (pure-Rust eBPF) or FFI into libbpf; read events from perf / ring buffers
-- [ ] **Graceful fallback** — if the kernel is too old (< 4.15) or the user lacks `CAP_BPF` / `CAP_NET_ADMIN` / root, fall back to the existing `/proc/net/tcp` polling path with a visible "eBPF unavailable" operator notice
+- [x] **eBPF TCP tracepoint module** — `src/monitor/ebpf.rs` attaches to `tracepoint:sock:inet_sock_set_state` via `aya::EbpfLoader` for sub-100ms connect/accept/close events with PID, sport, dport, family, and state
+- [x] **libbpf / aya integration** — `aya` 0.13 crate (Linux-gated dependency); pre-compiled BPF object embedded as `&[u8]` const (8 KB); ring buffer reader in background thread
+- [x] **Graceful fallback** — if kernel too old (< 5.8) or user lacks `CAP_BPF`/`CAP_SYS_ADMIN`, logs warning and falls back to `/proc/net/tcp` polling transparently
 - [ ] **Privilege UX** — explain the capability requirement clearly in Settings and Help; offer a one-shot `setcap` helper or a polkit prompt where appropriate
 
 **macOS — Endpoint Security Framework**
