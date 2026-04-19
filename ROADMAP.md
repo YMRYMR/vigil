@@ -168,6 +168,7 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - pause non-Microsoft scheduled tasks
   - clear-quarantine restores those controls where possible
 - [x] **Break-glass recovery** — scheduled watchdog + heartbeat-based automatic recovery from stale isolation lockout
+- [ ] **Post-restore network reattachment hardening** — after isolation is removed, reliably restore prior connectivity intent (Wi-Fi and VPN) without UI stalls; track adapter-enabled vs. internet-reachable as separate states and keep operator controls responsive during reassociation
 
 ### Rule engine and automation
 - [x] **User-defined response rules** — YAML rule file with first-match semantics, dry-run support, and actions for `kill_connection`, `block_remote`, `block_process`, and `quarantine`

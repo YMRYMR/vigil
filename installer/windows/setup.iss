@@ -32,7 +32,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 
 ; Installer appearance
 WizardStyle=modern
-SetupIconFile=..\..\assets\vigil.ico
+SetupIconFile=..\..\assets\vigil_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 ; Output

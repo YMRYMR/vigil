@@ -9,21 +9,20 @@ pub fn show(ui: &mut egui::Ui) {
         hero(ui);
         ui.add_space(16.0);
 
-        if ui.available_width() > 780.0 {
-            card(ui, "Operator workflow", |ui| {
-                field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
-                field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
-                field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
-                field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
-                field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
-                field_row(ui, "Freeze autoruns", "Capture the current Run and RunOnce autorun values as a baseline so later changes can be reverted.");
-                field_row(ui, "Quarantine", "Current Windows implementation isolates the network, blocks the executable path when known, suspends the process when possible, disables USB storage, and pauses non-Microsoft scheduled tasks.");
-                field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
-                field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
-            });
-
+        if ui.available_width() > 700.0 {
             ui.columns(2, |cols| {
                 cols[0].vertical(|ui| {
+                    card(ui, "Operator workflow", |ui| {
+                        field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
+                        field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
+                        field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
+                        field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                        field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                        field_row(ui, "Freeze autoruns", "Capture the current Run and RunOnce autorun values as a baseline so later changes can be reverted.");
+                        field_row(ui, "Quarantine", "Current Windows implementation isolates the network, blocks the executable path when known, suspends the process when possible, disables USB storage, and pauses non-Microsoft scheduled tasks.");
+                        field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
+                        field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
+                    });
                     card(ui, "What Vigil does", |ui| {
                         body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.");
                     });

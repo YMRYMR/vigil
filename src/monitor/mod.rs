@@ -299,9 +299,7 @@ fn process_conn(
     let script_host_suspicious =
         detection_depth::inspect_script_host(&proc.name_key, &proc.command_line).triggered();
     let baseline_deviation = baseline_signal.mature
-        && (baseline_signal.new_remote
-            || baseline_signal.new_port
-            || baseline_signal.new_country);
+        && (baseline_signal.new_remote || baseline_signal.new_port || baseline_signal.new_country);
 
     let info = ConnInfo {
         timestamp: Local::now().format("%H:%M:%S").to_string(),

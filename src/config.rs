@@ -120,6 +120,9 @@ pub struct Config {
     pub break_glass_timeout_mins: u64,
     #[serde(default = "default_break_glass_heartbeat_secs")]
     pub break_glass_heartbeat_secs: u64,
+
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
 }
 
 fn default_true() -> bool {
@@ -178,6 +181,9 @@ fn default_break_glass_timeout_mins() -> u64 {
 }
 fn default_break_glass_heartbeat_secs() -> u64 {
     30
+}
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 impl Default for Config {
@@ -361,6 +367,7 @@ impl Default for Config {
             break_glass_enabled: true,
             break_glass_timeout_mins: 10,
             break_glass_heartbeat_secs: 30,
+            ui_scale: 1.0,
         }
     }
 }
@@ -449,6 +456,10 @@ impl Config {
         }
         self.trusted_processes.push(key);
         true
+    }
+
+    pub fn sanitised_ui_scale(&self) -> f32 {
+        self.ui_scale.clamp(0.8, 1.8)
     }
     #[allow(dead_code)]
     pub fn remove_trusted(&mut self, name: &str) -> bool {

@@ -192,13 +192,31 @@ pub fn show(
                                             );
                                         }
                                         if group.script_host_suspicious {
-                                            pill(ui, "Script host", theme::WARN, theme::WARN_BG, theme::WARN);
+                                            pill(
+                                                ui,
+                                                "Script host",
+                                                theme::WARN,
+                                                theme::WARN_BG,
+                                                theme::WARN,
+                                            );
                                         }
                                         if group.baseline_deviation {
-                                            pill(ui, "Baseline drift", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                            pill(
+                                                ui,
+                                                "Baseline drift",
+                                                theme::ACCENT,
+                                                theme::ACCENT_BG,
+                                                theme::ACCENT,
+                                            );
                                         }
                                         if group.tls_enriched {
-                                            pill(ui, "TLS", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                            pill(
+                                                ui,
+                                                "TLS",
+                                                theme::ACCENT,
+                                                theme::ACCENT_BG,
+                                                theme::ACCENT,
+                                            );
                                         }
                                     });
 
@@ -265,6 +283,9 @@ pub fn show(
 
                         if summary_resp
                             .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text(
+                                "Select this process card to inspect process-level details.",
+                            )
                             .clicked()
                         {
                             *selected = Some(selection_from_group(group, None));
@@ -361,6 +382,7 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
                                 .stroke(egui::Stroke::NONE),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Clear search filter.")
                         .clicked()
                 {
                     state.filter.clear();
@@ -401,6 +423,7 @@ fn header_chip(ui: &mut egui::Ui, label: &str, col: usize, state: &mut TableStat
     );
     if resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(format!("Sort by {label}. Click again to reverse order."))
         .clicked()
     {
         state.toggle(col);
@@ -685,6 +708,7 @@ fn connection_line(
 
     let clicked = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Select this connection to inspect connection-level details.")
         .clicked();
     if clicked {
         return Some(conn.clone());
@@ -744,7 +768,10 @@ fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
         || info.status.to_lowercase().contains(lower)
         || info.proc_path.to_lowercase().contains(lower)
         || info.local_addr.to_lowercase().contains(lower)
-        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower))
+        || info
+            .attack_tags
+            .iter()
+            .any(|tag| tag.to_lowercase().contains(lower))
         || info
             .tls_sni
             .as_deref()

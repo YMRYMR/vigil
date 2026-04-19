@@ -89,6 +89,10 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
+          ICON_PNG="assets/vigil_icon.png"
+          if [ ! -f "$ICON_PNG" ]; then
+            ICON_PNG="assets/vigil.png"
+          fi
 
           # ── .app bundle structure ──────────────────────────────────────────
           APP="Vigil.app"
@@ -103,7 +107,7 @@ jobs:
             > "$APP/Contents/Info.plist"
 
           # Convert PNG icon → ICNS (sips is built into macOS)
-          sips -s format icns assets/vigil.png \
+          sips -s format icns "$ICON_PNG" \
             --out "$APP/Contents/Resources/vigil.icns" \
             2>/dev/null || true   # non-fatal if sips doesn't support this format
 
@@ -157,6 +161,10 @@ jobs:
         run: |
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
+          ICON_PNG="assets/vigil_icon.png"
+          if [ ! -f "$ICON_PNG" ]; then
+            ICON_PNG="assets/vigil.png"
+          fi
 
           # ── AppDir structure ───────────────────────────────────────────────
           APPDIR="Vigil.AppDir"
@@ -167,8 +175,8 @@ jobs:
           chmod +x "$APPDIR/usr/bin/vigil"
 
           # Icon — at AppDir root (required by AppImage spec) and in share/icons
-          cp assets/vigil.png "$APPDIR/vigil.png"
-          cp assets/vigil.png \
+          cp "$ICON_PNG" "$APPDIR/vigil.png"
+          cp "$ICON_PNG" \
             "$APPDIR/usr/share/icons/hicolor/256x256/apps/vigil.png"
 
           # Desktop entry and AppRun launcher

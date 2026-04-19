@@ -10,6 +10,7 @@
 //! The caller forwards `TrayCmd` values over a `std::sync::mpsc` channel:
 //! - `Alert(Box<ConnInfo>)` — display a notification, switch icon to ⚠
 //! - `ResetOk`         — switch icon back to the normal ● state
+//! - `SetLockdown(bool)` — force red icon while network isolation is active
 //!
 //! `show_window` is an `Arc<AtomicBool>` set to `true` when the user clicks
 //! "Open Vigil" in the tray menu *or* clicks a notification.
@@ -33,9 +34,15 @@ pub enum TrayCmd {
     Alert(Box<ConnInfo>),
     /// Return the icon to the normal "monitoring" state.
     ResetOk,
+    /// Toggle lockdown visual state (network isolation).
+    SetLockdown(bool),
 }
 
 // ── Icon generation ───────────────────────────────────────────────────────────
+
+const TRAY_GREEN_ICO: &[u8] = include_bytes!("../assets/vigil_tray_green.ico");
+const TRAY_ORANGE_ICO: &[u8] = include_bytes!("../assets/vigil_tray_orange.ico");
+const TRAY_RED_ICO: &[u8] = include_bytes!("../assets/vigil_tray_red.ico");
 
 fn make_circle_icon(r: u8, g: u8, b: u8) -> tray_icon::Icon {
     const SIZE: u32 = 32;
@@ -62,11 +69,55 @@ fn make_circle_icon(r: u8, g: u8, b: u8) -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("hardcoded icon dimensions are valid")
 }
 
+fn icon_from_embedded_ico(label: &str, bytes: &[u8]) -> Option<tray_icon::Icon> {
+    let image = match image::load_from_memory_with_format(bytes, image::ImageFormat::Ico) {
+        Ok(image) => image,
+        Err(err) => {
+            tracing::warn!("failed to decode embedded tray icon {label}: {err}");
+            return None;
+        }
+    };
+    let image = image.into_rgba8();
+    let (w, h) = (image.width(), image.height());
+    match tray_icon::Icon::from_rgba(image.into_raw(), w, h) {
+        Ok(icon) => Some(icon),
+        Err(err) => {
+            tracing::warn!("failed to build tray icon {label} from decoded bitmap: {err}");
+            None
+        }
+    }
+}
+
+fn load_tray_icons() -> TrayIcons {
+    TrayIcons {
+        ok: icon_from_embedded_ico("green", TRAY_GREEN_ICO)
+            .unwrap_or_else(|| make_circle_icon(0x22, 0xC5, 0x5E)),
+        alert: icon_from_embedded_ico("orange", TRAY_ORANGE_ICO)
+            .unwrap_or_else(|| make_circle_icon(0xF5, 0x9E, 0x0B)),
+        lockdown: icon_from_embedded_ico("red", TRAY_RED_ICO)
+            .unwrap_or_else(|| make_circle_icon(0xEF, 0x44, 0x44)),
+    }
+}
+
+fn apply_tray_visual_state(tray: &TrayIcon, icons: &TrayIcons, in_alert: bool, in_lockdown: bool) {
+    if in_lockdown {
+        let _ = tray.set_icon(Some(icons.lockdown.clone()));
+        let _ = tray.set_tooltip(Some("Vigil — Lockdown active"));
+    } else if in_alert {
+        let _ = tray.set_icon(Some(icons.alert.clone()));
+        let _ = tray.set_tooltip(Some("Vigil — ⚠ Threat detected"));
+    } else {
+        let _ = tray.set_icon(Some(icons.ok.clone()));
+        let _ = tray.set_tooltip(Some("Vigil — Monitoring"));
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 struct TrayIcons {
     ok: tray_icon::Icon,
     alert: tray_icon::Icon,
+    lockdown: tray_icon::Icon,
 }
 
 /// Build the tray icon and run the event loop.
@@ -82,10 +133,7 @@ pub fn run(
     log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
-    let icons = TrayIcons {
-        ok: make_circle_icon(0x22, 0xC5, 0x5E),
-        alert: make_circle_icon(0xF5, 0x9E, 0x0B),
-    };
+    let icons = load_tray_icons();
 
     // ── Context menu ──────────────────────────────────────────────────────────
     let menu = Menu::new();
@@ -147,6 +195,7 @@ fn event_loop(
 
     let mut msg = MSG::default();
     let mut in_alert = false;
+    let mut in_lockdown = false;
 
     loop {
         // Drain Win32 messages without blocking.
@@ -189,18 +238,16 @@ fn event_loop(
             match cmd {
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
-                    if !in_alert {
-                        let _ = tray.set_icon(Some(icons.alert.clone()));
-                        let _ = tray.set_tooltip(Some("Vigil — ⚠ Threat detected"));
-                        in_alert = true;
-                    }
+                    in_alert = true;
+                    apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                 }
                 TrayCmd::ResetOk => {
-                    if in_alert {
-                        let _ = tray.set_icon(Some(icons.ok.clone()));
-                        let _ = tray.set_tooltip(Some("Vigil — Network Monitor  ●"));
-                        in_alert = false;
-                    }
+                    in_alert = false;
+                    apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
+                }
+                TrayCmd::SetLockdown(active) => {
+                    in_lockdown = active;
+                    apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                 }
             }
         }
@@ -229,9 +276,22 @@ fn event_loop(
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                 }
                 TrayCmd::ResetOk => {}
+                TrayCmd::SetLockdown(_) => {}
             }
         }
         let _ = show_window.load(Ordering::Relaxed);
         std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_tray_icons_decode() {
+        assert!(icon_from_embedded_ico("green-test", TRAY_GREEN_ICO).is_some());
+        assert!(icon_from_embedded_ico("orange-test", TRAY_ORANGE_ICO).is_some());
+        assert!(icon_from_embedded_ico("red-test", TRAY_RED_ICO).is_some());
     }
 }
