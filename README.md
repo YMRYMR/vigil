@@ -33,12 +33,14 @@ notification, and a full GUI — the moment something looks wrong.
 ## Features
 
 - **Sub-100 ms detection** on Windows via ETW (Event Tracing for Windows);
-  polling fallback on other platforms
+  on Linux via eBPF (`sock:inet_sock_set_state` tracepoint); polling fallback
+  on macOS and older kernels
 - **Multi-signal threat scoring** (0–10+) across eight detection categories
 - **Full ancestor process tree** — see exactly which process spawned which,
   up to 8 levels deep
 - **System tray** — amber icon + tooltip on alert; green when all-clear;
-  left-click opens the UI, right-click shows the menu
+  left-click opens the UI, right-click shows the menu (GNOME AppIndicator
+  on Linux uses themed icon names)
 - **Clickable notifications** — clicking a desktop alert opens Vigil and
   navigates directly to the triggering connection
 - **Full GUI** — process-grouped Activity and Alerts views, a process-first

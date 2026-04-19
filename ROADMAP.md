@@ -242,6 +242,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 - [x] **Low-noise defaults** — 5ms time budget on UI event drain prevents frame stalls under burst load
 - [x] **eBPF module** — `src/monitor/ebpf.rs` with real `aya`-based TCP tracepoint on Linux (stub on other platforms); `Monitor::start()` attempts eBPF alongside ETW, merging into single receiver
 - [x] **Performance test fixtures** — scoring benchmark (1000 inputs under 50ms), baseline profile cap enforcement test
+- [x] **Linux system tray** — full AppIndicator integration: GTK init, themed icon names for GNOME dock, GLib MainContext D-Bus iteration, menu event handling (Open Vigil / Open Logs Folder / Quit), left-click to show window, graceful fallback when no display or running as root
 
 ### Native kernel-level monitoring (Linux + macOS)
 
