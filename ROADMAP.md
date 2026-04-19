@@ -5,12 +5,14 @@ Each phase ends with a working, runnable binary. No phase leaves the project bro
 ## Edition split
 
 Vigil will have two editions:
-- **OPEN**
-- **PRO**
+- **OPEN** — free, single-endpoint, local-only. The funnel and the reference implementation.
+- **PRO** — paid, recurring. Everything that requires a hosted backend, a subscription feed, or business-grade reporting.
 
 The roadmap split is:
-- **Phases 0–13**: OPEN roadmap
-- **Phases 14 and beyond**: PRO roadmap
+- **OPEN roadmap**: phases 0–15, plus phase 17 (protocol expansion) and phase 18 (cross-platform parity). Core detection, active response, hardening, anti-tamper, and broader protocol / platform coverage stay free.
+- **PRO roadmap**: phase 16 (fleet + integrations) and phases 19+ (monetization layer — MSP multi-tenant, managed threat-intel feed, compliance reporting, identity context, playbook builder, SaaS-session visibility).
+
+**Solo-dev constraint:** the roadmap intentionally avoids anything that requires a team of humans to run (e.g. an MDR / 24x7 analyst service). Everything on the PRO roadmap is productisable by a single maintainer plus AI tooling.
 
 ---
 
@@ -242,7 +244,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 14 — Hardening & Self-defence (PRO backlog)
+## Phase 14 — Hardening & Self-defence (OPEN backlog)
 
 - [ ] Protected policy store
 - [ ] Policy integrity verification
@@ -252,7 +254,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 15 — File Integrity & Anti-Tamper (PRO backlog)
+## Phase 15 — File Integrity & Anti-Tamper (OPEN backlog)
 
 Make sure no file used by Vigil can be silently tampered with without detection, recovery, or operator visibility.
 
@@ -265,16 +267,29 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 
 ---
 
-## Phase 16 — Integration & Fleet (PRO backlog)
+## Phase 16 — Cloud Fleet Console & Integrations (PRO backlog)
 
-- [ ] SIEM export
-- [ ] Webhook alerts
-- [ ] Fleet mode / remote lockdown
-- [ ] Shared intel sync and STIX/TAXII
+The single most important phase for turning Vigil into a business. Without a hosted console there is no recurring-revenue surface and no SMB / MSP path. Designed to be buildable and operable by a solo maintainer + AI tooling (managed service, Postgres + Rust/Axum backend, small React/egui-web frontend, no on-call rotation required).
+
+### Hosted fleet console
+- [ ] Multi-tenant SaaS backend with agent enrollment via install token
+- [ ] Live endpoint status grid, alerts feed, and cross-fleet search
+- [ ] Remote trigger: isolate / clear-isolation / kill process / block IP across selected endpoints
+- [ ] Role-based access (admin / analyst / read-only) with per-action audit log
+- [ ] End-to-end TLS, per-tenant encryption of sensitive fields, signed agent-to-server channel
+- [ ] Self-serve signup, Stripe billing, seat-based subscription management
+
+### Outbound integrations
+- [ ] Syslog / CEF export
+- [ ] Splunk HEC, Elastic, Microsoft Sentinel, Datadog connectors
+- [ ] Generic webhook + JSON-out channel
+- [ ] PagerDuty / Opsgenie / Slack / Microsoft Teams alerting
+- [ ] Jira / ServiceNow ticket creation on high-severity alerts
+- [ ] Shared intel sync and STIX / TAXII consumer
 
 ---
 
-## Phase 17 — Protocol Expansion (PRO backlog)
+## Phase 17 — Protocol Expansion (OPEN backlog)
 
 Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
 
@@ -288,6 +303,82 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 ### Optional scope
 - [ ] **SCTP support (optional)** — add SCTP visibility only if a concrete deployment need justifies the extra protocol-specific complexity
 - [ ] **DCCP support (optional)** — add DCCP visibility only if a clear real-world use case appears; otherwise keep it out of the default scope
+
+---
+
+## Phase 18 — Cross-platform Detection Parity (OPEN backlog)
+
+Windows is currently the first-class detection target. Broadening macOS and Linux unlocks half the addressable market and makes the PRO fleet console actually useful to mixed-OS shops. Mobile is explicitly out of scope.
+
+- [ ] **Linux eBPF monitor** — drop-in equivalent to ETW semantics using eBPF / BCC / aya for connect / accept / exec events, with graceful fallback to polling when eBPF is unavailable
+- [ ] **macOS Endpoint Security framework monitor** — real-time process and network events via the Apple ES framework, signed with an appropriate entitlement path for distribution
+- [ ] **Scoring and active-response parity** — bring LoLBAS-equivalent heuristics, blocking primitives (pf / iptables-nft), process kill / suspend, and isolation to macOS and Linux
+- [ ] **Installer and autostart parity** — launchd / systemd service units, signed installers, pkg / deb / rpm / AppImage polish
+- [ ] **Cross-platform test fixtures** — CI coverage and detection regression tests on all three OSes
+
+---
+
+## Phase 19 — MSP Multi-tenant & White-label (PRO backlog)
+
+Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 16.
+
+- [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules
+- [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails
+- [ ] **Bulk deployment tooling** — MSI / pkg / deb with embedded enrollment token, deployment guides for Intune, Kaseya, NinjaOne, ConnectWise Automate
+- [ ] **MSP dashboard** — cross-customer alert feed, filterable by tenant, with per-tenant usage and billing exports
+- [ ] **Tiered / volume pricing** — per-seat discount curves and monthly invoicing for channel partners
+
+---
+
+## Phase 20 — Managed Threat Intel Feed (PRO backlog)
+
+Turns PRO from a one-time install into a subscription with a clear renewal trigger. Intentionally designed around curation of public and community feeds plus Vigil-specific derived signals, not an in-house research team.
+
+- [ ] **Hosted feed service** — hourly-refreshed managed IP / domain / hash blocklist consumed by PRO agents via authenticated pull
+- [ ] **Curated LoLBAS, C2 port, and process-rule updates** — versioned, signed rule packs delivered to agents
+- [ ] **Sigma rule import pipeline** — ingest and translate community Sigma rules into Vigil scoring signals
+- [ ] **Optional reputation lookup API** — per-request IP / domain / hash reputation endpoint for the fleet console and automation
+- [ ] **Transparency and provenance** — every feed entry includes source, first-seen, and confidence so operators can audit blocks
+
+---
+
+## Phase 21 — Compliance Reporting Pack (PRO backlog)
+
+Single biggest lever for selling into regulated SMB verticals (legal, healthcare, financial advisors, MSPs serving them). Pairs naturally with the Phase 15 tamper-evident logging already in the OPEN tier.
+
+- [ ] **Pre-built report templates** — "Network activity evidence for SOC 2 CC7.2", "HIPAA §164.312(b) audit controls", "PCI DSS 10.x logging", "ISO 27001 A.12.4"
+- [ ] **Scheduled exports** — automated PDF / CSV delivery by email or to S3-compatible storage on operator-defined cadences
+- [ ] **Retention policy controls** — configurable 90-day / 1-year / 7-year log retention per tenant
+- [ ] **Exportable hash manifest** — tie reports to the Phase 15 tamper-evident chain so auditors can verify integrity
+- [ ] **Evidence bundle export** — one-click packaging of alerts, PCAPs, memory dumps, and audit log for a given incident window
+
+---
+
+## Phase 22 — Identity & User Context (PRO backlog)
+
+Modern detections hinge on who, not just what. Adds identity attribution so alerts can differentiate a connection initiated by a domain admin from one initiated by a kiosk user.
+
+- [ ] **Local-user attribution** — attach the local OS user and session id to every connection record
+- [ ] **Active Directory / Entra ID / Okta linkage** — resolve local users to directory identities via per-tenant connector
+- [ ] **Privileged-account differentiation** — raise alerts on domain admins and service accounts more aggressively than standard users
+- [ ] **Lateral-movement signal** — detect "this endpoint authenticated to N new internal hosts in a short window" as a first-class scoring input
+- [ ] **Identity surface in UI and reports** — show user context in inspector, alerts, and compliance reports
+
+---
+
+## Phase 23 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+
+Two differentiators bundled together because each alone is narrow, but together they round out the "modern endpoint" story.
+
+### Low-code response playbooks
+- [ ] **GUI rule builder** in the fleet console on top of the existing Phase 11 YAML engine
+- [ ] **Pre-built playbooks** — ransomware-like behaviour → isolate + capture PCAP + memory-dump + page; LoLBAS + new country → require approval before block
+- [ ] **Dry-run and rollback window** — every action has a reversible TTL and an operator "undo" button before commitment
+
+### Browser / SaaS-session visibility
+- [ ] **Tab / SaaS-app attribution** — correlate connections to browser tab identity and known SaaS destinations where possible
+- [ ] **OAuth token exfil signal** — detect anomalous cross-origin token flows
+- [ ] **Per-SaaS data-volume anomaly** — baseline typical outbound volume per SaaS destination and flag deviations
 
 ---
 
@@ -307,7 +398,13 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
 | 3.x | 12 | Detection depth | 🚧 In progress |
 | 4.x | 13 | Optimization & efficiency | 🚧 In progress |
-| PRO 1.x | 14 | Hardening & self-defence | 🔲 Backlog |
-| PRO 1.x | 15 | File integrity & anti-tamper | 🔲 Backlog |
-| PRO 1.x | 16 | Integration & fleet | 🔲 Backlog |
-| PRO 1.x | 17 | Protocol expansion | 🔲 Backlog |
+| 5.x | 14 | Hardening & self-defence (OPEN) | 🔲 Backlog |
+| 5.x | 15 | File integrity & anti-tamper (OPEN) | 🔲 Backlog |
+| 6.x | 17 | Protocol expansion (OPEN) | 🔲 Backlog |
+| 7.x | 18 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
+| PRO 1.x | 16 | Cloud fleet console & integrations | 🔲 Backlog |
+| PRO 1.x | 19 | MSP multi-tenant & white-label | 🔲 Backlog |
+| PRO 1.x | 20 | Managed threat intel feed | 🔲 Backlog |
+| PRO 1.x | 21 | Compliance reporting pack | 🔲 Backlog |
+| PRO 1.x | 22 | Identity & user context | 🔲 Backlog |
+| PRO 1.x | 23 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
