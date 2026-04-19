@@ -52,6 +52,16 @@ use monitor::Monitor;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 
+fn load_app_icon() -> Option<egui::IconData> {
+    eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil_icon.png"))
+        .or_else(|_| eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil.png")))
+        .map_err(|err| {
+            tracing::warn!("could not decode app icon PNG: {err}");
+            err
+        })
+        .ok()
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     for a in &args[1..] {
@@ -88,73 +98,82 @@ fn main() {
     let _guard = rt.enter();
 
     let cfg = Arc::new(RwLock::new(Config::load()));
-    {
-        let c = cfg.read().unwrap();
-        geoip::init(&c.geoip_city_db, &c.geoip_asn_db);
-        blocklist::init(&c.blocklist_paths);
-        if c.fswatch_enabled {
-            fswatch::start();
-        }
-        if c.reverse_dns_enabled {
-            revdns::start();
-        }
-        let (n_lists, n_entries) = blocklist::stats();
-        tracing::info!(
-            "Phase 10: geoip={}, blocklists={} ({} entries), fswatch={}, revdns={}",
-            geoip::is_loaded(),
-            n_lists,
-            n_entries,
-            c.fswatch_enabled,
-            c.reverse_dns_enabled
-        );
-    }
-
-    active_response::reconcile();
-    break_glass::start_heartbeat_loop(cfg.clone());
-
-    {
-        let mut w = cfg.write().unwrap();
-        if !w.first_run_done {
-            if autostart::enable() {
-                w.autostart = true;
-                tracing::info!("autostart enabled");
-            } else {
-                tracing::warn!("could not enable autostart");
+    let cfg_bootstrap = cfg.clone();
+    std::thread::Builder::new()
+        .name("vigil-bootstrap".into())
+        .spawn(move || {
+            let c = cfg_bootstrap.read().unwrap().clone();
+            geoip::init(&c.geoip_city_db, &c.geoip_asn_db);
+            blocklist::init(&c.blocklist_paths);
+            if c.fswatch_enabled {
+                fswatch::start();
             }
-            w.first_run_done = true;
-            w.save();
-        }
-    }
+            if c.reverse_dns_enabled {
+                revdns::start();
+            }
+            let (n_lists, n_entries) = blocklist::stats();
+            tracing::info!(
+                "Phase 10: geoip={}, blocklists={} ({} entries), fswatch={}, revdns={}",
+                geoip::is_loaded(),
+                n_lists,
+                n_entries,
+                c.fswatch_enabled,
+                c.reverse_dns_enabled
+            );
 
-    {
-        let c = cfg.read().unwrap();
-        if c.autostart && !autostart::enable() {
-            tracing::warn!("could not refresh autostart");
-        }
-    }
+            active_response::reconcile();
+            break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
+
+            {
+                let mut w = cfg_bootstrap.write().unwrap();
+                if !w.first_run_done {
+                    if autostart::enable() {
+                        w.autostart = true;
+                        tracing::info!("autostart enabled");
+                    } else {
+                        tracing::warn!("could not enable autostart");
+                    }
+                    w.first_run_done = true;
+                    w.save();
+                }
+            }
+
+            let c = cfg_bootstrap.read().unwrap();
+            if c.autostart && !autostart::enable() {
+                tracing::warn!("could not refresh autostart");
+            }
+        })
+        .expect("failed to spawn bootstrap thread");
 
     let mon = Monitor::new(cfg.clone());
     let event_rx = mon.subscribe();
     let _mon_handle = mon.start();
 
     let show_window = Arc::new(AtomicBool::new(false));
+    let paused_flag = Arc::new(AtomicBool::new(false));
     let show_window_tray = show_window.clone();
     let pending_nav: Arc<std::sync::Mutex<Option<crate::types::ConnInfo>>> =
         Arc::new(std::sync::Mutex::new(None));
     let pending_nav_tray = pending_nav.clone();
     let pending_nav_ui = pending_nav.clone();
     let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<tray::TrayCmd>(64);
+    let ui_rx = ui::spawn_event_worker(event_rx, cfg.clone(), tray_tx.clone(), paused_flag.clone());
 
     std::thread::Builder::new()
         .name("vigil-tray".into())
         .spawn(move || tray::run(tray_rx, show_window_tray, log_dir, pending_nav_tray))
         .expect("failed to spawn tray thread");
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Vigil")
+        .with_inner_size([1080.0, 680.0])
+        .with_min_inner_size([700.0, 440.0]);
+    if let Some(icon) = load_app_icon() {
+        viewport = viewport.with_icon(icon);
+    }
+
     let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Vigil")
-            .with_inner_size([1080.0, 680.0])
-            .with_min_inner_size([700.0, 440.0]),
+        viewport,
         persist_window: true,
         ..Default::default()
     };
@@ -167,10 +186,11 @@ fn main() {
             Ok(Box::new(ui::VigilApp::new(
                 cc,
                 cfg_ui,
-                event_rx,
+                ui_rx,
                 tray_tx,
                 show_window,
                 pending_nav_ui,
+                paused_flag,
             )))
         }),
     )

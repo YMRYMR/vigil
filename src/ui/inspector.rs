@@ -9,8 +9,13 @@ use crate::{
     ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
 };
 use egui::{RichText, Ui};
+use std::collections::BTreeSet;
 
-#[derive(Debug)]
+const MAX_REASON_SCAN: usize = 1_200;
+const MAX_REASON_PLAIN_ROWS: usize = 140;
+const MAX_REASON_PORT_ROWS: usize = 80;
+
+#[derive(Debug, Clone)]
 pub enum Action {
     Trust,
     OpenLocation,
@@ -165,133 +170,185 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
 
         section_header(ui, "Active response");
         if response_enabled {
-            ui.horizontal_wrapped(|ui| {
-                if autoruns_frozen {
-                    chip(ui, "Autoruns frozen");
-                    let revert = ui.add(accent_btn("Revert autoruns"));
-                    let revert = revert.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Remove autorun entries added after the baseline and restore baseline values.");
-                    if revert.clicked() { action = Some(Action::RevertAutoruns); }
-                } else {
-                    let freeze = ui.add(danger_btn("Freeze autoruns"));
-                    let freeze = freeze.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Capture the current Run and RunOnce keys as a baseline so later additions can be reverted.");
-                    if freeze.clicked() { action = Some(Action::FreezeAutoruns); }
-                }
-
-                if quarantine_active {
-                    let clear_btn = ui.add(accent_btn("Clear quarantine"));
-                    let clear_btn = clear_btn.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Restore the network and undo the selected process containment steps where possible.");
-                    if clear_btn.clicked() { action = Some(Action::ClearQuarantineProfile); }
-                } else {
-                    let quarantine_btn = ui.add_enabled(quarantine_ready, danger_btn("Quarantine profile"));
-                    let quarantine_btn = if quarantine_ready { quarantine_btn.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Initial quarantine preset: isolate the network, block the executable path, and suspend the process when available.") } else { quarantine_btn.on_hover_text("Quarantine profile requires administrator privileges and a real PID or known executable path.") };
-                    if quarantine_btn.clicked() { action = Some(Action::QuarantineProfile); }
-                }
-            });
-
-            ui.add_space(6.0);
-            ui.horizontal_wrapped(|ui| {
-                if let Some(target) = remote_target.as_ref() {
-                    if remote_blocked {
-                        blocked_status_row(ui, "Remote blocked", remote_remaining, &format!("Temporary firewall rule for {target}"), Action::UnblockRemote, &mut action);
-                    } else {
-                        for preset in [active_response::DurationPreset::OneHour, active_response::DurationPreset::OneDay, active_response::DurationPreset::Permanent] {
-                            let (label, hover) = match preset {
-                                active_response::DurationPreset::OneHour => ("Block 1h", format!("Temporarily block outbound traffic to {target} for 1 hour.")),
-                                active_response::DurationPreset::OneDay => ("Block 24h", format!("Temporarily block outbound traffic to {target} for 24 hours.")),
-                                active_response::DurationPreset::Permanent => ("Block permanent", format!("Block outbound traffic to {target} until you remove the rule.")),
-                            };
-                            let resp = ui.add_enabled(true, block_btn(preset, label));
-                            let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover);
-                            if resp.clicked() { action = Some(Action::BlockRemote(preset)); }
-                        }
-                    }
-                } else {
-                    ui.add_enabled(false, accent_btn("Block 1h")).on_hover_text("Select a concrete connection row to block its remote IP.");
-                }
-
-                if process_blocked {
-                    blocked_status_row(ui, "Process blocked", process_remaining, "Temporary firewall rules for this executable path", Action::UnblockProcess, &mut action);
-                } else {
-                    for preset in [active_response::DurationPreset::OneHour, active_response::DurationPreset::OneDay, active_response::DurationPreset::Permanent] {
-                        let (label, hover) = match preset {
-                            active_response::DurationPreset::OneHour => ("Block process 1h", "Temporarily block inbound and outbound traffic for this executable path for 1 hour."),
-                            active_response::DurationPreset::OneDay => ("Block process 24h", "Temporarily block inbound and outbound traffic for this executable path for 24 hours."),
-                            active_response::DurationPreset::Permanent => ("Block process permanent", "Block inbound and outbound traffic for this executable path until you remove the rule."),
-                        };
-                        let resp = ui.add_enabled(known_location, block_btn(preset, label));
-                        let resp = if known_location { resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(hover) } else { resp.on_hover_text("Block process is disabled because Vigil does not know the executable location.") };
-                        if resp.clicked() { action = Some(Action::BlockProcess(preset)); }
-                    }
-                }
-
-            });
-        }
-        if isolation_enabled {
-            ui.add_space(6.0);
-            let isolate_label = if isolated {
-                "Restore network"
-            } else {
-                "Isolate network"
-            };
-            let iso_resp = ui
-                .add_enabled(true, danger_btn(isolate_label))
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(if isolated {
-                    "Restore the saved firewall profile state and any adapter snapshot from before isolation."
-                } else {
-                    "Immediately isolate the machine. Vigil hardens firewall policy first and falls back to emergency adapter cutoff if connectivity is still reachable."
+            let mut action_cells = Vec::new();
+            if autoruns_frozen {
+                action_cells.push(ActionCell {
+                    action: Action::RevertAutoruns,
+                    label: "Revert autoruns".into(),
+                    hover: "Remove autorun entries added after the baseline and restore baseline values.".into(),
+                    tone: ActionTone::Accent,
                 });
-            if iso_resp.clicked() {
-                action = Some(if isolated {
-                    Action::RestoreNetwork
-                } else {
-                    Action::IsolateMachine
+            } else {
+                action_cells.push(ActionCell {
+                    action: Action::FreezeAutoruns,
+                    label: "Freeze autoruns".into(),
+                    hover: "Capture the current Run and RunOnce keys as a baseline so later additions can be reverted.".into(),
+                    tone: ActionTone::Warn,
                 });
             }
-        } else if !response_enabled {
+
+            if quarantine_active {
+                action_cells.push(ActionCell {
+                    action: Action::ClearQuarantineProfile,
+                    label: "Clear quarantine".into(),
+                    hover: "Restore the network and undo the selected process containment steps where possible.".into(),
+                    tone: ActionTone::Accent,
+                });
+            } else if quarantine_ready {
+                action_cells.push(ActionCell {
+                    action: Action::QuarantineProfile,
+                    label: "Quarantine profile".into(),
+                    hover: "Initial quarantine preset: isolate the network, block the executable path, and suspend the process when available.".into(),
+                    tone: ActionTone::Danger,
+                });
+            }
+
+            if process_blocked {
+                let label = match process_remaining {
+                    Some(duration) => format!("Unban process ({})", format_remaining(duration)),
+                    None => "Unban process".to_string(),
+                };
+                action_cells.push(ActionCell {
+                    action: Action::UnblockProcess,
+                    label,
+                    hover: "Remove temporary firewall rules for this executable path.".into(),
+                    tone: ActionTone::Accent,
+                });
+            } else if known_location {
+                action_cells.push(ActionCell {
+                    action: Action::BlockProcess(active_response::DurationPreset::OneDay),
+                    label: "Ban process 24h".into(),
+                    hover: "Temporarily block inbound and outbound traffic for this executable path for 24 hours.".into(),
+                    tone: ActionTone::Block(active_response::DurationPreset::OneDay),
+                });
+                action_cells.push(ActionCell {
+                    action: Action::BlockProcess(active_response::DurationPreset::Permanent),
+                    label: "Ban process permanent".into(),
+                    hover: "Block inbound and outbound traffic for this executable path until removed.".into(),
+                    tone: ActionTone::Block(active_response::DurationPreset::Permanent),
+                });
+            }
+
+            if let Some(target) = remote_target.as_ref() {
+                if remote_blocked {
+                    let label = match remote_remaining {
+                        Some(duration) => format!("Unban remote ({})", format_remaining(duration)),
+                        None => "Unban remote".to_string(),
+                    };
+                    action_cells.push(ActionCell {
+                        action: Action::UnblockRemote,
+                        label,
+                        hover: format!("Remove temporary firewall rule for {target}."),
+                        tone: ActionTone::Accent,
+                    });
+                } else {
+                    action_cells.push(ActionCell {
+                        action: Action::BlockRemote(active_response::DurationPreset::OneHour),
+                        label: "Ban remote 1h".into(),
+                        hover: format!("Temporarily block outbound traffic to {target} for 1 hour."),
+                        tone: ActionTone::Block(active_response::DurationPreset::OneHour),
+                    });
+                }
+            }
+
+            if domain_enabled {
+                if let Some(domain) = domain_target.as_ref() {
+                    if domain_blocked {
+                        action_cells.push(ActionCell {
+                            action: Action::UnblockDomain,
+                            label: "Unban domain".into(),
+                            hover: format!("Remove local hosts-file block for {domain}."),
+                            tone: ActionTone::Accent,
+                        });
+                    } else {
+                        action_cells.push(ActionCell {
+                            action: Action::BlockDomain,
+                            label: "Ban domain".into(),
+                            hover: format!("Redirect {domain} to localhost through the hosts file."),
+                            tone: ActionTone::Warn,
+                        });
+                    }
+                }
+            }
+
+            if connection_kill_enabled {
+                action_cells.push(ActionCell {
+                    action: Action::KillConnection,
+                    label: "Kill connection".into(),
+                    hover: "Immediately terminate the selected live TCP connection.".into(),
+                    tone: ActionTone::Danger,
+                });
+            }
+
+            if process_suspended {
+                action_cells.push(ActionCell {
+                    action: Action::ResumeProcess,
+                    label: "Resume process".into(),
+                    hover: "Resume every suspended thread in this process.".into(),
+                    tone: ActionTone::Accent,
+                });
+            } else if suspend_enabled {
+                action_cells.push(ActionCell {
+                    action: Action::SuspendProcess,
+                    label: "Suspend process".into(),
+                    hover: "Freeze the process while you investigate.".into(),
+                    tone: ActionTone::Warn,
+                });
+            }
+
+            if kill_enabled {
+                action_cells.push(ActionCell {
+                    action: Action::Kill,
+                    label: "Kill process".into(),
+                    hover: "Terminate this process after confirmation.".into(),
+                    tone: ActionTone::Danger,
+                });
+            }
+
+            if isolation_enabled {
+                let restoring = isolated;
+                action_cells.push(ActionCell {
+                    action: if isolated {
+                        Action::RestoreNetwork
+                    } else {
+                        Action::IsolateMachine
+                    },
+                    label: if isolated {
+                        "Restore network".into()
+                    } else {
+                        "Isolate network".into()
+                    },
+                    hover: if isolated {
+                        "Restore saved firewall and adapter state from before isolation.".into()
+                    } else {
+                        "Immediately isolate the machine network.".into()
+                    },
+                    tone: if restoring {
+                        ActionTone::Accent
+                    } else {
+                        ActionTone::Danger
+                    },
+                });
+            }
+
+            render_action_grid(ui, "active_response_actions", &action_cells, &mut action);
+
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                chip(ui, &format!("{} blocked target{}", response_status.blocked_rules, if response_status.blocked_rules == 1 { "" } else { "s" }));
+                chip(ui, &format!("{} blocked domain{}", response_status.blocked_domains, if response_status.blocked_domains == 1 { "" } else { "s" }));
+                chip(ui, if response_status.isolated { "Network isolated" } else { "Network open" });
+                chip(ui, &format!("{} process block{}", response_status.blocked_processes, if response_status.blocked_processes == 1 { "" } else { "s" }));
+                chip(ui, &format!("{} suspended", response_status.suspended_processes));
+                if response_status.frozen_autoruns { chip(ui, "Autorun baseline"); }
+            });
+        } else {
             ui.label(
-                RichText::new("Administrator privileges are required for active response.")
+                RichText::new("Active response actions are hidden until Vigil runs in Admin Mode.")
                     .color(theme::TEXT3)
                     .size(10.5),
             );
         }
-
-        ui.add_space(6.0);
-        ui.horizontal_wrapped(|ui| {
-            if domain_blocked {
-                chip(ui, "Domain blocked");
-                let unblock_domain = ui.add(accent_btn("Unblock domain"));
-                let unblock_domain = unblock_domain.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Remove the local hosts-file block for this hostname.");
-                if unblock_domain.clicked() { action = Some(Action::UnblockDomain); }
-            } else {
-                let domain_btn = ui.add_enabled(domain_enabled && domain_target.is_some(), danger_btn("Block domain"));
-                let domain_btn = if domain_enabled && domain_target.is_some() { let host = domain_target.as_deref().unwrap_or_default(); domain_btn.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(format!("Redirect {host} to the local machine through the Windows hosts file.")) } else { domain_btn.on_hover_text("Block domain requires administrator privileges and a selected connection with a resolved hostname.") };
-                if domain_btn.clicked() { action = Some(Action::BlockDomain); }
-            }
-            let kill_conn_resp = ui.add_enabled(connection_kill_enabled, danger_btn("Kill connection"));
-            let kill_conn_resp = if connection_kill_enabled { kill_conn_resp.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Immediately terminate the selected live TCP connection.") } else { kill_conn_resp.on_hover_text("Select an IPv4 TCP connection with a killable state while Vigil is running as administrator.") };
-            if kill_conn_resp.clicked() { action = Some(Action::KillConnection); }
-            if process_suspended {
-                chip(ui, "Process suspended");
-                let resume = ui.add(accent_btn("Resume process"));
-                let resume = resume.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Resume every suspended thread in this process.");
-                if resume.clicked() { action = Some(Action::ResumeProcess); }
-            } else {
-                let suspend = ui.add_enabled(suspend_enabled, danger_btn("Suspend process"));
-                let suspend = if suspend_enabled { suspend.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Freeze the process while you investigate. Use Resume process to continue it later.") } else { suspend.on_hover_text("Suspension requires a real PID, administrator privileges, and the Windows active-response backend.") };
-                if suspend.clicked() { action = Some(Action::SuspendProcess); }
-            }
-        });
-
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            chip(ui, &format!("{} blocked target{}", response_status.blocked_rules, if response_status.blocked_rules == 1 { "" } else { "s" }));
-            chip(ui, &format!("{} blocked domain{}", response_status.blocked_domains, if response_status.blocked_domains == 1 { "" } else { "s" }));
-            chip(ui, if response_status.isolated { "Network isolated" } else { "Network open" });
-            chip(ui, &format!("{} process block{}", response_status.blocked_processes, if response_status.blocked_processes == 1 { "" } else { "s" }));
-            chip(ui, &format!("{} suspended", response_status.suspended_processes));
-            if response_status.frozen_autoruns { chip(ui, "Autorun baseline"); }
-        });
 
         ui.add_space(8.0);
         separator(ui);
@@ -301,13 +358,16 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         if sel.reasons.is_empty() {
             ui.label(RichText::new("No score reasons recorded.").color(theme::TEXT3).size(11.0));
         } else {
-            for reason in &sel.reasons {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(">").color(theme::WARN).size(10.0));
-                    ui.add(egui::Label::new(RichText::new(reason).color(theme::TEXT2).size(11.0)).wrap());
-                });
-                ui.add_space(2.0);
-            }
+            render_reason_block(
+                ui,
+                "process",
+                &sel.reasons,
+                ">",
+                theme::WARN,
+                theme::TEXT2,
+                11.0,
+                2.0,
+            );
         }
 
         if let Some(conn) = sel.selected_connection.as_ref() {
@@ -327,12 +387,16 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             }
             if !conn.reasons.is_empty() {
                 ui.add_space(4.0);
-                for reason in &conn.reasons {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("-").color(theme::TEXT3).size(10.0));
-                        ui.add(egui::Label::new(RichText::new(reason).color(theme::TEXT2).size(10.6)).wrap());
-                    });
-                }
+                render_reason_block(
+                    ui,
+                    "connection",
+                    &conn.reasons,
+                    "-",
+                    theme::TEXT3,
+                    theme::TEXT2,
+                    10.6,
+                    0.0,
+                );
             }
         }
 
@@ -340,22 +404,44 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             ui.label(RichText::new("Really kill this process?").color(theme::DANGER).size(11.0));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let kill_resp = ui.add_enabled(kill_enabled, accent_btn("Kill"));
-                let kill_resp = if kill_enabled { kill_resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { kill_resp.on_hover_text("This row is unresolved, so Vigil cannot verify that a process is still running.") };
+                let kill_resp = ui.add_enabled(kill_enabled, danger_btn("Kill"));
+                let kill_resp = if kill_enabled {
+                    kill_resp
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Terminate this process immediately.")
+                } else {
+                    kill_resp.on_hover_text("This row is unresolved, so Vigil cannot verify that a process is still running.")
+                };
                 if kill_resp.clicked() { action = Some(Action::KillConfirmed); }
-                if ui.add(muted_btn("Cancel")).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { action = Some(Action::KillCancelled); }
+                if ui
+                    .add(muted_btn("Cancel"))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Cancel process termination.")
+                    .clicked()
+                {
+                    action = Some(Action::KillCancelled);
+                }
             });
         } else {
             ui.horizontal_wrapped(|ui| {
-                let trust_resp = ui.add_enabled(trust_enabled, accent_btn("Trust"));
-                let trust_resp = if trust_enabled { trust_resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { trust_resp.on_hover_text("Trust is disabled because Vigil does not know this process's executable location.") };
-                if trust_resp.clicked() { action = Some(Action::Trust); }
-                let open_resp = ui.add_enabled(open_location_enabled, muted_btn("Open Loc"));
-                let open_resp = if open_location_enabled { open_resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { open_resp.on_hover_text("No executable path is known for this process.") };
-                if open_resp.clicked() { action = Some(Action::OpenLocation); }
-                let kill_resp = ui.add_enabled(kill_enabled, danger_btn("Kill"));
-                let kill_resp = if kill_enabled { kill_resp.on_hover_cursor(egui::CursorIcon::PointingHand) } else { kill_resp.on_hover_text("This is an unresolved PID row, so it cannot be killed from the UI.") };
-                if kill_resp.clicked() { action = Some(Action::Kill); }
+                if trust_enabled {
+                    let trust_resp = ui
+                        .add(accent_btn("Trust"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Add this process name to the trusted list.");
+                    if trust_resp.clicked() {
+                        action = Some(Action::Trust);
+                    }
+                }
+                if open_location_enabled {
+                    let open_resp = ui
+                        .add(muted_btn("Open Loc"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Open this executable's folder in the file explorer.");
+                    if open_resp.clicked() {
+                        action = Some(Action::OpenLocation);
+                    }
+                }
             });
         }
 
@@ -440,6 +526,129 @@ fn section_header(ui: &mut Ui, title: &str) {
     ui.label(RichText::new(title).color(theme::TEXT2).size(10.5).strong());
     ui.add_space(4.0);
 }
+
+#[derive(Default)]
+struct ReasonSummary {
+    plain: Vec<String>,
+    unusual_ports: Vec<u16>,
+    truncated_input: usize,
+}
+
+fn summarize_reasons(reasons: &[String]) -> ReasonSummary {
+    let mut summary = ReasonSummary::default();
+    let mut ports = BTreeSet::new();
+    for reason in reasons.iter().take(MAX_REASON_SCAN) {
+        if let Some(port) = parse_unusual_destination_port(reason) {
+            ports.insert(port);
+        } else {
+            summary.plain.push(reason.clone());
+        }
+    }
+    summary.unusual_ports = ports.into_iter().collect();
+    summary.truncated_input = reasons.len().saturating_sub(MAX_REASON_SCAN);
+    summary
+}
+
+fn parse_unusual_destination_port(reason: &str) -> Option<u16> {
+    let tail = reason.strip_prefix("Unusual destination port ")?;
+    let token = tail.split_whitespace().next()?;
+    token.parse::<u16>().ok()
+}
+
+fn render_reason_row(
+    ui: &mut Ui,
+    marker: &str,
+    marker_color: egui::Color32,
+    text_color: egui::Color32,
+    text_size: f32,
+    reason: &str,
+    row_gap: f32,
+) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(marker).color(marker_color).size(10.0));
+        ui.add(egui::Label::new(RichText::new(reason).color(text_color).size(text_size)).wrap());
+    });
+    if row_gap > 0.0 {
+        ui.add_space(row_gap);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_reason_block(
+    ui: &mut Ui,
+    id_prefix: &str,
+    reasons: &[String],
+    marker: &str,
+    marker_color: egui::Color32,
+    text_color: egui::Color32,
+    text_size: f32,
+    row_gap: f32,
+) {
+    let summary = summarize_reasons(reasons);
+    for reason in summary.plain.iter().take(MAX_REASON_PLAIN_ROWS) {
+        render_reason_row(
+            ui,
+            marker,
+            marker_color,
+            text_color,
+            text_size,
+            reason,
+            row_gap,
+        );
+    }
+    let extra_plain = summary.plain.len().saturating_sub(MAX_REASON_PLAIN_ROWS);
+    if extra_plain > 0 {
+        ui.label(
+            RichText::new(format!(
+                "{} additional reason entries hidden for readability.",
+                extra_plain
+            ))
+            .color(theme::TEXT3)
+            .size(10.2),
+        );
+    }
+    if !summary.unusual_ports.is_empty() {
+        let count = summary.unusual_ports.len();
+        egui::CollapsingHeader::new(format!("Unusual destination ports ({count})"))
+            .id_salt((id_prefix, "unusual_ports"))
+            .default_open(count <= 6)
+            .show(ui, |ui| {
+                for port in summary.unusual_ports.iter().take(MAX_REASON_PORT_ROWS) {
+                    render_reason_row(
+                        ui,
+                        marker,
+                        marker_color,
+                        text_color,
+                        text_size,
+                        &format!("Unusual destination port {port}"),
+                        row_gap,
+                    );
+                }
+                let extra_ports = summary
+                    .unusual_ports
+                    .len()
+                    .saturating_sub(MAX_REASON_PORT_ROWS);
+                if extra_ports > 0 {
+                    ui.label(
+                        RichText::new(format!("{} additional unusual ports hidden.", extra_ports))
+                            .color(theme::TEXT3)
+                            .size(10.2),
+                    );
+                }
+            });
+    }
+    if summary.truncated_input > 0 {
+        ui.label(
+            RichText::new(format!(
+                "Input capped at {MAX_REASON_SCAN} reasons ({} hidden) to protect UI responsiveness.",
+                summary.truncated_input
+            ))
+            .color(theme::WARN)
+            .size(10.2),
+        );
+    }
+}
+
 fn kv(ui: &mut Ui, key: &str, val: &str) {
     ui.horizontal(|ui| {
         ui.add_sized(
@@ -482,29 +691,53 @@ fn chip(ui: &mut Ui, text: &str) {
             .strong(),
     );
 }
-fn blocked_status_row(
-    ui: &mut Ui,
-    label: &str,
-    remaining: Option<std::time::Duration>,
-    hover_prefix: &str,
-    unblock_action: Action,
-    action: &mut Option<Action>,
-) {
-    ui.add_space(4.0);
-    ui.horizontal_wrapped(|ui| {
-        let status = match remaining {
-            Some(duration) => format!("{label} {}", format_remaining(duration)),
-            None => format!("{label} permanently"),
-        };
-        chip(ui, &status);
-        let unblock = ui.add(accent_btn("Unblock"));
-        let unblock = unblock
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text(format!("{}.", hover_prefix));
-        if unblock.clicked() {
-            *action = Some(unblock_action);
-        }
-    });
+#[derive(Clone, Copy)]
+enum ActionTone {
+    Danger,
+    Warn,
+    Accent,
+    Block(active_response::DurationPreset),
+}
+
+struct ActionCell {
+    action: Action,
+    label: String,
+    hover: String,
+    tone: ActionTone,
+}
+
+fn render_action_grid(ui: &mut Ui, id: &str, cells: &[ActionCell], action: &mut Option<Action>) {
+    if cells.is_empty() {
+        return;
+    }
+    let col_w = ((ui.available_width() - 8.0).max(220.0)) * 0.5;
+    egui::Grid::new(id)
+        .num_columns(2)
+        .spacing([8.0, 8.0])
+        .show(ui, |ui| {
+            for (idx, cell) in cells.iter().enumerate() {
+                let button = match cell.tone {
+                    ActionTone::Danger => danger_btn(&cell.label),
+                    ActionTone::Warn => warn_btn(&cell.label),
+                    ActionTone::Accent => accent_btn(&cell.label),
+                    ActionTone::Block(preset) => block_btn(preset, &cell.label),
+                };
+                let resp = ui
+                    .add_sized([col_w, 28.0], button)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text(&cell.hover);
+                if resp.clicked() {
+                    *action = Some(cell.action.clone());
+                }
+                if idx % 2 == 1 {
+                    ui.end_row();
+                }
+            }
+            if cells.len() % 2 == 1 {
+                ui.add_space(0.0);
+                ui.end_row();
+            }
+        });
 }
 fn nonempty(text: &str) -> &str {
     if text.is_empty() {
@@ -521,9 +754,7 @@ fn accent_btn(text: &str) -> egui::Button<'_> {
 }
 fn block_btn(preset: active_response::DurationPreset, text: &str) -> egui::Button<'_> {
     let (fg, bg, border) = match preset {
-        active_response::DurationPreset::OneHour => {
-            (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT)
-        }
+        active_response::DurationPreset::OneHour => (theme::WARN, theme::WARN_BG, theme::WARN),
         active_response::DurationPreset::OneDay => (theme::WARN, theme::WARN_BG, theme::WARN),
         active_response::DurationPreset::Permanent => {
             (theme::DANGER, theme::DANGER_BG, theme::DANGER)
@@ -544,6 +775,12 @@ fn danger_btn(text: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(text).color(theme::DANGER).size(11.5))
         .fill(theme::DANGER_BG)
         .stroke(egui::Stroke::new(1.0, theme::DANGER))
+        .corner_radius(6.0)
+}
+fn warn_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(RichText::new(text).color(theme::WARN).size(11.5))
+        .fill(theme::WARN_BG)
+        .stroke(egui::Stroke::new(1.0, theme::WARN))
         .corner_radius(6.0)
 }
 fn format_remaining(duration: std::time::Duration) -> String {

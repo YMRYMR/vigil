@@ -84,7 +84,9 @@ fn parse_client_hello_body(hello: &[u8]) -> Option<ClientHelloMeta> {
     let mut ext_off = 0usize;
     while ext_off + 4 <= extensions_blob.len() {
         let ext_type = u16::from_be_bytes([extensions_blob[ext_off], extensions_blob[ext_off + 1]]);
-        let ext_len = u16::from_be_bytes([extensions_blob[ext_off + 2], extensions_blob[ext_off + 3]]) as usize;
+        let ext_len =
+            u16::from_be_bytes([extensions_blob[ext_off + 2], extensions_blob[ext_off + 3]])
+                as usize;
         ext_off += 4;
         if ext_off + ext_len > extensions_blob.len() {
             return None;
@@ -160,7 +162,7 @@ fn parse_supported_groups(ext: &[u8]) -> Vec<u16> {
         return Vec::new();
     }
     let len = u16::from_be_bytes([ext[0], ext[1]]) as usize;
-    if ext.len() < 2 + len || len % 2 != 0 {
+    if ext.len() < 2 + len || !len.is_multiple_of(2) {
         return Vec::new();
     }
     ext[2..2 + len]
@@ -193,11 +195,19 @@ fn build_ja3(meta: &ClientHelloMeta) -> String {
 }
 
 fn join_u16(values: &[u16]) -> String {
-    values.iter().map(u16::to_string).collect::<Vec<_>>().join("-")
+    values
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn join_u8(values: &[u8]) -> String {
-    values.iter().map(u8::to_string).collect::<Vec<_>>().join("-")
+    values
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join("-")
 }
 
 fn is_grease_u16(value: u16) -> bool {
@@ -223,20 +233,12 @@ mod tests {
 
     fn sample_client_hello() -> Vec<u8> {
         vec![
-            0x16, 0x03, 0x01, 0x00, 0x43,
-            0x01, 0x00, 0x00, 0x3f,
-            0x03, 0x03,
-            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-            0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
-            0x00,
-            0x00,0x04, 0x13,0x01, 0x13,0x02,
-            0x01, 0x00,
-            0x00,0x12,
-            0x00,0x00, 0x00,0x10,
-            0x00,0x0e,
-            0x00,
-            0x00,0x0b,
-            b'e',b'x',b'a',b'm',b'p',b'l',b'e',b'.',b'o',b'r',b'g'
+            0x16, 0x03, 0x01, 0x00, 0x45, 0x01, 0x00, 0x00, 0x41, 0x03, 0x03, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x04, 0x13, 0x01, 0x13, 0x02, 0x01, 0x00, 0x00, 0x14, 0x00, 0x00,
+            0x00, 0x10, 0x00, 0x0e, 0x00, 0x00, 0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e',
+            b'.', b'o', b'r', b'g',
         ]
     }
 
@@ -255,8 +257,8 @@ mod tests {
     #[test]
     fn grease_values_are_excluded_from_ja3() {
         let mut record = sample_client_hello();
-        record[44] = 0x0a;
-        record[45] = 0x0a;
+        record[46] = 0x0a;
+        record[47] = 0x0a;
         let meta = parse_client_hello(&record).expect("client hello");
         assert_eq!(meta.ja3_string.as_deref(), Some("771,4866,0,,"));
     }

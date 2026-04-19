@@ -26,7 +26,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 use tab_bar::Tab;
-use tokio::sync::broadcast;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TableState {
@@ -91,7 +90,7 @@ impl Default for UiState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NotificationKind {
+pub(crate) enum NotificationKind {
     Info,
     Success,
     Warning,
@@ -99,10 +98,18 @@ enum NotificationKind {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) enum UiMessage {
+    Event(Box<ConnEvent>),
+    Notification(NotificationKind, String),
+    ResponseStatus(active_response::Status),
+}
+
+#[derive(Debug, Clone)]
 struct Notification {
     id: u64,
     kind: NotificationKind,
     text: String,
+    expires_at: std::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +120,101 @@ enum NetworkOperationKind {
 
 struct NetworkOperation {
     kind: NetworkOperationKind,
-    rx: mpsc::Receiver<String>,
+    rx: mpsc::Receiver<NetworkOperationResult>,
+}
+
+struct NetworkOperationResult {
+    message: String,
+    status: active_response::Status,
+}
+
+pub fn spawn_event_worker(
+    mut event_rx: tokio::sync::broadcast::Receiver<ConnEvent>,
+    cfg: Arc<RwLock<Config>>,
+    tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
+    paused: Arc<AtomicBool>,
+) -> mpsc::Receiver<UiMessage> {
+    let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
+    std::thread::Builder::new()
+        .name("vigil-ui-events".into())
+        .spawn(move || {
+            let mut auto_response_state = auto_response::EngineState::default();
+            let mut response_rule_state = response_rules::EngineState::default();
+            loop {
+                match event_rx.blocking_recv() {
+                    Ok(event) => {
+                        if paused.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        match &event {
+                            ConnEvent::Alert(info) => {
+                                let _ = tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())));
+                                let cfg_snapshot = cfg.read().unwrap().clone();
+                                if let Some(message) = auto_response::maybe_apply(
+                                    info,
+                                    &cfg_snapshot,
+                                    &mut auto_response_state,
+                                ) {
+                                    let _ = ui_tx.send(UiMessage::Notification(
+                                        NotificationKind::Info,
+                                        message,
+                                    ));
+                                    let _ = ui_tx
+                                        .send(UiMessage::ResponseStatus(active_response::status()));
+                                }
+                                if let Some(message) = response_rules::maybe_apply(
+                                    info,
+                                    &cfg_snapshot,
+                                    &mut response_rule_state,
+                                ) {
+                                    let _ = ui_tx.send(UiMessage::Notification(
+                                        NotificationKind::Info,
+                                        message,
+                                    ));
+                                    let _ = ui_tx
+                                        .send(UiMessage::ResponseStatus(active_response::status()));
+                                }
+                            }
+                            ConnEvent::New(info) => {
+                                let cfg_snapshot = cfg.read().unwrap().clone();
+                                if let Some(message) = auto_response::maybe_apply(
+                                    info,
+                                    &cfg_snapshot,
+                                    &mut auto_response_state,
+                                ) {
+                                    let _ = ui_tx.send(UiMessage::Notification(
+                                        NotificationKind::Info,
+                                        message,
+                                    ));
+                                    let _ = ui_tx
+                                        .send(UiMessage::ResponseStatus(active_response::status()));
+                                }
+                                if let Some(message) = response_rules::maybe_apply(
+                                    info,
+                                    &cfg_snapshot,
+                                    &mut response_rule_state,
+                                ) {
+                                    let _ = ui_tx.send(UiMessage::Notification(
+                                        NotificationKind::Info,
+                                        message,
+                                    ));
+                                    let _ = ui_tx
+                                        .send(UiMessage::ResponseStatus(active_response::status()));
+                                }
+                            }
+                            ConnEvent::Closed { .. } => {}
+                        }
+                        let _ = ui_tx.send(UiMessage::Event(Box::new(event)));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("UI worker dropped {n} broadcast events");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        })
+        .expect("failed to spawn Vigil UI worker");
+    ui_rx
 }
 
 #[derive(Clone)]
@@ -209,41 +310,60 @@ pub struct VigilApp {
     selected_alert: Option<ProcessSelection>,
     active_tab: Tab,
     unseen_alerts: usize,
-    event_rx: broadcast::Receiver<ConnEvent>,
+    ui_rx: mpsc::Receiver<UiMessage>,
     tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
     cfg: Arc<RwLock<Config>>,
+    paused_flag: Arc<AtomicBool>,
     settings: settings::SettingsDraft,
     kill_confirm: bool,
     response_confirm: Option<PendingResponse>,
     response_status: active_response::Status,
+    tray_lockdown_sent: bool,
     network_operation: Option<NetworkOperation>,
+    reconcile_rx: Option<mpsc::Receiver<active_response::Status>>,
+    scheduled_target: Option<bool>,
     notifications: VecDeque<Notification>,
     next_notification_id: u64,
-    auto_response_state: auto_response::EngineState,
-    response_rule_state: response_rules::EngineState,
     exit_requested: bool,
     last_response_reconcile: std::time::Instant,
     last_schedule_check: std::time::Instant,
     scheduled_lockdown_active: bool,
     paused: bool,
+    last_applied_pixels_per_point: Option<f32>,
     activity_table: TableState,
     alerts_table: TableState,
 }
 const ACTIVITY_CAP: usize = 4096;
 const ALERTS_CAP: usize = 2048;
+const UI_EVENT_BUDGET: usize = 128;
+const UI_IDLE_REPAINT: std::time::Duration = std::time::Duration::from_secs(1);
+const UI_BUSY_REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
+const NOTIFICATION_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn apply_pixels_per_point(ctx: &egui::Context, scale: f32) {
+    let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+    let target_ppp = (native_ppp * scale.clamp(0.8, 1.8)).clamp(0.6, 4.0);
+    ctx.set_pixels_per_point(target_ppp);
+}
 
 impl VigilApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         cfg: Arc<RwLock<Config>>,
-        event_rx: broadcast::Receiver<ConnEvent>,
+        ui_rx: mpsc::Receiver<UiMessage>,
         tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
         show_window: Arc<AtomicBool>,
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+        paused_flag: Arc<AtomicBool>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
+        let initial_ui_scale = {
+            let c = cfg.read().unwrap();
+            c.sanitised_ui_scale()
+        };
+        apply_pixels_per_point(&cc.egui_ctx, initial_ui_scale);
         let settings = {
             let c = cfg.read().unwrap();
             settings::SettingsDraft::from_config(&c)
@@ -252,8 +372,8 @@ impl VigilApp {
             .storage
             .and_then(|storage| eframe::get_value::<UiState>(storage, "ui"))
             .unwrap_or_default();
-        cc.egui_ctx
-            .request_repaint_after(std::time::Duration::from_millis(16));
+        let response_status = active_response::status();
+        cc.egui_ctx.request_repaint_after(UI_IDLE_REPAINT);
         Self {
             activity: VecDeque::new(),
             alerts: VecDeque::new(),
@@ -261,76 +381,102 @@ impl VigilApp {
             selected_alert: None,
             active_tab: persisted.active_tab,
             unseen_alerts: 0,
-            event_rx,
+            ui_rx,
             tray_tx,
             show_window,
             pending_nav,
             cfg,
+            paused_flag,
             settings,
             kill_confirm: false,
             response_confirm: None,
-            response_status: active_response::status(),
+            response_status,
+            tray_lockdown_sent: !response_status.isolated,
             network_operation: None,
+            reconcile_rx: None,
+            scheduled_target: None,
             notifications: VecDeque::new(),
             next_notification_id: 1,
-            auto_response_state: auto_response::EngineState::default(),
-            response_rule_state: response_rules::EngineState::default(),
             exit_requested: false,
             last_response_reconcile: std::time::Instant::now(),
             last_schedule_check: std::time::Instant::now() - std::time::Duration::from_secs(60),
             scheduled_lockdown_active: false,
             paused: false,
+            last_applied_pixels_per_point: None,
             activity_table: persisted.activity_table,
             alerts_table: persisted.alerts_table,
         }
     }
-    fn drain_events(&mut self) -> bool {
-        use broadcast::error::TryRecvError;
+    fn handle_font_zoom_shortcut(&mut self, ctx: &egui::Context) {
+        let (ctrl, wheel_y): (bool, f32) =
+            ctx.input(|i| (i.modifiers.ctrl, i.smooth_scroll_delta.y));
+        if !ctrl || wheel_y.abs() < f32::EPSILON {
+            return;
+        }
+        let step = if wheel_y > 0.0 { 0.05 } else { -0.05 };
+        let mut cfg = self.cfg.write().unwrap();
+        let old = cfg.sanitised_ui_scale();
+        let new = (old + step).clamp(0.8, 1.8);
+        if (new - old).abs() < f32::EPSILON {
+            return;
+        }
+        cfg.ui_scale = new;
+        cfg.save();
+        self.settings.ui_scale = new;
+    }
+    fn sync_ui_scale(&mut self, ctx: &egui::Context) {
+        let scale = {
+            let cfg = self.cfg.read().unwrap();
+            cfg.sanitised_ui_scale()
+        };
+        let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
+        let target_ppp = (native_ppp * scale).clamp(0.6, 4.0);
+        let should_apply = match self.last_applied_pixels_per_point {
+            Some(last) => (last - target_ppp).abs() > 0.01,
+            None => true,
+        };
+        if should_apply {
+            ctx.set_pixels_per_point(target_ppp);
+            self.last_applied_pixels_per_point = Some(target_ppp);
+        }
+    }
+    fn drain_events(&mut self, max_events: usize) -> bool {
         let mut handled = false;
-        loop {
-            match self.event_rx.try_recv() {
-                Ok(event) => {
+        for _ in 0..max_events {
+            match self.ui_rx.try_recv() {
+                Ok(message) => {
                     handled = true;
-                    if self.paused {
-                        continue;
-                    }
-                    match event {
-                        ConnEvent::Alert(info) => {
-                            push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
-                            push_capped(&mut self.alerts, info.clone(), ALERTS_CAP);
-                            self.unseen_alerts += 1;
-                            let _ = self
-                                .tray_tx
-                                .try_send(TrayCmd::Alert(Box::new(info.clone())));
-                            self.maybe_apply_auto_response(&info);
+                    match message {
+                        UiMessage::Event(event) => {
+                            let event = *event;
+                            if self.paused {
+                                continue;
+                            }
+                            match event {
+                                ConnEvent::Alert(info) => {
+                                    push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
+                                    push_capped(&mut self.alerts, info.clone(), ALERTS_CAP);
+                                    self.unseen_alerts += 1;
+                                }
+                                ConnEvent::New(info) => {
+                                    push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
+                                }
+                                ConnEvent::Closed { .. } => {}
+                            }
                         }
-                        ConnEvent::New(info) => {
-                            push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
-                            self.maybe_apply_auto_response(&info);
+                        UiMessage::Notification(kind, text) => {
+                            self.push_notification(kind, text);
                         }
-                        ConnEvent::Closed { .. } => {}
+                        UiMessage::ResponseStatus(status) => {
+                            self.response_status = status;
+                        }
                     }
                 }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Lagged(n)) => tracing::warn!("UI dropped {n} broadcast events"),
-                Err(TryRecvError::Closed) => break,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
         }
         handled
-    }
-    fn maybe_apply_auto_response(&mut self, info: &ConnInfo) {
-        let cfg = self.cfg.read().unwrap().clone();
-        if let Some(message) = auto_response::maybe_apply(info, &cfg, &mut self.auto_response_state)
-        {
-            self.push_notification(NotificationKind::Info, message);
-            self.response_status = active_response::status();
-        }
-        if let Some(message) =
-            response_rules::maybe_apply(info, &cfg, &mut self.response_rule_state)
-        {
-            self.push_notification(NotificationKind::Info, message);
-            self.response_status = active_response::status();
-        }
     }
     fn handle_inspector_action(&mut self, action: inspector::Action, ctx: &egui::Context) {
         let selected_info: Option<ProcessSelection> = match self.active_tab {
@@ -628,8 +774,16 @@ impl VigilApp {
                 let resp = ui
                     .add_enabled(!network_busy, btn)
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let resp = if network_busy {
+                    resp.on_hover_text("A network action is already in progress.")
+                } else if self.paused {
+                    resp.on_hover_text("Resume live monitoring and detection updates.")
+                } else {
+                    resp.on_hover_text("Pause live monitoring and automatic response actions.")
+                };
                 if resp.clicked() {
                     self.paused = !self.paused;
+                    self.paused_flag.store(self.paused, Ordering::Relaxed);
                     if !self.paused {
                         let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
                     }
@@ -642,22 +796,33 @@ impl VigilApp {
                 } else {
                     "Isolate Net"
                 };
+                let (net_fg, net_bg, net_border) = if self.response_status.isolated {
+                    (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT)
+                } else {
+                    (theme::DANGER, theme::DANGER_BG, theme::DANGER)
+                };
                 let can_act = active_response::can_isolate_network();
                 let resp_btn = ui.add_enabled(
                     can_act && !network_busy,
                     egui::Button::new(
                         egui::RichText::new(isolate_label)
-                            .color(theme::DANGER)
+                            .color(net_fg)
                             .size(11.0),
                     )
-                    .fill(theme::DANGER_BG)
-                    .stroke(egui::Stroke::new(1.0, theme::DANGER))
+                    .fill(net_bg)
+                    .stroke(egui::Stroke::new(1.0, net_border))
                     .corner_radius(4.0),
                 );
                 let resp_btn = if network_busy {
                     resp_btn.on_hover_text("A network action is already in progress.")
                 } else if can_act {
-                    resp_btn.on_hover_cursor(egui::CursorIcon::PointingHand)
+                    resp_btn
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(if self.response_status.isolated {
+                            "Restore network connectivity and remove temporary isolation controls."
+                        } else {
+                            "Immediately isolate network traffic using active-response controls."
+                        })
                 } else {
                     resp_btn.on_hover_text("Administrator privileges are required for network isolation.")
                 };
@@ -677,8 +842,11 @@ impl VigilApp {
 impl eframe::App for VigilApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.handle_font_zoom_shortcut(&ctx);
+        self.sync_ui_scale(&ctx);
         self.refresh_active_response_state();
         self.poll_network_operation();
+        self.sync_tray_state();
         if self.show_window.swap(false, Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -705,7 +873,7 @@ impl eframe::App for VigilApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
-        let handled_events = self.drain_events();
+        let handled_events = self.drain_events(UI_EVENT_BUDGET);
         if handled_events {
             ctx.request_repaint();
         }
@@ -760,7 +928,6 @@ impl eframe::App for VigilApp {
             self.handle_inspector_action(action, &ctx);
         }
         self.show_response_confirm(ctx.clone());
-        self.show_notifications(ui);
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
@@ -795,24 +962,34 @@ impl eframe::App for VigilApp {
                 Tab::Settings => {
                     let changed = settings::show(ui, &mut self.settings);
                     if changed {
-                        let mut cfg = self.cfg.write().unwrap();
-                        self.settings.apply_to(&mut cfg);
-                        if cfg.autostart {
-                            if crate::autostart::enable() {
-                                cfg.autostart = true;
+                        {
+                            let mut cfg = self.cfg.write().unwrap();
+                            self.settings.apply_to(&mut cfg);
+                            if cfg.autostart {
+                                if crate::autostart::enable() {
+                                    cfg.autostart = true;
+                                }
+                            } else {
+                                crate::autostart::disable();
                             }
-                        } else {
-                            crate::autostart::disable();
+                            cfg.save();
                         }
-                        cfg.save();
+                        self.sync_ui_scale(&ctx);
                         self.settings.status_msg =
                             Some(("Settings auto-saved.".into(), std::time::Instant::now()));
                     }
                 }
                 Tab::Help => help::show(ui),
             });
+        self.show_notifications_overlay(&ctx);
         self.show_network_operation_overlay(&ctx);
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        ctx.request_repaint_after(
+            if self.network_operation.is_some() || !self.notifications.is_empty() {
+                UI_BUSY_REPAINT
+            } else {
+                UI_IDLE_REPAINT
+            },
+        );
     }
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [
@@ -834,7 +1011,7 @@ impl eframe::App for VigilApp {
 
 fn admin_chip(ui: &mut egui::Ui) {
     ui.label(
-        egui::RichText::new(" Admin ")
+        egui::RichText::new(" Admin Mode ")
             .color(theme::ACCENT)
             .background_color(theme::ACCENT_BG)
             .size(10.5)
@@ -849,10 +1026,50 @@ fn admin_btn(text: &str) -> egui::Button<'_> {
 }
 
 impl VigilApp {
+    fn sync_tray_state(&mut self) {
+        let isolated = self.response_status.isolated;
+        if isolated != self.tray_lockdown_sent
+            && self
+                .tray_tx
+                .try_send(TrayCmd::SetLockdown(isolated))
+                .is_ok()
+        {
+            self.tray_lockdown_sent = isolated;
+        }
+    }
     fn refresh_active_response_state(&mut self) {
+        if let Some(rx) = self.reconcile_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(status) => {
+                    self.response_status = status;
+                    self.reconcile_rx = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.reconcile_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
         if self.last_response_reconcile.elapsed().as_secs() >= 1 {
-            active_response::reconcile();
-            self.response_status = active_response::status();
+            if self.reconcile_rx.is_none() {
+                let (tx, rx) = mpsc::channel();
+                match std::thread::Builder::new()
+                    .name("vigil-active-response-reconcile".into())
+                    .spawn(move || {
+                        active_response::reconcile();
+                        let _ = tx.send(active_response::status());
+                    }) {
+                    Ok(_) => {
+                        self.reconcile_rx = Some(rx);
+                    }
+                    Err(err) => {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            format!("Could not start reconcile worker: {err}"),
+                        );
+                    }
+                }
+            }
             self.last_response_reconcile = std::time::Instant::now();
         }
         if self.last_schedule_check.elapsed().as_secs() >= 30 {
@@ -886,35 +1103,22 @@ impl VigilApp {
             minute_of_day >= start || minute_of_day < end
         };
         if should_lock && !self.scheduled_lockdown_active {
-            match active_response::isolate_machine() {
-                Ok(msg) => {
-                    self.scheduled_lockdown_active = true;
-                    self.push_notification(
-                        NotificationKind::Success,
-                        format!("Scheduled lockdown: {msg}"),
-                    );
-                    self.response_status = active_response::status();
-                }
-                Err(err) => self.push_notification(
-                    NotificationKind::Error,
-                    format!("Scheduled lockdown failed: {err}"),
-                ),
+            if self.start_network_operation(NetworkOperationKind::Isolate) {
+                self.scheduled_target = Some(true);
+                self.push_notification(
+                    NotificationKind::Info,
+                    "Scheduled lockdown started: isolating network…",
+                );
             }
-        } else if !should_lock && self.scheduled_lockdown_active {
-            match active_response::restore_machine() {
-                Ok(msg) => {
-                    self.scheduled_lockdown_active = false;
-                    self.push_notification(
-                        NotificationKind::Success,
-                        format!("Scheduled lockdown ended: {msg}"),
-                    );
-                    self.response_status = active_response::status();
-                }
-                Err(err) => self.push_notification(
-                    NotificationKind::Error,
-                    format!("Scheduled restore failed: {err}"),
-                ),
-            }
+        } else if !should_lock
+            && self.scheduled_lockdown_active
+            && self.start_network_operation(NetworkOperationKind::Restore)
+        {
+            self.scheduled_target = Some(false);
+            self.push_notification(
+                NotificationKind::Info,
+                "Scheduled lockdown window ended: restoring network…",
+            );
         }
     }
     fn show_response_confirm(&mut self, ctx: egui::Context) {
@@ -949,7 +1153,8 @@ impl VigilApp {
                             .stroke(egui::Stroke::new(1.0, theme::DANGER))
                             .corner_radius(6.0),
                         )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Execute this action now.");
                     if confirm.clicked() {
                         let result = Self::execute_pending_response(&pending);
                         let kind = Self::kind_from_message(&result);
@@ -967,6 +1172,7 @@ impl VigilApp {
                             .corner_radius(6.0),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Close this dialog without applying the action.")
                         .clicked()
                     {
                         self.response_confirm = None;
@@ -1065,9 +1271,9 @@ impl VigilApp {
             },
         }
     }
-    fn start_network_operation(&mut self, kind: NetworkOperationKind) {
+    fn start_network_operation(&mut self, kind: NetworkOperationKind) -> bool {
         if self.network_operation.is_some() {
-            return;
+            return false;
         }
         let pending = match kind {
             NetworkOperationKind::Isolate => PendingResponse::IsolateMachine,
@@ -1081,19 +1287,21 @@ impl VigilApp {
         match std::thread::Builder::new()
             .name(thread_name.into())
             .spawn(move || {
-                let result = Self::execute_pending_response(&pending);
-                let _ = tx.send(result);
+                let message = Self::execute_pending_response(&pending);
+                let status = active_response::status();
+                let _ = tx.send(NetworkOperationResult { message, status });
             }) {
             Ok(_) => {
                 self.network_operation = Some(NetworkOperation { kind, rx });
-                if matches!(kind, NetworkOperationKind::Restore) {
-                    self.scheduled_lockdown_active = false;
-                }
+                true
             }
-            Err(err) => self.push_notification(
-                NotificationKind::Error,
-                format!("Could not start network action: {err}"),
-            ),
+            Err(err) => {
+                self.push_notification(
+                    NotificationKind::Error,
+                    format!("Could not start network action: {err}"),
+                );
+                false
+            }
         }
     }
     fn poll_network_operation(&mut self) {
@@ -1101,11 +1309,22 @@ impl VigilApp {
             return;
         };
         match operation.rx.try_recv() {
-            Ok(message) => {
+            Ok(result) => {
+                let operation_kind = operation.kind;
                 self.network_operation = None;
-                let kind = Self::kind_from_message(&message);
-                self.push_notification(kind, message);
-                self.response_status = active_response::status();
+                let message = result.message;
+                let notification_kind = Self::kind_from_message(&message);
+                let success = !matches!(notification_kind, NotificationKind::Error);
+                if let Some(target) = self.scheduled_target.take() {
+                    if success {
+                        self.scheduled_lockdown_active = target;
+                    }
+                } else if success {
+                    self.scheduled_lockdown_active =
+                        matches!(operation_kind, NetworkOperationKind::Isolate);
+                }
+                self.push_notification(notification_kind, message);
+                self.response_status = result.status;
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -1114,7 +1333,6 @@ impl VigilApp {
                     NotificationKind::Error,
                     "Network action worker stopped unexpectedly.",
                 );
-                self.response_status = active_response::status();
             }
         }
     }
@@ -1122,59 +1340,48 @@ impl VigilApp {
         let Some(operation) = self.network_operation.as_ref() else {
             return;
         };
-        let screen = ctx.content_rect();
-        egui::Area::new(egui::Id::new("network_operation_blocker"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(screen.min)
-            .show(ctx, |ui| {
-                ui.set_min_size(screen.size());
-                let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen.size());
-                let response = ui.allocate_rect(rect, egui::Sense::click_and_drag());
-                ui.painter()
-                    .rect_filled(rect, 0.0, egui::Color32::from_black_alpha(170));
-                response.on_hover_cursor(egui::CursorIcon::Progress);
-            });
         let label = match operation.kind {
             NetworkOperationKind::Isolate => "Isolating...",
             NetworkOperationKind::Restore => "Restoring network...",
         };
         egui::Area::new(egui::Id::new("network_operation_modal"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 62.0))
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(theme::SURFACE2)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(12.0)
-                    .inner_margin(egui::Margin::symmetric(18, 14))
+                    .corner_radius(10.0)
+                    .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
-                        ui.set_min_width(280.0);
-                        ui.vertical_centered(|ui| {
+                        ui.set_min_width(252.0);
+                        ui.horizontal(|ui| {
                             ui.add(egui::Spinner::new().size(24.0).color(theme::ACCENT));
-                            ui.add_space(10.0);
-                            ui.label(
-                                egui::RichText::new(label)
-                                    .color(theme::TEXT)
-                                    .size(12.0)
-                                    .strong(),
-                            );
-                            ui.add_space(4.0);
-                            ui.label(
-                                egui::RichText::new(
-                                    "Applying containment rules and validating connectivity.",
-                                )
-                                .color(theme::TEXT3)
-                                .size(10.8),
-                            );
+                            ui.add_space(8.0);
+                            ui.vertical(|ui| {
+                                ui.label(
+                                    egui::RichText::new(label)
+                                        .color(theme::TEXT)
+                                        .size(11.8)
+                                        .strong(),
+                                );
+                                ui.label(
+                                    egui::RichText::new("Applying controls in background.")
+                                        .color(theme::TEXT3)
+                                        .size(10.4),
+                                );
+                            });
                         });
                     });
             });
     }
     fn push_notification(&mut self, kind: NotificationKind, text: impl Into<String>) {
+        let now = std::time::Instant::now();
         self.notifications.push_back(Notification {
             id: self.next_notification_id,
             kind,
             text: text.into(),
+            expires_at: now + NOTIFICATION_TTL,
         });
         self.next_notification_id = self.next_notification_id.saturating_add(1);
         while self.notifications.len() > 8 {
@@ -1200,115 +1407,171 @@ impl VigilApp {
             NotificationKind::Success
         }
     }
-    fn show_notifications(&mut self, ui: &mut egui::Ui) {
+    fn show_notifications_overlay(&mut self, ctx: &egui::Context) {
+        let now = std::time::Instant::now();
+        self.notifications.retain(|n| n.expires_at > now);
         if self.notifications.is_empty() {
             return;
         }
-        let count = self.notifications.len().min(4);
-        let height = (count as f32 * 52.0 + 20.0).min(220.0);
-        egui::Panel::bottom("notifications")
-            .exact_size(height)
-            .frame(
+        let screen = ctx.content_rect();
+        let width = (screen.width() - 24.0).max(360.0);
+        let max_height = (screen.height() * 0.34).clamp(120.0, 320.0);
+        egui::Area::new(egui::Id::new("notifications_overlay"))
+            .order(egui::Order::Foreground)
+            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -12.0))
+            .show(ctx, |ui| {
+                ui.set_max_width(width);
+                ui.set_width(width);
                 egui::Frame::NONE
-                    .fill(theme::BG)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER)),
-            )
-            .show_inside(ui, |ui| {
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Notifications")
-                            .color(theme::TEXT2)
-                            .size(10.5)
-                            .strong(),
-                    );
-                    ui.add_space(6.0);
-                    ui.label(
-                        egui::RichText::new(format!("{} open", self.notifications.len()))
-                            .color(theme::TEXT3)
-                            .size(10.0),
-                    );
-                });
-                ui.add_space(6.0);
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
+                    .fill(egui::Color32::from_black_alpha(168))
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(12.0)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
-                        let ids: Vec<u64> = self.notifications.iter().map(|n| n.id).collect();
-                        for id in ids {
-                            let Some(index) = self.notifications.iter().position(|n| n.id == id)
-                            else {
-                                continue;
-                            };
-                            let (kind, text) = {
-                                let n = &self.notifications[index];
-                                (n.kind, n.text.clone())
-                            };
-                            let (accent, label) = match kind {
-                                NotificationKind::Info => (theme::ACCENT, "Info"),
-                                NotificationKind::Success => (theme::ACCENT, "Success"),
-                                NotificationKind::Warning => (theme::WARN, "Warning"),
-                                NotificationKind::Error => (theme::DANGER, "Error"),
-                            };
-                            egui::Frame::NONE
-                                .fill(theme::SURFACE2)
-                                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                                .corner_radius(10.0)
-                                .inner_margin(egui::Margin::symmetric(12, 10))
-                                .show(ui, |ui| {
-                                    ui.horizontal_top(|ui| {
-                                        let (bar_rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(4.0, 34.0),
-                                            egui::Sense::hover(),
-                                        );
-                                        ui.painter().rect_filled(bar_rect, 2.0, accent);
-                                        ui.add_space(8.0);
-                                        ui.vertical(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(label)
-                                                    .color(accent)
-                                                    .size(10.0)
-                                                    .strong(),
-                                            );
-                                            ui.add(
-                                                egui::Label::new(
-                                                    egui::RichText::new(text)
-                                                        .color(theme::TEXT)
-                                                        .size(11.0),
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("Notifications")
+                                    .color(theme::TEXT2)
+                                    .size(10.5)
+                                    .strong(),
+                            );
+                            ui.add_space(6.0);
+                            ui.label(
+                                egui::RichText::new(format!("{} open", self.notifications.len()))
+                                    .color(theme::TEXT3)
+                                    .size(10.0),
+                            );
+                        });
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false, false])
+                            .max_height(max_height)
+                            .show(ui, |ui| {
+                                let ids: Vec<u64> = self.notifications.iter().map(|n| n.id).collect();
+                                for id in ids {
+                                    let Some(index) = self.notifications.iter().position(|n| n.id == id)
+                                    else {
+                                        continue;
+                                    };
+                                    let (kind, text, expires_at) = {
+                                        let n = &self.notifications[index];
+                                        (n.kind, n.text.clone(), n.expires_at)
+                                    };
+                                    let remaining = expires_at
+                                        .saturating_duration_since(now)
+                                        .as_secs_f32()
+                                        / NOTIFICATION_TTL.as_secs_f32();
+                                    let secs_left = expires_at.saturating_duration_since(now).as_secs();
+                                    let (accent, label) = match kind {
+                                        NotificationKind::Info => (theme::ACCENT, "Info"),
+                                        NotificationKind::Success => (theme::ACCENT, "Success"),
+                                        NotificationKind::Warning => (theme::WARN, "Warning"),
+                                        NotificationKind::Error => (theme::DANGER, "Error"),
+                                    };
+                                    egui::Frame::NONE
+                                        .fill(theme::SURFACE2)
+                                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                                        .corner_radius(10.0)
+                                        .inner_margin(egui::Margin::symmetric(10, 9))
+                                        .show(ui, |ui| {
+                                            ui.horizontal_top(|ui| {
+                                                let countdown = Self::show_notification_countdown_circle(
+                                                    ui,
+                                                    remaining.clamp(0.0, 1.0),
+                                                    accent,
                                                 )
-                                                .wrap(),
-                                            );
-                                        });
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::TOP),
-                                            |ui| {
-                                                let close = ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            egui::RichText::new("x")
-                                                                .color(theme::TEXT2)
-                                                                .size(10.5),
-                                                        )
-                                                        .fill(theme::SURFACE3)
-                                                        .stroke(egui::Stroke::new(
-                                                            1.0,
-                                                            theme::BORDER,
-                                                        ))
-                                                        .corner_radius(4.0),
-                                                    )
-                                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                                    .on_hover_text("Dismiss this notification.");
-                                                if close.clicked() {
-                                                    self.notifications.remove(index);
+                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                .on_hover_text(format!(
+                                                    "Auto-dismiss in {secs_left}s. Click to reset to 60s."
+                                                ));
+                                                if countdown.clicked() {
+                                                    if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
+                                                        notification.expires_at = std::time::Instant::now() + NOTIFICATION_TTL;
+                                                    }
                                                 }
-                                            },
-                                        );
-                                    });
-                                });
-                            ui.add_space(8.0);
-                        }
+                                                ui.add_space(8.0);
+                                                let (bar_rect, _) = ui.allocate_exact_size(
+                                                    egui::vec2(3.0, 34.0),
+                                                    egui::Sense::hover(),
+                                                );
+                                                ui.painter().rect_filled(bar_rect, 2.0, accent);
+                                                ui.add_space(8.0);
+                                                ui.vertical(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(label)
+                                                            .color(accent)
+                                                            .size(10.0)
+                                                            .strong(),
+                                                    );
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(text)
+                                                                .color(theme::TEXT)
+                                                                .size(11.0),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                });
+                                                ui.with_layout(
+                                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                                    |ui| {
+                                                        let close = ui
+                                                            .add(
+                                                                egui::Button::new(
+                                                                    egui::RichText::new("x")
+                                                                        .color(theme::TEXT2)
+                                                                        .size(10.5),
+                                                                )
+                                                                .fill(theme::SURFACE3)
+                                                                .stroke(egui::Stroke::new(
+                                                                    1.0,
+                                                                    theme::BORDER,
+                                                                ))
+                                                                .corner_radius(4.0),
+                                                            )
+                                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                                            .on_hover_text("Dismiss this notification.");
+                                                        if close.clicked() {
+                                                            self.notifications.remove(index);
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+                                    ui.add_space(8.0);
+                                }
+                            });
                     });
-                ui.add_space(4.0);
             });
+    }
+    fn show_notification_countdown_circle(
+        ui: &mut egui::Ui,
+        progress: f32,
+        accent: egui::Color32,
+    ) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+        let center = rect.center();
+        let radius = 7.0;
+        let stroke_bg = egui::Stroke::new(2.0, theme::BORDER);
+        let stroke_fg = egui::Stroke::new(2.2, accent);
+        ui.painter().circle_stroke(center, radius, stroke_bg);
+        let clamped = progress.clamp(0.0, 1.0);
+        if clamped > 0.0 {
+            let start_angle = -std::f32::consts::FRAC_PI_2;
+            let sweep = std::f32::consts::TAU * clamped;
+            let segments = ((sweep / std::f32::consts::TAU) * 40.0).ceil().max(2.0) as usize;
+            let mut points = Vec::with_capacity(segments + 1);
+            for i in 0..=segments {
+                let t = i as f32 / segments as f32;
+                let angle = start_angle + sweep * t;
+                points.push(egui::pos2(
+                    center.x + angle.cos() * radius,
+                    center.y + angle.sin() * radius,
+                ));
+            }
+            ui.painter().add(egui::Shape::line(points, stroke_fg));
+        }
+        response
     }
 }
 

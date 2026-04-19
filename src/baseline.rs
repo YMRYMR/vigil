@@ -66,29 +66,35 @@ pub fn observe(
     let now = unix_now();
     let manager = manager();
     let mut runtime = manager.lock().unwrap();
-    let entry = runtime.state.entries.entry(key).or_default();
-
-    if entry.first_seen_unix == 0 {
-        entry.first_seen_unix = now;
+    let observations;
+    let mature_before;
+    let new_remote;
+    let new_port;
+    let new_country;
+    {
+        let entry = runtime.state.entries.entry(key).or_default();
+        if entry.first_seen_unix == 0 {
+            entry.first_seen_unix = now;
+        }
+        entry.last_seen_unix = now;
+        mature_before = entry.observations >= MATURITY_THRESHOLD;
+        new_remote = remember_string(&mut entry.remotes, remote_ip, MAX_REMOTES);
+        new_port = remember_port(&mut entry.ports, remote_port, MAX_PORTS);
+        new_country = country
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| remember_string(&mut entry.countries, c, MAX_COUNTRIES))
+            .unwrap_or(false);
+        entry.observations = entry.observations.saturating_add(1);
+        observations = entry.observations;
     }
-    entry.last_seen_unix = now;
-
-    let mature_before = entry.observations >= MATURITY_THRESHOLD;
-    let new_remote = remember_string(&mut entry.remotes, remote_ip, MAX_REMOTES);
-    let new_port = remember_port(&mut entry.ports, remote_port, MAX_PORTS);
-    let new_country = country
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .map(|c| remember_string(&mut entry.countries, c, MAX_COUNTRIES))
-        .unwrap_or(false);
-
-    entry.observations = entry.observations.saturating_add(1);
 
     let should_save = (new_remote || new_port || new_country)
         || now.saturating_sub(runtime.last_save_unix) >= SAVE_INTERVAL_SECS
-        || entry.observations % 16 == 0;
+        || observations % 16 == 0;
     if should_save {
-        if save_state(&runtime.state).is_ok() {
+        let state = runtime.state.clone();
+        if save_state(&state).is_ok() {
             runtime.last_save_unix = now;
         }
     }
@@ -98,7 +104,7 @@ pub fn observe(
         new_remote,
         new_port,
         new_country,
-        observations: entry.observations,
+        observations,
     }
 }
 
@@ -115,7 +121,11 @@ fn manager() -> &'static Mutex<RuntimeState> {
 
 fn remember_string(values: &mut Vec<String>, value: &str, cap: usize) -> bool {
     let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() || values.iter().any(|existing| existing.eq_ignore_ascii_case(&value)) {
+    if value.is_empty()
+        || values
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&value))
+    {
         return false;
     }
     if values.len() >= cap {
@@ -189,7 +199,11 @@ mod tests {
 
     #[test]
     fn profile_key_uses_normalised_components() {
-        let key = profile_key("PowerShell.EXE", "Microsoft Corporation", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let key = profile_key(
+            "PowerShell.EXE",
+            "Microsoft Corporation",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        );
         assert!(key.contains("powershell"));
         assert!(key.contains("microsoft corporation"));
     }

@@ -11,6 +11,7 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
@@ -20,6 +21,7 @@ const DOMAIN_MARKER_PREFIX: &str = "# Vigil Domain Block";
 const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 const ISOLATION_MAX_SECS: u64 = 60 * 60;
+const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -185,15 +187,15 @@ impl DurationPreset {
 
 pub fn status() -> Status {
     let state = load_state().unwrap_or_default();
-    let isolated =
-        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    let now = unix_now();
     Status {
         blocked_rules: state.blocked.len() + state.blocked_processes.len(),
         blocked_processes: state.blocked_processes.len(),
         blocked_domains: state.blocked_domains.len(),
         suspended_processes: state.suspended_processes.len(),
         frozen_autoruns: state.autorun_snapshot.is_some(),
-        isolated,
+        // Reflect effective containment state, not just persisted intent.
+        isolated: isolation_effective_now(&state, now),
     }
 }
 pub fn has_frozen_autoruns() -> bool {
@@ -500,6 +502,30 @@ pub fn reconcile() {
     let now = unix_now();
     let isolation_active =
         state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    let isolation_arming = isolation_active
+        && state
+            .isolation_started_unix
+            .is_some_and(|started| now.saturating_sub(started) < ISOLATION_ACTIVATION_GRACE_SECS);
+    let probe_reachable = outbound_probe_reachable();
+    let controls_active = isolation_controls_active_best_effort(&state, probe_reachable);
+    if isolation_active && !isolation_arming && !controls_active && probe_reachable {
+        state.isolated = false;
+        state.firewall_snapshot = None;
+        state.network_snapshot = None;
+        state.isolation_started_unix = None;
+        state.isolation_expires_unix = None;
+        let _ = save_state(&state);
+        let cfg = crate::config::Config::load();
+        let _ = crate::break_glass::sync_watchdog(&cfg);
+        audit::record(
+            "reconcile_stale_isolation_state",
+            "success",
+            json!({
+                "reason": "local isolation controls are no longer active and connectivity probe is reachable"
+            }),
+        );
+        return;
+    }
     let isolation_expired = isolation_active
         && state
             .isolation_expires_unix
@@ -672,11 +698,38 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
 
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let firewall_snapshot = platform::snapshot_firewall_profiles().ok();
     let now = unix_now();
     let cfg = crate::config::Config::load();
     let timeout_secs = (cfg.break_glass_timeout_mins.clamp(1, 240) * 60).min(ISOLATION_MAX_SECS);
     let mut state = load_state().unwrap_or_default();
+    let controls_active = platform::isolation_controls_active(&state).unwrap_or(false);
+    if controls_active {
+        state.isolated = true;
+        state.isolation_started_unix.get_or_insert(now);
+        state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
+        save_state(&state)?;
+        if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+            return Err(format!(
+                "Isolation already active, but watchdog refresh failed: {err}"
+            ));
+        }
+        return Ok(format!(
+            "Network isolation already active (failsafe recovery armed: {} minute{} stale-heartbeat timeout).",
+            timeout_secs / 60,
+            if timeout_secs / 60 == 1 { "" } else { "s" }
+        ));
+    }
+    if state.isolated {
+        // Stale persisted marker: the machine is not currently isolated, so clear old state
+        // and perform a fresh isolation attempt.
+        state.isolated = false;
+        state.firewall_snapshot = None;
+        state.network_snapshot = None;
+        state.isolation_started_unix = None;
+        state.isolation_expires_unix = None;
+        let _ = save_state(&state);
+    }
+    let firewall_snapshot = platform::snapshot_firewall_profiles().ok();
     state.firewall_snapshot = firewall_snapshot.clone();
     state.network_snapshot = None;
     state.isolation_started_unix = Some(now);
@@ -811,6 +864,8 @@ pub fn isolate_machine() -> Result<String, String> {
 pub fn restore_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
     let mut state = load_state().unwrap_or_default();
+    let had_isolation_intent =
+        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
     let firewall_snapshot = state.firewall_snapshot.clone();
     let network_snapshot = state.network_snapshot.clone();
     let mut warnings = Vec::new();
@@ -835,7 +890,78 @@ pub fn restore_machine() -> Result<String, String> {
             warnings.push(format!("adapter restore failed: {err}"));
         }
     }
+    let mut connectivity_reachable = outbound_probe_reachable();
+    if had_isolation_intent && !connectivity_reachable {
+        match platform::enable_all_network_adapters() {
+            Ok(0) => {}
+            Ok(count) => warnings.push(format!(
+                "fallback adapter recovery enabled {count} additional adapter{}",
+                if count == 1 { "" } else { "s" }
+            )),
+            Err(err) => warnings.push(format!("fallback adapter recovery failed: {err}")),
+        }
+        // Wi-Fi reassociation can take a few seconds after interfaces are re-enabled.
+        connectivity_reachable = wait_for_outbound_probe(Duration::from_secs(2));
+        if !connectivity_reachable {
+            match platform::isolation_controls_active(&state) {
+                Ok(true) => {
+                    critical_failure = true;
+                    warnings.push(
+                        "local isolation controls are still active after restore attempts"
+                            .to_string(),
+                    );
+                }
+                Ok(false) => warnings.push(
+                    "connectivity probe is still failing after restore attempts; local isolation controls are no longer active"
+                        .to_string(),
+                ),
+                Err(err) => warnings.push(format!(
+                    "connectivity probe is still failing after restore attempts; could not verify local isolation controls: {err}"
+                )),
+            }
+        }
+    }
     if critical_failure {
+        let controls_active_result = platform::isolation_controls_active(&state);
+        let controls_active = match controls_active_result {
+            Ok(active) => active,
+            Err(err) => {
+                warnings.push(format!(
+                    "could not verify local isolation controls after restore: {err}"
+                ));
+                true
+            }
+        };
+        if !controls_active || connectivity_reachable || outbound_probe_reachable() {
+            warnings.push(
+                if controls_active {
+                    "connectivity probe succeeded; clearing stale isolation state despite restore warnings"
+                        .into()
+                } else {
+                    "local isolation controls are no longer active; clearing stale isolation state despite restore warnings"
+                        .into()
+                },
+            );
+            state.isolated = false;
+            state.firewall_snapshot = None;
+            state.network_snapshot = None;
+            state.isolation_started_unix = None;
+            state.isolation_expires_unix = None;
+            save_state(&state)?;
+            let cfg = crate::config::Config::load();
+            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+                warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+            }
+            audit::record(
+                "restore_machine_stale_state_cleared",
+                "partial",
+                json!({ "warnings": warnings }),
+            );
+            return Ok(format!(
+                "Network isolation removed with warnings: {}",
+                warnings.join("; ")
+            ));
+        }
         return Err(warnings.join("; "));
     }
     state.isolated = false;
@@ -999,15 +1125,53 @@ fn ensure_isolation_modifiable() -> Result<(), String> {
     }
     Ok(())
 }
+fn isolation_effective_now(state: &State, now: u64) -> bool {
+    let isolation_intent =
+        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    if !isolation_intent {
+        return false;
+    }
+    let probe_reachable = outbound_probe_reachable();
+    // UI and tray state should only flip to isolated once outbound connectivity is
+    // effectively cut, not merely when an isolation attempt has started.
+    if probe_reachable {
+        return false;
+    }
+    let isolation_arming = state
+        .isolation_started_unix
+        .is_some_and(|started| now.saturating_sub(started) < ISOLATION_ACTIVATION_GRACE_SECS);
+    if isolation_arming {
+        return true;
+    }
+    isolation_controls_active_best_effort(state, probe_reachable)
+}
+fn isolation_controls_active_best_effort(state: &State, probe_reachable: bool) -> bool {
+    match platform::isolation_controls_active(state) {
+        Ok(active) => active,
+        Err(_) => !probe_reachable,
+    }
+}
 fn outbound_probe_reachable() -> bool {
     const PROBE_TARGETS: [&str; 3] = ["1.1.1.1:443", "8.8.8.8:53", "9.9.9.9:443"];
-    let timeout = Duration::from_millis(700);
+    let timeout = Duration::from_millis(250);
     PROBE_TARGETS.iter().any(|target| {
         target
             .parse::<SocketAddr>()
             .ok()
             .is_some_and(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
     })
+}
+fn wait_for_outbound_probe(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if outbound_probe_reachable() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(650));
+    }
 }
 fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
     if !conn.status.eq_ignore_ascii_case("ESTABLISHED")
@@ -1087,13 +1251,21 @@ fn state_path() -> PathBuf {
     crate::config::data_dir().join(STATE_FILE)
 }
 fn load_state() -> Result<State, String> {
-    let path = state_path();
-    if !path.exists() {
-        return Ok(State::default());
+    if let Some(state) = state_cache().read().unwrap().clone() {
+        return Ok(state);
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+
+    let path = state_path();
+    let state = if !path.exists() {
+        State::default()
+    } else {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        serde_json::from_str(&text)
+            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?
+    };
+    *state_cache().write().unwrap() = Some(state.clone());
+    Ok(state)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
@@ -1103,7 +1275,13 @@ fn save_state(state: &State) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    *state_cache().write().unwrap() = Some(state.clone());
+    Ok(())
+}
+fn state_cache() -> &'static RwLock<Option<State>> {
+    static CACHE: OnceLock<RwLock<Option<State>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
 }
 fn reconcile_state<F>(state: &mut State, now: u64, mut delete_rule: F) -> bool
 where
@@ -1384,7 +1562,7 @@ mod platform {
     pub fn restore_firewall_profiles(snapshot: &FirewallSnapshot) -> Result<(), String> {
         for profile in &snapshot.profiles {
             run_powershell(&format!(
-                "Set-NetFirewallProfile -Profile {} -Enabled {} -DefaultInboundAction {} -DefaultOutboundAction {}",
+                "Set-NetFirewallProfile -Profile {} -Enabled {} -DefaultInboundAction {} -DefaultOutboundAction {} -ErrorAction Stop",
                 ps_quoted(&profile.name),
                 if profile.enabled { "True" } else { "False" },
                 profile.inbound_action,
@@ -1392,6 +1570,27 @@ mod platform {
             ))?;
         }
         Ok(())
+    }
+    pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        if firewall_rule_present(ISOLATE_RULE_IN)? || firewall_rule_present(ISOLATE_RULE_OUT)? {
+            return Ok(true);
+        }
+        let current_profiles = snapshot_firewall_profiles()?;
+        let profiles_fully_blocked = firewall_profiles_fully_blocked(&current_profiles);
+        let firewall_controls_active = if let Some(snapshot) = state.firewall_snapshot.as_ref() {
+            current_profiles != *snapshot && profiles_fully_blocked
+        } else {
+            profiles_fully_blocked
+        };
+        if firewall_controls_active {
+            return Ok(true);
+        }
+        if let Some(snapshot) = state.network_snapshot.as_ref() {
+            if !snapshot.adapters.is_empty() && !snapshot_adapters_are_enabled(snapshot)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         let wifi_profiles = snapshot_connected_wifi_profiles();
@@ -1411,16 +1610,65 @@ mod platform {
         Ok(())
     }
     pub fn enable_active_adapters(snapshot: &NetworkSnapshot) -> Result<(), String> {
+        let mut warnings = Vec::new();
+        let mut recovered_any = false;
         for adapter in &snapshot.adapters {
+            let result = run_powershell(&format!(
+                "$adapter = Get-NetAdapter -Name {} -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -eq $adapter) {{ 'MISSING' }} else {{ if ($adapter.Status -ne 'Up') {{ Enable-NetAdapter -Name {} -Confirm:$false -ErrorAction Stop }}; 'READY' }}",
+                ps_quoted(&adapter.name),
+                ps_quoted(&adapter.name)
+            ));
+            let output = match result {
+                Ok(output) => output,
+                Err(err) => {
+                    warnings.push(format!("{}: {err}", adapter.name));
+                    continue;
+                }
+            };
+            if output.trim().eq_ignore_ascii_case("MISSING") {
+                warnings.push(format!(
+                    "{}: adapter not found during restore",
+                    adapter.name
+                ));
+                continue;
+            }
+            recovered_any = true;
+            if adapter.is_wireless {
+                schedule_wireless_reconnect(adapter.name.clone(), adapter.wifi_profile.clone());
+            }
+        }
+        if recovered_any {
+            return Ok(());
+        }
+        if let Ok(current) = snapshot_active_adapters() {
+            if !current.adapters.is_empty() {
+                return Ok(());
+            }
+        }
+        if warnings.is_empty() {
+            Err("no saved adapters could be restored".into())
+        } else {
+            Err(warnings.join("; "))
+        }
+    }
+    pub fn enable_all_network_adapters() -> Result<usize, String> {
+        let wifi_profiles = snapshot_connected_wifi_profiles();
+        let output = run_powershell_json(
+            "Get-NetAdapter | Where-Object { $_.Name -ne 'Loopback Pseudo-Interface 1' -and $_.Status -ne 'Up' -and $_.HardwareInterface -eq $true } | Select-Object Name,InterfaceDescription,NdisPhysicalMedium | ConvertTo-Json -Compress",
+        )?;
+        let adapters = parse_adapter_snapshot(&output, &wifi_profiles)?;
+        let mut enabled = 0usize;
+        for adapter in adapters {
             run_powershell(&format!(
                 "Enable-NetAdapter -Name {} -Confirm:$false -ErrorAction Stop",
                 ps_quoted(&adapter.name)
             ))?;
-            if adapter.is_wireless && adapter.wifi_profile.is_some() {
-                let _ = reconnect_wireless_adapter(&adapter.name, adapter.wifi_profile.as_deref());
+            enabled += 1;
+            if adapter.is_wireless {
+                schedule_wireless_reconnect(adapter.name.clone(), adapter.wifi_profile.clone());
             }
         }
-        Ok(())
+        Ok(enabled)
     }
     pub fn terminate_active_tcp_connections() -> Result<usize, String> {
         let output = run_powershell_json(
@@ -1729,6 +1977,68 @@ mod platform {
         } else {
             Err(format!("failed to delete firewall rule {rule_name}"))
         }
+    }
+    fn firewall_rule_present(rule_name: &str) -> Result<bool, String> {
+        let output = hidden_command("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                &format!("name={rule_name}"),
+            ])
+            .output()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        let merged = format!("{stdout}\n{stderr}");
+        if merged.contains("no rules match") {
+            return Ok(false);
+        }
+        Ok(output.status.success())
+    }
+    fn firewall_profiles_fully_blocked(snapshot: &FirewallSnapshot) -> bool {
+        !snapshot.profiles.is_empty()
+            && snapshot.profiles.iter().all(|profile| {
+                profile.enabled
+                    && profile.inbound_action.eq_ignore_ascii_case("Block")
+                    && profile.outbound_action.eq_ignore_ascii_case("Block")
+            })
+    }
+    fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
+        let mut saw_known_adapter = false;
+        let mut saw_enabled_adapter = false;
+        for adapter in &snapshot.adapters {
+            let status = run_powershell(&format!(
+                "(Get-NetAdapter -Name {} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Status)",
+                ps_quoted(&adapter.name)
+            ))?;
+            let status = status.trim();
+            if status.is_empty() {
+                continue;
+            }
+            saw_known_adapter = true;
+            // "Disconnected" still means the adapter is enabled; only treat
+            // explicit "Disabled" as still being isolated by adapter cutoff.
+            if !status.eq_ignore_ascii_case("Disabled") {
+                saw_enabled_adapter = true;
+                break;
+            }
+        }
+        if saw_enabled_adapter {
+            return Ok(true);
+        }
+        if saw_known_adapter {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+    fn schedule_wireless_reconnect(name: String, profile: Option<String>) {
+        let _ = std::thread::Builder::new()
+            .name("vigil-wifi-reconnect".into())
+            .spawn(move || {
+                let _ = reconnect_wireless_adapter(&name, profile.as_deref());
+            });
     }
     fn run_powershell(script: &str) -> Result<String, String> {
         let script = format!("$ErrorActionPreference = 'Stop'; {script}");
@@ -2074,6 +2384,27 @@ mod platform {
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
         Ok(())
     }
+    pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        let Some(snapshot) = state.network_snapshot.as_ref() else {
+            return Ok(false);
+        };
+        if snapshot.adapters.is_empty() {
+            return Ok(false);
+        }
+        let current = snapshot_active_adapters()?;
+        let mut saw_known_adapter = false;
+        for adapter in &snapshot.adapters {
+            if current
+                .adapters
+                .iter()
+                .any(|item| item.name == adapter.name)
+            {
+                saw_known_adapter = true;
+                return Ok(false);
+            }
+        }
+        Ok(saw_known_adapter)
+    }
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         #[cfg(target_os = "linux")]
         {
@@ -2152,6 +2483,46 @@ mod platform {
         }
         #[allow(unreachable_code)]
         Err("Network adapter restoration is not implemented on this platform.".into())
+    }
+    pub fn enable_all_network_adapters() -> Result<usize, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let output = command_stdout("ip", &["-o", "link", "show"])?;
+            let mut names = Vec::new();
+            for line in output.lines() {
+                let mut parts = line.splitn(3, ':');
+                let _ = parts.next();
+                let Some(name) = parts.next().map(|p| p.trim()) else {
+                    continue;
+                };
+                if !name.is_empty() && name != "lo" {
+                    names.push(name.to_string());
+                }
+            }
+            let mut enabled = 0usize;
+            for name in names {
+                if command_status("ip", &["link", "set", "dev", &name, "up"]).is_ok() {
+                    enabled += 1;
+                }
+            }
+            return Ok(enabled);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let output = command_stdout("ifconfig", &["-l"])?;
+            let mut enabled = 0usize;
+            for name in output.split_whitespace() {
+                if name == "lo0" {
+                    continue;
+                }
+                if command_status("ifconfig", &[name, "up"]).is_ok() {
+                    enabled += 1;
+                }
+            }
+            return Ok(enabled);
+        }
+        #[allow(unreachable_code)]
+        Ok(0)
     }
     pub fn suspend_process(_pid: u32) -> Result<(), String> {
         Err("Process suspension is not implemented on this platform.".into())
@@ -2249,6 +2620,7 @@ mod tests {
             proc_user: "user".into(),
             parent_name: "cmd.exe".into(),
             parent_pid: 123,
+            parent_user: "user".into(),
             service_name: String::new(),
             publisher: String::new(),
             local_addr: local.into(),
@@ -2266,6 +2638,12 @@ mod tests {
             recently_dropped: false,
             long_lived: false,
             dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            command_line: String::new(),
+            attack_tags: Vec::new(),
+            tls_sni: None,
+            tls_ja3: None,
         }
     }
     #[test]

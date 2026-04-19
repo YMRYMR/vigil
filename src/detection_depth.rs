@@ -59,8 +59,7 @@ pub fn inspect_script_host(name: &str, cmdline: &str) -> DetectionAdditions {
             ) {
                 out.score = out.score.saturating_add(3);
                 out.reasons.push(
-                    "Script-host inspection: stealthy PowerShell execution switches present"
-                        .into(),
+                    "Script-host inspection: stealthy PowerShell execution switches present".into(),
                 );
                 out.attack_tags.push("T1059.001 PowerShell".into());
             }
@@ -81,13 +80,22 @@ pub fn inspect_script_host(name: &str, cmdline: &str) -> DetectionAdditions {
                 out.reasons.push(
                     "Script-host inspection: PowerShell download cradle / web execution indicators present".into(),
                 );
-                out.attack_tags.push("T1105 Ingress Tool Transfer (heuristic)".into());
+                out.attack_tags
+                    .push("T1105 Ingress Tool Transfer (heuristic)".into());
             }
         }
         "wscript" | "cscript" => {
             if contains_any(
                 &cmd,
-                &[".js", ".jse", ".vbs", ".vbe", "http://", "https://", "scrobj.dll"],
+                &[
+                    ".js",
+                    ".jse",
+                    ".vbs",
+                    ".vbe",
+                    "http://",
+                    "https://",
+                    "scrobj.dll",
+                ],
             ) {
                 out.score = out.score.saturating_add(4);
                 out.reasons.push(
@@ -97,7 +105,10 @@ pub fn inspect_script_host(name: &str, cmdline: &str) -> DetectionAdditions {
             }
         }
         "mshta" => {
-            if contains_any(&cmd, &["http://", "https://", "javascript:", "vbscript:", ".hta"]) {
+            if contains_any(
+                &cmd,
+                &["http://", "https://", "javascript:", "vbscript:", ".hta"],
+            ) {
                 out.score = out.score.saturating_add(4);
                 out.reasons.push(
                     "Script-host inspection: mshta remote / script execution indicators present"
@@ -142,7 +153,8 @@ pub fn inspect_script_host(name: &str, cmdline: &str) -> DetectionAdditions {
                     "Script-host inspection: cmd.exe launching a secondary script or LoLBAS host"
                         .into(),
                 );
-                out.attack_tags.push("T1059.003 Windows Command Shell".into());
+                out.attack_tags
+                    .push("T1059.003 Windows Command Shell".into());
             }
         }
         "certutil" => {
@@ -162,8 +174,10 @@ pub fn inspect_script_host(name: &str, cmdline: &str) -> DetectionAdditions {
                     "Script-host inspection: certutil command line suggests download or decode abuse"
                         .into(),
                 );
-                out.attack_tags.push("T1105 Ingress Tool Transfer (heuristic)".into());
-                out.attack_tags.push("T1140 Deobfuscate/Decode Files or Information".into());
+                out.attack_tags
+                    .push("T1105 Ingress Tool Transfer (heuristic)".into());
+                out.attack_tags
+                    .push("T1140 Deobfuscate/Decode Files or Information".into());
             }
         }
         "msiexec" => {
@@ -266,9 +280,8 @@ pub fn inspect_parent_token_anomaly(
             "Parent/token anomaly: sensitive system parent {} spawned script-capable child {}",
             immediate_parent, name
         ));
-        out.attack_tags.push(
-            "T1134 Access Token Manipulation / Parent Privilege Anomaly (heuristic)".into(),
-        );
+        out.attack_tags
+            .push("T1134 Access Token Manipulation / Parent Privilege Anomaly (heuristic)".into());
     }
 
     let parent_user_lc = parent_user.to_ascii_lowercase();
@@ -286,15 +299,15 @@ pub fn inspect_parent_token_anomaly(
         out.reasons.push(
             "Parent/token anomaly: SYSTEM-context ancestry spawned a different-user script-capable process".into(),
         );
-        out.attack_tags.push(
-            "T1134 Access Token Manipulation / Parent Privilege Anomaly (heuristic)".into(),
-        );
+        out.attack_tags
+            .push("T1134 Access Token Manipulation / Parent Privilege Anomaly (heuristic)".into());
     }
 
     dedup(&mut out.attack_tags);
     out
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn inspect_signed_binary_abuse(
     name: &str,
     publisher: &str,
@@ -373,13 +386,17 @@ mod tests {
 
     #[test]
     fn powershell_encoded_command_triggers() {
-        let additions = inspect_script_host(
-            "powershell",
-            "powershell -nop -w hidden -enc aQBlAHgA",
-        );
+        let additions =
+            inspect_script_host("powershell", "powershell -nop -w hidden -enc aQBlAHgA");
         assert!(additions.score >= 7);
-        assert!(additions.reasons.iter().any(|r| r.contains("encoded-command")));
-        assert!(additions.attack_tags.iter().any(|t| t.contains("T1059.001")));
+        assert!(additions
+            .reasons
+            .iter()
+            .any(|r| r.contains("encoded-command")));
+        assert!(additions
+            .attack_tags
+            .iter()
+            .any(|t| t.contains("T1059.001")));
     }
 
     #[test]
