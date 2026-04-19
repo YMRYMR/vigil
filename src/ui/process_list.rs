@@ -311,17 +311,19 @@ pub fn show(
                             ui.separator();
                             ui.add_space(8.0);
 
+                            let selected_conn = selected
+                                .as_ref()
+                                .and_then(|sel| sel.selected_connection.as_ref());
+
                             for endpoint in &endpoints {
-                                let endpoint_selected = selected
-                                    .as_ref()
-                                    .and_then(|sel| sel.selected_connection.as_ref())
+                                let endpoint_selected = selected_conn
                                     .is_some_and(|sel_conn| endpoint_matches_selection(endpoint, sel_conn));
                                 if let Some(clicked) = endpoint_line(
                                     ui,
                                     endpoint,
                                     group.pid,
                                     kind,
-                                    state,
+                                    selected_conn,
                                     endpoint_selected,
                                 ) {
                                     *selected = Some(selection_from_group(group, Some(clicked)));
@@ -727,12 +729,14 @@ fn endpoint_line(
     endpoint: &EndpointGroup<'_>,
     pid: u32,
     kind: Kind,
-    state: &mut TableState,
+    selected_connection: Option<&ConnInfo>,
     selected: bool,
 ) -> Option<ConnInfo> {
     let h = 44.0;
-    let endpoint_key = endpoint_state_key(pid, endpoint.remote_addr);
-    let expanded = state.is_endpoint_expanded(&endpoint_key);
+    let endpoint_id = endpoint_state_id(pid, endpoint.remote_addr);
+    let expanded = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(endpoint_id).unwrap_or(false));
     let (rect, row_resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
     let fill = if selected {
@@ -773,7 +777,7 @@ fn endpoint_line(
         })
         .clicked();
     if toggled {
-        state.toggle_endpoint(&endpoint_key);
+        ui.ctx().data_mut(|d| d.insert_temp(endpoint_id, !expanded));
     }
 
     ui.allocate_ui_at_rect(rect.shrink2(egui::vec2(30.0, 5.0)), |ui| {
@@ -868,18 +872,15 @@ fn endpoint_line(
     if expanded {
         ui.add_space(4.0);
         for conn in &endpoint.connections {
-            let conn_selected = selected
-                && endpoint
-                    .connections
-                    .iter()
-                    .any(|candidate| crate::ui::conn_matches_selection(candidate, Some(conn)));
+            let conn_selected = crate::ui::conn_matches_selection(conn, selected_connection);
+            let mut clicked_conn = None;
             ui.horizontal(|ui| {
                 ui.add_space(18.0);
-                if let Some(clicked) = connection_line(ui, conn, kind, conn_selected) {
-                    return Some(clicked);
-                }
-                None
-            })?;
+                clicked_conn = connection_line(ui, conn, kind, conn_selected);
+            });
+            if let Some(clicked) = clicked_conn {
+                return Some(clicked);
+            }
             ui.add_space(4.0);
         }
     }
@@ -1153,8 +1154,8 @@ fn summarize_ports(ports: &[String]) -> String {
     format!("{}, +{} more", ports[..MAX_PORTS].join(", "), ports.len() - MAX_PORTS)
 }
 
-fn endpoint_state_key(pid: u32, remote: &str) -> String {
-    format!("endpoint::{pid}::{remote}")
+fn endpoint_state_id(pid: u32, remote: &str) -> egui::Id {
+    egui::Id::new(("endpoint", pid, remote))
 }
 
 fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> u8 {
