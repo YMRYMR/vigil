@@ -135,64 +135,78 @@ pub fn run(
 ) {
     let icons = load_tray_icons();
 
-    // ── Context menu ──────────────────────────────────────────────────────────
-    let menu = Menu::new();
-    let open_item = MenuItem::new("Open Vigil", true, None);
-    let logs_item = MenuItem::new("Open Logs Folder", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
-    let _ = menu.append_items(&[
-        &open_item,
-        &logs_item,
-        &PredefinedMenuItem::separator(),
-        &quit_item,
-    ]);
-    let open_id = open_item.id().clone();
-    let logs_id = logs_item.id().clone();
-    let quit_id = quit_item.id().clone();
+    // Try to set up the tray icon + menu. On Linux without GTK initialized
+    // (e.g. pure Wayland, headless), the Menu::new() call panics. Catch that
+    // and fall back to a notification-only loop.
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // ── Context menu ──────────────────────────────────────────────────
+        let menu = Menu::new();
+        let open_item = MenuItem::new("Open Vigil", true, None);
+        let logs_item = MenuItem::new("Open Logs Folder", true, None);
+        let quit_item = MenuItem::new("Quit", true, None);
+        let _ = menu.append_items(&[
+            &open_item,
+            &logs_item,
+            &PredefinedMenuItem::separator(),
+            &quit_item,
+        ]);
+        let open_id = open_item.id().clone();
+        let logs_id = logs_item.id().clone();
+        let quit_id = quit_item.id().clone();
 
-    // ── Tray icon ─────────────────────────────────────────────────────────────
-    // menu_on_left_click = false → left click fires TrayIconEvent (we open the
-    // window ourselves); right click still shows the context menu.
-    let tray = match TrayIconBuilder::new()
-        .with_tooltip("Vigil — Network Monitor  ●")
-        .with_icon(icons.ok.clone())
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(false)
-        .build()
-    {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::warn!("tray icon unavailable ({e}) — running without system tray");
-            // Run a minimal event loop that just handles notifications.
-            loop {
-                while let Ok(cmd) = cmd_rx.try_recv() {
-                    match cmd {
-                        TrayCmd::Alert(info) => {
-                            crate::notifier::send_alert(
-                                &info,
-                                show_window.clone(),
-                                pending_nav.clone(),
-                            );
-                        }
-                        TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
-                    }
+        let tray = TrayIconBuilder::new()
+            .with_tooltip("Vigil — Network Monitor  ●")
+            .with_icon(icons.ok.clone())
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .build()?;
+
+        Ok::<(TrayIcon, tray_icon::menu::MenuId, tray_icon::menu::MenuId, tray_icon::menu::MenuId), Box<dyn std::error::Error>>((
+            tray, quit_id, open_id, logs_id,
+        ))
+    }));
+
+    match init_result {
+        Ok(Ok((tray, quit_id, open_id, logs_id))) => {
+            event_loop(
+                tray,
+                icons,
+                cmd_rx,
+                quit_id,
+                open_id,
+                logs_id,
+                log_dir,
+                show_window,
+                pending_nav,
+            );
+        }
+        _ => {
+            tracing::warn!("system tray unavailable — running without tray icon");
+            notification_only_loop(cmd_rx, show_window, pending_nav);
+        }
+    }
+}
+
+fn notification_only_loop(
+    cmd_rx: Receiver<TrayCmd>,
+    show_window: Arc<AtomicBool>,
+    pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+) {
+    loop {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                TrayCmd::Alert(info) => {
+                    crate::notifier::send_alert(
+                        &info,
+                        show_window.clone(),
+                        pending_nav.clone(),
+                    );
                 }
-                std::thread::sleep(std::time::Duration::from_millis(100));
+                TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
             }
         }
-    };
-
-    event_loop(
-        tray,
-        icons,
-        cmd_rx,
-        quit_id,
-        open_id,
-        logs_id,
-        log_dir,
-        show_window,
-        pending_nav,
-    );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 // ── Platform event loops ──────────────────────────────────────────────────────
