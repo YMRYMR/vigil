@@ -133,6 +133,7 @@ pub fn run(
     log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
+    tracing::info!("tray: run() entered, loading icons...");
     let icons = load_tray_icons();
 
     // On non-Windows, the tray-icon crate uses GTK which requires a working
@@ -175,13 +176,36 @@ pub fn run(
         let logs_id = logs_item.id().clone();
         let quit_id = quit_item.id().clone();
 
-        tracing::info!("tray: building tray icon...");
         let tray = TrayIconBuilder::new()
             .with_tooltip("Vigil — Network Monitor  ●")
             .with_icon(icons.ok.clone())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
             .build()?;
+
+        // On Linux, override the icon with a themed name so GNOME's
+        // AppIndicator extension can render it (raw pixel paths don't work).
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
+            tracing::info!("tray: app_indicator ptr = {:?}", ai);
+            if !ai.is_null() {
+                let icon_dir = std::env::var_os("HOME")
+                    .map(|h| std::path::PathBuf::from(h))
+                    .unwrap_or_default()
+                    .join(".local/share/icons/hicolor/32x32/apps");
+                tracing::info!("tray: icon_dir = {:?}", icon_dir);
+                if icon_dir.exists() {
+                    (*ai).set_icon_theme_path(icon_dir.to_str().unwrap_or(""));
+                    (*ai).set_icon_full("vigil-tray-green", "");
+                    tracing::info!("tray: set_icon_full called with theme path");
+                } else {
+                    tracing::warn!("tray: icon dir not found: {:?}", icon_dir);
+                }
+            }
+        }
+
+        tracing::info!("tray: creation complete");
 
         Ok::<(TrayIcon, tray_icon::menu::MenuId, tray_icon::menu::MenuId, tray_icon::menu::MenuId), Box<dyn std::error::Error>>((
             tray, quit_id, open_id, logs_id,
@@ -190,6 +214,7 @@ pub fn run(
 
     match init_result {
         Ok(Ok((tray, quit_id, open_id, logs_id))) => {
+            tracing::info!("tray: entering event loop");
             event_loop(
                 tray,
                 icons,
@@ -203,7 +228,7 @@ pub fn run(
             );
         }
         _ => {
-            tracing::warn!("system tray unavailable — running without tray icon");
+            tracing::warn!("tray init failed — running without tray icon");
             notification_only_loop(cmd_rx, show_window, pending_nav);
         }
     }
@@ -316,7 +341,7 @@ fn event_loop(
 #[cfg(not(windows))]
 #[allow(clippy::too_many_arguments)]
 fn event_loop(
-    _tray: TrayIcon,
+    tray: TrayIcon,
     _icons: TrayIcons,
     cmd_rx: Receiver<TrayCmd>,
     _quit_id: tray_icon::menu::MenuId,
@@ -326,7 +351,12 @@ fn event_loop(
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
+    let _tray = tray; // keep alive
+    let ctx = glib::MainContext::default();
     loop {
+        // Process pending GLib events (required for AppIndicator D-Bus).
+        while ctx.iteration(false) {}
+
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::Alert(info) => {
@@ -337,7 +367,7 @@ fn event_loop(
             }
         }
         let _ = show_window.load(Ordering::Relaxed);
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 
