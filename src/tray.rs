@@ -127,7 +127,10 @@ fn linux_icon_dir() -> PathBuf {
 #[cfg(target_os = "linux")]
 fn ensure_themed_icons() {
     let dir = linux_icon_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("tray: cannot create icon dir {:?}: {e}", dir);
+        return;
+    }
 
     let icons: &[(&str, &[u8])] = &[
         ("vigil-tray-green.png", TRAY_GREEN_ICO),
@@ -140,11 +143,16 @@ fn ensure_themed_icons() {
         if path.exists() {
             continue;
         }
-        if let Ok(img) =
-            image::load_from_memory_with_format(ico_bytes, image::ImageFormat::Ico)
-        {
-            let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
-            let _ = img.save(&path);
+        match image::load_from_memory_with_format(ico_bytes, image::ImageFormat::Ico) {
+            Ok(img) => {
+                let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
+                if let Err(e) = img.save(&path) {
+                    tracing::warn!("tray: failed to write {:?}: {e}", path);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("tray: failed to decode icon {name}: {e}");
+            }
         }
     }
 }
