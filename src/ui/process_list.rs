@@ -530,10 +530,11 @@ fn grouped_rows<'a>(
                 group.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
 
                 let key = endpoint_key(conn);
-                endpoint_map
-                    .entry(key)
-                    .or_insert_with(|| EndpointAccumulator::new(conn))
-                    .add(conn);
+                if let Some(existing) = endpoint_map.get_mut(&key) {
+                    existing.add(conn);
+                } else {
+                    endpoint_map.insert(key, EndpointAccumulator::new(conn));
+                }
             }
 
             group.distinct_ports = ports.len();
@@ -621,9 +622,7 @@ impl<'a> EndpointAccumulator<'a> {
     }
 
     fn add(&mut self, conn: &'a ConnInfo) {
-        if self.conn_count > 0 {
-            self.conn_count += 1;
-        }
+        self.conn_count += 1;
         if conn.timestamp.as_str() >= self.latest_timestamp {
             self.latest_timestamp = &conn.timestamp;
             self.representative = conn;
@@ -648,7 +647,7 @@ impl<'a> EndpointAccumulator<'a> {
             representative: self.representative,
             latest_timestamp: self.latest_timestamp,
             remote_addr: &self.representative.remote_addr,
-            conn_count: self.conn_count.max(1),
+            conn_count: self.conn_count,
             local_port_count: self.local_ports.len().max(1),
             status_summary: self.statuses.join(" + "),
             statuses: self.statuses,
