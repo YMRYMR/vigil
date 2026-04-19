@@ -57,6 +57,7 @@ winreg = "0.56"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+aya = "0.13"
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 
