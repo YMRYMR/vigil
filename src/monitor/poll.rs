@@ -18,13 +18,19 @@ pub struct RawConn {
     pub status: String,    // "ESTABLISHED" | "LISTEN" | "SYN_SENT" | …
 }
 
-/// The set of statuses we care about (ignore TIME_WAIT, CLOSE, etc.)
+/// The set of statuses we keep for operator-visible lifecycle summaries.
 const KEEP_STATUSES: &[&str] = &[
     "ESTABLISHED",
     "LISTEN",
     "SYN_SENT",
     "SYN_RECV",
     "CLOSE_WAIT",
+    "FIN_WAIT1",
+    "FIN_WAIT2",
+    "TIME_WAIT",
+    "LAST_ACK",
+    "CLOSING",
+    "DELETE_TCB",
 ];
 
 // ── Public API ────────────────────────────────────────────────────────────────
