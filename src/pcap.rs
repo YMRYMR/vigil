@@ -12,7 +12,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 static LAST_CAPTURE_AT: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+static LAST_GLOBAL_CAPTURE_AT: OnceLock<Mutex<u64>> = OnceLock::new();
 static CAPTURE_ACTIVE: OnceLock<Mutex<bool>> = OnceLock::new();
+const GLOBAL_COOLDOWN_SECS: u64 = 60;
 
 pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
     if !cfg.pcap_on_alert || info.score < cfg.pcap_min_score || info.pid == 0 {
@@ -30,6 +32,14 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
     };
     if let Some(previous) = last.get(&info.pid).copied() {
         if now.saturating_sub(previous) < cfg.pcap_cooldown_secs {
+            return;
+        }
+    }
+
+    // Global cooldown: only one capture per GLOBAL_COOLDOWN_SECS across all PIDs.
+    let global_gate = LAST_GLOBAL_CAPTURE_AT.get_or_init(|| Mutex::new(0));
+    if let Ok(global_last) = global_gate.lock() {
+        if now.saturating_sub(*global_last) < GLOBAL_COOLDOWN_SECS {
             return;
         }
     }
@@ -56,6 +66,9 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
     drop(active_guard);
 
     last.insert(info.pid, now);
+    if let Ok(mut global_last) = global_gate.lock() {
+        *global_last = now;
+    }
     let info = info.clone();
     let cfg = cfg.clone();
     std::thread::Builder::new()

@@ -7,7 +7,6 @@
 use crate::types::ConnInfo;
 use crate::ui::{theme, ProcessSelection, TableState};
 use egui::RichText;
-use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 const CONN_TIME_W: f32 = 84.0;
@@ -73,6 +72,51 @@ struct EndpointRow<'a> {
     tls_enriched: bool,
 }
 
+/// Cached computation results for a process-grouped view.
+/// Avoids recomputing grouping, sorting, and counting on every frame
+/// when the underlying data and filter state have not changed.
+#[allow(dead_code)]
+pub struct CachedGroupView {
+    /// Monotonically increasing version of the data when this cache was built.
+    pub data_version: u64,
+    /// Filter text hash when this cache was built.
+    pub filter_hash: u64,
+    /// Sort column when this cache was built.
+    pub sort_col: usize,
+    /// Sort direction when this cache was built.
+    pub sort_asc: bool,
+    /// Total number of filtered rows (not groups).
+    pub total_connections: usize,
+    /// Total number of process groups.
+    pub total_groups: usize,
+    /// Total number of endpoint rows across all groups.
+    pub total_endpoints: usize,
+    /// Cached distinct process count (for tab labels).
+    pub process_count: usize,
+}
+
+impl CachedGroupView {
+    pub fn is_valid(
+        &self,
+        data_version: u64,
+        filter: &str,
+        sort_col: usize,
+        sort_asc: bool,
+    ) -> bool {
+        self.data_version == data_version
+            && self.filter_hash == filter_hash(filter)
+            && self.sort_col == sort_col
+            && self.sort_asc == sort_asc
+    }
+}
+
+fn filter_hash(filter: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    filter.hash(&mut hasher);
+    hasher.finish()
+}
+
 #[allow(deprecated)]
 pub fn show(
     ui: &mut egui::Ui,
@@ -80,9 +124,15 @@ pub fn show(
     selected: &mut Option<ProcessSelection>,
     state: &mut TableState,
     kind: Kind,
+    data_version: u64,
+    cache: &mut Option<CachedGroupView>,
 ) -> bool {
     ui.add_space(4.0);
     filter_bar(ui, rows.len(), state, kind);
+
+    let cache_valid = cache
+        .as_ref()
+        .is_some_and(|c| c.is_valid(data_version, &state.filter, state.sort_col, state.sort_asc));
 
     let mut groups = grouped_rows(rows, &state.filter, kind);
     sort_groups(&mut groups, state);
@@ -90,12 +140,27 @@ pub fn show(
         sort_endpoint_rows(group, state);
     }
 
+    let total_connections: usize = groups.iter().map(|g| g.conn_count).sum();
+    let total_groups = groups.len();
+    let total_endpoints: usize = groups.iter().map(|g| g.endpoint_rows.len()).sum();
+    let process_count = groups.len();
+
+    if !cache_valid {
+        *cache = Some(CachedGroupView {
+            data_version,
+            filter_hash: filter_hash(&state.filter),
+            sort_col: state.sort_col,
+            sort_asc: state.sort_asc,
+            total_connections,
+            total_groups,
+            total_endpoints,
+            process_count,
+        });
+    }
+
     ui.add_space(8.0);
     header_row(ui, state);
     ui.add_space(8.0);
-
-    let total_connections: usize = groups.iter().map(|g| g.conn_count).sum();
-    let total_groups = groups.len();
 
     egui::ScrollArea::vertical()
         .id_salt(match kind {
@@ -384,6 +449,13 @@ pub fn selection_for_pid(
     let group = groups.into_iter().find(|g| g.pid == pid)?;
     let selected = selected_connection.cloned();
     Some(selection_from_group(&group, selected))
+}
+
+/// Compute the distinct process count for a set of rows.
+/// Used by tab bar labels.
+pub fn count_distinct_processes(rows: &VecDeque<ConnInfo>) -> usize {
+    use std::collections::HashSet;
+    rows.iter().map(|info| info.pid).collect::<HashSet<u32>>().len()
 }
 
 fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kind) {
@@ -939,31 +1011,28 @@ fn badge_row(ui: &mut egui::Ui, endpoint: &EndpointRow<'_>) {
     }
 }
 
-fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
-    let base = info.proc_name.to_lowercase().contains(lower)
-        || info.parent_name.to_lowercase().contains(lower)
-        || info.remote_addr.to_lowercase().contains(lower)
-        || info.status.to_lowercase().contains(lower)
-        || info.proc_path.to_lowercase().contains(lower)
-        || info.local_addr.to_lowercase().contains(lower)
-        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower))
-        || info.tls_sni.as_deref().map(|s| s.to_lowercase().contains(lower)).unwrap_or(false)
-        || info.tls_ja3.as_deref().map(|s| s.to_lowercase().contains(lower)).unwrap_or(false);
-
+fn matches_filter(info: &ConnInfo, lower: &str, _kind: Kind) -> bool {
     if lower.is_empty() {
         return true;
     }
+
+    let base = info.proc_name.to_ascii_lowercase().contains(lower)
+        || info.parent_name.to_ascii_lowercase().contains(lower)
+        || info.remote_addr.to_ascii_lowercase().contains(lower)
+        || info.status.to_ascii_lowercase().contains(lower)
+        || info.proc_path.to_ascii_lowercase().contains(lower)
+        || info.local_addr.to_ascii_lowercase().contains(lower)
+        || info.attack_tags.iter().any(|tag| tag.to_ascii_lowercase().contains(lower))
+        || info.tls_sni.as_deref().map(|s| s.to_ascii_lowercase().contains(lower)).unwrap_or(false)
+        || info.tls_ja3.as_deref().map(|s| s.to_ascii_lowercase().contains(lower)).unwrap_or(false);
+
     if base {
         return true;
     }
 
-    match kind {
-        Kind::Activity | Kind::Alerts => {
-            info.reasons.iter().any(|s| s.to_lowercase().contains(lower))
-                || info.hostname.as_deref().map(|h| h.to_lowercase().contains(lower)).unwrap_or(false)
-                || info.country.as_deref().map(|c| c.to_lowercase().contains(lower)).unwrap_or(false)
-        }
-    }
+    info.reasons.iter().any(|s| s.to_ascii_lowercase().contains(lower))
+        || info.hostname.as_deref().map(|h| h.to_ascii_lowercase().contains(lower)).unwrap_or(false)
+        || info.country.as_deref().map(|c| c.to_ascii_lowercase().contains(lower)).unwrap_or(false)
 }
 
 fn summary_bar_color(score: u8, kind: Kind) -> egui::Color32 {

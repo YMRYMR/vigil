@@ -11,6 +11,8 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 
 static LAST_DUMP_AT: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+static LAST_GLOBAL_DUMP_AT: OnceLock<Mutex<u64>> = OnceLock::new();
+const GLOBAL_COOLDOWN_SECS: u64 = 30;
 
 pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
     if !cfg.process_dump_on_alert || info.score < cfg.process_dump_min_score || info.pid == 0 {
@@ -32,9 +34,20 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
         }
     }
 
+    // Global cooldown: only one dump per GLOBAL_COOLDOWN_SECS across all PIDs.
+    let global_gate = LAST_GLOBAL_DUMP_AT.get_or_init(|| Mutex::new(0));
+    if let Ok(global_last) = global_gate.lock() {
+        if now.saturating_sub(*global_last) < GLOBAL_COOLDOWN_SECS {
+            return;
+        }
+    }
+
     match platform::capture_process_dump(info, cfg) {
         Ok(path) => {
             last.insert(info.pid, now);
+            if let Ok(mut global_last) = global_gate.lock() {
+                *global_last = now;
+            }
             audit::record(
                 "process_dump_on_alert",
                 "success",

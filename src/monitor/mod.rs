@@ -5,6 +5,7 @@
 //! `Monitor::start()` spawns a background task. New events are broadcast over
 //! a `tokio::sync::broadcast` channel so any number of receivers can subscribe.
 
+pub mod ebpf;
 pub mod etw;
 pub mod poll;
 
@@ -33,6 +34,29 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{sleep, Duration};
+
+/// Stores the last 100 pipeline timing snapshots for diagnostics.
+const TIMING_HISTORY_CAP: usize = 100;
+
+fn timing_history() -> &'static std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>> {
+    static HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>>> = std::sync::OnceLock::new();
+    HISTORY.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::new()))
+}
+
+fn record_pipeline_timing(timings: crate::types::PipelineTimings) {
+    if let Ok(mut history) = timing_history().lock() {
+        if history.len() >= TIMING_HISTORY_CAP {
+            history.pop_front();
+        }
+        history.push_back(timings);
+    }
+}
+
+/// Returns a snapshot of the last pipeline timing entry (for UI diagnostics).
+#[allow(dead_code)]
+pub fn last_pipeline_timing() -> Option<crate::types::PipelineTimings> {
+    timing_history().lock().ok().and_then(|h| h.back().cloned())
+}
 
 #[derive(PartialEq, Eq, Hash, Clone)]
 struct ConnKey {
@@ -82,17 +106,36 @@ impl Monitor {
         let (etw_tx, etw_rx) = mpsc::unbounded_channel::<RawConn>();
         let using_etw = etw::start(etw_tx);
         let etw_rx = if using_etw { Some(etw_rx) } else { None };
-        if using_etw {
-            tracing::info!("ETW kernel session started — real-time TCP monitoring active");
+
+        // Try eBPF on Linux (stub for now — always returns false on Windows).
+        let (ebpf_tx, ebpf_rx) = mpsc::unbounded_channel::<RawConn>();
+        let using_ebpf = ebpf::start(ebpf_tx);
+        if using_ebpf {
+            tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
+        }
+
+        // Merge ETW and eBPF into a single receiver.
+        // When both are inactive, etw_rx is None and ebpf_rx is unused (no thread reading it).
+        let merged_rx = if using_etw {
+            etw_rx
+        } else if using_ebpf {
+            Some(ebpf_rx)
         } else {
-            tracing::info!("ETW unavailable — falling back to polling");
+            None
+        };
+        let realtime_active = using_etw || using_ebpf;
+
+        if realtime_active {
+            tracing::info!("real-time monitoring active (ETW or eBPF)");
+        } else {
+            tracing::info!("real-time monitoring unavailable — falling back to polling");
         }
         let threshold = config.read().unwrap().alert_threshold;
         registry::win::spawn(tx.clone(), threshold);
         honeypot::start(config.clone(), tx.clone(), threshold);
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
-            rt.block_on(poll_loop(config, tx, etw_rx, using_etw))
+            rt.block_on(poll_loop(config, tx, merged_rx, using_etw))
         })
     }
 }
@@ -193,7 +236,66 @@ fn process_conn(
     etw_expected: bool,
     etw_active: bool,
 ) {
+    // Fast skip: loopback and link-local connections always score 0.
+    // Skip the expensive enrichment pipeline (process collection, geoip,
+    // blocklist, revdns, fswatch, baseline, TLS, scoring, tamper).
+    let remote = &raw_conn.remote_ip;
+    let is_loopback = remote.is_empty()
+        || remote == "0.0.0.0"
+        || remote == "127.0.0.1"
+        || remote == "::1"
+        || remote == "::";
+    if is_loopback {
+        // Still track in known so stale-detection works.
+        let key = ConnKey::from(raw_conn);
+        let info = ConnInfo {
+            timestamp: Local::now().format("%H:%M:%S").to_string(),
+            proc_name: String::new(),
+            pid: raw_conn.pid,
+            proc_path: String::new(),
+            proc_user: String::new(),
+            parent_user: String::new(),
+            parent_name: String::new(),
+            parent_pid: 0,
+            service_name: String::new(),
+            publisher: String::new(),
+            command_line: String::new(),
+            local_addr: format!("{}:{}", raw_conn.local_ip, raw_conn.local_port),
+            remote_addr: if remote.is_empty() {
+                "LISTEN".to_string()
+            } else {
+                format!("{}:{}", remote, raw_conn.remote_port)
+            },
+            status: raw_conn.status.clone(),
+            score: 0,
+            reasons: vec![],
+            attack_tags: vec![],
+            ancestor_chain: vec![],
+            pre_login: false,
+            hostname: None,
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            tls_sni: None,
+            tls_ja3: None,
+        };
+        known.insert(key, info);
+        if log_all {
+            let _ = tx.send(ConnEvent::New(known.get(&ConnKey::from(raw_conn)).unwrap().clone()));
+        }
+        return;
+    }
+
+    let total_start = std::time::Instant::now();
+
     let proc = process::collect(raw_conn.pid, svc_map);
+    let t_process = total_start.elapsed();
     let ancestors_norm: Vec<(String, u32)> = proc
         .ancestors
         .iter()
@@ -212,25 +314,39 @@ fn process_conn(
         )
     };
 
+    let t0 = std::time::Instant::now();
     let reputation_hit: Option<String> = if reputation_enabled {
         blocklist::lookup(&raw_conn.remote_ip)
     } else {
         None
     };
+    let t_blocklist = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     let geo = if !raw_conn.remote_ip.is_empty() {
         geoip::lookup(&raw_conn.remote_ip)
     } else {
         crate::geoip::GeoInfo::default()
     };
+    let t_geoip = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     let hostname: Option<String> = if rev_enabled && !raw_conn.remote_ip.is_empty() {
         revdns::lookup(&raw_conn.remote_ip).filter(|s| !s.is_empty())
     } else {
         None
     };
+    let t_revdns = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     let recently_dropped =
         !proc.path.is_empty() && fswatch::dropped_within(&proc.path, fs_window).is_some();
+    let t_fswatch = t0.elapsed();
+
     let ll_flag = !raw_conn.remote_ip.is_empty()
         && long_lived.is_long_lived(raw_conn.pid, &raw_conn.remote_ip, long_threshold);
+
+    let t0 = std::time::Instant::now();
     let baseline_signal = baseline::observe(
         &proc.name_key,
         &proc.publisher,
@@ -239,10 +355,15 @@ fn process_conn(
         raw_conn.remote_port,
         geo.country.as_deref(),
     );
+    let t_baseline = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     let cached_tls = tls_artifacts::lookup_remote(&raw_conn.remote_ip, raw_conn.remote_port);
     let tls_sni = cached_tls.as_ref().and_then(|meta| meta.tls_sni.clone());
     let tls_ja3 = cached_tls.as_ref().and_then(|meta| meta.tls_ja3.clone());
+    let t_tls = t0.elapsed();
 
+    let t0 = std::time::Instant::now();
     let (mut score_value, mut reasons, mut attack_tags) = {
         let cfg = config.read().unwrap();
         score(
@@ -271,6 +392,9 @@ fn process_conn(
             &cfg,
         )
     };
+    let t_scoring = t0.elapsed();
+
+    let t0 = std::time::Instant::now();
     tamper::inspect_visibility_gaps(
         &proc,
         VisibilityContext {
@@ -281,6 +405,32 @@ fn process_conn(
         },
     )
     .merge_into(&mut score_value, &mut reasons, &mut attack_tags);
+    let t_tamper = t0.elapsed();
+
+    let total_us = total_start.elapsed().as_micros() as u64;
+    let timings = crate::types::PipelineTimings {
+        process_collect_us: t_process.as_micros() as u64,
+        geoip_us: t_geoip.as_micros() as u64,
+        blocklist_us: t_blocklist.as_micros() as u64,
+        revdns_us: t_revdns.as_micros() as u64,
+        fswatch_us: t_fswatch.as_micros() as u64,
+        baseline_us: t_baseline.as_micros() as u64,
+        tls_lookup_us: t_tls.as_micros() as u64,
+        scoring_us: t_scoring.as_micros() as u64,
+        tamper_us: t_tamper.as_micros() as u64,
+        total_us,
+    };
+    tracing::debug!(
+        pid = raw_conn.pid,
+        proc = %raw_conn.remote_ip,
+        score = score_value,
+        total_us,
+        proc_us = timings.process_collect_us,
+        geo_us = timings.geoip_us,
+        score_us = timings.scoring_us,
+        "enrichment pipeline timing"
+    );
+    record_pipeline_timing(timings);
 
     let local_addr = format!("{}:{}", raw_conn.local_ip, raw_conn.local_port);
     let remote_addr = if raw_conn.remote_ip.is_empty() {

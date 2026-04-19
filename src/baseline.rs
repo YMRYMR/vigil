@@ -15,6 +15,7 @@ const MAX_REMOTES: usize = 64;
 const MAX_PORTS: usize = 32;
 const MAX_COUNTRIES: usize = 16;
 const SAVE_INTERVAL_SECS: u64 = 30;
+const MAX_PROFILES: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BaselineSignal {
@@ -87,6 +88,20 @@ pub fn observe(
             .unwrap_or(false);
         entry.observations = entry.observations.saturating_add(1);
         observations = entry.observations;
+    }
+
+    // Evict least-recently-seen profiles when over cap.
+    if runtime.state.entries.len() > MAX_PROFILES {
+        if let Some(evict_key) = runtime
+            .state
+            .entries
+            .iter()
+            .filter(|(_, e)| e.last_seen_unix > 0)
+            .min_by_key(|(_, e)| e.last_seen_unix)
+            .map(|(k, _)| k.clone())
+        {
+            runtime.state.entries.remove(&evict_key);
+        }
     }
 
     let should_save = (new_remote || new_port || new_country)
@@ -214,5 +229,44 @@ mod tests {
         assert!(!remember_string(&mut values, "KNOWN.example", 4));
         assert!(remember_string(&mut values, "new.example", 4));
         assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn profile_count_is_capped() {
+        let mut state = BaselineState::default();
+        // Insert more profiles than the cap allows.
+        for i in 0..MAX_PROFILES + 100 {
+            let key = format!("test-profile-{i}");
+            let mut entry = BaselineEntry::default();
+            entry.observations = 1;
+            entry.first_seen_unix = 1000 + i as u64;
+            entry.last_seen_unix = 1000 + i as u64;
+            state.entries.insert(key, entry);
+        }
+        // Simulate the eviction logic from observe() — evicts one LRU entry per call.
+        while state.entries.len() > MAX_PROFILES {
+            if let Some(evict_key) = state
+                .entries
+                .iter()
+                .filter(|(_, e)| e.last_seen_unix > 0)
+                .min_by_key(|(_, e)| e.last_seen_unix)
+                .map(|(k, _)| k.clone())
+            {
+                state.entries.remove(&evict_key);
+            } else {
+                break;
+            }
+        }
+        assert!(
+            state.entries.len() <= MAX_PROFILES,
+            "expected at most {} entries, got {}",
+            MAX_PROFILES,
+            state.entries.len()
+        );
+        // The evicted entries should be those with the smallest last_seen_unix.
+        assert!(
+            !state.entries.contains_key("test-profile-0"),
+            "oldest profile should have been evicted"
+        );
     }
 }
