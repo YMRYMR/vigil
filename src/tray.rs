@@ -151,7 +151,22 @@ pub fn run(
         }
     }
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // GTK must be initialized before any GTK operations (menu, tray icon).
+        // The tray-icon crate on Linux uses libappindicator which depends on GTK.
+        #[cfg(not(windows))]
+        {
+            tracing::info!("tray: attempting GTK init...");
+            match gtk::init() {
+                Ok(()) => tracing::info!("tray: GTK init OK"),
+                Err(e) => {
+                    tracing::warn!("tray: GTK init failed: {e:?}");
+                    return Err("GTK init failed — tray icon unavailable".into());
+                }
+            }
+        }
+
         // ── Context menu ──────────────────────────────────────────────────
+        tracing::info!("tray: creating menu...");
         let menu = Menu::new();
         let open_item = MenuItem::new("Open Vigil", true, None);
         let logs_item = MenuItem::new("Open Logs Folder", true, None);
@@ -166,12 +181,18 @@ pub fn run(
         let logs_id = logs_item.id().clone();
         let quit_id = quit_item.id().clone();
 
+        tracing::info!("tray: building tray icon...");
         let tray = TrayIconBuilder::new()
             .with_tooltip("Vigil — Network Monitor  ●")
             .with_icon(icons.ok.clone())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .build()?;
+            .build()
+            .map_err(|e| {
+                tracing::warn!("tray: build failed: {e:?}");
+                e
+            })?;
+        tracing::info!("tray: icon created successfully");
 
         Ok::<(TrayIcon, tray_icon::menu::MenuId, tray_icon::menu::MenuId, tray_icon::menu::MenuId), Box<dyn std::error::Error>>((
             tray, quit_id, open_id, logs_id,

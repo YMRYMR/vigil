@@ -60,6 +60,7 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 aya = "0.13"
 bytes = "1"
 libc = "0.2"
+gtk = "0.18"
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 
