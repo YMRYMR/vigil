@@ -133,7 +133,6 @@ pub fn run(
     log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
-    tracing::info!("tray: run() entered, loading icons...");
     let icons = load_tray_icons();
 
     // On non-Windows, the tray-icon crate uses GTK which requires a working
@@ -181,40 +180,30 @@ pub fn run(
             .with_icon(icons.ok.clone())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .build()?;
+            .build().map_err(|e| e.to_string())?;
 
         // On Linux, override the icon with a themed name so GNOME's
         // AppIndicator extension can render it (raw pixel paths don't work).
         #[cfg(target_os = "linux")]
         unsafe {
             let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
-            tracing::info!("tray: app_indicator ptr = {:?}", ai);
             if !ai.is_null() {
                 let icon_dir = std::env::var_os("HOME")
                     .map(|h| std::path::PathBuf::from(h))
                     .unwrap_or_default()
                     .join(".local/share/icons/hicolor/32x32/apps");
-                tracing::info!("tray: icon_dir = {:?}", icon_dir);
                 if icon_dir.exists() {
                     (*ai).set_icon_theme_path(icon_dir.to_str().unwrap_or(""));
                     (*ai).set_icon_full("vigil-tray-green", "");
-                    tracing::info!("tray: set_icon_full called with theme path");
-                } else {
-                    tracing::warn!("tray: icon dir not found: {:?}", icon_dir);
                 }
             }
         }
 
-        tracing::info!("tray: creation complete");
-
-        Ok::<(TrayIcon, tray_icon::menu::MenuId, tray_icon::menu::MenuId, tray_icon::menu::MenuId), Box<dyn std::error::Error>>((
-            tray, quit_id, open_id, logs_id,
-        ))
+        Ok::<_, String>((tray, quit_id, open_id, logs_id))
     }));
 
     match init_result {
         Ok(Ok((tray, quit_id, open_id, logs_id))) => {
-            tracing::info!("tray: entering event loop");
             event_loop(
                 tray,
                 icons,
@@ -342,31 +331,66 @@ fn event_loop(
 #[allow(clippy::too_many_arguments)]
 fn event_loop(
     tray: TrayIcon,
-    _icons: TrayIcons,
+    icons: TrayIcons,
     cmd_rx: Receiver<TrayCmd>,
-    _quit_id: tray_icon::menu::MenuId,
-    _open_id: tray_icon::menu::MenuId,
-    _logs_id: tray_icon::menu::MenuId,
-    _log_dir: PathBuf,
+    quit_id: tray_icon::menu::MenuId,
+    open_id: tray_icon::menu::MenuId,
+    logs_id: tray_icon::menu::MenuId,
+    log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
-    let _tray = tray; // keep alive
+    let _tray = tray;
     let ctx = glib::MainContext::default();
+    let mut in_alert = false;
+    let mut in_lockdown = false;
+
     loop {
         // Process pending GLib events (required for AppIndicator D-Bus).
         while ctx.iteration(false) {}
 
+        // ── Tray icon click events ────────────────────────────────────────
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = ev
+            {
+                show_window.store(true, Ordering::Relaxed);
+            }
+        }
+
+        // ── Menu events ───────────────────────────────────────────────────
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            if ev.id == quit_id {
+                std::process::exit(0);
+            } else if ev.id == open_id {
+                show_window.store(true, Ordering::Relaxed);
+            } else if ev.id == logs_id {
+                let _ = open::that(&log_dir);
+            }
+        }
+
+        // ── Commands from UI / monitor ────────────────────────────────────
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
+                    in_alert = true;
+                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
                 }
-                TrayCmd::ResetOk => {}
-                TrayCmd::SetLockdown(_) => {}
+                TrayCmd::ResetOk => {
+                    in_alert = false;
+                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
+                }
+                TrayCmd::SetLockdown(active) => {
+                    in_lockdown = active;
+                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
+                }
             }
         }
-        let _ = show_window.load(Ordering::Relaxed);
+
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
