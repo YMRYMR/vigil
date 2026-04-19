@@ -153,13 +153,34 @@ pub fn run(
     // ── Tray icon ─────────────────────────────────────────────────────────────
     // menu_on_left_click = false → left click fires TrayIconEvent (we open the
     // window ourselves); right click still shows the context menu.
-    let tray = TrayIconBuilder::new()
+    let tray = match TrayIconBuilder::new()
         .with_tooltip("Vigil — Network Monitor  ●")
         .with_icon(icons.ok.clone())
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false)
         .build()
-        .expect("Failed to create tray icon");
+    {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!("tray icon unavailable ({e}) — running without system tray");
+            // Run a minimal event loop that just handles notifications.
+            loop {
+                while let Ok(cmd) = cmd_rx.try_recv() {
+                    match cmd {
+                        TrayCmd::Alert(info) => {
+                            crate::notifier::send_alert(
+                                &info,
+                                show_window.clone(),
+                                pending_nav.clone(),
+                            );
+                        }
+                        TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
+    };
 
     event_loop(
         tray,
