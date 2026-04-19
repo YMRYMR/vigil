@@ -214,10 +214,15 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 
 ---
 
-## Phase 13 — Optimization & Efficiency (backlog)
+## Phase 13 — Optimization & Efficiency 🚧 IN PROGRESS
 
 Security remains paramount, but Vigil must stay light enough to protect a workstation without becoming the problem.
 
+### Implemented in this branch
+- [x] **Process-card endpoint aggregation** — identical remote endpoints inside a process card now collapse into one summary row with socket count, local-port rollup, and lifecycle summary, with raw sockets behind a second expand step
+- [x] **Broader TCP lifecycle visibility** — keep additional teardown / transient TCP states (`FIN_WAIT*`, `TIME_WAIT`, `LAST_ACK`, `CLOSING`, `DELETE_TCB`) so the UI shows a fuller socket lifecycle instead of mostly `ESTABLISHED`
+
+### Still remaining before Phase 13 can be called complete
 - [ ] ETW / polling / enrichment pipeline profiling under normal desktop load
 - [ ] Memory and cache budgeting for baselines, TLS metadata, DNS, GeoIP, and reputation data
 - [ ] Smarter sampling / throttling for expensive enrichments and forensic capture paths
@@ -274,7 +279,7 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 | 1.3.0 | 10 | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
 | 3.x | 12 | Detection depth | 🚧 In progress |
-| 4.x | 13 | Optimization & efficiency | 🔲 Backlog |
+| 4.x | 13 | Optimization & efficiency | 🚧 In progress |
 | 4.x | 14 | Hardening & self-defence | 🔲 Backlog |
 | 5.x | 15 | File integrity & anti-tamper | 🔲 Backlog |
 | 5.x | 16 | Integration & fleet | 🔲 Backlog |
