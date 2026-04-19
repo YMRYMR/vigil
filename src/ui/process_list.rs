@@ -7,6 +7,7 @@
 use crate::types::ConnInfo;
 use crate::ui::{theme, ProcessSelection, TableState};
 use egui::RichText;
+use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 const CONN_TIME_W: f32 = 84.0;
@@ -14,6 +15,9 @@ const CONN_REMOTE_W: f32 = 216.0;
 const CONN_STATUS_W: f32 = 132.0;
 const CONN_SCORE_W: f32 = 44.0;
 const CONN_BADGE_GAP: f32 = 8.0;
+const SUMMARY_LINE_H: f32 = 16.0;
+const SUMMARY_BASE_H: f32 = 54.0;
+const SUMMARY_META_INDENT: f32 = 28.0;
 
 #[derive(Clone, Copy)]
 pub enum Kind {
@@ -55,6 +59,7 @@ struct EndpointRow<'a> {
     remote_addr: &'a str,
     conn_count: usize,
     local_port_count: usize,
+    primary_local_port: u16,
     statuses: Vec<String>,
     status_summary: String,
     max_score: u8,
@@ -119,7 +124,7 @@ pub fn show(
                     .corner_radius(12.0)
                     .inner_margin(egui::Margin::same(14))
                     .show(ui, |ui| {
-                        let summary_h = if collapsed { 48.0 } else { 56.0 };
+                        let summary_h = summary_height(group, ui.available_width(), collapsed);
                         let (summary_rect, summary_resp) = ui.allocate_exact_size(
                             egui::vec2(ui.available_width(), summary_h),
                             egui::Sense::click(),
@@ -144,7 +149,7 @@ pub fn show(
                         ui.allocate_ui_at_rect(summary_rect.shrink2(egui::vec2(12.0, 8.0)), |ui| {
                             ui.horizontal(|ui| {
                                 let (bar_rect, bar_resp) = ui.allocate_exact_size(
-                                    egui::vec2(4.0, if collapsed { 28.0 } else { 40.0 }),
+                                    egui::vec2(4.0, (summary_h - 18.0).max(28.0)),
                                     egui::Sense::click(),
                                 );
                                 ui.painter().rect_filled(
@@ -234,46 +239,52 @@ pub fn show(
                                     });
 
                                     ui.add_space(2.0);
-                                    ui.label(
-                                        RichText::new(format!(
-                                            "{} | {} | {}",
-                                            if group.proc_path.is_empty() {
-                                                "No path"
+                                    ui.add(
+                                        egui::Label::new(
+                                            RichText::new(if group.proc_path.is_empty() {
+                                                format!(
+                                                    "No path | {} | {}",
+                                                    if group.proc_user.is_empty() {
+                                                        "Unknown user"
+                                                    } else {
+                                                        group.proc_user
+                                                    },
+                                                    process_meta_publisher(group)
+                                                )
                                             } else {
-                                                group.proc_path
-                                            },
-                                            if group.proc_user.is_empty() {
-                                                "Unknown user"
-                                            } else {
-                                                group.proc_user
-                                            },
-                                            if group.publisher.is_empty() {
-                                                if group.service_name.is_empty() {
-                                                    group.parent_name
-                                                } else {
-                                                    group.service_name
-                                                }
-                                            } else {
-                                                group.publisher
-                                            }
-                                        ))
-                                        .color(theme::TEXT2)
-                                        .size(10.4),
+                                                format!(
+                                                    "{} | {} | {}",
+                                                    group.proc_path,
+                                                    if group.proc_user.is_empty() {
+                                                        "Unknown user"
+                                                    } else {
+                                                        group.proc_user
+                                                    },
+                                                    process_meta_publisher(group)
+                                                )
+                                            })
+                                            .color(theme::TEXT2)
+                                            .size(10.4),
+                                        )
+                                        .wrap(),
                                     );
                                     if !group.statuses.is_empty() {
-                                        ui.label(
-                                            RichText::new(format!(
-                                                "States seen: {}",
-                                                group.statuses.join(", ")
-                                            ))
-                                            .color(theme::TEXT3)
-                                            .size(10.0),
+                                        ui.add(
+                                            egui::Label::new(
+                                                RichText::new(format!(
+                                                    "States seen: {}",
+                                                    group.statuses.join(", ")
+                                                ))
+                                                .color(theme::TEXT3)
+                                                .size(10.0),
+                                            )
+                                            .wrap(),
                                         );
                                     }
                                 });
 
                                 ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    egui::Layout::right_to_left(egui::Align::Min),
                                     |ui| {
                                         let (fg, bg) = theme::score_colors(group.score);
                                         ui.label(
@@ -319,8 +330,7 @@ pub fn show(
                                             Some(sel_conn),
                                         )
                                     });
-                                if let Some(clicked) =
-                                    endpoint_line(ui, endpoint, kind, conn_selected)
+                                if let Some(clicked) = endpoint_line(ui, endpoint, kind, conn_selected)
                                 {
                                     *selected = Some(selection_from_group(group, Some(clicked)));
                                 }
@@ -643,12 +653,18 @@ impl<'a> EndpointAccumulator<'a> {
     }
 
     fn finish(self) -> EndpointRow<'a> {
+        let primary_local_port = self
+            .local_ports
+            .iter()
+            .find_map(|addr| parse_port(addr))
+            .unwrap_or(0);
         EndpointRow {
             representative: self.representative,
             latest_timestamp: self.latest_timestamp,
             remote_addr: &self.representative.remote_addr,
             conn_count: self.conn_count,
             local_port_count: self.local_ports.len().max(1),
+            primary_local_port,
             status_summary: self.statuses.join(" + "),
             statuses: self.statuses,
             max_score: self.max_score,
@@ -712,7 +728,7 @@ fn selection_from_group(
 
 fn sort_groups(groups: &mut [ProcessGroup<'_>], state: &TableState) {
     groups.sort_by(|a, b| {
-        let ord = match state.sort_col {
+        let primary = match state.sort_col {
             0 => a.latest_timestamp.cmp(b.latest_timestamp),
             1 => a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()),
             2 => a
@@ -720,24 +736,40 @@ fn sort_groups(groups: &mut [ProcessGroup<'_>], state: &TableState) {
                 .len()
                 .cmp(&b.endpoint_rows.len())
                 .then_with(|| a.conn_count.cmp(&b.conn_count)),
-            3 => a.latest_status.cmp(b.latest_status),
+            3 => status_rank(&[a.latest_status.to_string()]).cmp(&status_rank(&[b.latest_status.to_string()])),
             4 => a.score.cmp(&b.score),
             _ => a.latest_timestamp.cmp(b.latest_timestamp),
         };
+        let ord = primary
+            .then_with(|| a.score.cmp(&b.score))
+            .then_with(|| status_rank(&a.statuses).cmp(&status_rank(&b.statuses)))
+            .then_with(|| a.endpoint_rows.len().cmp(&b.endpoint_rows.len()))
+            .then_with(|| a.distinct_ports.cmp(&b.distinct_ports))
+            .then_with(|| a.latest_timestamp.cmp(b.latest_timestamp))
+            .then_with(|| a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()))
+            .then_with(|| a.pid.cmp(&b.pid));
         if state.sort_asc { ord } else { ord.reverse() }
     });
 }
 
 fn sort_endpoint_rows(group: &mut ProcessGroup<'_>, state: &TableState) {
     group.endpoint_rows.sort_by(|a, b| {
-        let ord = match state.sort_col {
+        let primary = match state.sort_col {
             0 => a.latest_timestamp.cmp(b.latest_timestamp),
             1 => a.remote_addr.cmp(b.remote_addr),
             2 => a.conn_count.cmp(&b.conn_count).then_with(|| a.local_port_count.cmp(&b.local_port_count)),
-            3 => a.status_summary.cmp(&b.status_summary),
+            3 => status_rank(&a.statuses).cmp(&status_rank(&b.statuses)),
             4 => a.max_score.cmp(&b.max_score),
-            _ => a.latest_timestamp.cmp(b.latest_timestamp),
+            _ => a.max_score.cmp(&b.max_score),
         };
+        let ord = primary
+            .then_with(|| a.max_score.cmp(&b.max_score))
+            .then_with(|| status_rank(&a.statuses).cmp(&status_rank(&b.statuses)))
+            .then_with(|| badge_rank(a).cmp(&badge_rank(b)))
+            .then_with(|| badge_signature(a).cmp(&badge_signature(b)))
+            .then_with(|| a.primary_local_port.cmp(&b.primary_local_port))
+            .then_with(|| a.latest_timestamp.cmp(b.latest_timestamp))
+            .then_with(|| a.remote_addr.cmp(b.remote_addr));
         if state.sort_asc { ord } else { ord.reverse() }
     });
 }
@@ -949,16 +981,6 @@ fn summary_bar_color(score: u8, kind: Kind) -> egui::Color32 {
     }
 }
 
-fn status_color(status: &str) -> egui::Color32 {
-    match status {
-        "ESTABLISHED" => theme::ACCENT,
-        "LISTEN" => theme::TEXT2,
-        "SYN_SENT" | "SYN_RECV" => theme::WARN,
-        "CLOSE_WAIT" | "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK" | "CLOSING" => theme::TEXT3,
-        _ => theme::TEXT2,
-    }
-}
-
 fn status_summary_color(statuses: &[String]) -> egui::Color32 {
     if statuses.iter().any(|s| s == "SYN_SENT" || s == "SYN_RECV") {
         theme::WARN
@@ -980,8 +1002,8 @@ fn remote_label(remote: &str) -> String {
     remote.to_string()
 }
 
-fn parse_port(remote: &str) -> Option<u16> {
-    remote.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
+fn parse_port(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
 }
 
 fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> u8 {
@@ -993,6 +1015,113 @@ fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> 
     if remotes >= 3 { bonus += 1; }
     if statuses >= 3 { bonus += 1; }
     bonus.min(4)
+}
+
+fn summary_height(group: &ProcessGroup<'_>, width: f32, collapsed: bool) -> f32 {
+    if collapsed {
+        return 48.0;
+    }
+    let usable_width = (width - SUMMARY_META_INDENT - 120.0).max(180.0);
+    let chars_per_line = (usable_width / 6.1).max(18.0) as usize;
+    let meta_text = if group.proc_path.is_empty() {
+        format!(
+            "No path | {} | {}",
+            if group.proc_user.is_empty() {
+                "Unknown user"
+            } else {
+                group.proc_user
+            },
+            process_meta_publisher(group)
+        )
+    } else {
+        format!(
+            "{} | {} | {}",
+            group.proc_path,
+            if group.proc_user.is_empty() {
+                "Unknown user"
+            } else {
+                group.proc_user
+            },
+            process_meta_publisher(group)
+        )
+    };
+    let meta_lines = wrap_lines(&meta_text, chars_per_line);
+    let state_lines = if group.statuses.is_empty() {
+        0
+    } else {
+        wrap_lines(&format!("States seen: {}", group.statuses.join(", ")), chars_per_line)
+    };
+    SUMMARY_BASE_H + ((meta_lines.saturating_sub(1) + state_lines.saturating_sub(1)) as f32 * SUMMARY_LINE_H)
+}
+
+fn wrap_lines(text: &str, chars_per_line: usize) -> usize {
+    let chars_per_line = chars_per_line.max(1);
+    let len = text.chars().count().max(1);
+    len.div_ceil(chars_per_line)
+}
+
+fn process_meta_publisher(group: &ProcessGroup<'_>) -> &str {
+    if group.publisher.is_empty() {
+        if group.service_name.is_empty() {
+            group.parent_name
+        } else {
+            group.service_name
+        }
+    } else {
+        group.publisher
+    }
+}
+
+fn status_rank(statuses: &[String]) -> u8 {
+    if statuses.iter().any(|s| s == "SYN_SENT" || s == "SYN_RECV") {
+        0
+    } else if statuses.iter().any(|s| s == "ESTABLISHED") {
+        1
+    } else if statuses.iter().any(|s| matches!(s.as_str(), "CLOSE_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK" | "TIME_WAIT" | "CLOSING" | "DELETE_TCB")) {
+        2
+    } else if statuses.iter().any(|s| s == "LISTEN") {
+        3
+    } else {
+        4
+    }
+}
+
+fn badge_rank(endpoint: &EndpointRow<'_>) -> u8 {
+    if endpoint.baseline_deviation {
+        0
+    } else if endpoint.script_host_suspicious {
+        1
+    } else if endpoint.reputation_hit {
+        2
+    } else if endpoint.pre_login {
+        3
+    } else if endpoint.dga_like {
+        4
+    } else if endpoint.recently_dropped {
+        5
+    } else if endpoint.long_lived {
+        6
+    } else if endpoint.tls_enriched {
+        7
+    } else if endpoint.conn_count > 1 {
+        8
+    } else {
+        9
+    }
+}
+
+fn badge_signature(endpoint: &EndpointRow<'_>) -> String {
+    let mut parts = Vec::new();
+    if endpoint.baseline_deviation { parts.push("BASE"); }
+    if endpoint.script_host_suspicious { parts.push("SCR"); }
+    if endpoint.reputation_hit { parts.push("REP"); }
+    if endpoint.pre_login { parts.push("PL"); }
+    if endpoint.dga_like { parts.push("DGA"); }
+    if endpoint.recently_dropped { parts.push("DRP"); }
+    if endpoint.long_lived { parts.push("LL"); }
+    if endpoint.tls_enriched { parts.push("TLS"); }
+    if endpoint.conn_count > 1 { parts.push("XN"); }
+    parts.join("|")
 }
 
 fn pill(
