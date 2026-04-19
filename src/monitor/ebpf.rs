@@ -134,7 +134,7 @@ mod linux_impl {
             .map(|n| n.get())
             .unwrap_or(1);
         let mut buffers = Vec::new();
-        for cpu in 0..num_cpus {
+        for cpu in 0..num_cpus as u32 {
             let buf = perf_array
                 .open(cpu, None)
                 .map_err(|e| format!("perf buffer open failed for cpu {cpu}: {e}"))?;
