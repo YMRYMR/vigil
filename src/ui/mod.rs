@@ -911,10 +911,12 @@ impl eframe::App for VigilApp {
         self.sync_tray_state();
         self.trim_history_buffers();
         if self.show_window.swap(false, Ordering::Relaxed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         if let Some(nav) = self.pending_nav.lock().unwrap().take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.active_tab = Tab::Alerts;
