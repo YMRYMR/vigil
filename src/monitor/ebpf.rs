@@ -6,7 +6,7 @@
 //! ## Architecture
 //!
 //! 1. Load a pre-compiled BPF program (embedded as `BPF_OBJ`) attached to
-//!    `tracepoint/sock/inet_sock_set_state` via `aya::BpfLoader`.
+//!    `tracepoint/sock/inet_sock_set_state` via `aya::EbpfLoader`.
 //! 2. Read events from a `RingBuf` map in a background thread.
 //! 3. Map each event to `RawConn` (same type used by ETW and `/proc/net/tcp`).
 //! 4. Send over `mpsc::UnboundedSender<RawConn>` to the monitor hub.
@@ -99,12 +99,13 @@ mod linux_impl {
     }
 
     fn try_start(tx: mpsc::UnboundedSender<RawConn>) -> Result<(), String> {
-        use aya::BpfLoader;
+        use aya::EbpfLoader;
         use aya::maps::RingBuf;
         use aya::programs::TracePoint;
+        use std::convert::TryFrom;
 
         // Load the BPF object.
-        let mut bpf = BpfLoader::new()
+        let mut bpf = EbpfLoader::new()
             .load(BPF_OBJ)
             .map_err(|e| format!("BPF load failed: {e}"))?;
 
@@ -144,7 +145,7 @@ mod linux_impl {
     }
 
     fn reader_loop(
-        ring: Arc<std::sync::Mutex<RingBuf>>,
+        ring: Arc<std::sync::Mutex<RingBuf<aya::maps::MapData>>>,
         tx: mpsc::UnboundedSender<RawConn>,
     ) {
         loop {
