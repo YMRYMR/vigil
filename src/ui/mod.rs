@@ -34,6 +34,8 @@ pub struct TableState {
     pub sort_asc: bool,
     #[serde(default)]
     pub collapsed_pids: HashSet<u32>,
+    #[serde(default)]
+    pub expanded_endpoints: HashSet<String>,
 }
 impl TableState {
     pub fn new(default_col: usize, default_asc: bool) -> Self {
@@ -42,6 +44,7 @@ impl TableState {
             sort_col: default_col,
             sort_asc: default_asc,
             collapsed_pids: HashSet::new(),
+            expanded_endpoints: HashSet::new(),
         }
     }
     pub fn toggle(&mut self, col: usize) {
@@ -69,6 +72,14 @@ impl TableState {
     pub fn toggle_collapsed(&mut self, pid: u32) {
         if !self.collapsed_pids.insert(pid) {
             self.collapsed_pids.remove(&pid);
+        }
+    }
+    pub fn is_endpoint_expanded(&self, endpoint_key: &str) -> bool {
+        self.expanded_endpoints.contains(endpoint_key)
+    }
+    pub fn toggle_endpoint(&mut self, endpoint_key: &str) {
+        if !self.expanded_endpoints.insert(endpoint_key.to_string()) {
+            self.expanded_endpoints.remove(endpoint_key);
         }
     }
 }
