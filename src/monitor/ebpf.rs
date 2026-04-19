@@ -158,7 +158,7 @@ mod linux_impl {
             };
 
             while let Some(item) = ring.next() {
-                let data = item.as_ref();
+                let data: &[u8] = item.as_ref();
                 if data.len() < std::mem::size_of::<TcpEvent>() {
                     continue;
                 }
