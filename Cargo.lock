@@ -4712,6 +4712,7 @@ dependencies = [
  "egui_extras",
  "image",
  "ipnetwork",
+ "libc",
  "maxminddb",
  "notify",
  "notify-rust",

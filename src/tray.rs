@@ -135,9 +135,21 @@ pub fn run(
 ) {
     let icons = load_tray_icons();
 
-    // Try to set up the tray icon + menu. On Linux without GTK initialized
-    // (e.g. pure Wayland, headless), the Menu::new() call panics. Catch that
-    // and fall back to a notification-only loop.
+    // On non-Windows, the tray-icon crate uses GTK which requires a working
+    // display. Running under sudo or without a desktop session means GTK
+    // can't connect. Skip the entire GTK init to avoid panics and C-level
+    // warning spam on stderr.
+    #[cfg(not(windows))]
+    {
+        let has_display = std::env::var("DISPLAY").is_ok()
+            || std::env::var("WAYLAND_DISPLAY").is_ok();
+        let is_root = unsafe { libc::geteuid() == 0 };
+        if !has_display || is_root {
+            tracing::info!("system tray skipped ({}{})", if is_root { "running as root" } else { "no display" }, if !has_display { "" } else { " — display auth may fail" });
+            notification_only_loop(cmd_rx, show_window, pending_nav);
+            return;
+        }
+    }
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // ── Context menu ──────────────────────────────────────────────────
         let menu = Menu::new();
