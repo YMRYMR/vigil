@@ -4703,6 +4703,7 @@ version = "1.3.0"
 dependencies = [
  "auto-launch",
  "aya",
+ "bytes",
  "chrono",
  "dashmap",
  "dns-lookup",
