@@ -21,7 +21,7 @@
 use crate::types::ConnInfo;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc::Receiver, Arc, Mutex};
+use std::sync::{mpsc::Receiver, Arc, Mutex, OnceLock};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -112,6 +112,65 @@ fn apply_tray_visual_state(tray: &TrayIcon, icons: &TrayIcons, in_alert: bool, i
     }
 }
 
+// ── Linux themed icon helpers ─────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn linux_icon_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h))
+        .unwrap_or_default()
+        .join(".local/share/icons/hicolor/32x32/apps")
+}
+
+/// Decode embedded ICO assets and write PNG files to the themed icon directory
+/// so AppIndicator can find them by name.
+#[cfg(target_os = "linux")]
+fn ensure_themed_icons() {
+    let dir = linux_icon_dir();
+    let _ = std::fs::create_dir_all(&dir);
+
+    let icons: &[(&str, &[u8])] = &[
+        ("vigil-tray-green.png", TRAY_GREEN_ICO),
+        ("vigil-tray-orange.png", TRAY_ORANGE_ICO),
+        ("vigil-tray-red.png", TRAY_RED_ICO),
+    ];
+
+    for &(name, ico_bytes) in icons {
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        if let Ok(img) =
+            image::load_from_memory_with_format(ico_bytes, image::ImageFormat::Ico)
+        {
+            let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
+            let _ = img.save(&path);
+        }
+    }
+}
+
+/// Switch the AppIndicator themed icon by name (e.g. "vigil-tray-orange").
+#[cfg(target_os = "linux")]
+fn set_linux_tray_icon(tray: &TrayIcon, name: &str) {
+    unsafe {
+        let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
+        if !ai.is_null() {
+            (*ai).set_icon_full(name, "");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tray_icon_name(in_alert: bool, in_lockdown: bool) -> &'static str {
+    if in_lockdown {
+        "vigil-tray-red"
+    } else if in_alert {
+        "vigil-tray-orange"
+    } else {
+        "vigil-tray-green"
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 struct TrayIcons {
@@ -132,8 +191,12 @@ pub fn run(
     show_window: Arc<AtomicBool>,
     log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     let icons = load_tray_icons();
+
+    #[cfg(target_os = "linux")]
+    ensure_themed_icons();
 
     // On non-Windows, the tray-icon crate uses GTK which requires a working
     // display. Running under sudo or without a desktop session means GTK
@@ -188,10 +251,7 @@ pub fn run(
         unsafe {
             let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
             if !ai.is_null() {
-                let icon_dir = std::env::var_os("HOME")
-                    .map(|h| std::path::PathBuf::from(h))
-                    .unwrap_or_default()
-                    .join(".local/share/icons/hicolor/32x32/apps");
+                let icon_dir = linux_icon_dir();
                 if icon_dir.exists() {
                     (*ai).set_icon_theme_path(icon_dir.to_str().unwrap_or(""));
                     (*ai).set_icon_full("vigil-tray-green", "");
@@ -214,6 +274,7 @@ pub fn run(
                 log_dir,
                 show_window,
                 pending_nav,
+                egui_ctx,
             );
         }
         _ => {
@@ -259,6 +320,7 @@ fn event_loop(
     log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    _egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -331,7 +393,7 @@ fn event_loop(
 #[allow(clippy::too_many_arguments)]
 fn event_loop(
     tray: TrayIcon,
-    icons: TrayIcons,
+    _icons: TrayIcons,
     cmd_rx: Receiver<TrayCmd>,
     quit_id: tray_icon::menu::MenuId,
     open_id: tray_icon::menu::MenuId,
@@ -339,6 +401,7 @@ fn event_loop(
     log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     let _tray = tray;
     let ctx = glib::MainContext::default();
@@ -358,6 +421,9 @@ fn event_loop(
             } = ev
             {
                 show_window.store(true, Ordering::Relaxed);
+                if let Some(ec) = egui_ctx.get() {
+                    ec.request_repaint();
+                }
             }
         }
 
@@ -367,6 +433,9 @@ fn event_loop(
                 std::process::exit(0);
             } else if ev.id == open_id {
                 show_window.store(true, Ordering::Relaxed);
+                if let Some(ec) = egui_ctx.get() {
+                    ec.request_repaint();
+                }
             } else if ev.id == logs_id {
                 let _ = open::that(&log_dir);
             }
@@ -378,17 +447,18 @@ fn event_loop(
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                     in_alert = true;
-                    // NOTE: apply_tray_visual_state is NOT called here because
-                    // on Linux/GNOME it replaces the themed icon (set via
-                    // AppIndicator set_icon_full) with raw pixel data that
-                    // GNOME cannot render.  Icon state changes on Linux are
-                    // deferred until themed icons are available for all states.
+                    #[cfg(target_os = "linux")]
+                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
                 }
                 TrayCmd::ResetOk => {
                     in_alert = false;
+                    #[cfg(target_os = "linux")]
+                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
                 }
                 TrayCmd::SetLockdown(active) => {
                     in_lockdown = active;
+                    #[cfg(target_os = "linux")]
+                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
                 }
             }
         }

@@ -51,7 +51,6 @@ use config::Config;
 use monitor::Monitor;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
-
 fn load_app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil_icon.png"))
         .or_else(|_| eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil.png")))
@@ -159,9 +158,13 @@ fn main() {
     let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<tray::TrayCmd>(64);
     let ui_rx = ui::spawn_event_worker(event_rx, cfg.clone(), tray_tx.clone(), paused_flag.clone());
 
+    let egui_ctx: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
+    let egui_ctx_tray = egui_ctx.clone();
+    let egui_ctx_ui = egui_ctx.clone();
+
     std::thread::Builder::new()
         .name("vigil-tray".into())
-        .spawn(move || tray::run(tray_rx, show_window_tray, log_dir, pending_nav_tray))
+        .spawn(move || tray::run(tray_rx, show_window_tray, log_dir, pending_nav_tray, egui_ctx_tray))
         .expect("failed to spawn tray thread");
 
     let mut viewport = egui::ViewportBuilder::default()
@@ -192,6 +195,7 @@ fn main() {
                 show_window,
                 pending_nav_ui,
                 paused_flag,
+                egui_ctx_ui,
             )))
         }),
     )

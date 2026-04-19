@@ -390,8 +390,10 @@ impl VigilApp {
         show_window: Arc<AtomicBool>,
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
         paused_flag: Arc<AtomicBool>,
+        egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
+        let _ = egui_ctx.set(cc.egui_ctx.clone());
         let initial_ui_scale = {
             let c = cfg.read().unwrap();
             c.sanitised_ui_scale()
