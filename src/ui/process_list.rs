@@ -1060,7 +1060,7 @@ fn wrap_lines(text: &str, chars_per_line: usize) -> usize {
     len.div_ceil(chars_per_line)
 }
 
-fn process_meta_publisher(group: &ProcessGroup<'_>) -> &str {
+fn process_meta_publisher<'a>(group: &'a ProcessGroup<'a>) -> &'a str {
     if group.publisher.is_empty() {
         if group.service_name.is_empty() {
             group.parent_name
