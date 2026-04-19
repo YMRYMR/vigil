@@ -1,17 +1,17 @@
 //! Process-grouped connection list used by the Activity and Alerts tabs.
 //!
-//! One process becomes one card. Expanded cards now aggregate identical remote
-//! endpoints into summary rows, with raw per-socket rows hidden behind a second
-//! expansion step so high fan-out apps do not flood the UI by default.
+//! One process becomes one card. Each card shows summary metadata up top and
+//! then groups repeated sockets by remote endpoint so the UI stays useful even
+//! when a process opens many connections to the same destination.
 
 use crate::types::ConnInfo;
 use crate::ui::{theme, ProcessSelection, TableState};
 use egui::RichText;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 const CONN_TIME_W: f32 = 84.0;
 const CONN_REMOTE_W: f32 = 216.0;
-const CONN_STATUS_W: f32 = 120.0;
+const CONN_STATUS_W: f32 = 132.0;
 const CONN_SCORE_W: f32 = 44.0;
 const CONN_BADGE_GAP: f32 = 8.0;
 
@@ -36,6 +36,7 @@ struct ProcessGroup<'a> {
     latest_status: &'a str,
     latest_remote: &'a str,
     connections: Vec<&'a ConnInfo>,
+    endpoint_rows: Vec<EndpointRow<'a>>,
     score: u8,
     conn_count: usize,
     distinct_ports: usize,
@@ -48,16 +49,22 @@ struct ProcessGroup<'a> {
     tls_enriched: bool,
 }
 
-struct EndpointGroup<'a> {
-    remote_addr: &'a str,
+struct EndpointRow<'a> {
+    representative: &'a ConnInfo,
     latest_timestamp: &'a str,
-    latest_status: &'a str,
-    latest_connection: &'a ConnInfo,
-    connections: Vec<&'a ConnInfo>,
-    socket_count: usize,
-    local_ports: Vec<String>,
-    status_counts: Vec<(String, usize)>,
-    score: u8,
+    remote_addr: &'a str,
+    conn_count: usize,
+    local_port_count: usize,
+    statuses: Vec<String>,
+    status_summary: String,
+    max_score: u8,
+    pre_login: bool,
+    reputation_hit: bool,
+    recently_dropped: bool,
+    long_lived: bool,
+    dga_like: bool,
+    script_host_suspicious: bool,
+    baseline_deviation: bool,
     tls_enriched: bool,
 }
 
@@ -75,7 +82,7 @@ pub fn show(
     let mut groups = grouped_rows(rows, &state.filter, kind);
     sort_groups(&mut groups, state);
     for group in &mut groups {
-        sort_connections(group, state);
+        sort_endpoint_rows(group, state);
     }
 
     ui.add_space(8.0);
@@ -180,9 +187,20 @@ pub fn show(
                                         pill(
                                             ui,
                                             &format!(
-                                                "{} conn{}",
+                                                "{} socket{}",
                                                 group.conn_count,
                                                 if group.conn_count == 1 { "" } else { "s" }
+                                            ),
+                                            theme::TEXT2,
+                                            theme::SURFACE2,
+                                            theme::BORDER,
+                                        );
+                                        pill(
+                                            ui,
+                                            &format!(
+                                                "{} endpoint{}",
+                                                group.endpoint_rows.len(),
+                                                if group.endpoint_rows.len() == 1 { "" } else { "s" }
                                             ),
                                             theme::TEXT2,
                                             theme::SURFACE2,
@@ -205,31 +223,13 @@ pub fn show(
                                             );
                                         }
                                         if group.script_host_suspicious {
-                                            pill(
-                                                ui,
-                                                "Script host",
-                                                theme::WARN,
-                                                theme::WARN_BG,
-                                                theme::WARN,
-                                            );
+                                            pill(ui, "Script host", theme::WARN, theme::WARN_BG, theme::WARN);
                                         }
                                         if group.baseline_deviation {
-                                            pill(
-                                                ui,
-                                                "Baseline drift",
-                                                theme::ACCENT,
-                                                theme::ACCENT_BG,
-                                                theme::ACCENT,
-                                            );
+                                            pill(ui, "Baseline drift", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
                                         }
                                         if group.tls_enriched {
-                                            pill(
-                                                ui,
-                                                "TLS",
-                                                theme::ACCENT,
-                                                theme::ACCENT_BG,
-                                                theme::ACCENT,
-                                            );
+                                            pill(ui, "TLS", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
                                         }
                                     });
 
@@ -263,7 +263,7 @@ pub fn show(
                                     if !group.statuses.is_empty() {
                                         ui.label(
                                             RichText::new(format!(
-                                                "Statuses: {}",
+                                                "States seen: {}",
                                                 group.statuses.join(", ")
                                             ))
                                             .color(theme::TEXT3)
@@ -305,27 +305,23 @@ pub fn show(
                         }
 
                         if !collapsed {
-                            let endpoints = endpoint_groups(group, state);
-
                             ui.add_space(10.0);
                             ui.separator();
                             ui.add_space(8.0);
 
-                            let selected_conn = selected
-                                .as_ref()
-                                .and_then(|sel| sel.selected_connection.as_ref());
-
-                            for endpoint in &endpoints {
-                                let endpoint_selected = selected_conn
-                                    .is_some_and(|sel_conn| endpoint_matches_selection(endpoint, sel_conn));
-                                if let Some(clicked) = endpoint_line(
-                                    ui,
-                                    endpoint,
-                                    group.pid,
-                                    kind,
-                                    selected_conn,
-                                    endpoint_selected,
-                                ) {
+                            for endpoint in &group.endpoint_rows {
+                                let conn_selected = selected
+                                    .as_ref()
+                                    .and_then(|sel| sel.selected_connection.as_ref())
+                                    .is_some_and(|sel_conn| {
+                                        crate::ui::conn_matches_selection(
+                                            endpoint.representative,
+                                            Some(sel_conn),
+                                        )
+                                    });
+                                if let Some(clicked) =
+                                    endpoint_line(ui, endpoint, kind, conn_selected)
+                                {
                                     *selected = Some(selection_from_group(group, Some(clicked)));
                                 }
                                 ui.add_space(6.0);
@@ -334,9 +330,9 @@ pub fn show(
                             ui.add_space(8.0);
                             ui.label(
                                 RichText::new(format!(
-                                    "{} connection{} hidden",
-                                    group.conn_count,
-                                    if group.conn_count == 1 { "" } else { "s" }
+                                    "{} endpoint row{} hidden",
+                                    group.endpoint_rows.len(),
+                                    if group.endpoint_rows.len() == 1 { "" } else { "s" }
                                 ))
                                 .color(theme::TEXT3)
                                 .size(10.2),
@@ -349,12 +345,16 @@ pub fn show(
 
             let footer = match kind {
                 Kind::Activity => format!(
-                    "{} processes / {} connections",
-                    total_groups, total_connections
+                    "{} processes / {} sockets / {} endpoint rows",
+                    total_groups,
+                    total_connections,
+                    groups.iter().map(|g| g.endpoint_rows.len()).sum::<usize>()
                 ),
                 Kind::Alerts => format!(
-                    "{} alerting processes / {} alert rows",
-                    total_groups, total_connections
+                    "{} alerting processes / {} sockets / {} endpoint rows",
+                    total_groups,
+                    total_connections,
+                    groups.iter().map(|g| g.endpoint_rows.len()).sum::<usize>()
                 ),
             };
             ui.add_space(4.0);
@@ -386,8 +386,8 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Search").size(11.5).color(theme::TEXT3));
                 let hint = match kind {
-                    Kind::Activity => "filter by process, host, status, reason, or TLS…",
-                    Kind::Alerts => "filter alerts by process, host, status, reason, or TLS…",
+                    Kind::Activity => "filter by process, endpoint, state, reason, or TLS…",
+                    Kind::Alerts => "filter alerts by process, endpoint, state, reason, or TLS…",
                 };
                 let te = egui::TextEdit::singleline(&mut state.filter)
                     .hint_text(hint)
@@ -425,7 +425,7 @@ fn header_row(ui: &mut egui::Ui, state: &mut TableState) {
         header_chip(ui, "Time", 0, state, 88.0);
         header_chip(ui, "Process", 1, state, 220.0);
         header_chip(ui, "Fan-out", 2, state, 120.0);
-        header_chip(ui, "Status", 3, state, 160.0);
+        header_chip(ui, "State", 3, state, 160.0);
         header_chip(ui, "Score", 4, state, 72.0);
     });
 }
@@ -477,6 +477,7 @@ fn grouped_rows<'a>(
                 latest_status: &info.status,
                 latest_remote: &info.remote_addr,
                 connections: Vec::new(),
+                endpoint_rows: Vec::new(),
                 score: info.score,
                 conn_count: 0,
                 distinct_ports: 0,
@@ -510,6 +511,7 @@ fn grouped_rows<'a>(
             let mut statuses = Vec::new();
             let mut reasons = Vec::new();
             let mut attack_tags = Vec::new();
+            let mut endpoint_map: HashMap<String, EndpointAccumulator<'a>> = HashMap::new();
 
             for conn in &group.connections {
                 if conn.remote_addr != "LISTEN" {
@@ -526,6 +528,13 @@ fn grouped_rows<'a>(
                 group.baseline_deviation |= conn.baseline_deviation;
                 group.script_host_suspicious |= conn.script_host_suspicious;
                 group.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
+
+                let key = endpoint_key(conn);
+                if let Some(existing) = endpoint_map.get_mut(&key) {
+                    existing.add(conn);
+                } else {
+                    endpoint_map.insert(key, EndpointAccumulator::new(conn));
+                }
             }
 
             group.distinct_ports = ports.len();
@@ -533,10 +542,21 @@ fn grouped_rows<'a>(
             group.statuses = statuses;
             group.reasons = dedup_reasons(reasons);
             group.attack_tags = dedup_reasons(attack_tags);
+            group.endpoint_rows = endpoint_map
+                .into_values()
+                .map(EndpointAccumulator::finish)
+                .collect();
             if group.conn_count > 1 {
                 group.reasons.push(format!(
-                    "{} connections from the same process",
+                    "{} sockets from the same process",
                     group.conn_count
+                ));
+            }
+            if group.endpoint_rows.len() < group.conn_count {
+                group.reasons.push(format!(
+                    "{} repeated sockets collapsed into {} endpoint rows",
+                    group.conn_count,
+                    group.endpoint_rows.len()
                 ));
             }
             if group.distinct_ports > 1 {
@@ -562,77 +582,90 @@ fn grouped_rows<'a>(
     out
 }
 
-fn endpoint_groups<'a>(group: &'a ProcessGroup<'a>, state: &TableState) -> Vec<EndpointGroup<'a>> {
-    let mut grouped: HashMap<&'a str, EndpointGroup<'a>> = HashMap::new();
-    let mut order: Vec<&'a str> = Vec::new();
+struct EndpointAccumulator<'a> {
+    representative: &'a ConnInfo,
+    latest_timestamp: &'a str,
+    conn_count: usize,
+    local_ports: BTreeSet<String>,
+    statuses: Vec<String>,
+    max_score: u8,
+    pre_login: bool,
+    reputation_hit: bool,
+    recently_dropped: bool,
+    long_lived: bool,
+    dga_like: bool,
+    script_host_suspicious: bool,
+    baseline_deviation: bool,
+    tls_enriched: bool,
+}
 
-    for conn in &group.connections {
-        let entry = grouped.entry(conn.remote_addr.as_str()).or_insert_with(|| {
-            order.push(conn.remote_addr.as_str());
-            EndpointGroup {
-                remote_addr: &conn.remote_addr,
-                latest_timestamp: &conn.timestamp,
-                latest_status: &conn.status,
-                latest_connection: conn,
-                connections: Vec::new(),
-                socket_count: 0,
-                local_ports: Vec::new(),
-                status_counts: Vec::new(),
-                score: conn.score,
-                tls_enriched: conn.tls_sni.is_some() || conn.tls_ja3.is_some(),
-            }
-        });
-
-        entry.connections.push(conn);
-        entry.socket_count += 1;
-        entry.score = entry.score.max(conn.score);
-        entry.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
-        if conn.timestamp.as_str() > entry.latest_timestamp {
-            entry.latest_timestamp = &conn.timestamp;
-            entry.latest_status = &conn.status;
-            entry.latest_connection = conn;
-        }
-        if let Some(local_port) = parse_addr_port(&conn.local_addr) {
-            let local_port = local_port.to_string();
-            if !entry.local_ports.iter().any(|p| p == &local_port) {
-                entry.local_ports.push(local_port);
-            }
-        }
-    }
-
-    let mut out = Vec::new();
-    for remote in order {
-        if let Some(mut endpoint) = grouped.remove(remote) {
-            let mut counts = BTreeMap::new();
-            for conn in &endpoint.connections {
-                *counts.entry(conn.status.clone()).or_insert(0usize) += 1;
-            }
-            endpoint.status_counts = counts.into_iter().collect();
-            out.push(endpoint);
-        }
-    }
-
-    out.sort_by(|a, b| {
-        let ord = match state.sort_col {
-            0 => a.latest_timestamp.cmp(b.latest_timestamp),
-            1 => a.remote_addr.to_lowercase().cmp(&b.remote_addr.to_lowercase()),
-            2 => a
-                .socket_count
-                .cmp(&b.socket_count)
-                .then_with(|| a.local_ports.len().cmp(&b.local_ports.len())),
-            3 => endpoint_status_summary(&a.status_counts)
-                .cmp(&endpoint_status_summary(&b.status_counts)),
-            4 => a.score.cmp(&b.score),
-            _ => a.latest_timestamp.cmp(b.latest_timestamp),
+impl<'a> EndpointAccumulator<'a> {
+    fn new(conn: &'a ConnInfo) -> Self {
+        let mut acc = Self {
+            representative: conn,
+            latest_timestamp: &conn.timestamp,
+            conn_count: 0,
+            local_ports: BTreeSet::new(),
+            statuses: Vec::new(),
+            max_score: 0,
+            pre_login: false,
+            reputation_hit: false,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            script_host_suspicious: false,
+            baseline_deviation: false,
+            tls_enriched: false,
         };
-        if state.sort_asc {
-            ord
-        } else {
-            ord.reverse()
-        }
-    });
+        acc.add(conn);
+        acc
+    }
 
-    out
+    fn add(&mut self, conn: &'a ConnInfo) {
+        self.conn_count += 1;
+        if conn.timestamp.as_str() >= self.latest_timestamp {
+            self.latest_timestamp = &conn.timestamp;
+            self.representative = conn;
+        }
+        self.local_ports.insert(conn.local_addr.clone());
+        if !self.statuses.iter().any(|s| s == &conn.status) {
+            self.statuses.push(conn.status.clone());
+        }
+        self.max_score = self.max_score.max(conn.score);
+        self.pre_login |= conn.pre_login;
+        self.reputation_hit |= conn.reputation_hit.is_some();
+        self.recently_dropped |= conn.recently_dropped;
+        self.long_lived |= conn.long_lived;
+        self.dga_like |= conn.dga_like;
+        self.script_host_suspicious |= conn.script_host_suspicious;
+        self.baseline_deviation |= conn.baseline_deviation;
+        self.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
+    }
+
+    fn finish(self) -> EndpointRow<'a> {
+        EndpointRow {
+            representative: self.representative,
+            latest_timestamp: self.latest_timestamp,
+            remote_addr: &self.representative.remote_addr,
+            conn_count: self.conn_count,
+            local_port_count: self.local_ports.len().max(1),
+            status_summary: self.statuses.join(" + "),
+            statuses: self.statuses,
+            max_score: self.max_score,
+            pre_login: self.pre_login,
+            reputation_hit: self.reputation_hit,
+            recently_dropped: self.recently_dropped,
+            long_lived: self.long_lived,
+            dga_like: self.dga_like,
+            script_host_suspicious: self.script_host_suspicious,
+            baseline_deviation: self.baseline_deviation,
+            tls_enriched: self.tls_enriched,
+        }
+    }
+}
+
+fn endpoint_key(conn: &ConnInfo) -> String {
+    format!("{}|{}", conn.remote_addr, conn.hostname.as_deref().unwrap_or_default())
 }
 
 fn dedup_reasons(mut reasons: Vec<String>) -> Vec<String> {
@@ -683,226 +716,43 @@ fn sort_groups(groups: &mut [ProcessGroup<'_>], state: &TableState) {
             0 => a.latest_timestamp.cmp(b.latest_timestamp),
             1 => a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()),
             2 => a
-                .distinct_ports
-                .cmp(&b.distinct_ports)
-                .then_with(|| a.distinct_remotes.cmp(&b.distinct_remotes)),
+                .endpoint_rows
+                .len()
+                .cmp(&b.endpoint_rows.len())
+                .then_with(|| a.conn_count.cmp(&b.conn_count)),
             3 => a.latest_status.cmp(b.latest_status),
             4 => a.score.cmp(&b.score),
             _ => a.latest_timestamp.cmp(b.latest_timestamp),
         };
-        if state.sort_asc {
-            ord
-        } else {
-            ord.reverse()
-        }
+        if state.sort_asc { ord } else { ord.reverse() }
     });
 }
 
-fn sort_connections(group: &mut ProcessGroup<'_>, state: &TableState) {
-    group.connections.sort_by(|a, b| {
+fn sort_endpoint_rows(group: &mut ProcessGroup<'_>, state: &TableState) {
+    group.endpoint_rows.sort_by(|a, b| {
         let ord = match state.sort_col {
-            0 => a.timestamp.cmp(&b.timestamp),
-            1 => a.remote_addr.cmp(&b.remote_addr),
-            2 => a.status.cmp(&b.status),
-            3 => a.remote_addr.cmp(&b.remote_addr),
-            4 => a.score.cmp(&b.score),
-            _ => a.timestamp.cmp(&b.timestamp),
+            0 => a.latest_timestamp.cmp(b.latest_timestamp),
+            1 => a.remote_addr.cmp(b.remote_addr),
+            2 => a.conn_count.cmp(&b.conn_count).then_with(|| a.local_port_count.cmp(&b.local_port_count)),
+            3 => a.status_summary.cmp(&b.status_summary),
+            4 => a.max_score.cmp(&b.max_score),
+            _ => a.latest_timestamp.cmp(b.latest_timestamp),
         };
-        if state.sort_asc {
-            ord
-        } else {
-            ord.reverse()
-        }
+        if state.sort_asc { ord } else { ord.reverse() }
     });
-}
-
-fn endpoint_matches_selection(endpoint: &EndpointGroup<'_>, selected: &ConnInfo) -> bool {
-    endpoint
-        .connections
-        .iter()
-        .any(|conn| crate::ui::conn_matches_selection(conn, Some(selected)))
 }
 
 #[allow(deprecated)]
 fn endpoint_line(
     ui: &mut egui::Ui,
-    endpoint: &EndpointGroup<'_>,
-    pid: u32,
-    kind: Kind,
-    selected_connection: Option<&ConnInfo>,
-    selected: bool,
-) -> Option<ConnInfo> {
-    let h = 44.0;
-    let endpoint_id = endpoint_state_id(pid, endpoint.remote_addr);
-    let expanded = ui
-        .ctx()
-        .data(|d| d.get_temp::<bool>(endpoint_id).unwrap_or(false));
-    let (rect, row_resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-    let fill = if selected {
-        theme::SURFACE3
-    } else {
-        theme::SURFACE2
-    };
-    ui.painter()
-        .rect_filled(rect.shrink2(egui::vec2(1.0, 0.5)), 8.0, fill);
-    ui.painter().rect_stroke(
-        rect.shrink2(egui::vec2(1.0, 0.5)),
-        8.0,
-        egui::Stroke::new(1.0, theme::BORDER),
-        egui::StrokeKind::Outside,
-    );
-
-    let toggle_rect = egui::Rect::from_min_size(
-        rect.min + egui::vec2(8.0, 12.0),
-        egui::vec2(16.0, 16.0),
-    );
-    let toggle_resp = ui.put(
-        toggle_rect,
-        egui::Button::new(
-            RichText::new(if expanded { "v" } else { ">" })
-                .color(theme::TEXT2)
-                .size(10.0)
-                .monospace(),
-        )
-        .fill(egui::Color32::TRANSPARENT)
-        .stroke(egui::Stroke::NONE),
-    );
-    let toggled = toggle_resp
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text(if expanded {
-            "Hide raw sockets for this endpoint"
-        } else {
-            "Show raw sockets for this endpoint"
-        })
-        .clicked();
-    if toggled {
-        ui.ctx().data_mut(|d| d.insert_temp(endpoint_id, !expanded));
-    }
-
-    ui.allocate_ui_at_rect(rect.shrink2(egui::vec2(30.0, 5.0)), |ui| {
-        let avail = ui.available_width();
-        let fixed = CONN_TIME_W + CONN_REMOTE_W + CONN_STATUS_W + CONN_SCORE_W;
-        let badge_area = (avail - fixed - CONN_BADGE_GAP).max(0.0);
-
-        ui.vertical(|ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                ui.add_sized(
-                    [CONN_TIME_W, 16.0],
-                    egui::Label::new(
-                        RichText::new(endpoint.latest_timestamp)
-                            .color(theme::TEXT2)
-                            .size(10.5),
-                    ),
-                );
-                ui.add_sized(
-                    [CONN_REMOTE_W, 16.0],
-                    egui::Label::new(
-                        RichText::new(remote_label(endpoint.remote_addr))
-                            .color(theme::TEXT)
-                            .size(11.0),
-                    ),
-                );
-                ui.add_sized(
-                    [CONN_STATUS_W, 16.0],
-                    egui::Label::new(
-                        RichText::new(endpoint_status_summary(&endpoint.status_counts))
-                            .color(status_color(endpoint.latest_status))
-                            .size(10.2),
-                    ),
-                );
-                if let Kind::Alerts = kind {
-                    let (badge_rect, _) = ui.allocate_exact_size(
-                        egui::vec2(badge_area.max(0.0), 16.0),
-                        egui::Sense::hover(),
-                    );
-                    ui.allocate_ui_at_rect(badge_rect, |ui| {
-                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            badge_row(ui, endpoint.latest_connection);
-                            if endpoint.tls_enriched {
-                                ui.label(
-                                    RichText::new("TLS")
-                                        .color(theme::ACCENT)
-                                        .background_color(theme::ACCENT_BG)
-                                        .monospace()
-                                        .size(9.0),
-                                );
-                            }
-                        });
-                    });
-                } else {
-                    ui.add_space(badge_area.max(0.0));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (fg, bg) = theme::score_colors(endpoint.score);
-                    ui.label(
-                        RichText::new(format!("{:>2}", endpoint.score))
-                            .color(fg)
-                            .background_color(bg)
-                            .monospace()
-                            .size(10.5),
-                    );
-                });
-            });
-
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} socket{} | local ports: {}",
-                    endpoint.socket_count,
-                    if endpoint.socket_count == 1 { "" } else { "s" },
-                    summarize_ports(&endpoint.local_ports)
-                ))
-                .color(theme::TEXT3)
-                .size(9.8),
-            );
-        });
-    });
-
-    if row_resp
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Select this endpoint summary or expand it to inspect raw sockets.")
-        .clicked()
-        && !toggled
-    {
-        return Some(endpoint.latest_connection.clone());
-    }
-
-    if expanded {
-        ui.add_space(4.0);
-        for conn in &endpoint.connections {
-            let conn_selected = crate::ui::conn_matches_selection(conn, selected_connection);
-            let mut clicked_conn = None;
-            ui.horizontal(|ui| {
-                ui.add_space(18.0);
-                clicked_conn = connection_line(ui, conn, kind, conn_selected);
-            });
-            if let Some(clicked) = clicked_conn {
-                return Some(clicked);
-            }
-            ui.add_space(4.0);
-        }
-    }
-
-    None
-}
-
-#[allow(deprecated)]
-fn connection_line(
-    ui: &mut egui::Ui,
-    conn: &ConnInfo,
+    endpoint: &EndpointRow<'_>,
     kind: Kind,
     selected: bool,
 ) -> Option<ConnInfo> {
     let h = 30.0;
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-    let fill = if selected {
-        theme::SURFACE3
-    } else {
-        theme::SURFACE2
-    };
+    let fill = if selected { theme::SURFACE3 } else { theme::SURFACE2 };
     ui.painter()
         .rect_filled(rect.shrink2(egui::vec2(1.0, 0.5)), 8.0, fill);
     ui.painter().rect_stroke(
@@ -922,7 +772,7 @@ fn connection_line(
             ui.add_sized(
                 [CONN_TIME_W, 16.0],
                 egui::Label::new(
-                    RichText::new(&conn.timestamp)
+                    RichText::new(endpoint.latest_timestamp)
                         .color(theme::TEXT2)
                         .size(10.5),
                 ),
@@ -930,7 +780,7 @@ fn connection_line(
             ui.add_sized(
                 [CONN_REMOTE_W, 16.0],
                 egui::Label::new(
-                    RichText::new(remote_label(&conn.remote_addr))
+                    RichText::new(remote_label(endpoint.remote_addr))
                         .color(theme::TEXT)
                         .size(11.0),
                 ),
@@ -938,8 +788,8 @@ fn connection_line(
             ui.add_sized(
                 [CONN_STATUS_W, 16.0],
                 egui::Label::new(
-                    RichText::new(&conn.status)
-                        .color(status_color(&conn.status))
+                    RichText::new(&endpoint.status_summary)
+                        .color(status_summary_color(&endpoint.statuses))
                         .size(10.5),
                 ),
             );
@@ -951,17 +801,44 @@ fn connection_line(
                 );
                 ui.allocate_ui_at_rect(badge_rect, |ui| {
                     ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                        badge_row(ui, conn);
+                        badge_row(ui, endpoint);
+                        if endpoint.conn_count > 1 {
+                            ui.label(
+                                RichText::new(format!("x{}", endpoint.conn_count))
+                                    .color(theme::TEXT2)
+                                    .background_color(theme::SURFACE3)
+                                    .monospace()
+                                    .size(9.0),
+                            );
+                        }
                     });
                 });
             } else {
-                ui.add_space(badge_area.max(0.0));
+                let (meta_rect, _) = ui.allocate_exact_size(
+                    egui::vec2(badge_area.max(0.0), 16.0),
+                    egui::Sense::hover(),
+                );
+                ui.allocate_ui_at_rect(meta_rect, |ui| {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(format!(
+                                "{} socket{} / {} local port{}",
+                                endpoint.conn_count,
+                                if endpoint.conn_count == 1 { "" } else { "s" },
+                                endpoint.local_port_count,
+                                if endpoint.local_port_count == 1 { "" } else { "s" }
+                            ))
+                            .color(theme::TEXT3)
+                            .size(9.4),
+                        );
+                    });
+                });
             }
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (fg, bg) = theme::score_colors(conn.score);
+                let (fg, bg) = theme::score_colors(endpoint.max_score);
                 ui.label(
-                    RichText::new(format!("{:>2}", conn.score))
+                    RichText::new(format!("{:>2}", endpoint.max_score))
                         .color(fg)
                         .background_color(bg)
                         .monospace()
@@ -973,10 +850,14 @@ fn connection_line(
 
     let clicked = resp
         .on_hover_cursor(egui::CursorIcon::PointingHand)
-        .on_hover_text("Select this connection to inspect connection-level details.")
+        .on_hover_text(if endpoint.conn_count > 1 {
+            "Select the newest matching socket for this endpoint group."
+        } else {
+            "Select this connection to inspect connection-level details."
+        })
         .clicked();
     if clicked {
-        return Some(conn.clone());
+        return Some(endpoint.representative.clone());
     }
     None
 }
@@ -990,7 +871,7 @@ fn empty_state(ui: &mut egui::Ui, kind: Kind) {
     ui.label(RichText::new(text).color(theme::TEXT3).size(12.0));
 }
 
-fn badge_row(ui: &mut egui::Ui, info: &ConnInfo) {
+fn badge_row(ui: &mut egui::Ui, endpoint: &EndpointRow<'_>) {
     fn badge(ui: &mut egui::Ui, text: &str) {
         ui.label(
             RichText::new(text)
@@ -1000,28 +881,28 @@ fn badge_row(ui: &mut egui::Ui, info: &ConnInfo) {
                 .size(9.0),
         );
     }
-    if info.pre_login {
+    if endpoint.pre_login {
         badge(ui, "PL");
     }
-    if info.reputation_hit.is_some() {
+    if endpoint.reputation_hit {
         badge(ui, "REP");
     }
-    if info.recently_dropped {
+    if endpoint.recently_dropped {
         badge(ui, "DRP");
     }
-    if info.long_lived {
+    if endpoint.long_lived {
         badge(ui, "LL");
     }
-    if info.dga_like {
+    if endpoint.dga_like {
         badge(ui, "DGA");
     }
-    if info.script_host_suspicious {
+    if endpoint.script_host_suspicious {
         badge(ui, "SCR");
     }
-    if info.baseline_deviation {
+    if endpoint.baseline_deviation {
         badge(ui, "BASE");
     }
-    if info.tls_sni.is_some() || info.tls_ja3.is_some() {
+    if endpoint.tls_enriched {
         badge(ui, "TLS");
     }
 }
@@ -1033,44 +914,22 @@ fn matches_filter(info: &ConnInfo, lower: &str, kind: Kind) -> bool {
         || info.status.to_lowercase().contains(lower)
         || info.proc_path.to_lowercase().contains(lower)
         || info.local_addr.to_lowercase().contains(lower)
-        || info
-            .attack_tags
-            .iter()
-            .any(|tag| tag.to_lowercase().contains(lower))
-        || info
-            .tls_sni
-            .as_deref()
-            .map(|s| s.to_lowercase().contains(lower))
-            .unwrap_or(false)
-        || info
-            .tls_ja3
-            .as_deref()
-            .map(|s| s.to_lowercase().contains(lower))
-            .unwrap_or(false);
+        || info.attack_tags.iter().any(|tag| tag.to_lowercase().contains(lower))
+        || info.tls_sni.as_deref().map(|s| s.to_lowercase().contains(lower)).unwrap_or(false)
+        || info.tls_ja3.as_deref().map(|s| s.to_lowercase().contains(lower)).unwrap_or(false);
 
     if lower.is_empty() {
         return true;
     }
-
     if base {
         return true;
     }
 
     match kind {
         Kind::Activity | Kind::Alerts => {
-            info.reasons
-                .iter()
-                .any(|s| s.to_lowercase().contains(lower))
-                || info
-                    .hostname
-                    .as_deref()
-                    .map(|h| h.to_lowercase().contains(lower))
-                    .unwrap_or(false)
-                || info
-                    .country
-                    .as_deref()
-                    .map(|c| c.to_lowercase().contains(lower))
-                    .unwrap_or(false)
+            info.reasons.iter().any(|s| s.to_lowercase().contains(lower))
+                || info.hostname.as_deref().map(|h| h.to_lowercase().contains(lower)).unwrap_or(false)
+                || info.country.as_deref().map(|c| c.to_lowercase().contains(lower)).unwrap_or(false)
         }
     }
 }
@@ -1095,9 +954,20 @@ fn status_color(status: &str) -> egui::Color32 {
         "ESTABLISHED" => theme::ACCENT,
         "LISTEN" => theme::TEXT2,
         "SYN_SENT" | "SYN_RECV" => theme::WARN,
-        "CLOSE_WAIT" | "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK"
-        | "CLOSING" | "DELETE_TCB" => theme::TEXT3,
+        "CLOSE_WAIT" | "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK" | "CLOSING" => theme::TEXT3,
         _ => theme::TEXT2,
+    }
+}
+
+fn status_summary_color(statuses: &[String]) -> egui::Color32 {
+    if statuses.iter().any(|s| s == "SYN_SENT" || s == "SYN_RECV") {
+        theme::WARN
+    } else if statuses.iter().any(|s| s == "ESTABLISHED") {
+        theme::ACCENT
+    } else if statuses.iter().any(|s| matches!(s.as_str(), "FIN_WAIT1" | "FIN_WAIT2" | "CLOSE_WAIT" | "TIME_WAIT" | "LAST_ACK" | "CLOSING")) {
+        theme::TEXT3
+    } else {
+        theme::TEXT2
     }
 }
 
@@ -1111,73 +981,17 @@ fn remote_label(remote: &str) -> String {
 }
 
 fn parse_port(remote: &str) -> Option<u16> {
-    parse_addr_port(remote)
-}
-
-fn parse_addr_port(addr: &str) -> Option<u16> {
-    addr.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
-}
-
-fn endpoint_status_summary(counts: &[(String, usize)]) -> String {
-    counts
-        .iter()
-        .map(|(status, count)| format!("{} {}", status_abbrev(status), count))
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-fn status_abbrev(status: &str) -> &str {
-    match status {
-        "ESTABLISHED" => "EST",
-        "LISTEN" => "LIS",
-        "SYN_SENT" => "SYN",
-        "SYN_RECV" => "SNR",
-        "CLOSE_WAIT" => "CW",
-        "TIME_WAIT" => "TW",
-        "FIN_WAIT1" => "FW1",
-        "FIN_WAIT2" => "FW2",
-        "LAST_ACK" => "LA",
-        "CLOSING" => "CLS",
-        "DELETE_TCB" => "DEL",
-        _ => status,
-    }
-}
-
-fn summarize_ports(ports: &[String]) -> String {
-    if ports.is_empty() {
-        return "none".to_string();
-    }
-    const MAX_PORTS: usize = 5;
-    if ports.len() <= MAX_PORTS {
-        return ports.join(", ");
-    }
-    format!("{}, +{} more", ports[..MAX_PORTS].join(", "), ports.len() - MAX_PORTS)
-}
-
-fn endpoint_state_id(pid: u32, remote: &str) -> egui::Id {
-    egui::Id::new(("endpoint", pid, remote))
+    remote.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
 }
 
 fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> u8 {
     let mut bonus = 0;
-    if conns >= 2 {
-        bonus += 1;
-    }
-    if conns >= 4 {
-        bonus += 1;
-    }
-    if ports >= 2 {
-        bonus += 1;
-    }
-    if ports >= 4 {
-        bonus += 1;
-    }
-    if remotes >= 3 {
-        bonus += 1;
-    }
-    if statuses >= 3 {
-        bonus += 1;
-    }
+    if conns >= 2 { bonus += 1; }
+    if conns >= 4 { bonus += 1; }
+    if ports >= 2 { bonus += 1; }
+    if ports >= 4 { bonus += 1; }
+    if remotes >= 3 { bonus += 1; }
+    if statuses >= 3 { bonus += 1; }
     bonus.min(4)
 }
 
