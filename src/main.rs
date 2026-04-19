@@ -166,6 +166,7 @@ fn main() {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Vigil")
+        .with_app_id("vigil")
         .with_inner_size([1080.0, 680.0])
         .with_min_inner_size([700.0, 440.0]);
     if let Some(icon) = load_app_icon() {
