@@ -378,15 +378,17 @@ fn event_loop(
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                     in_alert = true;
-                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
+                    // NOTE: apply_tray_visual_state is NOT called here because
+                    // on Linux/GNOME it replaces the themed icon (set via
+                    // AppIndicator set_icon_full) with raw pixel data that
+                    // GNOME cannot render.  Icon state changes on Linux are
+                    // deferred until themed icons are available for all states.
                 }
                 TrayCmd::ResetOk => {
                     in_alert = false;
-                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
                 }
                 TrayCmd::SetLockdown(active) => {
                     in_lockdown = active;
-                    apply_tray_visual_state(&_tray, &icons, in_alert, in_lockdown);
                 }
             }
         }
