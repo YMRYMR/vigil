@@ -274,6 +274,12 @@ Replace the polling fallback on non-Windows platforms with real-time, kernel-lev
 - [ ] Privilege-gated policy edits
 - [ ] Self-protection and tamper evidence
 - [ ] Secure update channel
+- [ ] **Linux active-response parity** — all response actions must work cross-platform:
+  - Network isolation via `iptables`/`nftables` (gated on `CAP_NET_ADMIN` or root)
+  - Kill TCP connection via `ss -K` or `/proc` socket lookup
+  - Suspend/resume process via `kill -STOP`/`kill -CONT`
+  - Block IP via `iptables -A INPUT -s <ip> -j DROP`
+  - Elevated check: verify effective capabilities, not just uid 0
 
 ---
 
