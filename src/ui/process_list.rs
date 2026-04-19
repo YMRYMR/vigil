@@ -1,13 +1,13 @@
 //! Process-grouped connection list used by the Activity and Alerts tabs.
 //!
-//! One process becomes one card. Each card shows summary metadata up top and
-//! then stacks the individual connections underneath so row height expands and
-//! contracts with connection fan-out.
+//! One process becomes one card. Expanded cards now aggregate identical remote
+//! endpoints into summary rows, with raw per-socket rows hidden behind a second
+//! expansion step so high fan-out apps do not flood the UI by default.
 
 use crate::types::ConnInfo;
 use crate::ui::{theme, ProcessSelection, TableState};
 use egui::RichText;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 const CONN_TIME_W: f32 = 84.0;
 const CONN_REMOTE_W: f32 = 216.0;
@@ -45,6 +45,19 @@ struct ProcessGroup<'a> {
     attack_tags: Vec<String>,
     baseline_deviation: bool,
     script_host_suspicious: bool,
+    tls_enriched: bool,
+}
+
+struct EndpointGroup<'a> {
+    remote_addr: &'a str,
+    latest_timestamp: &'a str,
+    latest_status: &'a str,
+    latest_connection: &'a ConnInfo,
+    connections: Vec<&'a ConnInfo>,
+    socket_count: usize,
+    local_ports: Vec<String>,
+    status_counts: Vec<(String, usize)>,
+    score: u8,
     tls_enriched: bool,
 }
 
@@ -292,20 +305,25 @@ pub fn show(
                         }
 
                         if !collapsed {
+                            let endpoints = endpoint_groups(group, state);
+
                             ui.add_space(10.0);
                             ui.separator();
                             ui.add_space(8.0);
 
-                            for conn in &group.connections {
-                                let conn_selected = selected
+                            for endpoint in &endpoints {
+                                let endpoint_selected = selected
                                     .as_ref()
                                     .and_then(|sel| sel.selected_connection.as_ref())
-                                    .is_some_and(|sel_conn| {
-                                        crate::ui::conn_matches_selection(conn, Some(sel_conn))
-                                    });
-                                if let Some(clicked) =
-                                    connection_line(ui, conn, kind, conn_selected)
-                                {
+                                    .is_some_and(|sel_conn| endpoint_matches_selection(endpoint, sel_conn));
+                                if let Some(clicked) = endpoint_line(
+                                    ui,
+                                    endpoint,
+                                    group.pid,
+                                    kind,
+                                    state,
+                                    endpoint_selected,
+                                ) {
                                     *selected = Some(selection_from_group(group, Some(clicked)));
                                 }
                                 ui.add_space(6.0);
@@ -542,6 +560,79 @@ fn grouped_rows<'a>(
     out
 }
 
+fn endpoint_groups<'a>(group: &'a ProcessGroup<'a>, state: &TableState) -> Vec<EndpointGroup<'a>> {
+    let mut grouped: HashMap<&'a str, EndpointGroup<'a>> = HashMap::new();
+    let mut order: Vec<&'a str> = Vec::new();
+
+    for conn in &group.connections {
+        let entry = grouped.entry(conn.remote_addr.as_str()).or_insert_with(|| {
+            order.push(conn.remote_addr.as_str());
+            EndpointGroup {
+                remote_addr: &conn.remote_addr,
+                latest_timestamp: &conn.timestamp,
+                latest_status: &conn.status,
+                latest_connection: conn,
+                connections: Vec::new(),
+                socket_count: 0,
+                local_ports: Vec::new(),
+                status_counts: Vec::new(),
+                score: conn.score,
+                tls_enriched: conn.tls_sni.is_some() || conn.tls_ja3.is_some(),
+            }
+        });
+
+        entry.connections.push(conn);
+        entry.socket_count += 1;
+        entry.score = entry.score.max(conn.score);
+        entry.tls_enriched |= conn.tls_sni.is_some() || conn.tls_ja3.is_some();
+        if conn.timestamp.as_str() > entry.latest_timestamp {
+            entry.latest_timestamp = &conn.timestamp;
+            entry.latest_status = &conn.status;
+            entry.latest_connection = conn;
+        }
+        if let Some(local_port) = parse_addr_port(&conn.local_addr) {
+            let local_port = local_port.to_string();
+            if !entry.local_ports.iter().any(|p| p == &local_port) {
+                entry.local_ports.push(local_port);
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for remote in order {
+        if let Some(mut endpoint) = grouped.remove(remote) {
+            let mut counts = BTreeMap::new();
+            for conn in &endpoint.connections {
+                *counts.entry(conn.status.clone()).or_insert(0usize) += 1;
+            }
+            endpoint.status_counts = counts.into_iter().collect();
+            out.push(endpoint);
+        }
+    }
+
+    out.sort_by(|a, b| {
+        let ord = match state.sort_col {
+            0 => a.latest_timestamp.cmp(b.latest_timestamp),
+            1 => a.remote_addr.to_lowercase().cmp(&b.remote_addr.to_lowercase()),
+            2 => a
+                .socket_count
+                .cmp(&b.socket_count)
+                .then_with(|| a.local_ports.len().cmp(&b.local_ports.len())),
+            3 => endpoint_status_summary(&a.status_counts)
+                .cmp(&endpoint_status_summary(&b.status_counts)),
+            4 => a.score.cmp(&b.score),
+            _ => a.latest_timestamp.cmp(b.latest_timestamp),
+        };
+        if state.sort_asc {
+            ord
+        } else {
+            ord.reverse()
+        }
+    });
+
+    out
+}
+
 fn dedup_reasons(mut reasons: Vec<String>) -> Vec<String> {
     let mut seen = HashSet::new();
     reasons
@@ -621,6 +712,179 @@ fn sort_connections(group: &mut ProcessGroup<'_>, state: &TableState) {
             ord.reverse()
         }
     });
+}
+
+fn endpoint_matches_selection(endpoint: &EndpointGroup<'_>, selected: &ConnInfo) -> bool {
+    endpoint
+        .connections
+        .iter()
+        .any(|conn| crate::ui::conn_matches_selection(conn, Some(selected)))
+}
+
+#[allow(deprecated)]
+fn endpoint_line(
+    ui: &mut egui::Ui,
+    endpoint: &EndpointGroup<'_>,
+    pid: u32,
+    kind: Kind,
+    state: &mut TableState,
+    selected: bool,
+) -> Option<ConnInfo> {
+    let h = 44.0;
+    let endpoint_key = endpoint_state_key(pid, endpoint.remote_addr);
+    let expanded = state.is_endpoint_expanded(&endpoint_key);
+    let (rect, row_resp) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
+    let fill = if selected {
+        theme::SURFACE3
+    } else {
+        theme::SURFACE2
+    };
+    ui.painter()
+        .rect_filled(rect.shrink2(egui::vec2(1.0, 0.5)), 8.0, fill);
+    ui.painter().rect_stroke(
+        rect.shrink2(egui::vec2(1.0, 0.5)),
+        8.0,
+        egui::Stroke::new(1.0, theme::BORDER),
+        egui::StrokeKind::Outside,
+    );
+
+    let toggle_rect = egui::Rect::from_min_size(
+        rect.min + egui::vec2(8.0, 12.0),
+        egui::vec2(16.0, 16.0),
+    );
+    let toggle_resp = ui.put(
+        toggle_rect,
+        egui::Button::new(
+            RichText::new(if expanded { "v" } else { ">" })
+                .color(theme::TEXT2)
+                .size(10.0)
+                .monospace(),
+        )
+        .fill(egui::Color32::TRANSPARENT)
+        .stroke(egui::Stroke::NONE),
+    );
+    let toggled = toggle_resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text(if expanded {
+            "Hide raw sockets for this endpoint"
+        } else {
+            "Show raw sockets for this endpoint"
+        })
+        .clicked();
+    if toggled {
+        state.toggle_endpoint(&endpoint_key);
+    }
+
+    ui.allocate_ui_at_rect(rect.shrink2(egui::vec2(30.0, 5.0)), |ui| {
+        let avail = ui.available_width();
+        let fixed = CONN_TIME_W + CONN_REMOTE_W + CONN_STATUS_W + CONN_SCORE_W;
+        let badge_area = (avail - fixed - CONN_BADGE_GAP).max(0.0);
+
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.add_sized(
+                    [CONN_TIME_W, 16.0],
+                    egui::Label::new(
+                        RichText::new(endpoint.latest_timestamp)
+                            .color(theme::TEXT2)
+                            .size(10.5),
+                    ),
+                );
+                ui.add_sized(
+                    [CONN_REMOTE_W, 16.0],
+                    egui::Label::new(
+                        RichText::new(remote_label(endpoint.remote_addr))
+                            .color(theme::TEXT)
+                            .size(11.0),
+                    ),
+                );
+                ui.add_sized(
+                    [CONN_STATUS_W, 16.0],
+                    egui::Label::new(
+                        RichText::new(endpoint_status_summary(&endpoint.status_counts))
+                            .color(status_color(endpoint.latest_status))
+                            .size(10.2),
+                    ),
+                );
+                if let Kind::Alerts = kind {
+                    let (badge_rect, _) = ui.allocate_exact_size(
+                        egui::vec2(badge_area.max(0.0), 16.0),
+                        egui::Sense::hover(),
+                    );
+                    ui.allocate_ui_at_rect(badge_rect, |ui| {
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            badge_row(ui, endpoint.latest_connection);
+                            if endpoint.tls_enriched {
+                                ui.label(
+                                    RichText::new("TLS")
+                                        .color(theme::ACCENT)
+                                        .background_color(theme::ACCENT_BG)
+                                        .monospace()
+                                        .size(9.0),
+                                );
+                            }
+                        });
+                    });
+                } else {
+                    ui.add_space(badge_area.max(0.0));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (fg, bg) = theme::score_colors(endpoint.score);
+                    ui.label(
+                        RichText::new(format!("{:>2}", endpoint.score))
+                            .color(fg)
+                            .background_color(bg)
+                            .monospace()
+                            .size(10.5),
+                    );
+                });
+            });
+
+            ui.add_space(2.0);
+            ui.label(
+                RichText::new(format!(
+                    "{} socket{} | local ports: {}",
+                    endpoint.socket_count,
+                    if endpoint.socket_count == 1 { "" } else { "s" },
+                    summarize_ports(&endpoint.local_ports)
+                ))
+                .color(theme::TEXT3)
+                .size(9.8),
+            );
+        });
+    });
+
+    if row_resp
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Select this endpoint summary or expand it to inspect raw sockets.")
+        .clicked()
+        && !toggled
+    {
+        return Some(endpoint.latest_connection.clone());
+    }
+
+    if expanded {
+        ui.add_space(4.0);
+        for conn in &endpoint.connections {
+            let conn_selected = selected
+                && endpoint
+                    .connections
+                    .iter()
+                    .any(|candidate| crate::ui::conn_matches_selection(candidate, Some(conn)));
+            ui.horizontal(|ui| {
+                ui.add_space(18.0);
+                if let Some(clicked) = connection_line(ui, conn, kind, conn_selected) {
+                    return Some(clicked);
+                }
+                None
+            })?;
+            ui.add_space(4.0);
+        }
+    }
+
+    None
 }
 
 #[allow(deprecated)]
@@ -830,7 +1094,8 @@ fn status_color(status: &str) -> egui::Color32 {
         "ESTABLISHED" => theme::ACCENT,
         "LISTEN" => theme::TEXT2,
         "SYN_SENT" | "SYN_RECV" => theme::WARN,
-        "CLOSE_WAIT" | "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" => theme::TEXT3,
+        "CLOSE_WAIT" | "TIME_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK"
+        | "CLOSING" | "DELETE_TCB" => theme::TEXT3,
         _ => theme::TEXT2,
     }
 }
@@ -845,9 +1110,51 @@ fn remote_label(remote: &str) -> String {
 }
 
 fn parse_port(remote: &str) -> Option<u16> {
-    remote
-        .rsplit_once(':')
-        .and_then(|(_, port)| port.parse().ok())
+    parse_addr_port(remote)
+}
+
+fn parse_addr_port(addr: &str) -> Option<u16> {
+    addr.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
+}
+
+fn endpoint_status_summary(counts: &[(String, usize)]) -> String {
+    counts
+        .iter()
+        .map(|(status, count)| format!("{} {}", status_abbrev(status), count))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn status_abbrev(status: &str) -> &str {
+    match status {
+        "ESTABLISHED" => "EST",
+        "LISTEN" => "LIS",
+        "SYN_SENT" => "SYN",
+        "SYN_RECV" => "SNR",
+        "CLOSE_WAIT" => "CW",
+        "TIME_WAIT" => "TW",
+        "FIN_WAIT1" => "FW1",
+        "FIN_WAIT2" => "FW2",
+        "LAST_ACK" => "LA",
+        "CLOSING" => "CLS",
+        "DELETE_TCB" => "DEL",
+        _ => status,
+    }
+}
+
+fn summarize_ports(ports: &[String]) -> String {
+    if ports.is_empty() {
+        return "none".to_string();
+    }
+    const MAX_PORTS: usize = 5;
+    if ports.len() <= MAX_PORTS {
+        return ports.join(", ");
+    }
+    format!("{}, +{} more", ports[..MAX_PORTS].join(", "), ports.len() - MAX_PORTS)
+}
+
+fn endpoint_state_key(pid: u32, remote: &str) -> String {
+    format!("endpoint::{pid}::{remote}")
 }
 
 fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> u8 {
