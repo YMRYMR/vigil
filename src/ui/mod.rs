@@ -346,8 +346,6 @@ pub struct VigilApp {
     activity_table: TableState,
     alerts_table: TableState,
 }
-const ACTIVITY_CAP: usize = 4096;
-const ALERTS_CAP: usize = 2048;
 const UI_EVENT_BUDGET: usize = 128;
 const UI_IDLE_REPAINT: std::time::Duration = std::time::Duration::from_secs(1);
 const UI_BUSY_REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
@@ -451,8 +449,21 @@ impl VigilApp {
             self.last_applied_pixels_per_point = Some(target_ppp);
         }
     }
+    fn history_caps(&self) -> (usize, usize) {
+        let cfg = self.cfg.read().unwrap();
+        (
+            cfg.sanitised_activity_history_cap(),
+            cfg.sanitised_alerts_history_cap(),
+        )
+    }
+    fn trim_history_buffers(&mut self) {
+        let (activity_cap, alerts_cap) = self.history_caps();
+        truncate_deque(&mut self.activity, activity_cap);
+        truncate_deque(&mut self.alerts, alerts_cap);
+    }
     fn drain_events(&mut self, max_events: usize) -> bool {
         let mut handled = false;
+        let (activity_cap, alerts_cap) = self.history_caps();
         for _ in 0..max_events {
             match self.ui_rx.try_recv() {
                 Ok(message) => {
@@ -465,12 +476,12 @@ impl VigilApp {
                             }
                             match event {
                                 ConnEvent::Alert(info) => {
-                                    push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
-                                    push_capped(&mut self.alerts, info.clone(), ALERTS_CAP);
+                                    push_capped(&mut self.activity, info.clone(), activity_cap);
+                                    push_capped(&mut self.alerts, info.clone(), alerts_cap);
                                     self.unseen_alerts += 1;
                                 }
                                 ConnEvent::New(info) => {
-                                    push_capped(&mut self.activity, info.clone(), ACTIVITY_CAP);
+                                    push_capped(&mut self.activity, info.clone(), activity_cap);
                                 }
                                 ConnEvent::Closed { .. } => {}
                             }
@@ -858,6 +869,7 @@ impl eframe::App for VigilApp {
         self.refresh_active_response_state();
         self.poll_network_operation();
         self.sync_tray_state();
+        self.trim_history_buffers();
         if self.show_window.swap(false, Ordering::Relaxed) {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
@@ -1589,6 +1601,11 @@ impl VigilApp {
 fn push_capped<T>(deque: &mut VecDeque<T>, item: T, cap: usize) {
     deque.push_front(item);
     if deque.len() > cap {
+        deque.pop_back();
+    }
+}
+fn truncate_deque<T>(deque: &mut VecDeque<T>, cap: usize) {
+    while deque.len() > cap {
         deque.pop_back();
     }
 }
