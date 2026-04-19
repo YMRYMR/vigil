@@ -28,6 +28,7 @@ pub fn start(_tx: tokio::sync::mpsc::UnboundedSender<RawConn>) -> bool {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::super::poll::RawConn;
+    use aya::maps::{MapData, RingBuf};
     use std::net::{Ipv4Addr, Ipv6Addr};
     use std::sync::Arc;
     use tokio::sync::mpsc;
@@ -100,7 +101,6 @@ mod linux_impl {
 
     fn try_start(tx: mpsc::UnboundedSender<RawConn>) -> Result<(), String> {
         use aya::EbpfLoader;
-        use aya::maps::RingBuf;
         use aya::programs::TracePoint;
         use std::convert::TryFrom;
 
@@ -145,7 +145,7 @@ mod linux_impl {
     }
 
     fn reader_loop(
-        ring: Arc<std::sync::Mutex<RingBuf<aya::maps::MapData>>>,
+        ring: Arc<std::sync::Mutex<RingBuf<MapData>>>,
         tx: mpsc::UnboundedSender<RawConn>,
     ) {
         loop {
