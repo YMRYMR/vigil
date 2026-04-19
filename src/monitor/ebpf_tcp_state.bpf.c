@@ -1,6 +1,8 @@
 // eBPF tracepoint: sock:inet_sock_set_state
 // Reports TCP state transitions in real time.
 //
+// Uses PERF_EVENT_ARRAY (compatible with aya 0.13) instead of ringbuf.
+//
 // Compile:
 //   clang -target bpf -O2 -g -D__TARGET_ARCH_x86 \
 //     -I/usr/include/x86_64-linux-gnu \
@@ -15,6 +17,7 @@
 //       hex_str = ', '.join(f'0x{b:02x}' for b in chunk)
 //       lines.append('    ' + hex_str + ',')
 //     print('/// Pre-compiled eBPF object for sock:inet_sock_set_state tracepoint.')
+//     print('/// Generated from ebpf_tcp_state.bpf.c (perf_event_array) compiled with clang -target bpf.')
 //     print('pub const BPF_OBJ: &[u8] = &[')
 //     print(chr(10).join(lines))
 //     print('];')
@@ -44,10 +47,11 @@ struct tcp_event {
     int newstate;
 };
 
-// Ring buffer for events.
+// Perf event array for events (compatible with aya PerfEventArray).
 struct {
-    __uint(type, BPF_MAP_TYPE_RINGBUF);
-    __uint(max_entries, 256 * 1024);
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, sizeof(__u32));
 } events SEC(".maps");
 
 // Tracepoint context matching kernel ABI.
@@ -77,23 +81,20 @@ int trace_inet_sock_set_state(struct inet_sock_set_state_ctx *ctx)
     if (ctx->protocol != 6)
         return 0;
 
-    struct tcp_event *e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-    if (!e)
-        return 0;
+    struct tcp_event e = {};
+    e.pid = bpf_get_current_pid_tgid() >> 32;
+    e.family = ctx->family;
+    e.sport = ctx->sport;
+    e.dport = ctx->dport;
+    e.oldstate = ctx->oldstate;
+    e.newstate = ctx->newstate;
 
-    e->pid = bpf_get_current_pid_tgid() >> 32;
-    e->family = ctx->family;
-    e->sport = ctx->sport;
-    e->dport = ctx->dport;
-    e->oldstate = ctx->oldstate;
-    e->newstate = ctx->newstate;
+    __builtin_memcpy(&e.saddr, ctx->saddr, 4);
+    __builtin_memcpy(&e.daddr, ctx->daddr, 4);
+    __builtin_memcpy(e.saddr_v6, ctx->saddr_v6, 16);
+    __builtin_memcpy(e.daddr_v6, ctx->daddr_v6, 16);
 
-    __builtin_memcpy(&e->saddr, ctx->saddr, 4);
-    __builtin_memcpy(&e->daddr, ctx->daddr, 4);
-    __builtin_memcpy(e->saddr_v6, ctx->saddr_v6, 16);
-    __builtin_memcpy(e->daddr_v6, ctx->daddr_v6, 16);
-
-    bpf_ringbuf_submit(e, 0);
+    bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &e, sizeof(e));
     return 0;
 }
 

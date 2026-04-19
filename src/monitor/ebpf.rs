@@ -1,13 +1,13 @@
 //! Linux eBPF-based real-time TCP connection monitoring.
 //!
 //! Attaches to the `sock:inet_sock_set_state` tracepoint for sub-100ms
-//! connect/accept/close events with full process context (PID, UID, cgroup).
+//! connect/accept/close events with full process context (PID, sport, dport).
 //!
 //! ## Architecture
 //!
 //! 1. Load a pre-compiled BPF program (embedded as `BPF_OBJ`) attached to
 //!    `tracepoint/sock/inet_sock_set_state` via `aya::EbpfLoader`.
-//! 2. Read events from a `RingBuf` map in a background thread.
+//! 2. Read events from a `PerfEventArray` in a background thread.
 //! 3. Map each event to `RawConn` (same type used by ETW and `/proc/net/tcp`).
 //! 4. Send over `mpsc::UnboundedSender<RawConn>` to the monitor hub.
 //! 5. If eBPF is unavailable (old kernel, missing `CAP_BPF`), fall back to
@@ -28,13 +28,12 @@ pub fn start(_tx: tokio::sync::mpsc::UnboundedSender<RawConn>) -> bool {
 #[cfg(target_os = "linux")]
 mod linux_impl {
     use super::super::poll::RawConn;
-    use aya::maps::{MapData, RingBuf};
+    use aya::maps::perf::PerfEventArray;
     use std::net::{Ipv4Addr, Ipv6Addr};
-    use std::sync::Arc;
     use tokio::sync::mpsc;
 
     /// Event struct matching the BPF program's `struct tcp_event`.
-    /// Layout must be identical to the C struct in tcp_state.bpf.c.
+    /// Layout must be identical to the C struct in ebpf_tcp_state.bpf.c.
     #[repr(C)]
     #[derive(Debug)]
     struct TcpEvent {
@@ -124,59 +123,83 @@ mod linux_impl {
             .attach("sock", "inet_sock_set_state")
             .map_err(|e| format!("BPF attach failed: {e}"))?;
 
-        // Get the ring buffer map.
-        let ring = RingBuf::try_from(bpf.take_map("events").ok_or("BPF map 'events' not found")?)
-            .map_err(|e| format!("ringbuf map error: {e}"))?;
+        // Get the perf event array map.
+        let mut perf_array = PerfEventArray::try_from(
+            bpf.take_map("events").ok_or("BPF map 'events' not found")?,
+        )
+        .map_err(|e| format!("perf event array error: {e}"))?;
 
-        let ring = Arc::new(std::sync::Mutex::new(ring));
+        // Open a buffer for each online CPU.
+        let num_cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let mut buffers = Vec::new();
+        for cpu in 0..num_cpus {
+            let buf = perf_array
+                .open(cpu, None)
+                .map_err(|e| format!("perf buffer open failed for cpu {cpu}: {e}"))?;
+            buffers.push(buf);
+        }
 
         // Spawn background reader thread.
         std::thread::Builder::new()
             .name("vigil-ebpf".into())
             .spawn(move || {
-                reader_loop(ring, tx);
+                reader_loop(&mut buffers, tx);
             })
             .map_err(|e| format!("failed to spawn eBPF reader thread: {e}"))?;
 
         // Keep BPF object alive for the lifetime of the process.
         std::mem::forget(bpf);
+        // Keep perf_array alive (the map fd must stay open).
+        std::mem::forget(perf_array);
 
         Ok(())
     }
 
     fn reader_loop(
-        ring: Arc<std::sync::Mutex<RingBuf<MapData>>>,
+        buffers: &mut Vec<aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>>,
         tx: mpsc::UnboundedSender<RawConn>,
     ) {
+        use bytes::BytesMut;
+
+        // Pre-allocate read buffers (one per CPU).
+        let mut out_bufs: Vec<BytesMut> = (0..buffers.len())
+            .map(|_| BytesMut::with_capacity(std::mem::size_of::<TcpEvent>()))
+            .collect();
+
         loop {
-            let mut ring = match ring.lock() {
-                Ok(r) => r,
-                Err(_) => {
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
-            };
-
-            while let Some(item) = ring.next() {
-                let data: &[u8] = item.as_ref();
-                if data.len() < std::mem::size_of::<TcpEvent>() {
-                    continue;
+            for buf in buffers.iter_mut() {
+                // Reset output buffers for reuse.
+                for ob in &mut out_bufs {
+                    ob.clear();
                 }
 
-                let event: &TcpEvent =
-                    unsafe { &*(data.as_ptr() as *const TcpEvent) };
+                let events = match buf.read_events(&mut out_bufs) {
+                    Ok(ev) => ev,
+                    Err(_) => continue,
+                };
 
-                // Convert to RawConn.
-                let raw = event_to_raw_conn(event);
-                if tx.send(raw).is_err() {
-                    // Channel closed — monitor is shutting down.
-                    return;
+                if events.lost > 0 {
+                    tracing::debug!("eBPF: {} events lost", events.lost);
+                }
+
+                for data in out_bufs.iter() {
+                    if data.len() < std::mem::size_of::<TcpEvent>() {
+                        continue;
+                    }
+
+                    let event: &TcpEvent =
+                        unsafe { &*(data.as_ptr() as *const TcpEvent) };
+
+                    let raw = event_to_raw_conn(event);
+                    if tx.send(raw).is_err() {
+                        return;
+                    }
                 }
             }
 
-            drop(ring);
-
-            // Brief sleep to avoid busy-looping.
+            // Brief sleep to avoid busy-looping when idle.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
