@@ -93,6 +93,10 @@ mod linux_impl {
             }
             Err(e) => {
                 tracing::warn!("eBPF failed to start ({e}) — falling back to polling");
+                tracing::info!(
+                    "hint: eBPF requires capabilities. \
+                     Run: sudo setcap cap_bpf,cap_net_admin,cap_perfmon,cap_dac_read_search+ep <vigil-binary>"
+                );
                 false
             }
         }
@@ -104,8 +108,12 @@ mod linux_impl {
         use std::convert::TryFrom;
 
         // Load the BPF object.
+        // Copy to a Vec to avoid potential alignment issues when parsing the
+        // ELF from a static &[u8] slice (aya's ELF parser may require
+        // heap-aligned data).
+        let bpf_bytes: Vec<u8> = BPF_OBJ.to_vec();
         let mut bpf = EbpfLoader::new()
-            .load(BPF_OBJ)
+            .load(&bpf_bytes)
             .map_err(|e| format!("BPF load failed: {e}"))?;
 
         // Attach to the sock:inet_sock_set_state tracepoint.
