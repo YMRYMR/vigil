@@ -236,62 +236,6 @@ fn process_conn(
     etw_expected: bool,
     etw_active: bool,
 ) {
-    // Fast skip: loopback and link-local connections always score 0.
-    // Skip the expensive enrichment pipeline (process collection, geoip,
-    // blocklist, revdns, fswatch, baseline, TLS, scoring, tamper).
-    let remote = &raw_conn.remote_ip;
-    let is_loopback = remote.is_empty()
-        || remote == "0.0.0.0"
-        || remote == "127.0.0.1"
-        || remote == "::1"
-        || remote == "::";
-    if is_loopback {
-        // Still track in known so stale-detection works.
-        let key = ConnKey::from(raw_conn);
-        let info = ConnInfo {
-            timestamp: Local::now().format("%H:%M:%S").to_string(),
-            proc_name: String::new(),
-            pid: raw_conn.pid,
-            proc_path: String::new(),
-            proc_user: String::new(),
-            parent_user: String::new(),
-            parent_name: String::new(),
-            parent_pid: 0,
-            service_name: String::new(),
-            publisher: String::new(),
-            command_line: String::new(),
-            local_addr: format!("{}:{}", raw_conn.local_ip, raw_conn.local_port),
-            remote_addr: if remote.is_empty() {
-                "LISTEN".to_string()
-            } else {
-                format!("{}:{}", remote, raw_conn.remote_port)
-            },
-            status: raw_conn.status.clone(),
-            score: 0,
-            reasons: vec![],
-            attack_tags: vec![],
-            ancestor_chain: vec![],
-            pre_login: false,
-            hostname: None,
-            country: None,
-            asn: None,
-            asn_org: None,
-            reputation_hit: None,
-            recently_dropped: false,
-            long_lived: false,
-            dga_like: false,
-            baseline_deviation: false,
-            script_host_suspicious: false,
-            tls_sni: None,
-            tls_ja3: None,
-        };
-        known.insert(key, info);
-        if log_all {
-            let _ = tx.send(ConnEvent::New(known.get(&ConnKey::from(raw_conn)).unwrap().clone()));
-        }
-        return;
-    }
-
     let total_start = std::time::Instant::now();
 
     let proc = process::collect(raw_conn.pid, svc_map);
