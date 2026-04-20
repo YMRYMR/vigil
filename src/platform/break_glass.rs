@@ -436,10 +436,12 @@ mod platform {
             }
         }
         fn crontab_path() -> Result<&'static str, String> {
-            ["/usr/bin/crontab", "/bin/crontab"]
-                .into_iter()
+            const CANDIDATES: [&str; 2] = ["/usr/bin/crontab", "/bin/crontab"];
+            CANDIDATES
+                .iter()
+                .copied()
                 .find(|path| Path::new(path).exists())
-                .ok_or_else(|| "required system binary for crontab not found".to_string())
+                .ok_or_else(|| "could not locate crontab in trusted paths".to_string())
         }
     }
     #[cfg(target_os = "macos")]
@@ -456,10 +458,11 @@ mod platform {
             let plist = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{PLIST_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--break-glass-recover</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>60</integer>\n</dict>\n</plist>\n", xml_escape(&exe.display().to_string()));
             std::fs::write(plist_path(), plist)
                 .map_err(|e| format!("failed to write launchd plist: {e}"))?;
-            let _ = Command::new("/bin/launchctl")
+            let launchctl = launchctl_path();
+            let _ = Command::new(launchctl)
                 .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
                 .status();
-            let status = Command::new("/bin/launchctl")
+            let status = Command::new(launchctl)
                 .args([
                     "bootstrap",
                     "system",
@@ -474,7 +477,7 @@ mod platform {
             }
         }
         pub fn delete_recovery_task() -> Result<(), String> {
-            let _ = Command::new("/bin/launchctl")
+            let _ = Command::new(launchctl_path())
                 .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
                 .status();
             if plist_path().exists() {
@@ -482,6 +485,9 @@ mod platform {
                     .map_err(|e| format!("failed to remove launchd plist: {e}"))?;
             }
             Ok(())
+        }
+        fn launchctl_path() -> &'static str {
+            "/bin/launchctl"
         }
         fn plist_path() -> PathBuf {
             PathBuf::from(format!("/Library/LaunchDaemons/{PLIST_LABEL}.plist"))
