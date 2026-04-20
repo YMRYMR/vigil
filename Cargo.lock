@@ -2183,6 +2183,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ksni"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7ca513d0be42df5edb485af9f44a12b2cb85af773d91c27dc796d1c58b78edc"
+dependencies = [
+ "futures-util",
+ "once_cell",
+ "pastey",
+ "serde",
+ "zbus",
+]
+
+[[package]]
 name = "kurbo"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3176,6 +3189,12 @@ dependencies = [
  "smallvec",
  "windows-link 0.2.1",
 ]
+
+[[package]]
+name = "pastey"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b867cad97c0791bbd3aaa6472142568c6c9e8f71937e98379f584cfb0cf35bec"
 
 [[package]]
 name = "pathdiff"
@@ -4724,11 +4743,9 @@ dependencies = [
  "eframe",
  "egui",
  "egui_extras",
- "glib",
- "gtk",
  "image",
  "ipnetwork 0.20.0",
- "libappindicator",
+ "ksni",
  "libc",
  "maxminddb",
  "notify",
