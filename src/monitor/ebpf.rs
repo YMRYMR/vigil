@@ -9,7 +9,7 @@
 //!    `tracepoint/sock/inet_sock_set_state` via `aya::EbpfLoader`.
 //! 2. Read events from a `PerfEventArray` in a background thread.
 //! 3. Map each event to `RawConn` (same type used by ETW and `/proc/net/tcp`).
-//! 4. Send over `mpsc::UnboundedSender<RawConn>` to the monitor hub.
+//! 4. Send over a bounded `mpsc::Sender<RawConn>` to the monitor hub.
 //! 5. If eBPF is unavailable (old kernel, missing `CAP_BPF`), fall back to
 //!    `/proc/net/tcp` polling transparently.
 
@@ -18,7 +18,7 @@ use super::poll::RawConn;
 // ── Non-Linux stub ───────────────────────────────────────────────────────────
 
 #[cfg(not(target_os = "linux"))]
-pub fn start(_tx: tokio::sync::mpsc::UnboundedSender<RawConn>) -> bool {
+pub fn start(_tx: tokio::sync::mpsc::Sender<RawConn>) -> bool {
     tracing::debug!("eBPF monitoring not available on this platform");
     false
 }
@@ -85,7 +85,7 @@ mod linux_impl {
         }
     }
 
-    pub fn start(tx: mpsc::UnboundedSender<RawConn>) -> bool {
+    pub fn start(tx: mpsc::Sender<RawConn>) -> bool {
         match try_start(tx) {
             Ok(()) => {
                 tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
@@ -102,7 +102,7 @@ mod linux_impl {
         }
     }
 
-    fn try_start(tx: mpsc::UnboundedSender<RawConn>) -> Result<(), String> {
+    fn try_start(tx: mpsc::Sender<RawConn>) -> Result<(), String> {
         use aya::programs::TracePoint;
         use aya::EbpfLoader;
         use std::convert::TryFrom;
@@ -166,7 +166,7 @@ mod linux_impl {
 
     fn reader_loop(
         buffers: &mut Vec<aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>>,
-        tx: mpsc::UnboundedSender<RawConn>,
+        tx: mpsc::Sender<RawConn>,
     ) {
         use bytes::BytesMut;
 
@@ -199,9 +199,11 @@ mod linux_impl {
                     let event: TcpEvent =
                         unsafe { std::ptr::read_unaligned(data.as_ptr() as *const TcpEvent) };
 
-                    let raw = event_to_raw_conn(event);
-                    if tx.send(raw).is_err() {
-                        return;
+                    let raw = event_to_raw_conn(&event);
+                    match tx.try_send(raw) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => continue,
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                     }
                 }
             }
