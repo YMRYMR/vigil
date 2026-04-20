@@ -323,6 +323,7 @@ pub fn has_known_location(sel: &ProcessSelection) -> bool {
 }
 
 pub struct VigilApp {
+    vigil_logo: Option<egui::TextureHandle>,
     activity: VecDeque<ConnInfo>,
     alerts: VecDeque<ConnInfo>,
     selected_activity: Option<ProcessSelection>,
@@ -381,6 +382,49 @@ fn apply_pixels_per_point(ctx: &egui::Context, scale: f32) {
     ctx.set_pixels_per_point(target_ppp);
 }
 
+fn trim_transparent_border(image: image::RgbaImage) -> image::RgbaImage {
+    let (width, height) = image.dimensions();
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut found = false;
+
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel[3] > 0 {
+            found = true;
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+
+    if !found {
+        return image;
+    }
+
+    let pad = 2;
+    let left = min_x.saturating_sub(pad);
+    let top = min_y.saturating_sub(pad);
+    let right = (max_x + pad + 1).min(width);
+    let bottom = (max_y + pad + 1).min(height);
+    image::imageops::crop_imm(&image, left, top, right - left, bottom - top).to_image()
+}
+
+fn load_vigil_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
+    let image = image::load_from_memory_with_format(
+        include_bytes!("../../assets/vigil_logo.png"),
+        image::ImageFormat::Png,
+    )
+    .ok()?
+    .into_rgba8();
+    let image = trim_transparent_border(image);
+    let size = [image.width() as usize, image.height() as usize];
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
+    Some(ctx.load_texture("vigil-logo", color_image, egui::TextureOptions::default()))
+}
+
 impl VigilApp {
     pub fn new(
         cc: &eframe::CreationContext<'_>,
@@ -408,8 +452,32 @@ impl VigilApp {
             .and_then(|storage| eframe::get_value::<UiState>(storage, "ui"))
             .unwrap_or_default();
         let response_status = active_response::status();
+        let vigil_logo = load_vigil_logo(&cc.egui_ctx);
         cc.egui_ctx.request_repaint_after(UI_IDLE_REPAINT);
+        #[cfg(target_os = "linux")]
+        {
+            let wake_ctx = cc.egui_ctx.clone();
+            let wake_show_window = show_window.clone();
+            let wake_pending_nav = pending_nav.clone();
+            let _ = std::thread::Builder::new()
+                .name("vigil-window-waker".into())
+                .spawn(move || loop {
+                    let should_wake = wake_show_window.load(Ordering::Relaxed)
+                        || wake_pending_nav
+                            .lock()
+                            .map(|pending| pending.is_some())
+                            .unwrap_or(false);
+                    if should_wake {
+                        wake_ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                        wake_ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        wake_ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                        wake_ctx.request_repaint();
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                });
+        }
         Self {
+            vigil_logo,
             activity: VecDeque::new(),
             alerts: VecDeque::new(),
             selected_activity: None,
@@ -537,12 +605,11 @@ impl VigilApp {
             self.data_version = self.data_version.wrapping_add(1);
             self.cached_activity_process_count =
                 process_list::count_distinct_processes(&self.activity);
-            self.cached_alerts_process_count =
-                process_list::count_distinct_processes(&self.alerts);
+            self.cached_alerts_process_count = process_list::count_distinct_processes(&self.alerts);
         }
         handled
     }
-    fn handle_inspector_action(&mut self, action: inspector::Action, ctx: &egui::Context) {
+    fn handle_inspector_action(&mut self, action: inspector::Action, _ctx: &egui::Context) {
         let selected_info: Option<ProcessSelection> = match self.active_tab {
             Tab::Activity => self.selected_activity.clone(),
             Tab::Alerts => self.selected_alert.clone(),
@@ -689,17 +756,14 @@ impl VigilApp {
             }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
                 Ok(()) => {
-                    self.exit_requested = true;
-                    self.push_notification(
-                        NotificationKind::Info,
-                        "Reopened Vigil as administrator.",
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    // Exit immediately after spawning the elevated instance.
+                    // This avoids teardown races between egui shutdown and Tokio worker threads.
+                    std::process::exit(0);
                 }
                 Err(err) => {
                     self.push_notification(
                         NotificationKind::Error,
-                        format!("Could not relaunch as admin: {err}"),
+                        format!("Could not elevate: {err}"),
                     );
                 }
             },
@@ -739,9 +803,21 @@ impl VigilApp {
         let network_busy = self.network_operation.is_some();
 
         ui.horizontal_centered(|ui| {
-            ui.add_space(12.0);
-            ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(16.0).strong());
-            ui.add_space(10.0);
+            ui.add_space(8.0);
+            if let Some(logo) = &self.vigil_logo {
+                let (logo_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                let logo_rect = logo_rect.translate(egui::vec2(0.0, -4.0));
+                ui.painter().image(
+                    logo.id(),
+                    logo_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                ui.add_space(6.0);
+            }
+            ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(15.5).strong());
+            ui.add_space(8.0);
 
             let admin = crate::autostart::is_elevated();
             let (label, color, filled) = if self.paused {
@@ -766,12 +842,12 @@ impl VigilApp {
                 if admin {
                     admin_chip(ui);
                 } else {
+                    let btn_label = "Run as Admin";
+                    let hover = "Relaunch Vigil with elevated privileges so restricted monitoring and response features are available.";
                     let relaunch = ui
-                        .add(admin_btn("Run as Admin"))
+                        .add(admin_btn(btn_label))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(
-                            "Relaunch Vigil with administrator privileges so it can inspect more network activity.",
-                        );
+                        .on_hover_text(hover);
                     if relaunch.clicked() {
                         action = Some(inspector::Action::RequestAdmin);
                     }
@@ -937,6 +1013,9 @@ impl eframe::App for VigilApp {
             );
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
+            #[cfg(target_os = "linux")]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            #[cfg(not(target_os = "linux"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
@@ -1032,6 +1111,20 @@ impl eframe::App for VigilApp {
                 }
                 Tab::Settings => {
                     let changed = settings::show(ui, &mut self.settings);
+                    if self.settings.grant_capabilities_requested {
+                        self.settings.grant_capabilities_requested = false;
+                        match crate::autostart::relaunch_as_admin() {
+                            Ok(()) => {
+                                std::process::exit(0);
+                            }
+                            Err(err) => {
+                                self.push_notification(
+                                    NotificationKind::Error,
+                                    format!("Could not elevate: {err}"),
+                                );
+                            }
+                        }
+                    }
                     if changed {
                         {
                             let mut cfg = self.cfg.write().unwrap();

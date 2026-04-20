@@ -9,7 +9,7 @@
 //!    `tracepoint/sock/inet_sock_set_state` via `aya::EbpfLoader`.
 //! 2. Read events from a `PerfEventArray` in a background thread.
 //! 3. Map each event to `RawConn` (same type used by ETW and `/proc/net/tcp`).
-//! 4. Send over `mpsc::UnboundedSender<RawConn>` to the monitor hub.
+//! 4. Send over a bounded `mpsc::Sender<RawConn>` to the monitor hub.
 //! 5. If eBPF is unavailable (old kernel, missing `CAP_BPF`), fall back to
 //!    `/proc/net/tcp` polling transparently.
 
@@ -18,7 +18,7 @@ use super::poll::RawConn;
 // ── Non-Linux stub ───────────────────────────────────────────────────────────
 
 #[cfg(not(target_os = "linux"))]
-pub fn start(_tx: tokio::sync::mpsc::UnboundedSender<RawConn>) -> bool {
+pub fn start(_tx: tokio::sync::mpsc::Sender<RawConn>) -> bool {
     tracing::debug!("eBPF monitoring not available on this platform");
     false
 }
@@ -85,7 +85,7 @@ mod linux_impl {
         }
     }
 
-    pub fn start(tx: mpsc::UnboundedSender<RawConn>) -> bool {
+    pub fn start(tx: mpsc::Sender<RawConn>) -> bool {
         match try_start(tx) {
             Ok(()) => {
                 tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
@@ -102,9 +102,9 @@ mod linux_impl {
         }
     }
 
-    fn try_start(tx: mpsc::UnboundedSender<RawConn>) -> Result<(), String> {
-        use aya::EbpfLoader;
+    fn try_start(tx: mpsc::Sender<RawConn>) -> Result<(), String> {
         use aya::programs::TracePoint;
+        use aya::EbpfLoader;
         use std::convert::TryFrom;
 
         // Load the BPF object.
@@ -132,17 +132,16 @@ mod linux_impl {
             .map_err(|e| format!("BPF attach failed: {e}"))?;
 
         // Get the perf event array map.
-        let mut perf_array = PerfEventArray::try_from(
-            bpf.take_map("events").ok_or("BPF map 'events' not found")?,
-        )
-        .map_err(|e| format!("perf event array error: {e}"))?;
+        let mut perf_array =
+            PerfEventArray::try_from(bpf.take_map("events").ok_or("BPF map 'events' not found")?)
+                .map_err(|e| format!("perf event array error: {e}"))?;
 
         // Open a buffer for each online CPU.
-        let num_cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        // Use /sys/devices/system/cpu/online to handle cpuset/container
+        // setups with non-contiguous CPU IDs, rather than assuming 0..N.
+        let cpu_ids = online_cpu_ids();
         let mut buffers = Vec::new();
-        for cpu in 0..num_cpus as u32 {
+        for cpu in cpu_ids {
             let buf = perf_array
                 .open(cpu, None)
                 .map_err(|e| format!("perf buffer open failed for cpu {cpu}: {e}"))?;
@@ -167,7 +166,7 @@ mod linux_impl {
 
     fn reader_loop(
         buffers: &mut Vec<aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>>,
-        tx: mpsc::UnboundedSender<RawConn>,
+        tx: mpsc::Sender<RawConn>,
     ) {
         use bytes::BytesMut;
 
@@ -197,12 +196,14 @@ mod linux_impl {
                         continue;
                     }
 
-                    let event: &TcpEvent =
-                        unsafe { &*(data.as_ptr() as *const TcpEvent) };
+                    let event: TcpEvent =
+                        unsafe { std::ptr::read_unaligned(data.as_ptr() as *const TcpEvent) };
 
-                    let raw = event_to_raw_conn(event);
-                    if tx.send(raw).is_err() {
-                        return;
+                    let raw = event_to_raw_conn(&event);
+                    match tx.try_send(raw) {
+                        Ok(()) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => continue,
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
                     }
                 }
             }
@@ -210,6 +211,29 @@ mod linux_impl {
             // Brief sleep to avoid busy-looping when idle.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// Parse online CPU IDs from /sys/devices/system/cpu/online.
+    /// Handles non-contiguous ranges like "0-1,4-5" in cpuset/container setups.
+    fn online_cpu_ids() -> Vec<u32> {
+        let mut ids = Vec::new();
+        if let Ok(s) = std::fs::read_to_string("/sys/devices/system/cpu/online") {
+            for part in s.trim().split(',') {
+                if let Some((lo, hi)) = part.trim().split_once('-') {
+                    if let (Ok(a), Ok(b)) = (lo.parse::<u32>(), hi.parse::<u32>()) {
+                        ids.extend(a..=b);
+                        continue;
+                    }
+                }
+                if let Ok(id) = part.trim().parse::<u32>() {
+                    ids.push(id);
+                }
+            }
+        }
+        if ids.is_empty() {
+            ids.push(0);
+        }
+        ids
     }
 
     fn event_to_raw_conn(event: &TcpEvent) -> RawConn {
