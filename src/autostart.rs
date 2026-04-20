@@ -248,6 +248,53 @@ mod platform {
     }
 
     pub fn relaunch_as_admin() -> Result<(), String> {
-        Err("Elevation is only supported on Windows.".into())
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+
+            let exe = std::env::current_exe()
+                .map_err(|e| format!("failed to locate Vigil: {e}"))?;
+
+            // pkexec ships with polkit on every mainstream desktop Linux and
+            // produces a GUI authentication dialog. Without preserving the
+            // display/session env vars the elevated child can't reach the
+            // compositor, so we pass them explicitly via `env`.
+            let mut keep: Vec<String> = Vec::new();
+            for var in [
+                "DISPLAY",
+                "WAYLAND_DISPLAY",
+                "XAUTHORITY",
+                "XDG_RUNTIME_DIR",
+                "XDG_SESSION_TYPE",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "HOME",
+            ] {
+                if let Some(val) = std::env::var_os(var) {
+                    keep.push(format!("{}={}", var, val.to_string_lossy()));
+                }
+            }
+
+            let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+
+            let spawned = Command::new("pkexec")
+                .arg("env")
+                .args(&keep)
+                .arg(&exe)
+                .args(&args)
+                .spawn();
+
+            match spawned {
+                Ok(_) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(
+                    "pkexec not found — install policykit-1 / polkit to relaunch as admin."
+                        .into(),
+                ),
+                Err(e) => Err(format!("pkexec failed to start: {e}")),
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("Elevation is only supported on Windows and Linux.".into())
+        }
     }
 }

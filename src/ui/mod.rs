@@ -765,7 +765,7 @@ impl VigilApp {
 
                 if admin {
                     admin_chip(ui);
-                } else if cfg!(windows) {
+                } else {
                     let relaunch = ui
                         .add(admin_btn("Run as Admin"))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
