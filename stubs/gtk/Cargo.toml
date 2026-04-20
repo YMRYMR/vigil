@@ -1,0 +1,9 @@
+[package]
+name = "gtk"
+version = "0.18.2"
+edition = "2021"
+description = "Empty stub overriding crates.io `gtk` (gtk3 Rust bindings) via [patch.crates-io]. Vigil never uses this crate: on Linux the tray is implemented with `ksni`; on Windows/macOS `tray-icon`/`muda` reference `gtk` only inside `#[cfg(target_os = \"linux\")]` + `#[cfg(feature = \"gtk\")]` blocks that don't compile. The stub removes glib 0.18 and its gdk/gio/atk/pango/cairo-rs subtree from Cargo.lock."
+license = "MIT"
+
+[lib]
+path = "lib.rs"
