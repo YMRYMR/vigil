@@ -30,17 +30,14 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: rust
-          build-mode: manual
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build for analysis
-        run: cargo build --workspace --all-targets
+          build-mode: none
 
       - name: Perform CodeQL analysis
         uses: github/codeql-action/analyze@v4
