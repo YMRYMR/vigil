@@ -63,14 +63,19 @@ pub fn collect(pid: u32, svc_map: &std::collections::HashMap<u32, String>) -> Pr
 
     let name = proc.name().to_string_lossy().to_string();
     let name_key = crate::config::normalise_name(&name);
-    let path = proc.exe().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-    let user = proc.user_id().map(|uid| uid.to_string()).unwrap_or_default();
+    let path = proc
+        .exe()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let user = proc
+        .user_id()
+        .map(|uid| uid.to_string())
+        .unwrap_or_default();
     let command_line = join_cmdline(proc.cmd());
-
-    let ancestors = walk_ancestors(proc.parent(), &mut sys);
+    let parent_pid_opt = proc.parent();
+    let ancestors = walk_ancestors(parent_pid_opt, &mut sys);
     let (parent_name, parent_pid) = ancestors.first().cloned().unwrap_or_default();
-    let parent_user = proc
-        .parent()
+    let parent_user = parent_pid_opt
         .and_then(|ppid| {
             sys.refresh_processes(ProcessesToUpdate::Some(&[ppid]), true);
             sys.process(ppid)
@@ -170,7 +175,8 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
         );
 
         if bytes_needed == 0 {
-            let _ = windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
+            let _ =
+                windows::Win32::Foundation::CloseHandle(windows::Win32::Foundation::HANDLE(scm.0));
             return map;
         }
 

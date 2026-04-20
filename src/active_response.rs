@@ -11,6 +11,7 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
@@ -20,6 +21,7 @@ const DOMAIN_MARKER_PREFIX: &str = "# Vigil Domain Block";
 const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 const ISOLATION_MAX_SECS: u64 = 60 * 60;
+const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -185,15 +187,15 @@ impl DurationPreset {
 
 pub fn status() -> Status {
     let state = load_state().unwrap_or_default();
-    let isolated =
-        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    let now = unix_now();
     Status {
         blocked_rules: state.blocked.len() + state.blocked_processes.len(),
         blocked_processes: state.blocked_processes.len(),
         blocked_domains: state.blocked_domains.len(),
         suspended_processes: state.suspended_processes.len(),
         frozen_autoruns: state.autorun_snapshot.is_some(),
-        isolated,
+        // Reflect effective containment state, not just persisted intent.
+        isolated: isolation_effective_now(&state, now),
     }
 }
 pub fn has_frozen_autoruns() -> bool {
@@ -500,6 +502,30 @@ pub fn reconcile() {
     let now = unix_now();
     let isolation_active =
         state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    let isolation_arming = isolation_active
+        && state
+            .isolation_started_unix
+            .is_some_and(|started| now.saturating_sub(started) < ISOLATION_ACTIVATION_GRACE_SECS);
+    let probe_reachable = outbound_probe_reachable();
+    let controls_active = isolation_controls_active_best_effort(&state, probe_reachable);
+    if isolation_active && !isolation_arming && !controls_active && probe_reachable {
+        state.isolated = false;
+        state.firewall_snapshot = None;
+        state.network_snapshot = None;
+        state.isolation_started_unix = None;
+        state.isolation_expires_unix = None;
+        let _ = save_state(&state);
+        let cfg = crate::config::Config::load();
+        let _ = crate::break_glass::sync_watchdog(&cfg);
+        audit::record(
+            "reconcile_stale_isolation_state",
+            "success",
+            json!({
+                "reason": "local isolation controls are no longer active and connectivity probe is reachable"
+            }),
+        );
+        return;
+    }
     let isolation_expired = isolation_active
         && state
             .isolation_expires_unix
@@ -602,8 +628,8 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
     let _ = platform::delete_rule(&outbound_rule_name);
     let _ = platform::delete_rule(&inbound_rule_name);
-    platform::add_block_program_rule(&outbound_rule_name, &path, "out")?;
-    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, &path, "in") {
+    platform::add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
+    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
         let _ = platform::delete_rule(&outbound_rule_name);
         return Err(err);
     }
@@ -672,11 +698,38 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
 
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let firewall_snapshot = platform::snapshot_firewall_profiles().ok();
     let now = unix_now();
     let cfg = crate::config::Config::load();
     let timeout_secs = (cfg.break_glass_timeout_mins.clamp(1, 240) * 60).min(ISOLATION_MAX_SECS);
     let mut state = load_state().unwrap_or_default();
+    let controls_active = platform::isolation_controls_active(&state).unwrap_or(false);
+    if controls_active {
+        state.isolated = true;
+        state.isolation_started_unix.get_or_insert(now);
+        state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
+        save_state(&state)?;
+        if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+            return Err(format!(
+                "Isolation already active, but watchdog refresh failed: {err}"
+            ));
+        }
+        return Ok(format!(
+            "Network isolation already active (failsafe recovery armed: {} minute{} stale-heartbeat timeout).",
+            timeout_secs / 60,
+            if timeout_secs / 60 == 1 { "" } else { "s" }
+        ));
+    }
+    if state.isolated {
+        // Stale persisted marker: the machine is not currently isolated, so clear old state
+        // and perform a fresh isolation attempt.
+        state.isolated = false;
+        state.firewall_snapshot = None;
+        state.network_snapshot = None;
+        state.isolation_started_unix = None;
+        state.isolation_expires_unix = None;
+        let _ = save_state(&state);
+    }
+    let firewall_snapshot = platform::snapshot_firewall_profiles().ok();
     state.firewall_snapshot = firewall_snapshot.clone();
     state.network_snapshot = None;
     state.isolation_started_unix = Some(now);
@@ -811,6 +864,8 @@ pub fn isolate_machine() -> Result<String, String> {
 pub fn restore_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
     let mut state = load_state().unwrap_or_default();
+    let had_isolation_intent =
+        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
     let firewall_snapshot = state.firewall_snapshot.clone();
     let network_snapshot = state.network_snapshot.clone();
     let mut warnings = Vec::new();
@@ -835,7 +890,78 @@ pub fn restore_machine() -> Result<String, String> {
             warnings.push(format!("adapter restore failed: {err}"));
         }
     }
+    let mut connectivity_reachable = outbound_probe_reachable();
+    if had_isolation_intent && !connectivity_reachable {
+        match platform::enable_all_network_adapters() {
+            Ok(0) => {}
+            Ok(count) => warnings.push(format!(
+                "fallback adapter recovery enabled {count} additional adapter{}",
+                if count == 1 { "" } else { "s" }
+            )),
+            Err(err) => warnings.push(format!("fallback adapter recovery failed: {err}")),
+        }
+        // Wi-Fi reassociation can take a few seconds after interfaces are re-enabled.
+        connectivity_reachable = wait_for_outbound_probe(Duration::from_secs(2));
+        if !connectivity_reachable {
+            match platform::isolation_controls_active(&state) {
+                Ok(true) => {
+                    critical_failure = true;
+                    warnings.push(
+                        "local isolation controls are still active after restore attempts"
+                            .to_string(),
+                    );
+                }
+                Ok(false) => warnings.push(
+                    "connectivity probe is still failing after restore attempts; local isolation controls are no longer active"
+                        .to_string(),
+                ),
+                Err(err) => warnings.push(format!(
+                    "connectivity probe is still failing after restore attempts; could not verify local isolation controls: {err}"
+                )),
+            }
+        }
+    }
     if critical_failure {
+        let controls_active_result = platform::isolation_controls_active(&state);
+        let controls_active = match controls_active_result {
+            Ok(active) => active,
+            Err(err) => {
+                warnings.push(format!(
+                    "could not verify local isolation controls after restore: {err}"
+                ));
+                true
+            }
+        };
+        if !controls_active || connectivity_reachable || outbound_probe_reachable() {
+            warnings.push(
+                if controls_active {
+                    "connectivity probe succeeded; clearing stale isolation state despite restore warnings"
+                        .into()
+                } else {
+                    "local isolation controls are no longer active; clearing stale isolation state despite restore warnings"
+                        .into()
+                },
+            );
+            state.isolated = false;
+            state.firewall_snapshot = None;
+            state.network_snapshot = None;
+            state.isolation_started_unix = None;
+            state.isolation_expires_unix = None;
+            save_state(&state)?;
+            let cfg = crate::config::Config::load();
+            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+                warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+            }
+            audit::record(
+                "restore_machine_stale_state_cleared",
+                "partial",
+                json!({ "warnings": warnings }),
+            );
+            return Ok(format!(
+                "Network isolation removed with warnings: {}",
+                warnings.join("; ")
+            ));
+        }
         return Err(warnings.join("; "));
     }
     state.isolated = false;
@@ -983,7 +1109,10 @@ pub fn extract_domain_from_hostname(hostname: &str) -> Option<String> {
 
 fn ensure_modifiable() -> Result<(), String> {
     if !platform::is_supported() {
-        return Err("Active response is currently only implemented on Windows.".into());
+        return Err(
+            "Active response requires elevated privileges (run as root or grant CAP_NET_ADMIN)."
+                .into(),
+        );
     }
     if !platform::is_elevated() {
         return Err("Administrator privileges are required for active response.".into());
@@ -999,15 +1128,53 @@ fn ensure_isolation_modifiable() -> Result<(), String> {
     }
     Ok(())
 }
+fn isolation_effective_now(state: &State, now: u64) -> bool {
+    let isolation_intent =
+        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    if !isolation_intent {
+        return false;
+    }
+    let probe_reachable = outbound_probe_reachable();
+    // UI and tray state should only flip to isolated once outbound connectivity is
+    // effectively cut, not merely when an isolation attempt has started.
+    if probe_reachable {
+        return false;
+    }
+    let isolation_arming = state
+        .isolation_started_unix
+        .is_some_and(|started| now.saturating_sub(started) < ISOLATION_ACTIVATION_GRACE_SECS);
+    if isolation_arming {
+        return true;
+    }
+    isolation_controls_active_best_effort(state, probe_reachable)
+}
+fn isolation_controls_active_best_effort(state: &State, probe_reachable: bool) -> bool {
+    match platform::isolation_controls_active(state) {
+        Ok(active) => active,
+        Err(_) => !probe_reachable,
+    }
+}
 fn outbound_probe_reachable() -> bool {
     const PROBE_TARGETS: [&str; 3] = ["1.1.1.1:443", "8.8.8.8:53", "9.9.9.9:443"];
-    let timeout = Duration::from_millis(700);
+    let timeout = Duration::from_millis(250);
     PROBE_TARGETS.iter().any(|target| {
         target
             .parse::<SocketAddr>()
             .ok()
             .is_some_and(|addr| TcpStream::connect_timeout(&addr, timeout).is_ok())
     })
+}
+fn wait_for_outbound_probe(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if outbound_probe_reachable() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(650));
+    }
 }
 fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
     if !conn.status.eq_ignore_ascii_case("ESTABLISHED")
@@ -1087,13 +1254,21 @@ fn state_path() -> PathBuf {
     crate::config::data_dir().join(STATE_FILE)
 }
 fn load_state() -> Result<State, String> {
-    let path = state_path();
-    if !path.exists() {
-        return Ok(State::default());
+    if let Some(state) = state_cache().read().unwrap().clone() {
+        return Ok(state);
     }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+
+    let path = state_path();
+    let state = if !path.exists() {
+        State::default()
+    } else {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        serde_json::from_str(&text)
+            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?
+    };
+    *state_cache().write().unwrap() = Some(state.clone());
+    Ok(state)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
@@ -1103,7 +1278,13 @@ fn save_state(state: &State) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(state)
         .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    *state_cache().write().unwrap() = Some(state.clone());
+    Ok(())
+}
+fn state_cache() -> &'static RwLock<Option<State>> {
+    static CACHE: OnceLock<RwLock<Option<State>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(None))
 }
 fn reconcile_state<F>(state: &mut State, now: u64, mut delete_rule: F) -> bool
 where
@@ -1384,7 +1565,7 @@ mod platform {
     pub fn restore_firewall_profiles(snapshot: &FirewallSnapshot) -> Result<(), String> {
         for profile in &snapshot.profiles {
             run_powershell(&format!(
-                "Set-NetFirewallProfile -Profile {} -Enabled {} -DefaultInboundAction {} -DefaultOutboundAction {}",
+                "Set-NetFirewallProfile -Profile {} -Enabled {} -DefaultInboundAction {} -DefaultOutboundAction {} -ErrorAction Stop",
                 ps_quoted(&profile.name),
                 if profile.enabled { "True" } else { "False" },
                 profile.inbound_action,
@@ -1392,6 +1573,27 @@ mod platform {
             ))?;
         }
         Ok(())
+    }
+    pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        if firewall_rule_present(ISOLATE_RULE_IN)? || firewall_rule_present(ISOLATE_RULE_OUT)? {
+            return Ok(true);
+        }
+        let current_profiles = snapshot_firewall_profiles()?;
+        let profiles_fully_blocked = firewall_profiles_fully_blocked(&current_profiles);
+        let firewall_controls_active = if let Some(snapshot) = state.firewall_snapshot.as_ref() {
+            current_profiles != *snapshot && profiles_fully_blocked
+        } else {
+            profiles_fully_blocked
+        };
+        if firewall_controls_active {
+            return Ok(true);
+        }
+        if let Some(snapshot) = state.network_snapshot.as_ref() {
+            if !snapshot.adapters.is_empty() && !snapshot_adapters_are_enabled(snapshot)? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         let wifi_profiles = snapshot_connected_wifi_profiles();
@@ -1411,16 +1613,65 @@ mod platform {
         Ok(())
     }
     pub fn enable_active_adapters(snapshot: &NetworkSnapshot) -> Result<(), String> {
+        let mut warnings = Vec::new();
+        let mut recovered_any = false;
         for adapter in &snapshot.adapters {
+            let result = run_powershell(&format!(
+                "$adapter = Get-NetAdapter -Name {} -ErrorAction SilentlyContinue | Select-Object -First 1; if ($null -eq $adapter) {{ 'MISSING' }} else {{ if ($adapter.Status -ne 'Up') {{ Enable-NetAdapter -Name {} -Confirm:$false -ErrorAction Stop }}; 'READY' }}",
+                ps_quoted(&adapter.name),
+                ps_quoted(&adapter.name)
+            ));
+            let output = match result {
+                Ok(output) => output,
+                Err(err) => {
+                    warnings.push(format!("{}: {err}", adapter.name));
+                    continue;
+                }
+            };
+            if output.trim().eq_ignore_ascii_case("MISSING") {
+                warnings.push(format!(
+                    "{}: adapter not found during restore",
+                    adapter.name
+                ));
+                continue;
+            }
+            recovered_any = true;
+            if adapter.is_wireless {
+                schedule_wireless_reconnect(adapter.name.clone(), adapter.wifi_profile.clone());
+            }
+        }
+        if recovered_any {
+            return Ok(());
+        }
+        if let Ok(current) = snapshot_active_adapters() {
+            if !current.adapters.is_empty() {
+                return Ok(());
+            }
+        }
+        if warnings.is_empty() {
+            Err("no saved adapters could be restored".into())
+        } else {
+            Err(warnings.join("; "))
+        }
+    }
+    pub fn enable_all_network_adapters() -> Result<usize, String> {
+        let wifi_profiles = snapshot_connected_wifi_profiles();
+        let output = run_powershell_json(
+            "Get-NetAdapter | Where-Object { $_.Name -ne 'Loopback Pseudo-Interface 1' -and $_.Status -ne 'Up' -and $_.HardwareInterface -eq $true } | Select-Object Name,InterfaceDescription,NdisPhysicalMedium | ConvertTo-Json -Compress",
+        )?;
+        let adapters = parse_adapter_snapshot(&output, &wifi_profiles)?;
+        let mut enabled = 0usize;
+        for adapter in adapters {
             run_powershell(&format!(
                 "Enable-NetAdapter -Name {} -Confirm:$false -ErrorAction Stop",
                 ps_quoted(&adapter.name)
             ))?;
-            if adapter.is_wireless && adapter.wifi_profile.is_some() {
-                let _ = reconnect_wireless_adapter(&adapter.name, adapter.wifi_profile.as_deref());
+            enabled += 1;
+            if adapter.is_wireless {
+                schedule_wireless_reconnect(adapter.name.clone(), adapter.wifi_profile.clone());
             }
         }
-        Ok(())
+        Ok(enabled)
     }
     pub fn terminate_active_tcp_connections() -> Result<usize, String> {
         let output = run_powershell_json(
@@ -1691,7 +1942,12 @@ mod platform {
             Err(format!("failed to add isolation rule {rule_name}"))
         }
     }
-    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        _pid: u32,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
         let status = hidden_command("netsh")
             .args([
                 "advfirewall",
@@ -1729,6 +1985,68 @@ mod platform {
         } else {
             Err(format!("failed to delete firewall rule {rule_name}"))
         }
+    }
+    fn firewall_rule_present(rule_name: &str) -> Result<bool, String> {
+        let output = hidden_command("netsh")
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                &format!("name={rule_name}"),
+            ])
+            .output()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        let merged = format!("{stdout}\n{stderr}");
+        if merged.contains("no rules match") {
+            return Ok(false);
+        }
+        Ok(output.status.success())
+    }
+    fn firewall_profiles_fully_blocked(snapshot: &FirewallSnapshot) -> bool {
+        !snapshot.profiles.is_empty()
+            && snapshot.profiles.iter().all(|profile| {
+                profile.enabled
+                    && profile.inbound_action.eq_ignore_ascii_case("Block")
+                    && profile.outbound_action.eq_ignore_ascii_case("Block")
+            })
+    }
+    fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
+        let mut saw_known_adapter = false;
+        let mut saw_enabled_adapter = false;
+        for adapter in &snapshot.adapters {
+            let status = run_powershell(&format!(
+                "(Get-NetAdapter -Name {} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Status)",
+                ps_quoted(&adapter.name)
+            ))?;
+            let status = status.trim();
+            if status.is_empty() {
+                continue;
+            }
+            saw_known_adapter = true;
+            // "Disconnected" still means the adapter is enabled; only treat
+            // explicit "Disabled" as still being isolated by adapter cutoff.
+            if !status.eq_ignore_ascii_case("Disabled") {
+                saw_enabled_adapter = true;
+                break;
+            }
+        }
+        if saw_enabled_adapter {
+            return Ok(true);
+        }
+        if saw_known_adapter {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+    fn schedule_wireless_reconnect(name: String, profile: Option<String>) {
+        let _ = std::thread::Builder::new()
+            .name("vigil-wifi-reconnect".into())
+            .spawn(move || {
+                let _ = reconnect_wireless_adapter(&name, profile.as_deref());
+            });
     }
     fn run_powershell(script: &str) -> Result<String, String> {
         let script = format!("$ErrorActionPreference = 'Stop'; {script}");
@@ -2026,34 +2344,58 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::*;
+    use std::path::Path;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
         pub restored_entries: usize,
     }
     pub fn is_supported() -> bool {
-        false
+        cfg!(target_os = "linux")
     }
     pub fn supports_isolation() -> bool {
         cfg!(target_os = "linux") || cfg!(target_os = "macos")
     }
     pub fn is_elevated() -> bool {
-        match Command::new("id").arg("-u").output() {
-            Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).trim() == "0"
-            }
-            _ => false,
+        // Root always has privileges.
+        if unsafe { libc::geteuid() == 0 } {
+            return true;
         }
+        // Check CAP_NET_ADMIN (bit 12) from /proc/self/status CapEff.
+        check_capability(12)
+    }
+    /// Check whether a specific Linux capability (by bit index) is present in
+    /// the effective capability set of the current process.
+    #[cfg(target_os = "linux")]
+    fn check_capability(bit: u8) -> bool {
+        let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        for line in data.lines() {
+            let Some(rest) = line.strip_prefix("CapEff:\t") else {
+                continue;
+            };
+            let Ok(val) = u64::from_str_radix(rest.trim(), 16) else {
+                return false;
+            };
+            return val & (1u64 << bit) != 0;
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn check_capability(_bit: u8) -> bool {
+        false
     }
     pub fn process_exists(pid: u32) -> bool {
         if pid == 0 {
             return false;
         }
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+        command_base("kill", &["-0", &pid.to_string()])
+            .and_then(|mut cmd| {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                cmd.status()
+                    .map_err(|e| format!("failed to spawn kill: {e}"))
+            })
             .map(|status| status.success())
             .unwrap_or(false)
     }
@@ -2065,15 +2407,403 @@ mod platform {
     ) -> Result<AutorunRevertResult, String> {
         Err("Autorun revert is not implemented on this platform.".into())
     }
+
+    // ── Firewall / iptables operations (Linux) ─────────────────────────────
+
+    const IPTABLES_COMMENT_PREFIX: &str = "Vigil:";
+
     pub fn snapshot_firewall_profiles() -> Result<FirewallSnapshot, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let output = command_stdout("iptables", &["-L", "-n"])?;
+            let mut profiles = Vec::new();
+            for line in output.lines() {
+                let l = line.trim();
+                // Default policy lines look like: "Chain INPUT (policy DROP)"
+                if let Some(rest) = l.strip_prefix("Chain ") {
+                    let mut parts = rest.splitn(2, ' ');
+                    let chain = parts.next().unwrap_or("");
+                    let policy_part = parts.next().unwrap_or("");
+                    if let Some(policy) = policy_part
+                        .trim_start_matches('(')
+                        .strip_prefix("policy ")
+                        .and_then(|s| s.strip_suffix(')'))
+                    {
+                        profiles.push(format!("{chain}:{policy}"));
+                    }
+                }
+            }
+            return Ok(FirewallSnapshot { profiles });
+        }
+        #[allow(unreachable_code)]
         Ok(FirewallSnapshot { profiles: vec![] })
     }
     pub fn apply_firewall_isolation() -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            for chain in &["INPUT", "FORWARD", "OUTPUT"] {
+                command_status("iptables", &["-P", chain, "DROP"])?;
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
         Err("firewall backend unavailable; falling back to emergency adapter cutoff".into())
     }
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            for entry in &_snapshot.profiles {
+                let mut parts = entry.splitn(2, ':');
+                let chain = parts.next().unwrap_or("");
+                let policy = parts.next().unwrap_or("ACCEPT");
+                if !chain.is_empty() {
+                    command_status("iptables", &["-P", chain, policy])?;
+                }
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
         Ok(())
     }
+    pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        // If firewall snapshot exists with non-empty profiles, iptables isolation is active.
+        if let Some(snapshot) = state.firewall_snapshot.as_ref() {
+            if !snapshot.profiles.is_empty() {
+                // Check if current iptables policies are DROP.
+                let current = snapshot_firewall_profiles()?;
+                let all_drop = current.profiles.iter().all(|p| p.ends_with(":DROP"));
+                if all_drop {
+                    return Ok(true);
+                }
+            }
+        }
+        // Adapter-level fallback.
+        let Some(snapshot) = state.network_snapshot.as_ref() else {
+            return Ok(false);
+        };
+        if snapshot.adapters.is_empty() {
+            return Ok(false);
+        }
+        let current = snapshot_active_adapters()?;
+        let mut saw_known_adapter = false;
+        for adapter in &snapshot.adapters {
+            if current
+                .adapters
+                .iter()
+                .any(|item| item.name == adapter.name)
+            {
+                saw_known_adapter = true;
+                return Ok(false);
+            }
+        }
+        Ok(saw_known_adapter)
+    }
+    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let chain = match dir {
+                "out" => "OUTPUT",
+                "in" => "INPUT",
+                _ => "OUTPUT",
+            };
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            command_status(
+                "iptables",
+                &[
+                    "-I",
+                    chain,
+                    "1",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "DROP",
+                ],
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, dir);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            command_status(
+                "iptables",
+                &[
+                    "-I",
+                    "OUTPUT",
+                    "1",
+                    "-d",
+                    target,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "DROP",
+                ],
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, target);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        pid: u32,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let chain = match dir {
+                "out" => "OUTPUT",
+                "in" => "INPUT",
+                _ => "OUTPUT",
+            };
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            let mut args = vec!["-I", chain, "1"];
+            if chain == "OUTPUT" {
+                let uid = process_effective_uid(pid)?;
+                args.extend_from_slice(&["-m", "owner", "--uid-owner"]);
+                let uid_string = uid.to_string();
+                args.push(uid_string.as_str());
+                args.extend_from_slice(&["-m", "comment", "--comment", &comment, "-j", "DROP"]);
+                return command_status("iptables", &args);
+            }
+            args.extend_from_slice(&["-m", "comment", "--comment", &comment, "-j", "DROP"]);
+            command_status("iptables", &args)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, path, dir);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn delete_rule(rule_name: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            let mut failures = Vec::new();
+            let mut deleted = 0usize;
+            for chain in &["INPUT", "OUTPUT", "FORWARD"] {
+                match command_status(
+                    "iptables",
+                    &[
+                        "-D",
+                        chain,
+                        "-m",
+                        "comment",
+                        "--comment",
+                        &comment,
+                        "-j",
+                        "DROP",
+                    ],
+                ) {
+                    Ok(()) => deleted += 1,
+                    Err(err) => failures.push(format!("{chain}: {err}")),
+                }
+            }
+            if deleted > 0 {
+                Ok(())
+            } else {
+                Err(format!(
+                    "failed to delete firewall rule {rule_name}: {}",
+                    failures.join("; ")
+                ))
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = rule_name;
+            Ok(())
+        }
+    }
+
+    // ── Process control (Linux: SIGSTOP / SIGCONT) ─────────────────────────
+
+    pub fn suspend_process(pid: u32) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            command_status("kill", &["-STOP", &pid.to_string()])
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err("Process suspension is not implemented on this platform.".into())
+        }
+    }
+    pub fn resume_process(pid: u32) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            command_status("kill", &["-CONT", &pid.to_string()])
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err("Process resume is not implemented on this platform.".into())
+        }
+    }
+
+    // ── TCP connection kill (Linux: ss -K) ─────────────────────────────────
+
+    pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
+        #[cfg(target_os = "linux")]
+        {
+            let status = Command::new("ss")
+                .args([
+                    "-K",
+                    "dst",
+                    &target.remote_ip.to_string(),
+                    "dport",
+                    "=",
+                    &target.remote_port.to_string(),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|_| SocketKillError::OsError("failed to spawn ss".into()))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(SocketKillError::OsError("ss -K failed".into()))
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = target;
+            Err(SocketKillError::PlatformUnsupported)
+        }
+    }
+    pub fn terminate_active_tcp_connections() -> Result<usize, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let data = std::fs::read_to_string("/proc/net/tcp")
+                .map_err(|e| format!("read /proc/net/tcp: {e}"))?;
+            let mut count = 0usize;
+            for line in data.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 4 {
+                    continue;
+                }
+                // State 01 = ESTABLISHED in /proc/net/tcp.
+                if parts[3] != "01" {
+                    continue;
+                }
+                let Some((lip, lport)) = parse_hex_addr_port(parts[1]) else {
+                    continue;
+                };
+                let Some((rip, rport)) = parse_hex_addr_port(parts[2]) else {
+                    continue;
+                };
+                let status = Command::new("ss")
+                    .args([
+                        "-K",
+                        "dst",
+                        &rip,
+                        "dport",
+                        "=",
+                        &rport.to_string(),
+                        "src",
+                        &lip,
+                        "sport",
+                        "=",
+                        &lport.to_string(),
+                    ])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("TCP termination is not implemented on this platform.".into())
+        }
+    }
+    /// Parse "AABBCCDD:PPPP" hex format from /proc/net/tcp into (ip_string, port).
+    /// The IP is little-endian hex (e.g. "0100007F" = 127.0.0.1).
+    #[cfg(target_os = "linux")]
+    fn parse_hex_addr_port(s: &str) -> Option<(String, u16)> {
+        let (hex_ip, hex_port) = s.split_once(':')?;
+        let port = u16::from_str_radix(hex_port, 16).ok()?;
+        if hex_ip.len() != 8 {
+            return None;
+        }
+        let bytes = [
+            u8::from_str_radix(&hex_ip[6..8], 16).ok()?,
+            u8::from_str_radix(&hex_ip[4..6], 16).ok()?,
+            u8::from_str_radix(&hex_ip[2..4], 16).ok()?,
+            u8::from_str_radix(&hex_ip[0..2], 16).ok()?,
+        ];
+        Some((
+            format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]),
+            port,
+        ))
+    }
+
+    // ── Domain blocking via /etc/hosts ─────────────────────────────────────
+
+    pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let entry = format!("\n{marker}\n127.0.0.1 {domain}\n::1 {domain}\n");
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open("/etc/hosts")
+                .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()))
+                .map_err(|e| format!("failed to update /etc/hosts: {e}"))?;
+            flush_dns();
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (domain, marker);
+            Err("Domain blocking is not implemented on this platform.".into())
+        }
+    }
+    pub fn remove_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let content = std::fs::read_to_string("/etc/hosts")
+                .map_err(|e| format!("failed to read /etc/hosts: {e}"))?;
+            let filtered: String = content
+                .lines()
+                .filter(|line| {
+                    line.trim() != marker && !line.trim().ends_with(&format!(" {domain}"))
+                })
+                .collect::<Vec<&str>>()
+                .join("\n");
+            std::fs::write("/etc/hosts", filtered)
+                .map_err(|e| format!("failed to write /etc/hosts: {e}"))?;
+            flush_dns();
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (domain, marker);
+            Err("Domain blocking is not implemented on this platform.".into())
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn flush_dns() {
+        // Try systemd-resolve first (older Ubuntu), then resolvectl.
+        let _ = command_status("resolvectl", &["flush-caches"]);
+        let _ = command_status("systemd-resolve", &["--flush-caches"]);
+    }
+
+    // ── Network adapter management ─────────────────────────────────────────
+
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         #[cfg(target_os = "linux")]
         {
@@ -2153,36 +2883,51 @@ mod platform {
         #[allow(unreachable_code)]
         Err("Network adapter restoration is not implemented on this platform.".into())
     }
-    pub fn suspend_process(_pid: u32) -> Result<(), String> {
-        Err("Process suspension is not implemented on this platform.".into())
+    pub fn enable_all_network_adapters() -> Result<usize, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let output = command_stdout("ip", &["-o", "link", "show"])?;
+            let mut names = Vec::new();
+            for line in output.lines() {
+                let mut parts = line.splitn(3, ':');
+                let _ = parts.next();
+                let Some(name) = parts.next().map(|p| p.trim()) else {
+                    continue;
+                };
+                if !name.is_empty() && name != "lo" {
+                    names.push(name.to_string());
+                }
+            }
+            let mut enabled = 0usize;
+            for name in names {
+                if command_status("ip", &["link", "set", "dev", &name, "up"]).is_ok() {
+                    enabled += 1;
+                }
+            }
+            return Ok(enabled);
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let output = command_stdout("ifconfig", &["-l"])?;
+            let mut enabled = 0usize;
+            for name in output.split_whitespace() {
+                if name == "lo0" {
+                    continue;
+                }
+                if command_status("ifconfig", &[name, "up"]).is_ok() {
+                    enabled += 1;
+                }
+            }
+            return Ok(enabled);
+        }
+        #[allow(unreachable_code)]
+        Ok(0)
     }
-    pub fn resume_process(_pid: u32) -> Result<(), String> {
-        Err("Process resume is not implemented on this platform.".into())
-    }
-    pub fn add_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
-        Err("Domain blocking is not implemented on this platform.".into())
-    }
-    pub fn remove_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
-        Err("Domain blocking is not implemented on this platform.".into())
-    }
-    pub fn kill_tcp_connection(_target: &SocketKillTarget) -> Result<(), SocketKillError> {
-        Err(SocketKillError::PlatformUnsupported)
-    }
-    pub fn add_block_rule(_rule_name: &str, _target: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn add_block_all_rule(_rule_name: &str, _dir: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn add_block_program_rule(_rule_name: &str, _path: &str, _dir: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn delete_rule(_rule_name: &str) -> Result<(), String> {
-        Ok(())
-    }
+
+    // ── Command helpers ────────────────────────────────────────────────────
+
     fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
-        let output = Command::new(program)
-            .args(args)
+        let output = command_base(program, args)?
             .output()
             .map_err(|e| format!("failed to spawn {program}: {e}"))?;
         if output.status.success() {
@@ -2195,8 +2940,7 @@ mod platform {
         }
     }
     fn command_status(program: &str, args: &[&str]) -> Result<(), String> {
-        let status = Command::new(program)
-            .args(args)
+        let status = command_base(program, args)?
             .status()
             .map_err(|e| format!("failed to spawn {program}: {e}"))?;
         if status.success() {
@@ -2204,6 +2948,49 @@ mod platform {
         } else {
             Err(format!("{program} failed with status {status}"))
         }
+    }
+    fn command_base(program: &str, args: &[&str]) -> Result<Command, String> {
+        let resolved = resolve_program_path(program)?;
+        let mut cmd = Command::new(resolved);
+        cmd.args(args);
+        Ok(cmd)
+    }
+    fn resolve_program_path(program: &str) -> Result<&'static str, String> {
+        let candidates: &[&str] = match program {
+            "kill" => &["/bin/kill", "/usr/bin/kill"],
+            #[cfg(target_os = "linux")]
+            "iptables" => &["/usr/sbin/iptables", "/sbin/iptables"],
+            #[cfg(target_os = "linux")]
+            "ip" => &["/usr/sbin/ip", "/sbin/ip"],
+            #[cfg(target_os = "macos")]
+            "ifconfig" => &["/sbin/ifconfig"],
+            _ => &[],
+        };
+        candidates
+            .iter()
+            .copied()
+            .find(|path| Path::new(path).exists())
+            .ok_or_else(|| format!("required system binary for {program} not found"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_effective_uid(pid: u32) -> Result<u32, String> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .map_err(|e| format!("read /proc/{pid}/status: {e}"))?;
+        for line in status.lines() {
+            let Some(rest) = line.strip_prefix("Uid:") else {
+                continue;
+            };
+            let mut fields = rest.split_whitespace();
+            let _real = fields.next();
+            let Some(effective) = fields.next() else {
+                return Err(format!("malformed Uid line for pid {pid}"));
+            };
+            return effective
+                .parse::<u32>()
+                .map_err(|e| format!("parse effective uid for pid {pid}: {e}"));
+        }
+        Err(format!("could not read effective uid for pid {pid}"))
     }
 }
 
@@ -2249,6 +3036,7 @@ mod tests {
             proc_user: "user".into(),
             parent_name: "cmd.exe".into(),
             parent_pid: 123,
+            parent_user: "user".into(),
             service_name: String::new(),
             publisher: String::new(),
             local_addr: local.into(),
@@ -2266,6 +3054,12 @@ mod tests {
             recently_dropped: false,
             long_lived: false,
             dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            command_line: String::new(),
+            attack_tags: Vec::new(),
+            tls_sni: None,
+            tls_ja3: None,
         }
     }
     #[test]

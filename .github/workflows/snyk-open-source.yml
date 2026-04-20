@@ -1,0 +1,46 @@
+name: Snyk Open Source
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sbom-scan:
+    if: secrets.SNYK_TOKEN != ''
+    name: Snyk OSS SBOM scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate CycloneDX SBOM
+        shell: bash
+        run: |
+          cargo cyclonedx -f json --manifest-path Cargo.toml
+          SBOM_FILE="$(find . -maxdepth 3 \( -name 'bom.json' -o -name '*.cdx.json' \) | head -n 1)"
+          test -n "$SBOM_FILE"
+          cp "$SBOM_FILE" vigil.cdx.json
+          ls -l vigil.cdx.json
+
+      - name: Set up Snyk CLI
+        uses: snyk/actions/setup@master
+
+      - name: Run Snyk Open Source SBOM test
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk sbom test --file=vigil.cdx.json --severity-threshold=high

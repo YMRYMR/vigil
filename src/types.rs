@@ -88,3 +88,20 @@ pub enum MonitorCmd {
     Resume,
     UpdateConfig(Box<crate::config::Config>),
 }
+
+/// Per-connection enrichment pipeline timing breakdown.
+/// Each field is in microseconds. Used for profiling and diagnostics.
+#[derive(Debug, Clone, Default)]
+#[allow(dead_code)]
+pub struct PipelineTimings {
+    pub process_collect_us: u64,
+    pub geoip_us: u64,
+    pub blocklist_us: u64,
+    pub revdns_us: u64,
+    pub fswatch_us: u64,
+    pub baseline_us: u64,
+    pub tls_lookup_us: u64,
+    pub scoring_us: u64,
+    pub tamper_us: u64,
+    pub total_us: u64,
+}

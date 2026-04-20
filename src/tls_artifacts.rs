@@ -32,13 +32,14 @@ struct CachedTlsMeta {
 }
 
 const CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const CACHE_MAX_ENTRIES: usize = 1024;
 
 pub fn analyze_capture(info: &ConnInfo, pcapng: &Path) -> Result<Option<PathBuf>, String> {
     let Some((remote_ip, remote_port)) = parse_remote_endpoint(&info.remote_addr) else {
         return Ok(None);
     };
-    let bytes = std::fs::read(pcapng)
-        .map_err(|e| format!("failed to read {}: {e}", pcapng.display()))?;
+    let bytes =
+        std::fs::read(pcapng).map_err(|e| format!("failed to read {}: {e}", pcapng.display()))?;
     let Some(meta) = extract_client_hello(&bytes, remote_ip, remote_port) else {
         return Ok(None);
     };
@@ -83,6 +84,18 @@ fn cache() -> &'static Mutex<HashMap<String, CachedTlsMeta>> {
 fn prune_stale_locked(cache: &mut HashMap<String, CachedTlsMeta>) {
     let now = unix_now();
     cache.retain(|_, entry| now.saturating_sub(entry.observed_unix) <= CACHE_TTL_SECS);
+    // Enforce size cap: evict oldest entries when over limit.
+    if cache.len() > CACHE_MAX_ENTRIES {
+        let mut entries: Vec<_> = cache
+            .iter()
+            .map(|(k, v)| (k.clone(), v.observed_unix))
+            .collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+        let to_remove = cache.len() - CACHE_MAX_ENTRIES;
+        for (key, _) in entries.into_iter().take(to_remove) {
+            cache.remove(&key);
+        }
+    }
 }
 
 fn cache_key(remote_ip: &str, remote_port: u16) -> String {
@@ -105,7 +118,11 @@ fn parse_remote_endpoint(remote: &str) -> Option<(IpAddr, u16)> {
     Some((ip, port))
 }
 
-fn extract_client_hello(bytes: &[u8], remote_ip: IpAddr, remote_port: u16) -> Option<TlsArtifactMeta> {
+fn extract_client_hello(
+    bytes: &[u8],
+    remote_ip: IpAddr,
+    remote_port: u16,
+) -> Option<TlsArtifactMeta> {
     let mut off = 0usize;
     let mut little_endian = true;
     let mut linktype = 1u16;
@@ -153,7 +170,11 @@ fn extract_client_hello(bytes: &[u8], remote_ip: IpAddr, remote_port: u16) -> Op
     None
 }
 
-fn parse_ethernet_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> Option<TlsArtifactMeta> {
+fn parse_ethernet_packet(
+    packet: &[u8],
+    remote_ip: IpAddr,
+    remote_port: u16,
+) -> Option<TlsArtifactMeta> {
     if packet.len() < 14 {
         return None;
     }
@@ -165,7 +186,11 @@ fn parse_ethernet_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> 
     }
 }
 
-fn parse_ipv4_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> Option<TlsArtifactMeta> {
+fn parse_ipv4_packet(
+    packet: &[u8],
+    remote_ip: IpAddr,
+    remote_port: u16,
+) -> Option<TlsArtifactMeta> {
     if packet.len() < 20 {
         return None;
     }
@@ -174,14 +199,20 @@ fn parse_ipv4_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> Opti
     if version != 4 || packet.len() < ihl || packet[9] != 6 {
         return None;
     }
-    let dst = IpAddr::V4(std::net::Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]));
+    let dst = IpAddr::V4(std::net::Ipv4Addr::new(
+        packet[16], packet[17], packet[18], packet[19],
+    ));
     if dst != remote_ip {
         return None;
     }
     parse_tcp_segment(&packet[ihl..], remote_port, remote_ip)
 }
 
-fn parse_ipv6_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> Option<TlsArtifactMeta> {
+fn parse_ipv6_packet(
+    packet: &[u8],
+    remote_ip: IpAddr,
+    remote_port: u16,
+) -> Option<TlsArtifactMeta> {
     if packet.len() < 40 || (packet[0] >> 4) != 6 {
         return None;
     }
@@ -197,7 +228,11 @@ fn parse_ipv6_packet(packet: &[u8], remote_ip: IpAddr, remote_port: u16) -> Opti
     parse_tcp_segment(&packet[40..], remote_port, remote_ip)
 }
 
-fn parse_tcp_segment(segment: &[u8], remote_port: u16, remote_ip: IpAddr) -> Option<TlsArtifactMeta> {
+fn parse_tcp_segment(
+    segment: &[u8],
+    remote_port: u16,
+    remote_ip: IpAddr,
+) -> Option<TlsArtifactMeta> {
     if segment.len() < 20 {
         return None;
     }
@@ -251,26 +286,16 @@ mod tests {
 
     fn sample_pcapng() -> Vec<u8> {
         let packet: Vec<u8> = vec![
-            0,1,2,3,4,5, 6,7,8,9,10,11, 0x08,0x00,
-            0x45,0x00,0x00,0x71,0x00,0x00,0x40,0x00,0x40,0x06,0x00,0x00,
-            192,0,2,10, 93,184,216,34,
-            0xC3,0x50, 0x01,0xBB, 0,0,0,1, 0,0,0,0, 0x50,0x18, 0x20,0x00, 0,0, 0,0,
-            0x16,0x03,0x01,0x00,0x43,
-            0x01,0x00,0x00,0x3f,
-            0x03,0x03,
-            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
-            0x00,
-            0x00,0x04, 0x13,0x01, 0x13,0x02,
-            0x01, 0x00,
-            0x00,0x12,
-            0x00,0x00, 0x00,0x10,
-            0x00,0x0e,
-            0x00,
-            0x00,0x0b,
-            b'e',b'x',b'a',b'm',b'p',b'l',b'e',b'.',b'o',b'r',b'g'
+            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 0x08, 0x00, 0x45, 0x00, 0x00, 0x71, 0x00, 0x00,
+            0x40, 0x00, 0x40, 0x06, 0x00, 0x00, 192, 0, 2, 10, 93, 184, 216, 34, 0xC3, 0x50, 0x01,
+            0xBB, 0, 0, 0, 1, 0, 0, 0, 0, 0x50, 0x18, 0x20, 0x00, 0, 0, 0, 0, 0x16, 0x03, 0x01,
+            0x00, 0x45, 0x01, 0x00, 0x00, 0x41, 0x03, 0x03, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00, 0x04, 0x13, 0x01,
+            0x13, 0x02, 0x01, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x10, 0x00, 0x0e, 0x00, 0x00,
+            0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'o', b'r', b'g',
         ];
         let cap_len = packet.len() as u32;
-        let padded = ((packet.len() + 3) / 4) * 4;
+        let padded = packet.len().div_ceil(4) * 4;
         let block_len = (28 + padded + 4) as u32;
         let mut out = Vec::new();
         out.extend_from_slice(&0x0A0D0D0Au32.to_le_bytes());

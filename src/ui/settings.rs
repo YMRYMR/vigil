@@ -53,7 +53,9 @@ pub struct SettingsDraft {
     pub honeypot_decoy_names_text: String,
     pub break_glass_timeout_mins: u64,
     pub break_glass_heartbeat_secs: u64,
+    pub ui_scale: f32,
     pub status_msg: Option<(String, std::time::Instant)>,
+    pub grant_capabilities_requested: bool,
 }
 
 impl SettingsDraft {
@@ -101,7 +103,9 @@ impl SettingsDraft {
             honeypot_decoy_names_text: cfg.honeypot_decoy_names.join("\n"),
             break_glass_timeout_mins: cfg.break_glass_timeout_mins,
             break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
+            ui_scale: cfg.sanitised_ui_scale(),
             status_msg: None,
+            grant_capabilities_requested: false,
         }
     }
 
@@ -147,6 +151,7 @@ impl SettingsDraft {
         cfg.break_glass_enabled = true;
         cfg.break_glass_timeout_mins = self.break_glass_timeout_mins.clamp(1, 240);
         cfg.break_glass_heartbeat_secs = self.break_glass_heartbeat_secs.clamp(5, 300);
+        cfg.ui_scale = self.ui_scale.clamp(0.8, 1.8);
     }
 }
 
@@ -184,6 +189,31 @@ pub fn show(ui: &mut egui::Ui, draft: &mut SettingsDraft) -> bool {
 
 fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let label_w = 185.0f32;
+
+    section_header(ui, "Display");
+    setting_row(ui, label_w, "Font size", |ui| {
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::Slider::new(&mut draft.ui_scale, 0.8_f32..=1.8_f32)
+                    .fixed_decimals(2)
+                    .clamping(egui::SliderClamping::Always),
+            );
+            *changed |= resp.changed();
+            ui.label(
+                RichText::new(format!("  {}%", (draft.ui_scale * 100.0).round() as i32))
+                    .color(theme::TEXT3)
+                    .size(11.0),
+            );
+        });
+    });
+    ui.label(
+        RichText::new(
+            "Tip: hold Ctrl and use the mouse wheel anywhere in the app to adjust font size.",
+        )
+        .color(theme::TEXT3)
+        .size(10.6),
+    );
+    ui.add_space(12.0);
 
     section_header(ui, "Detection");
     setting_row(ui, label_w, "Alert threshold", |ui| {
@@ -609,6 +639,45 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         });
     });
 
+    #[cfg(target_os = "linux")]
+    {
+        ui.add_space(16.0);
+        section_header(ui, "Privileges");
+        let elevated = crate::autostart::is_elevated();
+        let (status_text, status_color) = if elevated {
+            ("Elevated privileges: active", theme::ACCENT)
+        } else {
+            ("Elevated privileges: not active", theme::DANGER)
+        };
+        setting_row(ui, label_w, "Status", |ui| {
+            ui.label(RichText::new(status_text).color(status_color).size(11.5));
+        });
+        if !elevated {
+            setting_row(ui, label_w, "", |ui| {
+                ui.vertical(|ui| {
+                    if ui
+                        .button(
+                            RichText::new("Run as Admin")
+                                .color(theme::ACCENT)
+                                .size(11.5),
+                        )
+                        .clicked()
+                    {
+                        draft.grant_capabilities_requested = true;
+                    }
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new(
+                            "Uses pkexec (polkit) to relaunch Vigil with elevated privileges.",
+                        )
+                        .color(theme::TEXT3)
+                        .size(10.2),
+                    );
+                });
+            });
+        }
+    }
+
     ui.add_space(16.0);
     section_header(ui, "Trusted Processes");
     ui.add_space(6.0);
@@ -628,6 +697,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                     .corner_radius(4.0),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .on_hover_text("Add this process name to the trusted list.")
             .clicked();
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
@@ -705,6 +775,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                                 .stroke(egui::Stroke::NONE),
                         )
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text("Clear trusted-processes filter.")
                         .clicked()
                 {
                     draft.trusted_filter.clear();
@@ -738,28 +809,46 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                 });
             });
             ui.add_space(8.0);
-            let list_h = (visible.max(4) as f32 * 42.0).clamp(210.0, 520.0);
-            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
-                for orig_idx in filtered {
-                    let name = draft.trusted_processes[orig_idx].clone();
-                    egui::Frame::NONE.fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(12.0).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
-                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                            let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(3.0, 16.0), egui::Sense::hover());
-                            ui.painter().rect_filled(bar_rect, 2.0, theme::ACCENT);
-                            ui.add_space(8.0);
-                            ui.vertical(|ui| {
-                                ui.label(RichText::new(&name).color(theme::TEXT).size(12.2));
-                                ui.label(RichText::new("Trusted for routine connections and automation suppression").color(theme::TEXT3).size(9.6));
+            let viewport_h = ui.ctx().content_rect().height();
+            // Reserve a large, stable viewport for trusted processes so this section
+            // is usable when it appears near the bottom of the Settings page.
+            let min_view_h = (viewport_h * 0.58).clamp(320.0, 640.0);
+            let rows_hint_h = (visible.clamp(8, 14) as f32 * 40.0).max(320.0);
+            let list_h = min_view_h.max(rows_hint_h);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), list_h),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        for orig_idx in filtered {
+                            let name = draft.trusted_processes[orig_idx].clone();
+                            egui::Frame::NONE.fill(theme::SURFACE2).stroke(egui::Stroke::new(1.0, theme::BORDER)).corner_radius(12.0).inner_margin(egui::Margin::symmetric(10, 5)).show(ui, |ui| {
+                                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 38.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                    let (bar_rect, _) = ui.allocate_exact_size(egui::vec2(3.0, 16.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(bar_rect, 2.0, theme::ACCENT);
+                                    ui.add_space(8.0);
+                                    ui.vertical(|ui| {
+                                        ui.label(RichText::new(&name).color(theme::TEXT).size(12.2));
+                                        ui.label(RichText::new("Trusted for routine connections and automation suppression").color(theme::TEXT3).size(9.6));
+                                    });
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        let remove_btn = egui::Button::new(RichText::new("Remove").color(theme::DANGER).size(11.0)).fill(theme::DANGER_BG).stroke(egui::Stroke::new(1.0, theme::DANGER)).corner_radius(7.0);
+                                        if ui
+                                            .add(remove_btn)
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .on_hover_text("Remove this process from the trusted list.")
+                                            .clicked()
+                                        {
+                                            remove_idx = Some(orig_idx);
+                                        }
+                                    });
+                                });
                             });
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                let remove_btn = egui::Button::new(RichText::new("Remove").color(theme::DANGER).size(11.0)).fill(theme::DANGER_BG).stroke(egui::Stroke::new(1.0, theme::DANGER)).corner_radius(7.0);
-                                if ui.add(remove_btn).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() { remove_idx = Some(orig_idx); }
-                            });
-                        });
+                            ui.add_space(6.0);
+                        }
                     });
-                    ui.add_space(6.0);
-                }
-            });
+                },
+            );
         });
     }
 

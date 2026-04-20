@@ -14,13 +14,13 @@ path = "src/main.rs"
 tokio = { version = "1", features = ["full"] }
 egui        = "0.34"
 eframe      = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
-egui_extras = { version = "0.34", features = ["all_loaders"] }
-tray-icon = "0.22"
 notify-rust = "4"
+image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
 sysinfo = "0.38"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+single-instance = "0.3"
 tracing             = "0.1"
 tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 tracing-appender    = "0.2"
@@ -28,7 +28,7 @@ chrono = { version = "0.4", features = ["serde"] }
 open = "5"
 dashmap = "5"
 auto-launch = "0.6.0"
-maxminddb = "0.24"
+maxminddb = "0.27"
 notify = "6"
 dns-lookup = "2"
 ipnetwork = "0.20"
@@ -54,9 +54,42 @@ windows = { version = "0.62", features = [
 ] }
 winreg = "0.56"
 
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+tray-icon = "0.22"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence", "wayland", "x11"] }
+aya = "0.13"
+bytes = "1"
+libc = "0.2"
+ksni = { version = "0.3", default-features = false, features = ["blocking"] }
+
+[target.'cfg(target_os = "linux")'.build-dependencies]
+
 [build-dependencies]
+png = "0.17"
+
+[target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
-png    = "0.17"
+
+# Strip the gtk3 / glib 0.18 chain from Cargo.lock.
+#
+# `tray-icon` declares `libappindicator` as a hard `cfg(linux)` dependency in
+# its own Cargo.toml (not behind a feature flag). Cargo's resolver records
+# target-specific transitive deps in Cargo.lock regardless of the build target,
+# so even though we never use tray-icon on Linux (we use ksni), libappindicator
+# and its glib/gtk 0.18 subtree would still appear in the lockfile and trip
+# Dependabot on GHSA-wrw7-89jp-8q8g (unsound glib::VariantStrIter).
+#
+# The stub below is an empty crate with zero dependencies. tray-icon only
+# references `libappindicator` from `#[cfg(all(unix, not(target_os = "macos")))]`
+# blocks, which don't compile on Windows or macOS, so the stub's body is never
+# referenced. On Linux `tray-icon` isn't pulled in at all. Net effect:
+# glib/gtk/libappindicator disappear from Cargo.lock without changing any
+# compiled behavior.
+[patch.crates-io]
+libappindicator = { path = "stubs/libappindicator" }
+gtk             = { path = "stubs/gtk" }
 
 [workspace.metadata.dist]
 cargo-dist-version = "0.22.1"

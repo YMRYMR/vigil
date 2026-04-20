@@ -68,6 +68,7 @@ fn synthetic_alert(path: &Path, score: u8) -> ConnInfo {
         proc_user: String::new(),
         parent_name: String::new(),
         parent_pid: 0,
+        parent_user: String::new(),
         service_name: String::new(),
         publisher: String::new(),
         local_addr: "file://local".into(),
@@ -85,6 +86,12 @@ fn synthetic_alert(path: &Path, score: u8) -> ConnInfo {
         recently_dropped: false,
         long_lived: false,
         dga_like: false,
+        baseline_deviation: false,
+        script_host_suspicious: false,
+        command_line: String::new(),
+        attack_tags: Vec::new(),
+        tls_sni: None,
+        tls_ja3: None,
     }
 }
 

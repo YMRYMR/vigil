@@ -122,6 +122,7 @@ pub mod win {
                         proc_user: String::new(),
                         parent_name: label.clone(),
                         parent_pid: 0,
+                        parent_user: String::new(),
                         ancestor_chain: vec![],
                         service_name: String::new(),
                         publisher: String::new(),
@@ -139,6 +140,12 @@ pub mod win {
                         recently_dropped: false,
                         long_lived: false,
                         dga_like: false,
+                        baseline_deviation: false,
+                        script_host_suspicious: false,
+                        command_line: String::new(),
+                        attack_tags: Vec::new(),
+                        tls_sni: None,
+                        tls_ja3: None,
                     };
 
                     let _ = tx.send(ConnEvent::Alert(info));

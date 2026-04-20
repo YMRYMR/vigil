@@ -5,7 +5,7 @@
 //! On Linux:   `/proc/net/tcp` + `/proc/net/tcp6`.
 //! On macOS:   falls back to parsing `netstat` output.
 
-use std::net::Ipv4Addr;
+use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// A raw connection record from the OS, before scoring / enrichment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18,13 +18,19 @@ pub struct RawConn {
     pub status: String,    // "ESTABLISHED" | "LISTEN" | "SYN_SENT" | …
 }
 
-/// The set of statuses we care about (ignore TIME_WAIT, CLOSE, etc.)
+/// The set of statuses we keep for operator-visible lifecycle summaries.
 const KEEP_STATUSES: &[&str] = &[
     "ESTABLISHED",
     "LISTEN",
     "SYN_SENT",
     "SYN_RECV",
     "CLOSE_WAIT",
+    "FIN_WAIT1",
+    "FIN_WAIT2",
+    "TIME_WAIT",
+    "LAST_ACK",
+    "CLOSING",
+    "DELETE_TCB",
 ];
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -183,7 +189,7 @@ fn linux_parse_proc_content(
             local_port,
             remote_ip: if is_listen { String::new() } else { remote_ip },
             remote_port: if is_listen { 0 } else { remote_port },
-            status,
+            status: status.to_string(),
         });
     }
     out

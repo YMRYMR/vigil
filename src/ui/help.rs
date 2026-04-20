@@ -9,21 +9,20 @@ pub fn show(ui: &mut egui::Ui) {
         hero(ui);
         ui.add_space(16.0);
 
-        if ui.available_width() > 780.0 {
-            card(ui, "Operator workflow", |ui| {
-                field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
-                field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
-                field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
-                field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
-                field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
-                field_row(ui, "Freeze autoruns", "Capture the current Run and RunOnce autorun values as a baseline so later changes can be reverted.");
-                field_row(ui, "Quarantine", "Current Windows implementation isolates the network, blocks the executable path when known, suspends the process when possible, disables USB storage, and pauses non-Microsoft scheduled tasks.");
-                field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the Windows hosts file. Requires a resolved hostname on the selected connection.");
-                field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket. On Windows this is currently available for IPv4 TCP connections when Vigil is elevated.");
-            });
-
+        if ui.available_width() > 700.0 {
             ui.columns(2, |cols| {
                 cols[0].vertical(|ui| {
+                    card(ui, "Operator workflow", |ui| {
+                        field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
+                        field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
+                        field_row(ui, "Open loc", "Open the executable's folder in the system file manager. Disabled when no location is known.");
+                        field_row(ui, "Kill", "Terminate the process after confirmation. Unresolved PID placeholder rows are not killable.");
+                        field_row(ui, "Suspend", "Freeze the selected process without killing it. Use Resume process to continue it later.");
+                        field_row(ui, "Freeze autoruns", "Capture the current Run and RunOnce autorun values as a baseline so later changes can be reverted.");
+                        field_row(ui, "Quarantine", "Isolate the network, block the executable path when known, suspend the process when possible, and apply platform-specific containment controls.");
+                        field_row(ui, "Block domain", "Redirect the selected hostname to the local machine through the hosts file. Requires a resolved hostname on the selected connection.");
+                        field_row(ui, "Kill connection", "Immediately terminate the selected live TCP socket.");
+                    });
                     card(ui, "What Vigil does", |ui| {
                         body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold.");
                     });
@@ -57,12 +56,12 @@ pub fn show(ui: &mut egui::Ui) {
                     card(ui, "Active response", |ui| {
                         body(ui, "Vigil supports reversible intervention: kill a live connection, block a remote IP for 1 hour, 24 hours, or permanently, block a process by executable path, block a resolved domain through the hosts file, suspend a process while you investigate, freeze autorun keys for later rollback, apply a quarantine preset, or isolate the machine. Active blocks show a countdown and a quick unblock action. Isolation is immediate and confirmed by connectivity checks; other destructive actions keep confirmation.");
                         ui.add_space(6.0);
-                        bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately. Current Windows implementation uses the IPv4 TCP delete-TCB path.");
+                        bullet(ui, "Kill connection", "Terminate the selected live TCP socket immediately.");
                         bullet(ui, "Suspend process", "Freeze every thread in the selected process without killing it. Resume process re-enables the same process later in the investigation.");
-                        bullet(ui, "Freeze autoruns", "Capture a baseline of Windows Run and RunOnce keys. Revert autoruns removes later additions and restores changed baseline values.");
-                        bullet(ui, "Quarantine profile", "Current Windows preset: isolate the network, block the selected executable path permanently when known, suspend the process when possible, disable USB storage, and pause non-Microsoft scheduled tasks. Clear quarantine restores those same controls where possible.");
-                        bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the Windows firewall. IPv4 and IPv6 remote addresses are supported.");
-                        bullet(ui, "Block domain", "Add or remove Windows hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
+                        bullet(ui, "Freeze autoruns", "Capture a baseline of Run and RunOnce keys. Revert autoruns removes later additions and restores changed baseline values.");
+                        bullet(ui, "Quarantine profile", "Isolate the network, block the selected executable path permanently when known, suspend the process when possible, and apply platform-specific containment. Clear quarantine restores those same controls where possible.");
+                        bullet(ui, "Block remote", "Choose a 1h, 24h, or permanent block for the selected connection's remote IP through the platform firewall. IPv4 and IPv6 remote addresses are supported.");
+                        bullet(ui, "Block domain", "Add or remove hosts-file entries that redirect the selected hostname to 127.0.0.1 and ::1. Best for persistent C2 or phishing domains.");
                         bullet(ui, "Block process", "Choose a 1h, 24h, or permanent block for all traffic from the selected executable path.");
                         bullet(ui, "Isolate network", "Apply strict containment immediately: first harden firewall policy, then verify outbound reachability. If traffic is still reachable, Vigil falls back to emergency adapter cutoff. Break-glass and failsafe recovery restore saved state if the app dies.");
                     });
@@ -85,7 +84,7 @@ pub fn show(ui: &mut egui::Ui) {
                     });
 
                     card(ui, "Forensics and honeypots", |ui| {
-                        body(ui, "Optional forensic capture is available in Settings. Current Windows implementation can write a full user-mode process dump and a short host-wide packet window on high-score alerts, both rate-limited and logged to the audit trail. Honeypot decoys can plant lure files into common user folders and raise synthetic alerts when touched.");
+                        body(ui, "Optional forensic capture is available in Settings. Vigil can write a full user-mode process dump and a short host-wide packet window on high-score alerts, both rate-limited and logged to the audit trail. Honeypot decoys can plant lure files into common user folders and raise synthetic alerts when touched.");
                         ui.add_space(6.0);
                         bullet(ui, "Enable process dump", "Off by default. Turn it on only when you have disk space and a triage workflow for dump files.");
                         bullet(ui, "Enable PCAP capture", "Off by default. Captures a short pktmon window and converts it to pcapng for later packet analysis. Phase 12 can also derive TLS ClientHello sidecars from those captures.");
@@ -99,6 +98,28 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
                         bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
                         bullet(ui, "Watchdog task", "Vigil uses an OS scheduler entry to run the same binary with --break-glass-recover (Windows Task Scheduler, Linux cron, macOS launchd).");
+                    });
+
+                    #[cfg(target_os = "linux")]
+                    card(ui, "Linux privileges", |ui| {
+                        body(ui, "Vigil can run with elevated privileges on Linux for full monitoring and active response. If capabilities are already granted to the binary, non-root runs can still access most privileged paths.");
+                        ui.add_space(6.0);
+                        bullet(ui, "CAP_NET_ADMIN", "Required for network isolation (iptables), blocking IPs, and TCP connection kill (ss -K).");
+                        bullet(ui, "CAP_BPF + CAP_PERFMON", "Required for eBPF real-time monitoring. Without these, Vigil falls back to /proc/net/tcp polling (slower).");
+                        bullet(ui, "CAP_DAC_READ_SEARCH + CAP_DAC_OVERRIDE", "Allow reading process details for connections owned by other users.");
+                        ui.add_space(6.0);
+                        body(ui, "Grant all capabilities at once:");
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(">").color(theme::ACCENT).size(11.0));
+                            ui.add_space(2.0);
+                            ui.add(egui::Label::new(
+                                RichText::new("sudo setcap cap_bpf,cap_net_admin,cap_perfmon,cap_dac_read_search,cap_dac_override+ep /path/to/vigil")
+                                    .color(theme::TEXT2).size(10.5).monospace()
+                            ).wrap());
+                        });
+                        ui.add_space(4.0);
+                        body(ui, "Or click \"Run as Admin\" in the toolbar/settings to relaunch via pkexec with a graphical polkit prompt.");
                     });
 
                     card(ui, "Telemetry and reputation", |ui| {

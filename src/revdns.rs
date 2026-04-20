@@ -28,6 +28,7 @@ static CACHE: OnceLock<DashMap<String, (String, Instant)>> = OnceLock::new();
 static TX: OnceLock<mpsc::SyncSender<String>> = OnceLock::new();
 
 const TTL_SECS: u64 = 3600;
+const CACHE_MAX: usize = 4096;
 
 /// Start the background resolver thread.  Idempotent — calling multiple times
 /// is a no-op.
@@ -58,6 +59,18 @@ fn worker(rx: mpsc::Receiver<String>) {
         let host = if host == ip_str { String::new() } else { host };
         if let Some(cache) = CACHE.get() {
             cache.insert(ip_str, (host, Instant::now()));
+            // Enforce size cap: evict oldest entries.
+            if cache.len() > CACHE_MAX {
+                let mut entries: Vec<_> = cache
+                    .iter()
+                    .map(|r| (r.key().clone(), r.value().1))
+                    .collect();
+                entries.sort_by_key(|(_, ts)| *ts);
+                let to_remove = cache.len() - CACHE_MAX;
+                for (key, _) in entries.into_iter().take(to_remove) {
+                    cache.remove(&key);
+                }
+            }
         }
     }
 }

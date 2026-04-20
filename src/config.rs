@@ -22,6 +22,11 @@ pub struct Config {
     pub suspicious_path_fragments: Vec<String>,
     pub lolbins: Vec<String>,
 
+    #[serde(default = "default_activity_history_cap")]
+    pub activity_history_cap: usize,
+    #[serde(default = "default_alerts_history_cap")]
+    pub alerts_history_cap: usize,
+
     #[serde(default)]
     pub geoip_city_db: String,
     #[serde(default)]
@@ -120,10 +125,19 @@ pub struct Config {
     pub break_glass_timeout_mins: u64,
     #[serde(default = "default_break_glass_heartbeat_secs")]
     pub break_glass_heartbeat_secs: u64,
+
+    #[serde(default = "default_ui_scale")]
+    pub ui_scale: f32,
 }
 
 fn default_true() -> bool {
     true
+}
+fn default_activity_history_cap() -> usize {
+    2048
+}
+fn default_alerts_history_cap() -> usize {
+    1024
 }
 fn default_fswatch_window() -> u64 {
     600
@@ -178,6 +192,9 @@ fn default_break_glass_timeout_mins() -> u64 {
 }
 fn default_break_glass_heartbeat_secs() -> u64 {
     30
+}
+fn default_ui_scale() -> f32 {
+    1.0
 }
 
 impl Default for Config {
@@ -312,6 +329,8 @@ impl Default for Config {
             .iter()
             .map(|s| s.to_string())
             .collect(),
+            activity_history_cap: default_activity_history_cap(),
+            alerts_history_cap: default_alerts_history_cap(),
             geoip_city_db: String::new(),
             geoip_asn_db: String::new(),
             allowed_countries: Vec::new(),
@@ -361,6 +380,7 @@ impl Default for Config {
             break_glass_enabled: true,
             break_glass_timeout_mins: 10,
             break_glass_heartbeat_secs: 30,
+            ui_scale: 1.0,
         }
     }
 }
@@ -450,6 +470,16 @@ impl Config {
         self.trusted_processes.push(key);
         true
     }
+
+    pub fn sanitised_ui_scale(&self) -> f32 {
+        self.ui_scale.clamp(0.8, 1.8)
+    }
+    pub fn sanitised_activity_history_cap(&self) -> usize {
+        self.activity_history_cap.clamp(256, 16_384)
+    }
+    pub fn sanitised_alerts_history_cap(&self) -> usize {
+        self.alerts_history_cap.clamp(128, 8_192)
+    }
     #[allow(dead_code)]
     pub fn remove_trusted(&mut self, name: &str) -> bool {
         let before = self.trusted_processes.len();
@@ -518,5 +548,13 @@ mod tests {
         assert!(cfg.lolbins.contains(&"msbuild".to_string()));
         assert!(cfg.lolbins.contains(&"odbcconf".to_string()));
         assert!(cfg.lolbins.contains(&"ieexec".to_string()));
+    }
+    #[test]
+    fn history_caps_are_sanitised() {
+        let mut cfg = Config::default();
+        cfg.activity_history_cap = 1;
+        cfg.alerts_history_cap = usize::MAX;
+        assert_eq!(cfg.sanitised_activity_history_cap(), 256);
+        assert_eq!(cfg.sanitised_alerts_history_cap(), 8_192);
     }
 }

@@ -1,5 +1,7 @@
 # Vigil
 
+[![Static Analysis](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil) [![Dependency Vulnerability Scan](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml) [![Dependency Change Review](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml/badge.svg?event=pull_request)](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml)
+
 Real-time network threat monitor for Windows, macOS, and Linux.
 
 <code style="color: red"><strong>WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</strong></code>
@@ -33,19 +35,21 @@ notification, and a full GUI — the moment something looks wrong.
 ## Features
 
 - **Sub-100 ms detection** on Windows via ETW (Event Tracing for Windows);
-  polling fallback on other platforms
+  on Linux via eBPF (`sock:inet_sock_set_state` tracepoint); polling fallback
+  on macOS and older kernels
 - **Multi-signal threat scoring** (0–10+) across eight detection categories
 - **Full ancestor process tree** — see exactly which process spawned which,
   up to 8 levels deep
 - **System tray** — amber icon + tooltip on alert; green when all-clear;
-  left-click opens the UI, right-click shows the menu
+  left-click opens the UI, right-click shows the menu (GNOME AppIndicator
+  on Linux uses themed icon names)
 - **Clickable notifications** — clicking a desktop alert opens Vigil and
   navigates directly to the triggering connection
 - **Full GUI** — process-grouped Activity and Alerts views, a process-first
   Inspector, auto-save Settings, persisted grid sort/window state, a
   polished Help screen, and a header that clearly shows whether Vigil is
   elevated
-- **Active response** — reversible Windows actions for killing a live TCP
+- **Active response** — reversible actions (Windows + Linux) for killing a live TCP
   connection, suspending or resuming a process during investigation,
   blocking a remote IP for 1 hour, 24 hours, or permanently, blocking a
   process by executable path, or isolating the machine, with confirmation
@@ -69,7 +73,7 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +5 | Connection to a known malware / C2 port (4444, 1337, 31337, …) |
 | +4 | Living-off-the-land binary making a network connection (`powershell`, `cmd`, `mshta`, …) |
 | +3 | No executable path found — possible process injection or hollowing |
-| +3 | Running from a suspicious directory (`\Temp\`, `\AppData\Roaming\`, …) |
+| +3 | Running from a suspicious directory (`\\Temp\\`, `\\AppData\\Roaming\\`, …) |
 | +3 | Suspicious parent process (e.g. `winword.exe` spawning `powershell.exe`) |
 | +3 | Beaconing pattern detected — regular C2 callback timing signature |
 | +3 | IP reputation hit — remote matched a user-supplied blocklist (**Phase 10**, REP badge) |
@@ -91,7 +95,7 @@ app suddenly dials a C2 port, you want to know.
 Vigil also runs two passive persistence watchers that raise synthetic alerts
 (independent of active connections):
 
-- **Registry autorun watcher** (Windows) — polls `HKCU\…\Run`, `HKLM\…\Run`,
+- **Registry autorun watcher** (Windows) — polls `HKCU\\…\\Run`, `HKLM\\…\\Run`,
   and both `RunOnce` keys every 30 s; alerts on any new entry.
 - **Beaconing detector** — tracks inter-arrival time per `(pid, remote_ip)`
   across a rolling 30-sample window; flags stddev < 5 s / mean 1 – 600 s.
@@ -195,19 +199,19 @@ The top bar also reflects privilege state: it shows an `Admin` badge when
 Vigil is elevated, or a `Run as Admin` button that relaunches the app with
 UAC if it is not.
 
-When Vigil is running with administrator privileges, the Inspector can take
-reversible action:
+When Vigil is running with elevated privileges (admin on Windows,
+`CAP_NET_ADMIN` or root on Linux), the Inspector can take reversible action:
 
 - **Kill connection** immediately tears down the selected live TCP socket.
 - **Suspend process** freezes the selected PID without killing it; **Resume process** continues it later.
-- **Block remote** (Windows) lets you choose a 1 hour, 24 hour, or permanent outbound
+- **Block remote** lets you choose a 1 hour, 24 hour, or permanent outbound
   firewall rule for the selected connection's remote IP. Temporary blocks show
   a live countdown and an inline unblock button.
-- **Block process** (Windows) lets you choose a 1 hour, 24 hour, or permanent firewall
+- **Block process** lets you choose a 1 hour, 24 hour, or permanent firewall
   rule for all traffic from the selected executable path. Temporary blocks
   show a live countdown and an inline unblock button.
 - **Isolate network** (Windows, Linux, macOS) now uses strict containment:
-  it first applies firewall-level isolation and verifies outbound reachability.
+  it first applies firewall-level isolation (iptables on Linux) and verifies outbound reachability.
   If outbound traffic is still possible, Vigil falls back to emergency adapter
   cutoff and keeps snapshot state for restore.
 - **Restore network** restores the saved firewall and adapter state.
@@ -316,7 +320,7 @@ and the Alerts row gets a red `REP` badge naming the source list.
 
 ### File-drop correlation
 
-Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\Temp`,
+Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\\Temp`,
 `%APPDATA%`, `Downloads`, and (on Unix) `/tmp` and `/var/tmp` for new
 `.exe` / `.dll` / `.ps1` / `.scr` / `.msi` / `.sh` / `.py` drops. When a
 connection originates from a file that was dropped within the last

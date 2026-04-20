@@ -15,6 +15,7 @@ const MAX_REMOTES: usize = 64;
 const MAX_PORTS: usize = 32;
 const MAX_COUNTRIES: usize = 16;
 const SAVE_INTERVAL_SECS: u64 = 30;
+const MAX_PROFILES: usize = 512;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BaselineSignal {
@@ -66,29 +67,49 @@ pub fn observe(
     let now = unix_now();
     let manager = manager();
     let mut runtime = manager.lock().unwrap();
-    let entry = runtime.state.entries.entry(key).or_default();
-
-    if entry.first_seen_unix == 0 {
-        entry.first_seen_unix = now;
+    let observations;
+    let mature_before;
+    let new_remote;
+    let new_port;
+    let new_country;
+    {
+        let entry = runtime.state.entries.entry(key).or_default();
+        if entry.first_seen_unix == 0 {
+            entry.first_seen_unix = now;
+        }
+        entry.last_seen_unix = now;
+        mature_before = entry.observations >= MATURITY_THRESHOLD;
+        new_remote = remember_string(&mut entry.remotes, remote_ip, MAX_REMOTES);
+        new_port = remember_port(&mut entry.ports, remote_port, MAX_PORTS);
+        new_country = country
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| remember_string(&mut entry.countries, c, MAX_COUNTRIES))
+            .unwrap_or(false);
+        entry.observations = entry.observations.saturating_add(1);
+        observations = entry.observations;
     }
-    entry.last_seen_unix = now;
 
-    let mature_before = entry.observations >= MATURITY_THRESHOLD;
-    let new_remote = remember_string(&mut entry.remotes, remote_ip, MAX_REMOTES);
-    let new_port = remember_port(&mut entry.ports, remote_port, MAX_PORTS);
-    let new_country = country
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
-        .map(|c| remember_string(&mut entry.countries, c, MAX_COUNTRIES))
-        .unwrap_or(false);
-
-    entry.observations = entry.observations.saturating_add(1);
+    // Evict least-recently-seen profiles when over cap.
+    if runtime.state.entries.len() > MAX_PROFILES {
+        if let Some(evict_key) = runtime
+            .state
+            .entries
+            .iter()
+            .filter(|(_, e)| e.last_seen_unix > 0)
+            .min_by_key(|(_, e)| e.last_seen_unix)
+            .map(|(k, _)| k.clone())
+        {
+            runtime.state.entries.remove(&evict_key);
+        }
+    }
 
     let should_save = (new_remote || new_port || new_country)
         || now.saturating_sub(runtime.last_save_unix) >= SAVE_INTERVAL_SECS
-        || entry.observations % 16 == 0;
+        || observations % 16 == 0;
     if should_save {
-        if save_state(&runtime.state).is_ok() {
+        let state = runtime.state.clone();
+        if save_state(&state).is_ok() {
             runtime.last_save_unix = now;
         }
     }
@@ -98,7 +119,7 @@ pub fn observe(
         new_remote,
         new_port,
         new_country,
-        observations: entry.observations,
+        observations,
     }
 }
 
@@ -115,7 +136,11 @@ fn manager() -> &'static Mutex<RuntimeState> {
 
 fn remember_string(values: &mut Vec<String>, value: &str, cap: usize) -> bool {
     let value = value.trim().to_ascii_lowercase();
-    if value.is_empty() || values.iter().any(|existing| existing.eq_ignore_ascii_case(&value)) {
+    if value.is_empty()
+        || values
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&value))
+    {
         return false;
     }
     if values.len() >= cap {
@@ -189,7 +214,11 @@ mod tests {
 
     #[test]
     fn profile_key_uses_normalised_components() {
-        let key = profile_key("PowerShell.EXE", "Microsoft Corporation", r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe");
+        let key = profile_key(
+            "PowerShell.EXE",
+            "Microsoft Corporation",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        );
         assert!(key.contains("powershell"));
         assert!(key.contains("microsoft corporation"));
     }
@@ -200,5 +229,44 @@ mod tests {
         assert!(!remember_string(&mut values, "KNOWN.example", 4));
         assert!(remember_string(&mut values, "new.example", 4));
         assert_eq!(values.len(), 2);
+    }
+
+    #[test]
+    fn profile_count_is_capped() {
+        let mut state = BaselineState::default();
+        // Insert more profiles than the cap allows.
+        for i in 0..MAX_PROFILES + 100 {
+            let key = format!("test-profile-{i}");
+            let mut entry = BaselineEntry::default();
+            entry.observations = 1;
+            entry.first_seen_unix = 1000 + i as u64;
+            entry.last_seen_unix = 1000 + i as u64;
+            state.entries.insert(key, entry);
+        }
+        // Simulate the eviction logic from observe() — evicts one LRU entry per call.
+        while state.entries.len() > MAX_PROFILES {
+            if let Some(evict_key) = state
+                .entries
+                .iter()
+                .filter(|(_, e)| e.last_seen_unix > 0)
+                .min_by_key(|(_, e)| e.last_seen_unix)
+                .map(|(k, _)| k.clone())
+            {
+                state.entries.remove(&evict_key);
+            } else {
+                break;
+            }
+        }
+        assert!(
+            state.entries.len() <= MAX_PROFILES,
+            "expected at most {} entries, got {}",
+            MAX_PROFILES,
+            state.entries.len()
+        );
+        // The evicted entries should be those with the smallest last_seen_unix.
+        assert!(
+            !state.entries.contains_key("test-profile-0"),
+            "oldest profile should have been evicted"
+        );
     }
 }

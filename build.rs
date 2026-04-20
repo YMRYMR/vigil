@@ -1,41 +1,86 @@
 // Build script for Vigil.
 //
 // Platform-agnostic:
-//   Generates `assets/vigil.png` (256 × 256 RGBA) — used by the macOS DMG
-//   and Linux AppImage installers.
+//   Uses `assets/vigil_icon.png` when present (preferred shipped icon) and
+//   falls back to generating `assets/vigil.png` (256 × 256 RGBA) for installers.
 //
 // Windows only:
-//   1. Generates `assets/vigil.ico` (16 / 32 / 48 px) and embeds it via `winres`.
+//   Uses `assets/vigil_icon.ico` when present (preferred shipped icon) and
+//   falls back to generating `assets/vigil.ico` (16 / 32 / 48 px).
+//   The selected .ico is embedded via `winres`.
 
 fn main() {
-    // Only re-run this build script when it changes — the generated assets are
-    // deterministic so there is no need to regenerate them on every cargo build.
+    // Regenerate resources when script or icon assets change.
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=assets/vigil_icon.png");
+    println!("cargo:rerun-if-changed=assets/vigil_icon.ico");
+    println!("cargo:rerun-if-changed=assets/vigil_tray_green.ico");
+    println!("cargo:rerun-if-changed=assets/vigil_tray_orange.ico");
+    println!("cargo:rerun-if-changed=assets/vigil_tray_red.ico");
+    println!("cargo:rerun-if-changed=assets/vigil.png");
+    println!("cargo:rerun-if-changed=assets/vigil.ico");
 
     std::fs::create_dir_all("assets").expect("failed to create assets/");
 
-    // PNG — needed by macOS (.app bundle icon) and Linux (AppImage icon).
-    // Skip if it already exists (content is always identical).
-    if !std::path::Path::new("assets/vigil.png").exists() {
-        write_png("assets/vigil.png", 256, 0x22, 0xC5, 0x5E);
+    let app_png = std::path::Path::new("assets/vigil_icon.png");
+    let legacy_png = std::path::Path::new("assets/vigil.png");
+    if !app_png.exists() {
+        if legacy_png.exists() {
+            std::fs::copy(legacy_png, app_png)
+                .expect("failed to copy assets/vigil.png to vigil_icon.png");
+        } else {
+            write_png("assets/vigil_icon.png", 256, 0x22, 0xC5, 0x5E);
+        }
     }
+    if !legacy_png.exists() {
+        std::fs::copy(app_png, legacy_png).expect("failed to create assets/vigil.png");
+    }
+
+    let app_ico = std::path::Path::new("assets/vigil_icon.ico");
+    let legacy_ico = std::path::Path::new("assets/vigil.ico");
+    if !app_ico.exists() {
+        if legacy_ico.exists() {
+            std::fs::copy(legacy_ico, app_ico)
+                .expect("failed to copy assets/vigil.ico to vigil_icon.ico");
+        } else {
+            let ico = make_ico(&[16, 32, 48], 0x22, 0xC5, 0x5E);
+            std::fs::write(app_ico, &ico).expect("failed to write assets/vigil_icon.ico");
+        }
+    }
+    if !legacy_ico.exists() {
+        std::fs::copy(app_ico, legacy_ico).expect("failed to create assets/vigil.ico");
+    }
+
+    ensure_tray_ico("assets/vigil_tray_green.ico", 0x22, 0xC5, 0x5E);
+    ensure_tray_ico("assets/vigil_tray_orange.ico", 0xF5, 0x9E, 0x0B);
+    ensure_tray_ico("assets/vigil_tray_red.ico", 0xEF, 0x44, 0x44);
 
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
-        // ICO — Windows taskbar / PE resource icon.
-        if !std::path::Path::new("assets/vigil.ico").exists() {
-            let ico = make_ico(&[16, 32, 48], 0x22, 0xC5, 0x5E);
-            std::fs::write("assets/vigil.ico", &ico).expect("failed to write assets/vigil.ico");
-        }
-
-        // Embed via winres. Requires the Windows SDK (rc.exe) or llvm-rc.
-        // Non-fatal: warn but don't abort the build if the toolchain is absent.
-        if let Err(e) = winres::WindowsResource::new()
-            .set_icon("assets/vigil.ico")
-            .compile()
-        {
-            println!("cargo:warning=winres failed (Windows SDK / llvm-rc not found): {e}");
-        }
+        embed_windows_icon();
     }
+}
+
+#[cfg(windows)]
+fn embed_windows_icon() {
+    // Embed via winres. Requires the Windows SDK (rc.exe) or llvm-rc.
+    // Non-fatal: warn but don't abort the build if the toolchain is absent.
+    if let Err(e) = winres::WindowsResource::new()
+        .set_icon("assets/vigil_icon.ico")
+        .compile()
+    {
+        println!("cargo:warning=winres failed (Windows SDK / llvm-rc not found): {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon() {}
+
+fn ensure_tray_ico(path: &str, r: u8, g: u8, b: u8) {
+    if std::path::Path::new(path).exists() {
+        return;
+    }
+    let ico = make_ico(&[16, 32, 48], r, g, b);
+    std::fs::write(path, &ico).unwrap_or_else(|e| panic!("failed to write {path}: {e}"));
 }
 
 // ── ICO generation ────────────────────────────────────────────────────────────

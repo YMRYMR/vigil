@@ -52,6 +52,12 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: us
         for tab in all {
             let is_active = tab == active;
             let label_str = tab.label(activity_count, alerts_count);
+            let hover = match tab {
+                Tab::Activity => "View all observed process traffic.",
+                Tab::Alerts => "View high-signal alerting processes.",
+                Tab::Settings => "Open settings.",
+                Tab::Help => "Open help and operator guidance.",
+            };
 
             let text_color = if is_active { theme::TEXT } else { theme::TEXT2 };
             let text = RichText::new(&label_str)
@@ -65,7 +71,10 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: us
                 .corner_radius(0.0)
                 .min_size(egui::vec2(0.0, 30.0));
 
-            let resp = ui.add(btn).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let resp = ui
+                .add(btn)
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(hover);
 
             // 2 px ACCENT underline for the active tab
             if is_active {

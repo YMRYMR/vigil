@@ -211,22 +211,54 @@ mod platform {
     pub fn create_recovery_task(name: &str) -> Result<(), String> {
         let exe =
             std::env::current_exe().map_err(|e| format!("failed to resolve current exe: {e}"))?;
-        ensure_trusted_executable_path(&exe)?;
         let command = format!("\"{}\" --break-glass-recover", exe.display());
         let start = (Local::now() + ChronoDuration::minutes(1))
             .format("%H:%M")
             .to_string();
+        if is_trusted_install_path(&exe)? {
+            if create_system_task(name, &command, &start).is_ok() {
+                return Ok(());
+            }
+            create_user_task(name, &command, &start).map_err(|err| {
+                format!("failed to create recovery task as SYSTEM and as current user: {err}")
+            })
+        } else {
+            Err(format!(
+                "refusing recovery task creation for untrusted executable path ({})",
+                exe.display()
+            ))
+        }
+    }
+    fn create_system_task(name: &str, command: &str, start: &str) -> Result<(), String> {
         let status = schtasks()
             .args([
-                "/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", &command, "/ST",
-                &start, "/RU", "SYSTEM", "/RL", "HIGHEST",
+                "/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", command, "/ST",
+                start, "/RU", "SYSTEM", "/RL", "HIGHEST",
             ])
             .status()
             .map_err(|e| format!("failed to spawn schtasks.exe: {e}"))?;
         if status.success() {
             Ok(())
         } else {
-            Err(format!("schtasks /Create failed with status {status}"))
+            Err(format!(
+                "schtasks /Create (/RU SYSTEM) failed with status {status}"
+            ))
+        }
+    }
+    fn create_user_task(name: &str, command: &str, start: &str) -> Result<(), String> {
+        let status = schtasks()
+            .args([
+                "/Create", "/F", "/SC", "MINUTE", "/MO", "1", "/TN", name, "/TR", command, "/ST",
+                start, "/RL", "HIGHEST",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn schtasks.exe: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "schtasks /Create (current user) failed with status {status}"
+            ))
         }
     }
     pub fn delete_recovery_task(name: &str) -> Result<(), String> {
@@ -251,16 +283,6 @@ mod platform {
         let mut cmd = Command::new(program);
         cmd.creation_flags(CREATE_NO_WINDOW);
         cmd
-    }
-    fn ensure_trusted_executable_path(exe: &Path) -> Result<(), String> {
-        if is_trusted_install_path(exe)? {
-            Ok(())
-        } else {
-            Err(format!(
-                "refusing to create SYSTEM recovery task for executable in untrusted location: {}",
-                exe.display()
-            ))
-        }
     }
     fn is_trusted_install_path(exe: &Path) -> Result<bool, String> {
         let exe_norm = canonicalise_for_prefix_compare(exe)?;

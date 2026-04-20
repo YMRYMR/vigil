@@ -20,7 +20,9 @@ pub fn inspect_visibility_gaps(proc: &ProcessInfo, ctx: VisibilityContext) -> De
     let mut out = DetectionAdditions::default();
     let proc_key = proc.name_key.as_str();
     let service_or_system_ancestry = matches!(
-        proc.parent_name.to_ascii_lowercase().trim_end_matches(".exe"),
+        proc.parent_name
+            .to_ascii_lowercase()
+            .trim_end_matches(".exe"),
         "services" | "svchost" | "wininit" | "lsass" | "wmiprvse" | "taskeng" | "schtasks"
     ) || !proc.service_name.is_empty();
 
@@ -52,7 +54,11 @@ pub fn inspect_visibility_gaps(proc: &ProcessInfo, ctx: VisibilityContext) -> De
             .push("T1562 Impair Defenses / Metadata Access Failure (heuristic)".into());
     }
 
-    if ctx.pre_login && service_or_system_ancestry && proc.publisher.is_empty() && !proc.path.is_empty() {
+    if ctx.pre_login
+        && service_or_system_ancestry
+        && proc.publisher.is_empty()
+        && !proc.path.is_empty()
+    {
         out.score = out.score.saturating_add(2);
         out.reasons.push(format!(
             "Pre-login visibility anomaly: {} spawned from service-like ancestry without publisher metadata",
@@ -62,8 +68,10 @@ pub fn inspect_visibility_gaps(proc: &ProcessInfo, ctx: VisibilityContext) -> De
             .push("T1547 Boot or Logon Autostart Execution (heuristic)".into());
     }
 
-    if matches!(proc_key, "lsass" | "csrss" | "wininit" | "services" | "svchost")
-        && proc.path.is_empty()
+    if matches!(
+        proc_key,
+        "lsass" | "csrss" | "wininit" | "services" | "svchost"
+    ) && proc.path.is_empty()
         && ctx.elevated
     {
         out.score = out.score.saturating_add(2);
@@ -121,6 +129,9 @@ mod tests {
             },
         );
         assert!(out.score >= 2);
-        assert!(out.reasons.iter().any(|r| r.contains("ETW fast-path unavailable")));
+        assert!(out
+            .reasons
+            .iter()
+            .any(|r| r.contains("ETW fast-path unavailable")));
     }
 }

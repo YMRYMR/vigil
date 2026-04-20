@@ -65,11 +65,17 @@ may already be planned.
 - Windows SDK (`rc.exe`) — installed with Visual Studio, or
 - `llvm-rc` — included with LLVM
 
-**Linux extras** (needed for the egui/eframe backend):
+**Linux extras** (needed for the egui/eframe backend and eBPF support):
 
 ```sh
 sudo apt-get install libgtk-3-dev libxdo-dev libayatana-appindicator3-dev
 ```
+
+For eBPF real-time monitoring, the binary needs Linux capabilities:
+```sh
+sudo setcap cap_bpf,cap_net_admin,cap_perfmon,cap_dac_read_search,cap_dac_override+ep target/release/vigil
+```
+Without these capabilities, Vigil falls back to `/proc/net/tcp` polling.
 
 **Clone and build**
 
@@ -163,7 +169,17 @@ cargo test
 
 ### Linux
 
-- Same as macOS — polling only.
+- eBPF real-time monitoring via aya 0.13 (`sock:inet_sock_set_state`
+  tracepoint) — requires `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_PERFMON`,
+  `CAP_DAC_READ_SEARCH`, and `CAP_DAC_OVERRIDE`; falls back to
+  `/proc/net/tcp` polling if unavailable.
+- Active response: network isolation via iptables, TCP kill via `ss -K`,
+  process suspend/resume via SIGSTOP/SIGCONT, IP blocking via iptables
+  comment rules, domain blocking via `/etc/hosts`. All gated on
+  `CAP_NET_ADMIN` (checked from `/proc/self/status`) or root.
+- System tray via libappindicator (GNOME AppIndicator); uses themed icon
+  names — install PNG icons at
+  `~/.local/share/icons/hicolor/32x32/apps/`.
 - GTK3 and libayatana-appindicator are required at link time (see setup
   above).
 
