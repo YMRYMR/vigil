@@ -622,17 +622,12 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     let path = normalise_target(path)?;
     let rule_suffix = rule_suffix_for_process(&path);
     let outbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} Out {rule_suffix}");
-    let inbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} In {rule_suffix}");
+    let inbound_rule_name = outbound_rule_name.clone();
     let expires_at_unix = preset
         .ttl()
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
     let _ = platform::delete_rule(&outbound_rule_name);
-    let _ = platform::delete_rule(&inbound_rule_name);
     platform::add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
-    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
-        let _ = platform::delete_rule(&outbound_rule_name);
-        return Err(err);
-    }
     let mut state = load_state().unwrap_or_default();
     state
         .blocked_processes
@@ -666,9 +661,7 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     let mut delete_failed = false;
     for rule in state.blocked_processes.drain(..) {
         if process_block_matches(&rule, &path) {
-            let inbound_deleted = platform::delete_rule(&rule.inbound_rule_name).is_ok();
-            let outbound_deleted = platform::delete_rule(&rule.outbound_rule_name).is_ok();
-            if inbound_deleted && outbound_deleted {
+            if delete_process_block_rules(&rule, |name| platform::delete_rule(name).is_ok()) {
                 removed += 1;
             } else {
                 delete_failed = true;
@@ -1215,6 +1208,23 @@ fn normalise_domain(domain: &str) -> Result<String, String> {
 fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
     rule.path == path
 }
+fn process_block_cleanup_rule_names(rule: &BlockedProcess) -> Vec<&str> {
+    let mut names = vec![
+        rule.inbound_rule_name.as_str(),
+        rule.outbound_rule_name.as_str(),
+    ];
+    names.sort_unstable();
+    names.dedup();
+    names
+}
+fn delete_process_block_rules<F>(rule: &BlockedProcess, mut delete_rule: F) -> bool
+where
+    F: FnMut(&str) -> bool,
+{
+    process_block_cleanup_rule_names(rule)
+        .into_iter()
+        .all(|name| delete_rule(name))
+}
 fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool {
     entry.pid == pid && (path.is_empty() || entry.path == path)
 }
@@ -1307,9 +1317,7 @@ where
     state.blocked_processes.retain(|rule| {
         let expired = rule.expires_at_unix.is_some_and(|ts| ts <= now);
         if expired {
-            let inbound_deleted = delete_rule(&rule.inbound_rule_name);
-            let outbound_deleted = delete_rule(&rule.outbound_rule_name);
-            if inbound_deleted && outbound_deleted {
+            if delete_process_block_rules(rule, &mut delete_rule) {
                 changed = true;
                 false
             } else {
@@ -2591,22 +2599,27 @@ mod platform {
             let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
             let mut failures = Vec::new();
             let mut deleted = 0usize;
-            for chain in &["INPUT", "OUTPUT", "FORWARD"] {
-                match command_status(
-                    "iptables",
-                    &[
-                        "-D",
-                        chain,
-                        "-m",
-                        "comment",
-                        "--comment",
-                        &comment,
-                        "-j",
-                        "DROP",
-                    ],
-                ) {
+            let saved = command_stdout("iptables-save", &[])?;
+            for line in saved.lines() {
+                let line = line.trim();
+                if !line.starts_with("-A ") || !line.contains(&comment) {
+                    continue;
+                }
+                let parts: Vec<String> = line
+                    .split_whitespace()
+                    .map(|part| part.trim_matches('"').to_string())
+                    .collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                let mut args = Vec::with_capacity(parts.len() + 1);
+                args.push("-D".to_string());
+                args.push(parts[1].clone());
+                args.extend(parts.into_iter().skip(2));
+                let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+                match command_status("iptables", &arg_refs) {
                     Ok(()) => deleted += 1,
-                    Err(err) => failures.push(format!("{chain}: {err}")),
+                    Err(err) => failures.push(format!("{}: {err}", args[1])),
                 }
             }
             if deleted > 0 {
@@ -2663,6 +2676,11 @@ mod platform {
                     "dport",
                     "=",
                     &target.remote_port.to_string(),
+                    "src",
+                    &target.local_ip.to_string(),
+                    "sport",
+                    "=",
+                    &target.local_port.to_string(),
                 ])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
