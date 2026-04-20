@@ -689,17 +689,27 @@ impl VigilApp {
             }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
                 Ok(()) => {
-                    self.exit_requested = true;
-                    self.push_notification(
-                        NotificationKind::Info,
-                        "Reopened Vigil as administrator.",
-                    );
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    #[cfg(target_os = "linux")]
+                    {
+                        self.push_notification(
+                            NotificationKind::Info,
+                            "Capabilities granted. Restart Vigil for changes to take effect.",
+                        );
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        self.exit_requested = true;
+                        self.push_notification(
+                            NotificationKind::Info,
+                            "Reopened Vigil as administrator.",
+                        );
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
                 }
                 Err(err) => {
                     self.push_notification(
                         NotificationKind::Error,
-                        format!("Could not relaunch as admin: {err}"),
+                        format!("Could not elevate: {err}"),
                     );
                 }
             },
@@ -766,12 +776,22 @@ impl VigilApp {
                 if admin {
                     admin_chip(ui);
                 } else {
+                    let btn_label = {
+                        #[cfg(target_os = "linux")]
+                        { "Grant Capabilities" }
+                        #[cfg(not(target_os = "linux"))]
+                        { "Run as Admin" }
+                    };
+                    let hover = {
+                        #[cfg(target_os = "linux")]
+                        { "Grant Linux capabilities (CAP_NET_ADMIN, CAP_BPF, etc.) so Vigil can perform active response and eBPF monitoring." }
+                        #[cfg(not(target_os = "linux"))]
+                        { "Relaunch Vigil with administrator privileges so it can inspect more network activity." }
+                    };
                     let relaunch = ui
-                        .add(admin_btn("Run as Admin"))
+                        .add(admin_btn(btn_label))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(
-                            "Relaunch Vigil with administrator privileges so it can inspect more network activity.",
-                        );
+                        .on_hover_text(hover);
                     if relaunch.clicked() {
                         action = Some(inspector::Action::RequestAdmin);
                     }
@@ -1032,6 +1052,23 @@ impl eframe::App for VigilApp {
                 }
                 Tab::Settings => {
                     let changed = settings::show(ui, &mut self.settings);
+                    if self.settings.grant_capabilities_requested {
+                        self.settings.grant_capabilities_requested = false;
+                        match crate::autostart::relaunch_as_admin() {
+                            Ok(()) => {
+                                self.push_notification(
+                                    NotificationKind::Info,
+                                    "Capabilities granted. Restart Vigil for changes to take effect.",
+                                );
+                            }
+                            Err(err) => {
+                                self.push_notification(
+                                    NotificationKind::Error,
+                                    format!("Could not grant capabilities: {err}"),
+                                );
+                            }
+                        }
+                    }
                     if changed {
                         {
                             let mut cfg = self.cfg.write().unwrap();

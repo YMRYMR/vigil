@@ -243,7 +243,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 - [x] **eBPF module** — `src/monitor/ebpf.rs` with real `aya`-based TCP tracepoint on Linux (stub on other platforms); `Monitor::start()` attempts eBPF alongside ETW, merging into single receiver. Attaches to `tracepoint:sock:inet_sock_set_state` via `aya::EbpfLoader` for sub-100ms connect/accept/close events; pre-compiled BPF object embedded as `&[u8]` const (8 KB); graceful fallback to `/proc/net/tcp` polling if kernel too old or user lacks `CAP_BPF`/`CAP_SYS_ADMIN`
 - [x] **Performance test fixtures** — scoring benchmark (1000 inputs under 50ms), baseline profile cap enforcement test
 - [x] **Linux system tray** — full AppIndicator integration: GTK init, themed icon names for GNOME dock, GLib MainContext D-Bus iteration, menu event handling (Open Vigil / Open Logs Folder / Quit), left-click to show window, graceful fallback when no display or running as root
-- [ ] **Privilege UX** — explain the capability requirement clearly in Settings and Help; offer a one-shot `setcap` helper or a polkit prompt where appropriate
+- [x] **Privilege UX** — explain the capability requirement clearly in Settings and Help; offer a one-shot `setcap` helper via pkexec where appropriate
 
 ---
 

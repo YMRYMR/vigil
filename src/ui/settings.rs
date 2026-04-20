@@ -55,6 +55,7 @@ pub struct SettingsDraft {
     pub break_glass_heartbeat_secs: u64,
     pub ui_scale: f32,
     pub status_msg: Option<(String, std::time::Instant)>,
+    pub grant_capabilities_requested: bool,
 }
 
 impl SettingsDraft {
@@ -104,6 +105,7 @@ impl SettingsDraft {
             break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
             ui_scale: cfg.sanitised_ui_scale(),
             status_msg: None,
+            grant_capabilities_requested: false,
         }
     }
 
@@ -636,6 +638,36 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             );
         });
     });
+
+    #[cfg(target_os = "linux")]
+    {
+        ui.add_space(16.0);
+        section_header(ui, "Capabilities");
+        let elevated = crate::autostart::is_elevated();
+        let (status_text, status_color) = if elevated {
+            ("CAP_NET_ADMIN: granted", theme::ACCENT)
+        } else {
+            ("CAP_NET_ADMIN: missing — active response unavailable", theme::DANGER)
+        };
+        setting_row(ui, label_w, "Status", |ui| {
+            ui.label(RichText::new(status_text).color(status_color).size(11.5));
+        });
+        if !elevated {
+            setting_row(ui, label_w, "", |ui| {
+                ui.vertical(|ui| {
+                    if ui.button(RichText::new("Grant Capabilities").color(theme::ACCENT).size(11.5)).clicked() {
+                        draft.grant_capabilities_requested = true;
+                    }
+                    ui.add_space(2.0);
+                    ui.label(
+                        RichText::new("Uses pkexec to run setcap on the Vigil binary. Restart after granting.")
+                            .color(theme::TEXT3)
+                            .size(10.2),
+                    );
+                });
+            });
+        }
+    }
 
     ui.add_space(16.0);
     section_header(ui, "Trusted Processes");

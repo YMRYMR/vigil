@@ -237,10 +237,75 @@ mod platform {
     }
 
     pub fn is_elevated() -> bool {
-        false
+        if unsafe { libc::geteuid() == 0 } {
+            return true;
+        }
+        check_capability(12) // CAP_NET_ADMIN
     }
 
     pub fn relaunch_as_admin() -> Result<(), String> {
-        Err("Elevation is only supported on Windows.".into())
+        #[cfg(target_os = "linux")]
+        {
+            grant_capabilities()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("Elevation is not supported on this platform.".into())
+        }
+    }
+
+    /// Check whether a specific Linux capability (by bit index) is present in
+    /// the effective capability set of the current process.
+    #[cfg(target_os = "linux")]
+    fn check_capability(bit: u8) -> bool {
+        let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        for line in data.lines() {
+            let Some(rest) = line.strip_prefix("CapEff:\t") else {
+                continue;
+            };
+            let Ok(val) = u64::from_str_radix(rest.trim(), 16) else {
+                return false;
+            };
+            return val & (1u64 << bit) != 0;
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn check_capability(_bit: u8) -> bool {
+        false
+    }
+
+    /// Use pkexec to grant capabilities via setcap on the current binary.
+    #[cfg(target_os = "linux")]
+    fn grant_capabilities() -> Result<(), String> {
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
+        let exe_str = exe.to_string_lossy();
+        let caps = "cap_bpf,cap_net_admin,cap_perfmon,cap_dac_read_search,cap_dac_override+ep";
+        let setcap_arg = format!("{caps} {exe_str}");
+
+        // Try pkexec first (graphical polkit prompt).
+        let pkexec_result = std::process::Command::new("pkexec")
+            .args(["setcap", &setcap_arg])
+            .status();
+
+        match pkexec_result {
+            Ok(status) if status.success() => Ok(()),
+            Ok(_) => {
+                // pkexec ran but setcap failed — fall back to showing the command.
+                Err(format!(
+                    "pkexec setcap failed. Run manually:\n  sudo setcap {caps} {exe_str}"
+                ))
+            }
+            Err(_) => {
+                // pkexec not found — show the command.
+                Err(format!(
+                    "pkexec not found. Run manually:\n  sudo setcap {caps} {exe_str}"
+                ))
+            }
+        }
     }
 }
