@@ -51,11 +51,7 @@ fn notification_only_loop(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::Alert(info) => {
-                    crate::notifier::send_alert(
-                        &info,
-                        show_window.clone(),
-                        pending_nav.clone(),
-                    );
+                    crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                 }
                 TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
             }
@@ -445,10 +441,7 @@ mod imp {
         }
 
         fn icon_theme_path(&self) -> String {
-            linux_icon_dir()
-                .to_str()
-                .unwrap_or("")
-                .to_string()
+            linux_icon_dir().to_str().unwrap_or("").to_string()
         }
 
         fn tool_tip(&self) -> ksni::ToolTip {
@@ -540,13 +533,17 @@ mod imp {
         egui_ctx: Arc<OnceLock<egui::Context>>,
     ) {
         // No display → no SNI host. Skip the tray, still deliver notifications.
-        let has_display = std::env::var("DISPLAY").is_ok()
-            || std::env::var("WAYLAND_DISPLAY").is_ok();
+        let has_display =
+            std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
         let is_root = unsafe { libc::geteuid() == 0 };
         if !has_display || is_root {
             tracing::info!(
                 "system tray skipped ({})",
-                if is_root { "running as root" } else { "no display" }
+                if is_root {
+                    "running as root"
+                } else {
+                    "no display"
+                }
             );
             notification_only_loop(cmd_rx, show_window, pending_nav);
             return;
@@ -592,7 +589,11 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
+                        crate::notifier::send_alert(
+                            &info,
+                            show_window.clone(),
+                            pending_nav.clone(),
+                        );
                         in_alert = true;
                         alert_since = Some(std::time::Instant::now());
                         apply(&handle, in_alert, in_lockdown);

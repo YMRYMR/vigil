@@ -223,12 +223,10 @@ mod platform {
                 format!("failed to create recovery task as SYSTEM and as current user: {err}")
             })
         } else {
-            create_user_task(name, &command, &start).map_err(|err| {
-                format!(
-                    "refusing SYSTEM task for untrusted executable path ({}); failed to create current-user recovery task: {err}",
-                    exe.display()
-                )
-            })
+            Err(format!(
+                "refusing recovery task creation for untrusted executable path ({})",
+                exe.display()
+            ))
         }
     }
     fn create_system_task(name: &str, command: &str, start: &str) -> Result<(), String> {

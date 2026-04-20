@@ -8,6 +8,9 @@
 
 use auto_launch::AutoLaunchBuilder;
 
+pub(crate) const ELEVATED_RELAUNCH_FLAG: &str = "--elevated-relaunch";
+pub(crate) const ELEVATED_LAUNCHER_FLAG: &str = "--elevated-launcher";
+
 /// Enable autostart for the current executable.
 /// Returns `true` on success, `false` on any error.
 pub fn enable() -> bool {
@@ -39,6 +42,12 @@ pub fn relaunch_as_admin() -> Result<(), String> {
     platform::relaunch_as_admin()
 }
 
+/// Linux-only launcher entrypoint used by `pkexec` to spawn the elevated app
+/// and then exit only after the elevated child has been started.
+pub fn launch_elevated_child() -> Result<(), String> {
+    platform::launch_elevated_child()
+}
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 fn with_builder<F: FnOnce(auto_launch::AutoLaunch) -> bool>(f: F) -> bool {
@@ -59,7 +68,7 @@ fn with_builder<F: FnOnce(auto_launch::AutoLaunch) -> bool>(f: F) -> bool {
 #[cfg(windows)]
 mod platform {
     use super::with_builder;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
     use std::process::Command;
@@ -120,7 +129,13 @@ mod platform {
 
     pub fn relaunch_as_admin() -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("failed to locate Vigil: {e}"))?;
-        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        if !args
+            .iter()
+            .any(|arg| arg == OsStr::new(super::ELEVATED_RELAUNCH_FLAG))
+        {
+            args.push(OsString::from(super::ELEVATED_RELAUNCH_FLAG));
+        }
         let args = join_args(&args);
 
         let exe_w = to_wide(exe.as_os_str());
@@ -146,6 +161,10 @@ mod platform {
                 Err("Windows declined the elevation request.".into())
             }
         }
+    }
+
+    pub fn launch_elevated_child() -> Result<(), String> {
+        Err("Elevation is not supported on this platform.".into())
     }
 
     fn to_wide(text: &OsStr) -> Vec<u16> {
@@ -223,6 +242,9 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::with_builder;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::process::Command;
 
     pub fn enable() -> bool {
         with_builder(|al| al.enable().is_ok())
@@ -237,10 +259,159 @@ mod platform {
     }
 
     pub fn is_elevated() -> bool {
-        false
+        if unsafe { libc::geteuid() == 0 } {
+            return true;
+        }
+        check_capability(12) // CAP_NET_ADMIN
     }
 
     pub fn relaunch_as_admin() -> Result<(), String> {
-        Err("Elevation is only supported on Windows.".into())
+        #[cfg(target_os = "linux")]
+        {
+            relaunch_with_pkexec()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("Elevation is not supported on this platform.".into())
+        }
+    }
+
+    pub fn launch_elevated_child() -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            launch_elevated_child_impl()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("Elevation is not supported on this platform.".into())
+        }
+    }
+
+    /// Check whether a specific Linux capability (by bit index) is present in
+    /// the effective capability set of the current process.
+    #[cfg(target_os = "linux")]
+    fn check_capability(bit: u8) -> bool {
+        let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        for line in data.lines() {
+            let Some(rest) = line.strip_prefix("CapEff:\t") else {
+                continue;
+            };
+            let Ok(val) = u64::from_str_radix(rest.trim(), 16) else {
+                return false;
+            };
+            return val & (1u64 << bit) != 0;
+        }
+        false
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn check_capability(_bit: u8) -> bool {
+        false
+    }
+
+    /// Relaunch Vigil under root privileges via pkexec.
+    #[cfg(target_os = "linux")]
+    fn relaunch_with_pkexec() -> Result<(), String> {
+        let exe =
+            std::env::current_exe().map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
+        let target = elevation_target_path().unwrap_or(exe);
+        let mut cmd = Command::new("pkexec");
+        cmd.arg("env");
+
+        // Preserve desktop-session variables so the relaunched GUI can attach
+        // to the current display/session instead of failing EGL/GL init.
+        for key in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_TYPE",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                let mut kv = OsString::from(key);
+                kv.push("=");
+                kv.push(value);
+                cmd.arg(kv);
+            }
+        }
+
+        cmd.arg(&target);
+        let mut launcher_present = false;
+        for arg in std::env::args_os().skip(1) {
+            if arg == std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+                launcher_present = true;
+            }
+            if arg != std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG) {
+                cmd.arg(arg);
+            }
+        }
+        if !launcher_present {
+            cmd.arg(ELEVATED_LAUNCHER_FLAG);
+        }
+
+        let status = cmd.status().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "pkexec is not available on this system. Install polkit and pkexec, then retry."
+                    .to_string()
+            } else {
+                format!("failed to launch pkexec: {e}")
+            }
+        })?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("the elevation request was denied or the launcher failed".into())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn launch_elevated_child_impl() -> Result<(), String> {
+        let target =
+            elevation_target_path().ok_or_else(|| "could not locate Vigil binary".to_string())?;
+        let mut args = Vec::new();
+        for arg in std::env::args_os().skip(1) {
+            if arg != std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+                args.push(arg);
+            }
+        }
+        if !args
+            .iter()
+            .any(|arg| arg == std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG))
+        {
+            args.push(OsString::from(ELEVATED_RELAUNCH_FLAG));
+        }
+        Command::new(target)
+            .args(args)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("failed to launch elevated Vigil: {e}"))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn elevation_target_path() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+        {
+            return Some(path);
+        }
+
+        if let Some(path) = std::env::args_os()
+            .next()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+        {
+            return Some(path);
+        }
+
+        let current = std::env::current_exe().ok()?;
+        if current.to_string_lossy().contains("/tmp/.mount_") {
+            return None;
+        }
+        Some(current)
     }
 }

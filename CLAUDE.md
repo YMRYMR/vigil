@@ -215,7 +215,7 @@ src/
 ├── tray.rs              # TrayIcon; menu; icon states; platform event loops (Win32 / GLib)
 ├── notifier.rs          # send(title, body) via notify-rust
 ├── autostart.rs         # thin wrapper over auto-launch crate
-├── active_response.rs   # reversible response actions (kill, suspend, block, isolate)
+├── active_response.rs   # reversible response actions (kill, suspend, block, isolate) — cross-platform (Windows + Linux)
 ├── auto_response.rs     # automated response rule engine
 ├── baseline.rs          # behavioural baseline profiles (capped at 512, LRU eviction)
 ├── beacon.rs            # beaconing pattern detection
