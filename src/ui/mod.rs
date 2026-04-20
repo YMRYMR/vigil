@@ -765,7 +765,7 @@ impl VigilApp {
 
                 if admin {
                     admin_chip(ui);
-                } else {
+                } else if cfg!(windows) {
                     let relaunch = ui
                         .add(admin_btn("Run as Admin"))
                         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -916,6 +916,19 @@ impl eframe::App for VigilApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            // Linux winit often ignores plain Focus on hidden/iconified windows
+            // under Wayland/GNOME; forcing an outer-position nudge and a repaint
+            // reliably brings the surface back in front.
+            #[cfg(target_os = "linux")]
+            {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::Normal,
+                ));
+                ctx.request_repaint();
+            }
         }
         if let Some(nav) = self.pending_nav.lock().unwrap().take() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
@@ -937,6 +950,12 @@ impl eframe::App for VigilApp {
             );
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
+            // On Linux, `Visible(false)` is unreliable under Wayland/GNOME —
+            // the window stays on screen and the close appears to do nothing.
+            // Minimizing to the tray is the robust equivalent.
+            #[cfg(target_os = "linux")]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            #[cfg(not(target_os = "linux"))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }

@@ -237,7 +237,14 @@ mod platform {
     }
 
     pub fn is_elevated() -> bool {
-        false
+        #[cfg(target_os = "linux")]
+        unsafe {
+            libc::geteuid() == 0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
     }
 
     pub fn relaunch_as_admin() -> Result<(), String> {
