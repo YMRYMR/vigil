@@ -8,7 +8,8 @@
 
 use auto_launch::AutoLaunchBuilder;
 
-const ELEVATED_RELAUNCH_FLAG: &str = "--elevated-relaunch";
+pub(crate) const ELEVATED_RELAUNCH_FLAG: &str = "--elevated-relaunch";
+pub(crate) const ELEVATED_LAUNCHER_FLAG: &str = "--elevated-launcher";
 
 /// Enable autostart for the current executable.
 /// Returns `true` on success, `false` on any error.
@@ -39,6 +40,12 @@ pub fn is_elevated() -> bool {
 #[allow(dead_code)]
 pub fn relaunch_as_admin() -> Result<(), String> {
     platform::relaunch_as_admin()
+}
+
+/// Linux-only launcher entrypoint used by `pkexec` to spawn the elevated app
+/// and then exit only after the elevated child has been started.
+pub fn launch_elevated_child() -> Result<(), String> {
+    platform::launch_elevated_child()
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -156,6 +163,10 @@ mod platform {
         }
     }
 
+    pub fn launch_elevated_child() -> Result<(), String> {
+        Err("Elevation is not supported on this platform.".into())
+    }
+
     fn to_wide(text: &OsStr) -> Vec<u16> {
         text.encode_wide().chain(Some(0)).collect()
     }
@@ -265,6 +276,17 @@ mod platform {
         }
     }
 
+    pub fn launch_elevated_child() -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            launch_elevated_child_impl()
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("Elevation is not supported on this platform.".into())
+        }
+    }
+
     /// Check whether a specific Linux capability (by bit index) is present in
     /// the effective capability set of the current process.
     #[cfg(target_os = "linux")]
@@ -318,25 +340,55 @@ mod platform {
         }
 
         cmd.arg(&target);
-        let mut has_handoff_flag = false;
+        let mut launcher_present = false;
         for arg in std::env::args_os().skip(1) {
-            if arg == std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG) {
-                has_handoff_flag = true;
+            if arg == std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+                launcher_present = true;
             }
-            cmd.arg(arg);
+            if arg != std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG) {
+                cmd.arg(arg);
+            }
         }
-        if !has_handoff_flag {
-            cmd.arg(super::ELEVATED_RELAUNCH_FLAG);
+        if !launcher_present {
+            cmd.arg(ELEVATED_LAUNCHER_FLAG);
         }
 
-        cmd.spawn().map(|_| ()).map_err(|e| {
+        let status = cmd.status().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 "pkexec is not available on this system. Install polkit and pkexec, then retry."
                     .to_string()
             } else {
                 format!("failed to launch pkexec: {e}")
             }
-        })
+        })?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("the elevation request was denied or the launcher failed".into())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn launch_elevated_child_impl() -> Result<(), String> {
+        let target =
+            elevation_target_path().ok_or_else(|| "could not locate Vigil binary".to_string())?;
+        let mut args = Vec::new();
+        for arg in std::env::args_os().skip(1) {
+            if arg != std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+                args.push(arg);
+            }
+        }
+        if !args
+            .iter()
+            .any(|arg| arg == std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG))
+        {
+            args.push(OsString::from(ELEVATED_RELAUNCH_FLAG));
+        }
+        Command::new(target)
+            .args(args)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("failed to launch elevated Vigil: {e}"))
     }
 
     #[cfg(target_os = "linux")]

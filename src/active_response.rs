@@ -2566,26 +2566,18 @@ mod platform {
                 "in" => "INPUT",
                 _ => "OUTPUT",
             };
-            let uid = process_effective_uid(pid)?;
             let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
-            command_status(
-                "iptables",
-                &[
-                    "-I",
-                    chain,
-                    "1",
-                    "-m",
-                    "owner",
-                    "--uid-owner",
-                    &uid.to_string(),
-                    "-m",
-                    "comment",
-                    "--comment",
-                    &comment,
-                    "-j",
-                    "DROP",
-                ],
-            )
+            let mut args = vec!["-I", chain, "1"];
+            if chain == "OUTPUT" {
+                let uid = process_effective_uid(pid)?;
+                args.extend_from_slice(&["-m", "owner", "--uid-owner"]);
+                let uid_string = uid.to_string();
+                args.push(uid_string.as_str());
+                args.extend_from_slice(&["-m", "comment", "--comment", &comment, "-j", "DROP"]);
+                return command_status("iptables", &args);
+            }
+            args.extend_from_slice(&["-m", "comment", "--comment", &comment, "-j", "DROP"]);
+            command_status("iptables", &args)
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2617,11 +2609,11 @@ mod platform {
                     Err(err) => failures.push(format!("{chain}: {err}")),
                 }
             }
-            if failures.is_empty() {
+            if deleted > 0 {
                 Ok(())
             } else {
                 Err(format!(
-                    "failed to delete firewall rule {rule_name} from {deleted} chain(s): {}",
+                    "failed to delete firewall rule {rule_name}: {}",
                     failures.join("; ")
                 ))
             }

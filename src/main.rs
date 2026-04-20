@@ -55,7 +55,6 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 const SINGLE_INSTANCE_ID: &str = "com.ymrymr.vigil.single_instance";
-const ELEVATED_RELAUNCH_FLAG: &str = "--elevated-relaunch";
 fn load_app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil_icon.png"))
         .or_else(|_| eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil.png")))
@@ -92,19 +91,33 @@ fn acquire_single_instance(wait_for_release: bool) -> Result<SingleInstance, Str
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let mut elevated_relaunch = false;
+    let mut elevated_launcher = false;
     for a in &args[1..] {
         match a.as_str() {
             "--install-service" => std::process::exit(service::run_cmd("install")),
             "--uninstall-service" => std::process::exit(service::run_cmd("uninstall")),
             "--break-glass-recover" => std::process::exit(break_glass::recover_if_stale()),
-            ELEVATED_RELAUNCH_FLAG => {
+            autostart::ELEVATED_RELAUNCH_FLAG => {
                 elevated_relaunch = true;
+            }
+            autostart::ELEVATED_LAUNCHER_FLAG => {
+                elevated_launcher = true;
             }
             "--help" | "-h" => {
                 println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service      register Vigil as a boot-time service\n  --uninstall-service    remove the boot-time service\n  --break-glass-recover  watchdog entrypoint for network recovery\n  -h, --help             show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
+        }
+    }
+
+    if elevated_launcher {
+        match autostart::launch_elevated_child() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
         }
     }
 
