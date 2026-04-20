@@ -12,14 +12,10 @@
     windows_subsystem = "windows"
 )]
 
-mod active_response;
 mod audit;
-mod auto_response;
-mod autostart;
 mod baseline;
 mod beacon;
 mod blocklist;
-mod break_glass;
 mod config;
 mod detection_depth;
 mod entropy;
@@ -32,20 +28,19 @@ mod longlived;
 mod monitor;
 mod notifier;
 mod pcap;
+mod platform;
 mod process;
-mod quarantine;
-mod registry;
-mod response_rules;
 mod revdns;
 mod score;
-mod service;
+mod security;
 mod session;
-mod tamper;
 mod tls;
 mod tls_artifacts;
-mod tray;
 mod types;
 mod ui;
+
+pub use platform::{autostart, break_glass, service, tray};
+pub use security::{active_response, auto_response, quarantine, registry, response_rules, tamper};
 
 use config::Config;
 use monitor::Monitor;
