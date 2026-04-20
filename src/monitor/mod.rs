@@ -220,6 +220,14 @@ async fn poll_loop(
                         if !known.contains_key(&key) {
                             let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                             process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
+                        } else if is_terminal_state(&raw_conn.status) {
+                            if let Some(info) = known.remove(&key) {
+                                let _ = tx.send(ConnEvent::Closed {
+                                    pid: info.pid,
+                                    local: info.local_addr.clone(),
+                                    remote: info.remote_addr.clone(),
+                                });
+                            }
                         }
                     }
                     None => {
