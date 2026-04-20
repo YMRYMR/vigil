@@ -342,7 +342,6 @@ fn process_conn(
         }
         return;
     }
-
     let total_start = std::time::Instant::now();
 
     let proc = process::collect(raw_conn.pid, svc_map);
