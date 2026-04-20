@@ -28,3 +28,5 @@ installer/windows/logs/
 # Generated icon assets (produced by build.rs from programmatic code)
 assets/vigil.ico
 assets/vigil.png
+installer/linux/output/
+installer/windows/output/
