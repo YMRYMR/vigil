@@ -628,8 +628,8 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
     let _ = platform::delete_rule(&outbound_rule_name);
     let _ = platform::delete_rule(&inbound_rule_name);
-    platform::add_block_program_rule(&outbound_rule_name, &path, "out")?;
-    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, &path, "in") {
+    platform::add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
+    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
         let _ = platform::delete_rule(&outbound_rule_name);
         return Err(err);
     }
@@ -1942,7 +1942,12 @@ mod platform {
             Err(format!("failed to add isolation rule {rule_name}"))
         }
     }
-    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        _pid: u32,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
         let status = hidden_command("netsh")
             .args([
                 "advfirewall",
@@ -2339,7 +2344,6 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::*;
-    use std::os::unix::fs::MetadataExt;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
@@ -2549,7 +2553,12 @@ mod platform {
             Err("Active response is not implemented on this platform.".into())
         }
     }
-    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        pid: u32,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
             let chain = match dir {
@@ -2557,9 +2566,7 @@ mod platform {
                 "in" => "INPUT",
                 _ => "OUTPUT",
             };
-            let uid = std::fs::metadata(path)
-                .map_err(|e| format!("cannot stat {path}: {e}"))?
-                .uid();
+            let uid = process_effective_uid(pid)?;
             let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
             command_status(
                 "iptables",
@@ -2590,9 +2597,10 @@ mod platform {
         #[cfg(target_os = "linux")]
         {
             let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            let mut failures = Vec::new();
+            let mut deleted = 0usize;
             for chain in &["INPUT", "OUTPUT", "FORWARD"] {
-                // Ignore errors — rule may not exist in every chain.
-                let _ = command_status(
+                match command_status(
                     "iptables",
                     &[
                         "-D",
@@ -2604,9 +2612,19 @@ mod platform {
                         "-j",
                         "DROP",
                     ],
-                );
+                ) {
+                    Ok(()) => deleted += 1,
+                    Err(err) => failures.push(format!("{chain}: {err}")),
+                }
             }
-            Ok(())
+            if failures.is_empty() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "failed to delete firewall rule {rule_name} from {deleted} chain(s): {}",
+                    failures.join("; ")
+                ))
+            }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -2681,8 +2699,8 @@ mod platform {
                 if parts.len() < 4 {
                     continue;
                 }
-                // State 0A = ESTABLISHED
-                if parts[3] != "0A" {
+                // State 01 = ESTABLISHED in /proc/net/tcp.
+                if parts[3] != "01" {
                     continue;
                 }
                 let Some((lip, lport)) = parse_hex_addr_port(parts[1]) else {
@@ -2938,6 +2956,26 @@ mod platform {
         } else {
             Err(format!("{program} failed with status {status}"))
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_effective_uid(pid: u32) -> Result<u32, String> {
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status"))
+            .map_err(|e| format!("read /proc/{pid}/status: {e}"))?;
+        for line in status.lines() {
+            let Some(rest) = line.strip_prefix("Uid:") else {
+                continue;
+            };
+            let mut fields = rest.split_whitespace();
+            let _real = fields.next();
+            let Some(effective) = fields.next() else {
+                return Err(format!("malformed Uid line for pid {pid}"));
+            };
+            return effective
+                .parse::<u32>()
+                .map_err(|e| format!("parse effective uid for pid {pid}: {e}"));
+        }
+        Err(format!("could not read effective uid for pid {pid}"))
     }
 }
 

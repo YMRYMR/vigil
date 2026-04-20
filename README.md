@@ -1,5 +1,7 @@
 # Vigil
 
+[![Static Analysis](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil) [![Dependency Vulnerability Scan](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml) [![Dependency Change Review](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml/badge.svg?event=pull_request)](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml)
+
 Real-time network threat monitor for Windows, macOS, and Linux.
 
 <code style="color: red"><strong>WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</strong></code>
@@ -71,7 +73,7 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +5 | Connection to a known malware / C2 port (4444, 1337, 31337, …) |
 | +4 | Living-off-the-land binary making a network connection (`powershell`, `cmd`, `mshta`, …) |
 | +3 | No executable path found — possible process injection or hollowing |
-| +3 | Running from a suspicious directory (`\Temp\`, `\AppData\Roaming\`, …) |
+| +3 | Running from a suspicious directory (`\\Temp\\`, `\\AppData\\Roaming\\`, …) |
 | +3 | Suspicious parent process (e.g. `winword.exe` spawning `powershell.exe`) |
 | +3 | Beaconing pattern detected — regular C2 callback timing signature |
 | +3 | IP reputation hit — remote matched a user-supplied blocklist (**Phase 10**, REP badge) |
@@ -93,7 +95,7 @@ app suddenly dials a C2 port, you want to know.
 Vigil also runs two passive persistence watchers that raise synthetic alerts
 (independent of active connections):
 
-- **Registry autorun watcher** (Windows) — polls `HKCU\…\Run`, `HKLM\…\Run`,
+- **Registry autorun watcher** (Windows) — polls `HKCU\\…\\Run`, `HKLM\\…\\Run`,
   and both `RunOnce` keys every 30 s; alerts on any new entry.
 - **Beaconing detector** — tracks inter-arrival time per `(pid, remote_ip)`
   across a rolling 30-sample window; flags stddev < 5 s / mean 1 – 600 s.
@@ -318,7 +320,7 @@ and the Alerts row gets a red `REP` badge naming the source list.
 
 ### File-drop correlation
 
-Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\Temp`,
+Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\\Temp`,
 `%APPDATA%`, `Downloads`, and (on Unix) `/tmp` and `/var/tmp` for new
 `.exe` / `.dll` / `.ps1` / `.scr` / `.msi` / `.sh` / `.py` drops. When a
 connection originates from a file that was dropped within the last
