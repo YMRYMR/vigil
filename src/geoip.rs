@@ -67,17 +67,18 @@ impl GeoEngine {
         let mut info = GeoInfo::default();
 
         if let Some(r) = &self.city {
-            if let Ok(rec) = r.lookup::<geoip2::City>(addr) {
-                info.country = rec
-                    .country
-                    .and_then(|c| c.iso_code)
-                    .map(|s| s.to_uppercase());
+            if let Ok(res) = r.lookup(addr) {
+                if let Ok(Some(rec)) = res.decode::<geoip2::City>() {
+                    info.country = rec.country.iso_code.map(|s| s.to_uppercase());
+                }
             }
         }
         if let Some(r) = &self.asn {
-            if let Ok(rec) = r.lookup::<geoip2::Asn>(addr) {
-                info.asn = rec.autonomous_system_number;
-                info.asn_org = rec.autonomous_system_organization.map(|s| s.to_string());
+            if let Ok(res) = r.lookup(addr) {
+                if let Ok(Some(rec)) = res.decode::<geoip2::Asn>() {
+                    info.asn = rec.autonomous_system_number;
+                    info.asn_org = rec.autonomous_system_organization.map(|s| s.to_string());
+                }
             }
         }
         info
