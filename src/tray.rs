@@ -427,6 +427,19 @@ mod imp {
         fn wake_ui(&self) {
             self.show_window.store(true, Ordering::Relaxed);
             if let Some(ec) = self.egui_ctx.get() {
+                // Send the viewport commands from *this* thread so they land
+                // in winit's event queue even while the window is minimized —
+                // a plain request_repaint() on an iconified window on
+                // Wayland/GNOME doesn't wake the render loop.
+                ec.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ec.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ec.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ec.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
+                ec.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::Normal,
+                ));
                 ec.request_repaint();
             }
         }
