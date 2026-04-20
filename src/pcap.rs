@@ -163,6 +163,7 @@ fn safe_name(text: &str) -> String {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::process::Command;
 
     pub fn capture_window(info: &ConnInfo, cfg: &Config) -> Result<PathBuf, String> {
@@ -181,10 +182,14 @@ mod platform {
         let etl = dir.join(format!("{stem}.etl"));
         let pcapng = dir.join(format!("{stem}.pcapng"));
 
-        let _ = Command::new("pktmon.exe").arg("stop").status();
-        let _ = Command::new("pktmon.exe").arg("reset").status();
+        let _ = Command::new(command_paths::resolve("pktmon.exe")?)
+            .arg("stop")
+            .status();
+        let _ = Command::new(command_paths::resolve("pktmon.exe")?)
+            .arg("reset")
+            .status();
 
-        let start = Command::new("pktmon.exe")
+        let start = Command::new(command_paths::resolve("pktmon.exe")?)
             .args(["start", "--capture", "--file-name"])
             .arg(&etl)
             .args(["--pkt-size"])
@@ -200,7 +205,7 @@ mod platform {
             cfg.pcap_duration_secs.max(1),
         ));
 
-        let stop = Command::new("pktmon.exe")
+        let stop = Command::new(command_paths::resolve("pktmon.exe")?)
             .arg("stop")
             .status()
             .map_err(|e| format!("failed to spawn pktmon stop: {e}"))?;
@@ -208,7 +213,7 @@ mod platform {
             return Err(format!("pktmon stop exited with status {stop}"));
         }
 
-        let convert = Command::new("pktmon.exe")
+        let convert = Command::new(command_paths::resolve("pktmon.exe")?)
             .args(["etl2pcap"])
             .arg(&etl)
             .args(["--out"])
@@ -225,7 +230,9 @@ mod platform {
             ));
         }
 
-        let _ = Command::new("pktmon.exe").arg("reset").status();
+        let _ = Command::new(command_paths::resolve("pktmon.exe")?)
+            .arg("reset")
+            .status();
         Ok(pcapng)
     }
 }

@@ -1339,8 +1339,8 @@ fn unix_now() -> u64 {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::collections::BTreeMap;
-    use std::ffi::OsStr;
     use std::fs;
     use std::os::windows::process::CommandExt;
     use windows::Win32::Foundation::{
@@ -1831,7 +1831,7 @@ mod platform {
         Ok(())
     }
     fn flush_dns() -> Result<(), String> {
-        let status = hidden_command("ipconfig")
+        let status = hidden_command("ipconfig")?
             .arg("/flushdns")
             .status()
             .map_err(|e| format!("failed to spawn ipconfig: {e}"))?;
@@ -1899,7 +1899,7 @@ mod platform {
         }
     }
     pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
-        let status = hidden_command("netsh")
+        let status = hidden_command("netsh")?
             .args([
                 "advfirewall",
                 "firewall",
@@ -1921,7 +1921,7 @@ mod platform {
         }
     }
     pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
-        let status = hidden_command("netsh")
+        let status = hidden_command("netsh")?
             .args([
                 "advfirewall",
                 "firewall",
@@ -1948,7 +1948,7 @@ mod platform {
         path: &str,
         dir: &str,
     ) -> Result<(), String> {
-        let status = hidden_command("netsh")
+        let status = hidden_command("netsh")?
             .args([
                 "advfirewall",
                 "firewall",
@@ -1970,7 +1970,7 @@ mod platform {
         }
     }
     pub fn delete_rule(rule_name: &str) -> Result<(), String> {
-        let status = hidden_command("netsh")
+        let status = hidden_command("netsh")?
             .args([
                 "advfirewall",
                 "firewall",
@@ -1987,7 +1987,7 @@ mod platform {
         }
     }
     fn firewall_rule_present(rule_name: &str) -> Result<bool, String> {
-        let output = hidden_command("netsh")
+        let output = hidden_command("netsh")?
             .args([
                 "advfirewall",
                 "firewall",
@@ -2050,7 +2050,7 @@ mod platform {
     }
     fn run_powershell(script: &str) -> Result<String, String> {
         let script = format!("$ErrorActionPreference = 'Stop'; {script}");
-        let output = hidden_command("powershell")
+        let output = hidden_command("powershell")?
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -2075,9 +2075,13 @@ mod platform {
     }
     fn snapshot_connected_wifi_profiles() -> BTreeMap<String, String> {
         let output = hidden_command("netsh")
-            .args(["wlan", "show", "interfaces"])
-            .output();
-        let Ok(output) = output else {
+            .map(|mut cmd| {
+                cmd.args(["wlan", "show", "interfaces"]);
+                cmd
+            })
+            .ok()
+            .and_then(|mut cmd| cmd.output().ok());
+        let Some(output) = output else {
             return BTreeMap::new();
         };
         if !output.status.success() {
@@ -2089,7 +2093,7 @@ mod platform {
         // Give Windows a brief moment to bring the radio interface fully up.
         std::thread::sleep(Duration::from_millis(900));
         if let Some(profile) = profile {
-            let status = hidden_command("netsh")
+            let status = hidden_command("netsh")?
                 .args([
                     "wlan",
                     "connect",
@@ -2103,7 +2107,7 @@ mod platform {
             }
         }
         for _ in 0..4 {
-            let status = hidden_command("netsh")
+            let status = hidden_command("netsh")?
                 .args(["wlan", "reconnect", &format!("interface={name}")])
                 .status()
                 .map_err(|e| format!("failed to spawn netsh wlan reconnect: {e}"))?;
@@ -2114,10 +2118,10 @@ mod platform {
         }
         Err(format!("netsh wlan reconnect failed for {name}"))
     }
-    fn hidden_command<S: AsRef<OsStr>>(program: S) -> Command {
-        let mut cmd = Command::new(program);
+    fn hidden_command(program: &str) -> Result<Command, String> {
+        let mut cmd = Command::new(command_paths::resolve(program)?);
         cmd.creation_flags(CREATE_NO_WINDOW);
-        cmd
+        Ok(cmd)
     }
     fn ps_quoted(text: &str) -> String {
         format!("'{}'", text.replace('\'', "''"))
@@ -2344,6 +2348,7 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::path::Path;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
@@ -2657,19 +2662,21 @@ mod platform {
     pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
         #[cfg(target_os = "linux")]
         {
-            let status = Command::new("ss")
-                .args([
+            let status = command_base(
+                "ss",
+                &[
                     "-K",
                     "dst",
                     &target.remote_ip.to_string(),
                     "dport",
                     "=",
                     &target.remote_port.to_string(),
-                ])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .map_err(|_| SocketKillError::OsError("failed to spawn ss".into()))?;
+                ],
+            )?
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map_err(|_| SocketKillError::OsError("failed to spawn ss".into()))?;
             if status.success() {
                 Ok(())
             } else {
@@ -2703,8 +2710,9 @@ mod platform {
                 let Some((rip, rport)) = parse_hex_addr_port(parts[2]) else {
                     continue;
                 };
-                let status = Command::new("ss")
-                    .args([
+                let status = command_base(
+                    "ss",
+                    &[
                         "-K",
                         "dst",
                         &rip,
@@ -2716,10 +2724,11 @@ mod platform {
                         "sport",
                         "=",
                         &lport.to_string(),
-                    ])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status();
+                    ],
+                )?
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
                 if status.map(|s| s.success()).unwrap_or(false) {
                     count += 1;
                 }
@@ -2950,27 +2959,10 @@ mod platform {
         }
     }
     fn command_base(program: &str, args: &[&str]) -> Result<Command, String> {
-        let resolved = resolve_program_path(program)?;
+        let resolved = command_paths::resolve(program)?;
         let mut cmd = Command::new(resolved);
         cmd.args(args);
         Ok(cmd)
-    }
-    fn resolve_program_path(program: &str) -> Result<&'static str, String> {
-        let candidates: &[&str] = match program {
-            "kill" => &["/bin/kill", "/usr/bin/kill"],
-            #[cfg(target_os = "linux")]
-            "iptables" => &["/usr/sbin/iptables", "/sbin/iptables"],
-            #[cfg(target_os = "linux")]
-            "ip" => &["/usr/sbin/ip", "/sbin/ip"],
-            #[cfg(target_os = "macos")]
-            "ifconfig" => &["/sbin/ifconfig"],
-            _ => &[],
-        };
-        candidates
-            .iter()
-            .copied()
-            .find(|path| Path::new(path).exists())
-            .ok_or_else(|| format!("required system binary for {program} not found"))
     }
 
     #[cfg(target_os = "linux")]

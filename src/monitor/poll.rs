@@ -5,7 +5,9 @@
 //! On Linux:   `/proc/net/tcp` + `/proc/net/tcp6`.
 //! On macOS:   falls back to parsing `netstat` output.
 
-use std::net::{Ipv4Addr, Ipv6Addr};
+use std::net::Ipv4Addr;
+#[cfg(target_os = "linux")]
+use std::net::Ipv6Addr;
 
 /// A raw connection record from the OS, before scoring / enrichment.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -296,7 +298,10 @@ fn platform_poll() -> Vec<RawConn> {
 #[cfg(target_os = "macos")]
 fn macos_netstat() -> Vec<RawConn> {
     use std::process::Command;
-    let Ok(out) = Command::new("netstat").args(["-anv", "-p", "tcp"]).output() else {
+    let Ok(netstat) = crate::platform::command_paths::resolve("netstat") else {
+        return vec![];
+    };
+    let Ok(out) = Command::new(netstat).args(["-anv", "-p", "tcp"]).output() else {
         return vec![];
     };
     let text = String::from_utf8_lossy(&out.stdout);

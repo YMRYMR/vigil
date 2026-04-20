@@ -11,6 +11,9 @@ on:
   release:
     types: [created]
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -20,7 +23,7 @@ jobs:
       digests: ${{ steps.hash.outputs.hashes }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@733dd5d4a5203f238c33806593ec0f5fc5343d8c
 
       - name: Build artifacts
         run: |
@@ -44,7 +47,7 @@ jobs:
       id-token: write # Required for non-forgeable signing via Sigstore
       contents: write # Required to attach provenance to your release
     # Reference the generator by a full version tag
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
     with:
       base64-subjects: "${{ needs.build.outputs.digests }}"
       upload-assets: true
