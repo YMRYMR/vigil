@@ -1,0 +1,3 @@
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0415"
+reason = "Vigil does not use GTK at runtime; the gtk crate is a local stub patch used only to keep tray-icon's unused GTK3 transitive tree out of the lockfile."
