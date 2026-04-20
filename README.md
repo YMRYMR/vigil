@@ -1,8 +1,6 @@
 # Vigil
 
-[![OpenSSF Scorecard workflow](https://github.com/YMRYMR/vigil/actions/workflows/ossf-scorecard.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/ossf-scorecard.yml)
-[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil)
-[![Snyk Open Source](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml)
+[![CodeQL](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml) [![OpenSSF Scorecard workflow](https://github.com/YMRYMR/vigil/actions/workflows/ossf-scorecard.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/ossf-scorecard.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil) [![Snyk Open Source](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml) [![Dependency Review](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml/badge.svg?event=pull_request)](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml)
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
