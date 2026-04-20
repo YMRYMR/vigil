@@ -86,7 +86,10 @@ fn prune_stale_locked(cache: &mut HashMap<String, CachedTlsMeta>) {
     cache.retain(|_, entry| now.saturating_sub(entry.observed_unix) <= CACHE_TTL_SECS);
     // Enforce size cap: evict oldest entries when over limit.
     if cache.len() > CACHE_MAX_ENTRIES {
-        let mut entries: Vec<_> = cache.iter().map(|(k, v)| (k.clone(), v.observed_unix)).collect();
+        let mut entries: Vec<_> = cache
+            .iter()
+            .map(|(k, v)| (k.clone(), v.observed_unix))
+            .collect();
         entries.sort_by_key(|(_, ts)| *ts);
         let to_remove = cache.len() - CACHE_MAX_ENTRIES;
         for (key, _) in entries.into_iter().take(to_remove) {

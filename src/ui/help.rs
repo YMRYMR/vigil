@@ -101,8 +101,8 @@ pub fn show(ui: &mut egui::Ui) {
                     });
 
                     #[cfg(target_os = "linux")]
-                    card(ui, "Linux capabilities", |ui| {
-                        body(ui, "Vigil uses Linux capabilities instead of running as root. Without them, eBPF monitoring and active response features are unavailable.");
+                    card(ui, "Linux privileges", |ui| {
+                        body(ui, "Vigil can run with elevated privileges on Linux for full monitoring and active response. If capabilities are already granted to the binary, non-root runs can still access most privileged paths.");
                         ui.add_space(6.0);
                         bullet(ui, "CAP_NET_ADMIN", "Required for network isolation (iptables), blocking IPs, and TCP connection kill (ss -K).");
                         bullet(ui, "CAP_BPF + CAP_PERFMON", "Required for eBPF real-time monitoring. Without these, Vigil falls back to /proc/net/tcp polling (slower).");
@@ -119,7 +119,7 @@ pub fn show(ui: &mut egui::Ui) {
                             ).wrap());
                         });
                         ui.add_space(4.0);
-                        body(ui, "Or click the \"Grant Capabilities\" button in the toolbar (uses pkexec for a graphical prompt). Restart Vigil after granting.");
+                        body(ui, "Or click \"Run as Admin\" in the toolbar/settings to relaunch via pkexec with a graphical polkit prompt.");
                     });
 
                     card(ui, "Telemetry and reputation", |ui| {

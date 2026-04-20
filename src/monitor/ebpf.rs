@@ -103,8 +103,8 @@ mod linux_impl {
     }
 
     fn try_start(tx: mpsc::UnboundedSender<RawConn>) -> Result<(), String> {
-        use aya::EbpfLoader;
         use aya::programs::TracePoint;
+        use aya::EbpfLoader;
         use std::convert::TryFrom;
 
         // Load the BPF object.
@@ -132,10 +132,9 @@ mod linux_impl {
             .map_err(|e| format!("BPF attach failed: {e}"))?;
 
         // Get the perf event array map.
-        let mut perf_array = PerfEventArray::try_from(
-            bpf.take_map("events").ok_or("BPF map 'events' not found")?,
-        )
-        .map_err(|e| format!("perf event array error: {e}"))?;
+        let mut perf_array =
+            PerfEventArray::try_from(bpf.take_map("events").ok_or("BPF map 'events' not found")?)
+                .map_err(|e| format!("perf event array error: {e}"))?;
 
         // Open a buffer for each online CPU.
         // Use /sys/devices/system/cpu/online to handle cpuset/container
@@ -197,9 +196,8 @@ mod linux_impl {
                         continue;
                     }
 
-                    let event: TcpEvent = unsafe {
-                        std::ptr::read_unaligned(data.as_ptr() as *const TcpEvent)
-                    };
+                    let event: TcpEvent =
+                        unsafe { std::ptr::read_unaligned(data.as_ptr() as *const TcpEvent) };
 
                     let raw = event_to_raw_conn(event);
                     if tx.send(raw).is_err() {

@@ -8,6 +8,8 @@
 
 use auto_launch::AutoLaunchBuilder;
 
+const ELEVATED_RELAUNCH_FLAG: &str = "--elevated-relaunch";
+
 /// Enable autostart for the current executable.
 /// Returns `true` on success, `false` on any error.
 pub fn enable() -> bool {
@@ -59,7 +61,7 @@ fn with_builder<F: FnOnce(auto_launch::AutoLaunch) -> bool>(f: F) -> bool {
 #[cfg(windows)]
 mod platform {
     use super::with_builder;
-    use std::ffi::OsStr;
+    use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::OsStrExt;
     use std::path::PathBuf;
     use std::process::Command;
@@ -120,7 +122,13 @@ mod platform {
 
     pub fn relaunch_as_admin() -> Result<(), String> {
         let exe = std::env::current_exe().map_err(|e| format!("failed to locate Vigil: {e}"))?;
-        let args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
+        if !args
+            .iter()
+            .any(|arg| arg == OsStr::new(super::ELEVATED_RELAUNCH_FLAG))
+        {
+            args.push(OsString::from(super::ELEVATED_RELAUNCH_FLAG));
+        }
         let args = join_args(&args);
 
         let exe_w = to_wide(exe.as_os_str());
@@ -223,6 +231,9 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::with_builder;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+    use std::process::Command;
 
     pub fn enable() -> bool {
         with_builder(|al| al.enable().is_ok())
@@ -246,7 +257,7 @@ mod platform {
     pub fn relaunch_as_admin() -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            grant_capabilities()
+            relaunch_with_pkexec()
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -278,34 +289,77 @@ mod platform {
         false
     }
 
-    /// Use pkexec to grant capabilities via setcap on the current binary.
+    /// Relaunch Vigil under root privileges via pkexec.
     #[cfg(target_os = "linux")]
-    fn grant_capabilities() -> Result<(), String> {
-        let exe = std::env::current_exe()
-            .map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
-        let exe_str = exe.to_string_lossy();
-        let caps = "cap_bpf,cap_net_admin,cap_perfmon,cap_dac_read_search,cap_dac_override+ep";
-        let setcap_arg = format!("{caps} {exe_str}");
+    fn relaunch_with_pkexec() -> Result<(), String> {
+        let exe =
+            std::env::current_exe().map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
+        let target = elevation_target_path().unwrap_or(exe);
+        let mut cmd = Command::new("pkexec");
+        cmd.arg("env");
 
-        // Try pkexec first (graphical polkit prompt).
-        let pkexec_result = std::process::Command::new("pkexec")
-            .args(["setcap", &setcap_arg])
-            .status();
-
-        match pkexec_result {
-            Ok(status) if status.success() => Ok(()),
-            Ok(_) => {
-                // pkexec ran but setcap failed — fall back to showing the command.
-                Err(format!(
-                    "pkexec setcap failed. Run manually:\n  sudo setcap {caps} {exe_str}"
-                ))
-            }
-            Err(_) => {
-                // pkexec not found — show the command.
-                Err(format!(
-                    "pkexec not found. Run manually:\n  sudo setcap {caps} {exe_str}"
-                ))
+        // Preserve desktop-session variables so the relaunched GUI can attach
+        // to the current display/session instead of failing EGL/GL init.
+        for key in [
+            "DISPLAY",
+            "WAYLAND_DISPLAY",
+            "XAUTHORITY",
+            "XDG_RUNTIME_DIR",
+            "DBUS_SESSION_BUS_ADDRESS",
+            "XDG_CURRENT_DESKTOP",
+            "XDG_SESSION_TYPE",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                let mut kv = OsString::from(key);
+                kv.push("=");
+                kv.push(value);
+                cmd.arg(kv);
             }
         }
+
+        cmd.arg(&target);
+        let mut has_handoff_flag = false;
+        for arg in std::env::args_os().skip(1) {
+            if arg == std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG) {
+                has_handoff_flag = true;
+            }
+            cmd.arg(arg);
+        }
+        if !has_handoff_flag {
+            cmd.arg(super::ELEVATED_RELAUNCH_FLAG);
+        }
+
+        cmd.spawn().map(|_| ()).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "pkexec is not available on this system. Install polkit and pkexec, then retry."
+                    .to_string()
+            } else {
+                format!("failed to launch pkexec: {e}")
+            }
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn elevation_target_path() -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("APPIMAGE")
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+        {
+            return Some(path);
+        }
+
+        if let Some(path) = std::env::args_os()
+            .next()
+            .map(PathBuf::from)
+            .filter(|path| path.exists())
+        {
+            return Some(path);
+        }
+
+        let current = std::env::current_exe().ok()?;
+        if current.to_string_lossy().contains("/tmp/.mount_") {
+            return None;
+        }
+        Some(current)
     }
 }

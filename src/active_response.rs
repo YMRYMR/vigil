@@ -1109,7 +1109,10 @@ pub fn extract_domain_from_hostname(hostname: &str) -> Option<String> {
 
 fn ensure_modifiable() -> Result<(), String> {
     if !platform::is_supported() {
-        return Err("Active response requires elevated privileges (run as root or grant CAP_NET_ADMIN).".into());
+        return Err(
+            "Active response requires elevated privileges (run as root or grant CAP_NET_ADMIN)."
+                .into(),
+        );
     }
     if !platform::is_elevated() {
         return Err("Administrator privileges are required for active response.".into());
@@ -2546,11 +2549,7 @@ mod platform {
             Err("Active response is not implemented on this platform.".into())
         }
     }
-    pub fn add_block_program_rule(
-        rule_name: &str,
-        path: &str,
-        dir: &str,
-    ) -> Result<(), String> {
+    pub fn add_block_program_rule(rule_name: &str, path: &str, dir: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
             let chain = match dir {
@@ -2674,8 +2673,8 @@ mod platform {
     pub fn terminate_active_tcp_connections() -> Result<usize, String> {
         #[cfg(target_os = "linux")]
         {
-            let data =
-                std::fs::read_to_string("/proc/net/tcp").map_err(|e| format!("read /proc/net/tcp: {e}"))?;
+            let data = std::fs::read_to_string("/proc/net/tcp")
+                .map_err(|e| format!("read /proc/net/tcp: {e}"))?;
             let mut count = 0usize;
             for line in data.lines().skip(1) {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -2735,7 +2734,10 @@ mod platform {
             u8::from_str_radix(&hex_ip[2..4], 16).ok()?,
             u8::from_str_radix(&hex_ip[0..2], 16).ok()?,
         ];
-        Some((format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]), port))
+        Some((
+            format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]),
+            port,
+        ))
     }
 
     // ── Domain blocking via /etc/hosts ─────────────────────────────────────
@@ -2743,9 +2745,7 @@ mod platform {
     pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            let entry = format!(
-                "\n{marker}\n127.0.0.1 {domain}\n::1 {domain}\n"
-            );
+            let entry = format!("\n{marker}\n127.0.0.1 {domain}\n::1 {domain}\n");
             std::fs::OpenOptions::new()
                 .append(true)
                 .open("/etc/hosts")
@@ -2768,8 +2768,7 @@ mod platform {
             let filtered: String = content
                 .lines()
                 .filter(|line| {
-                    line.trim() != marker
-                        && !line.trim().ends_with(&format!(" {domain}"))
+                    line.trim() != marker && !line.trim().ends_with(&format!(" {domain}"))
                 })
                 .collect::<Vec<&str>>()
                 .join("\n");

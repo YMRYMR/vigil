@@ -20,6 +20,8 @@
 
 use crate::types::ConnInfo;
 use std::path::PathBuf;
+#[cfg(target_os = "linux")]
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc::Receiver, Arc, Mutex, OnceLock};
 use tray_icon::{
@@ -110,6 +112,57 @@ fn apply_tray_visual_state(tray: &TrayIcon, icons: &TrayIcons, in_alert: bool, i
         let _ = tray.set_icon(Some(icons.ok.clone()));
         let _ = tray.set_tooltip(Some("Vigil — Monitoring"));
     }
+}
+
+fn request_open_window(show_window: &Arc<AtomicBool>, egui_ctx: &Arc<OnceLock<egui::Context>>) {
+    show_window.store(true, Ordering::Relaxed);
+    if let Some(ctx) = egui_ctx.get() {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+    #[cfg(target_os = "linux")]
+    raise_linux_window_best_effort();
+}
+
+#[cfg(target_os = "linux")]
+fn raise_linux_window_best_effort() {
+    let _ = std::thread::Builder::new()
+        .name("vigil-linux-window-raise".into())
+        .spawn(|| {
+            for _ in 0..4 {
+                if try_raise_linux_window_once() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(120));
+            }
+        });
+}
+
+#[cfg(target_os = "linux")]
+fn try_raise_linux_window_once() -> bool {
+    let first = Command::new("wmctrl")
+        .args(["-x", "-a", "vigil"])
+        .status()
+        .ok()
+        .is_some_and(|s| s.success());
+    if first {
+        return true;
+    }
+    let second = Command::new("wmctrl")
+        .args(["-a", "Vigil"])
+        .status()
+        .ok()
+        .is_some_and(|s| s.success());
+    if second {
+        return true;
+    }
+    Command::new("xdotool")
+        .args(["search", "--name", "Vigil", "windowactivate"])
+        .status()
+        .ok()
+        .is_some_and(|s| s.success())
 }
 
 // ── Linux themed icon helpers ─────────────────────────────────────────────────
@@ -212,11 +265,23 @@ pub fn run(
     // warning spam on stderr.
     #[cfg(target_os = "linux")]
     {
-        let has_display = std::env::var("DISPLAY").is_ok()
-            || std::env::var("WAYLAND_DISPLAY").is_ok();
+        let has_display =
+            std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
         let is_root = unsafe { libc::geteuid() == 0 };
         if !has_display || is_root {
-            tracing::info!("system tray skipped ({}{})", if is_root { "running as root" } else { "no display" }, if !has_display { "" } else { " — display auth may fail" });
+            tracing::info!(
+                "system tray skipped ({}{})",
+                if is_root {
+                    "running as root"
+                } else {
+                    "no display"
+                },
+                if !has_display {
+                    ""
+                } else {
+                    " — display auth may fail"
+                }
+            );
             notification_only_loop(cmd_rx, show_window, pending_nav);
             return;
         }
@@ -256,7 +321,8 @@ pub fn run(
             .with_icon(icons.ok.clone())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
-            .build().map_err(|e| e.to_string())?;
+            .build()
+            .map_err(|e| e.to_string())?;
 
         // On Linux, override the icon with a themed name so GNOME's
         // AppIndicator extension can render it (raw pixel paths don't work).
@@ -306,11 +372,7 @@ fn notification_only_loop(
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::Alert(info) => {
-                    crate::notifier::send_alert(
-                        &info,
-                        show_window.clone(),
-                        pending_nav.clone(),
-                    );
+                    crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
                 }
                 TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
             }
@@ -333,7 +395,7 @@ fn event_loop(
     log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
-    _egui_ctx: Arc<OnceLock<egui::Context>>,
+    egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -364,7 +426,7 @@ fn event_loop(
                 ..
             } = ev
             {
-                show_window.store(true, Ordering::Relaxed);
+                request_open_window(&show_window, &egui_ctx);
             }
         }
 
@@ -373,7 +435,7 @@ fn event_loop(
             if ev.id == quit_id {
                 std::process::exit(0);
             } else if ev.id == open_id {
-                show_window.store(true, Ordering::Relaxed);
+                request_open_window(&show_window, &egui_ctx);
             } else if ev.id == logs_id {
                 let _ = open::that(&log_dir);
             }
@@ -435,10 +497,7 @@ fn event_loop(
                 ..
             } = ev
             {
-                show_window.store(true, Ordering::Relaxed);
-                if let Some(ec) = egui_ctx.get() {
-                    ec.request_repaint();
-                }
+                request_open_window(&show_window, &egui_ctx);
             }
         }
 
@@ -447,10 +506,7 @@ fn event_loop(
             if ev.id == quit_id {
                 std::process::exit(0);
             } else if ev.id == open_id {
-                show_window.store(true, Ordering::Relaxed);
-                if let Some(ec) = egui_ctx.get() {
-                    ec.request_repaint();
-                }
+                request_open_window(&show_window, &egui_ctx);
             } else if ev.id == logs_id {
                 let _ = open::that(&log_dir);
             }
