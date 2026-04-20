@@ -5,8 +5,6 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  pull_request_review:
-    types: [submitted]
   schedule:
     - cron: '0 4 * * 1'
   workflow_dispatch:
@@ -16,7 +14,7 @@ permissions:
 
 jobs:
   sbom-scan:
-    if: (github.event_name != 'pull_request_review' || github.event.review.state == 'approved') && secrets.SNYK_TOKEN != ''
+    if: secrets.SNYK_TOKEN != ''
     name: Snyk OSS SBOM scan
     runs-on: ubuntu-latest
 
