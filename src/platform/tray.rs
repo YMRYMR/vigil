@@ -36,9 +36,18 @@ pub enum TrayCmd {
 
 // ── Embedded icon bytes (shared across platforms) ────────────────────────────
 
-const TRAY_GREEN_ICO: &[u8] = include_bytes!("../assets/vigil_tray_green.ico");
-const TRAY_ORANGE_ICO: &[u8] = include_bytes!("../assets/vigil_tray_orange.ico");
-const TRAY_RED_ICO: &[u8] = include_bytes!("../assets/vigil_tray_red.ico");
+const TRAY_GREEN_ICO: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/vigil_tray_green.ico"
+));
+const TRAY_ORANGE_ICO: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/vigil_tray_orange.ico"
+));
+const TRAY_RED_ICO: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/vigil_tray_red.ico"
+));
 
 // ── Shared fallback loop for environments without a usable tray ──────────────
 
