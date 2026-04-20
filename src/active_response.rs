@@ -1109,7 +1109,7 @@ pub fn extract_domain_from_hostname(hostname: &str) -> Option<String> {
 
 fn ensure_modifiable() -> Result<(), String> {
     if !platform::is_supported() {
-        return Err("Active response is currently only implemented on Windows.".into());
+        return Err("Active response requires elevated privileges (run as root or grant CAP_NET_ADMIN).".into());
     }
     if !platform::is_elevated() {
         return Err("Administrator privileges are required for active response.".into());
@@ -2336,24 +2336,47 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::*;
+    use std::os::unix::fs::MetadataExt;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
         pub restored_entries: usize,
     }
     pub fn is_supported() -> bool {
-        false
+        cfg!(target_os = "linux")
     }
     pub fn supports_isolation() -> bool {
         cfg!(target_os = "linux") || cfg!(target_os = "macos")
     }
     pub fn is_elevated() -> bool {
-        match Command::new("id").arg("-u").output() {
-            Ok(output) if output.status.success() => {
-                String::from_utf8_lossy(&output.stdout).trim() == "0"
-            }
-            _ => false,
+        // Root always has privileges.
+        if unsafe { libc::geteuid() == 0 } {
+            return true;
         }
+        // Check CAP_NET_ADMIN (bit 12) from /proc/self/status CapEff.
+        check_capability(12)
+    }
+    /// Check whether a specific Linux capability (by bit index) is present in
+    /// the effective capability set of the current process.
+    #[cfg(target_os = "linux")]
+    fn check_capability(bit: u8) -> bool {
+        let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
+            return false;
+        };
+        for line in data.lines() {
+            let Some(rest) = line.strip_prefix("CapEff:\t") else {
+                continue;
+            };
+            let Ok(val) = u64::from_str_radix(rest.trim(), 16) else {
+                return false;
+            };
+            return val & (1u64 << bit) != 0;
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    fn check_capability(_bit: u8) -> bool {
+        false
     }
     pub fn process_exists(pid: u32) -> bool {
         if pid == 0 {
@@ -2375,16 +2398,77 @@ mod platform {
     ) -> Result<AutorunRevertResult, String> {
         Err("Autorun revert is not implemented on this platform.".into())
     }
+
+    // ── Firewall / iptables operations (Linux) ─────────────────────────────
+
+    const IPTABLES_COMMENT_PREFIX: &str = "Vigil:";
+
     pub fn snapshot_firewall_profiles() -> Result<FirewallSnapshot, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let output = command_stdout("iptables", &["-L", "-n"])?;
+            let mut profiles = Vec::new();
+            for line in output.lines() {
+                let l = line.trim();
+                // Default policy lines look like: "Chain INPUT (policy DROP)"
+                if let Some(rest) = l.strip_prefix("Chain ") {
+                    let mut parts = rest.splitn(2, ' ');
+                    let chain = parts.next().unwrap_or("");
+                    let policy_part = parts.next().unwrap_or("");
+                    if let Some(policy) = policy_part
+                        .trim_start_matches('(')
+                        .strip_prefix("policy ")
+                        .and_then(|s| s.strip_suffix(')'))
+                    {
+                        profiles.push(format!("{chain}:{policy}"));
+                    }
+                }
+            }
+            return Ok(FirewallSnapshot { profiles });
+        }
+        #[allow(unreachable_code)]
         Ok(FirewallSnapshot { profiles: vec![] })
     }
     pub fn apply_firewall_isolation() -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            for chain in &["INPUT", "FORWARD", "OUTPUT"] {
+                command_status("iptables", &["-P", chain, "DROP"])?;
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
         Err("firewall backend unavailable; falling back to emergency adapter cutoff".into())
     }
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            for entry in &_snapshot.profiles {
+                let mut parts = entry.splitn(2, ':');
+                let chain = parts.next().unwrap_or("");
+                let policy = parts.next().unwrap_or("ACCEPT");
+                if !chain.is_empty() {
+                    command_status("iptables", &["-P", chain, policy])?;
+                }
+            }
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
         Ok(())
     }
     pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        // If firewall snapshot exists with non-empty profiles, iptables isolation is active.
+        if let Some(snapshot) = state.firewall_snapshot.as_ref() {
+            if !snapshot.profiles.is_empty() {
+                // Check if current iptables policies are DROP.
+                let current = snapshot_firewall_profiles()?;
+                let all_drop = current.profiles.iter().all(|p| p.ends_with(":DROP"));
+                if all_drop {
+                    return Ok(true);
+                }
+            }
+        }
+        // Adapter-level fallback.
         let Some(snapshot) = state.network_snapshot.as_ref() else {
             return Ok(false);
         };
@@ -2405,6 +2489,310 @@ mod platform {
         }
         Ok(saw_known_adapter)
     }
+    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let chain = match dir {
+                "out" => "OUTPUT",
+                "in" => "INPUT",
+                _ => "OUTPUT",
+            };
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            command_status(
+                "iptables",
+                &[
+                    "-I",
+                    chain,
+                    "1",
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "DROP",
+                ],
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, dir);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            command_status(
+                "iptables",
+                &[
+                    "-I",
+                    "OUTPUT",
+                    "1",
+                    "-d",
+                    target,
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "DROP",
+                ],
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, target);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let chain = match dir {
+                "out" => "OUTPUT",
+                "in" => "INPUT",
+                _ => "OUTPUT",
+            };
+            let uid = std::fs::metadata(path)
+                .map_err(|e| format!("cannot stat {path}: {e}"))?
+                .uid();
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            command_status(
+                "iptables",
+                &[
+                    "-I",
+                    chain,
+                    "1",
+                    "-m",
+                    "owner",
+                    "--uid-owner",
+                    &uid.to_string(),
+                    "-m",
+                    "comment",
+                    "--comment",
+                    &comment,
+                    "-j",
+                    "DROP",
+                ],
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (rule_name, path, dir);
+            Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn delete_rule(rule_name: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            for chain in &["INPUT", "OUTPUT", "FORWARD"] {
+                // Ignore errors — rule may not exist in every chain.
+                let _ = command_status(
+                    "iptables",
+                    &[
+                        "-D",
+                        chain,
+                        "-m",
+                        "comment",
+                        "--comment",
+                        &comment,
+                        "-j",
+                        "DROP",
+                    ],
+                );
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = rule_name;
+            Ok(())
+        }
+    }
+
+    // ── Process control (Linux: SIGSTOP / SIGCONT) ─────────────────────────
+
+    pub fn suspend_process(pid: u32) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            command_status("kill", &["-STOP", &pid.to_string()])
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err("Process suspension is not implemented on this platform.".into())
+        }
+    }
+    pub fn resume_process(pid: u32) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            command_status("kill", &["-CONT", &pid.to_string()])
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err("Process resume is not implemented on this platform.".into())
+        }
+    }
+
+    // ── TCP connection kill (Linux: ss -K) ─────────────────────────────────
+
+    pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
+        #[cfg(target_os = "linux")]
+        {
+            let status = Command::new("ss")
+                .args([
+                    "-K",
+                    "dst",
+                    &target.remote_ip.to_string(),
+                    "dport",
+                    "=",
+                    &target.remote_port.to_string(),
+                ])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .map_err(|_| SocketKillError::OsError("failed to spawn ss".into()))?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(SocketKillError::OsError("ss -K failed".into()))
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = target;
+            Err(SocketKillError::PlatformUnsupported)
+        }
+    }
+    pub fn terminate_active_tcp_connections() -> Result<usize, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let data =
+                std::fs::read_to_string("/proc/net/tcp").map_err(|e| format!("read /proc/net/tcp: {e}"))?;
+            let mut count = 0usize;
+            for line in data.lines().skip(1) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 4 {
+                    continue;
+                }
+                // State 0A = ESTABLISHED
+                if parts[3] != "0A" {
+                    continue;
+                }
+                let Some((lip, lport)) = parse_hex_addr_port(parts[1]) else {
+                    continue;
+                };
+                let Some((rip, rport)) = parse_hex_addr_port(parts[2]) else {
+                    continue;
+                };
+                let status = Command::new("ss")
+                    .args([
+                        "-K",
+                        "dst",
+                        &rip,
+                        "dport",
+                        "=",
+                        &rport.to_string(),
+                        "src",
+                        &lip,
+                        "sport",
+                        "=",
+                        &lport.to_string(),
+                    ])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                if status.map(|s| s.success()).unwrap_or(false) {
+                    count += 1;
+                }
+            }
+            Ok(count)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Err("TCP termination is not implemented on this platform.".into())
+        }
+    }
+    /// Parse "AABBCCDD:PPPP" hex format from /proc/net/tcp into (ip_string, port).
+    /// The IP is little-endian hex (e.g. "0100007F" = 127.0.0.1).
+    #[cfg(target_os = "linux")]
+    fn parse_hex_addr_port(s: &str) -> Option<(String, u16)> {
+        let (hex_ip, hex_port) = s.split_once(':')?;
+        let port = u16::from_str_radix(hex_port, 16).ok()?;
+        if hex_ip.len() != 8 {
+            return None;
+        }
+        let bytes = [
+            u8::from_str_radix(&hex_ip[6..8], 16).ok()?,
+            u8::from_str_radix(&hex_ip[4..6], 16).ok()?,
+            u8::from_str_radix(&hex_ip[2..4], 16).ok()?,
+            u8::from_str_radix(&hex_ip[0..2], 16).ok()?,
+        ];
+        Some((format!("{}.{}.{}.{}", bytes[0], bytes[1], bytes[2], bytes[3]), port))
+    }
+
+    // ── Domain blocking via /etc/hosts ─────────────────────────────────────
+
+    pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let entry = format!(
+                "\n{marker}\n127.0.0.1 {domain}\n::1 {domain}\n"
+            );
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open("/etc/hosts")
+                .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()))
+                .map_err(|e| format!("failed to update /etc/hosts: {e}"))?;
+            flush_dns();
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (domain, marker);
+            Err("Domain blocking is not implemented on this platform.".into())
+        }
+    }
+    pub fn remove_domain_block(domain: &str, marker: &str) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        {
+            let content = std::fs::read_to_string("/etc/hosts")
+                .map_err(|e| format!("failed to read /etc/hosts: {e}"))?;
+            let filtered: String = content
+                .lines()
+                .filter(|line| {
+                    line.trim() != marker
+                        && !line.trim().ends_with(&format!(" {domain}"))
+                })
+                .collect::<Vec<&str>>()
+                .join("\n");
+            std::fs::write("/etc/hosts", filtered)
+                .map_err(|e| format!("failed to write /etc/hosts: {e}"))?;
+            flush_dns();
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (domain, marker);
+            Err("Domain blocking is not implemented on this platform.".into())
+        }
+    }
+    #[cfg(target_os = "linux")]
+    fn flush_dns() {
+        // Try systemd-resolve first (older Ubuntu), then resolvectl.
+        let _ = command_status("resolvectl", &["flush-caches"]);
+        let _ = command_status("systemd-resolve", &["--flush-caches"]);
+    }
+
+    // ── Network adapter management ─────────────────────────────────────────
+
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         #[cfg(target_os = "linux")]
         {
@@ -2524,36 +2912,9 @@ mod platform {
         #[allow(unreachable_code)]
         Ok(0)
     }
-    pub fn suspend_process(_pid: u32) -> Result<(), String> {
-        Err("Process suspension is not implemented on this platform.".into())
-    }
-    pub fn resume_process(_pid: u32) -> Result<(), String> {
-        Err("Process resume is not implemented on this platform.".into())
-    }
-    pub fn add_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
-        Err("Domain blocking is not implemented on this platform.".into())
-    }
-    pub fn remove_domain_block(_domain: &str, _marker: &str) -> Result<(), String> {
-        Err("Domain blocking is not implemented on this platform.".into())
-    }
-    pub fn kill_tcp_connection(_target: &SocketKillTarget) -> Result<(), SocketKillError> {
-        Err(SocketKillError::PlatformUnsupported)
-    }
-    pub fn add_block_rule(_rule_name: &str, _target: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn terminate_active_tcp_connections() -> Result<usize, String> {
-        Err("TCP termination is not implemented on this platform.".into())
-    }
-    pub fn add_block_all_rule(_rule_name: &str, _dir: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn add_block_program_rule(_rule_name: &str, _path: &str, _dir: &str) -> Result<(), String> {
-        Err("Active response is not implemented on this platform.".into())
-    }
-    pub fn delete_rule(_rule_name: &str) -> Result<(), String> {
-        Ok(())
-    }
+
+    // ── Command helpers ────────────────────────────────────────────────────
+
     fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
         let output = Command::new(program)
             .args(args)
