@@ -40,6 +40,11 @@ jobs:
         uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04
 
       - name: Run Snyk Open Source SBOM test
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk sbom test --file=vigil.cdx.json --severity-threshold=high
+
+      - name: Skip Snyk Open Source SBOM test on automatic runs
+        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
+        run: echo "Skipping token-based Snyk scan on automatic PR/push runs; use schedule or workflow_dispatch when credentials are available."
