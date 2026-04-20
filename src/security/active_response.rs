@@ -2344,6 +2344,7 @@ mod platform {
 #[cfg(not(windows))]
 mod platform {
     use super::*;
+    use std::path::Path;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
@@ -2389,11 +2390,12 @@ mod platform {
         if pid == 0 {
             return false;
         }
-        Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
+        command_base("kill", &["-0", &pid.to_string()])
+            .and_then(|mut cmd| {
+                cmd.stdout(Stdio::null()).stderr(Stdio::null());
+                cmd.status()
+                    .map_err(|e| format!("failed to spawn kill: {e}"))
+            })
             .map(|status| status.success())
             .unwrap_or(false)
     }
@@ -2925,8 +2927,7 @@ mod platform {
     // ── Command helpers ────────────────────────────────────────────────────
 
     fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
-        let output = Command::new(program)
-            .args(args)
+        let output = command_base(program, args)?
             .output()
             .map_err(|e| format!("failed to spawn {program}: {e}"))?;
         if output.status.success() {
@@ -2939,8 +2940,7 @@ mod platform {
         }
     }
     fn command_status(program: &str, args: &[&str]) -> Result<(), String> {
-        let status = Command::new(program)
-            .args(args)
+        let status = command_base(program, args)?
             .status()
             .map_err(|e| format!("failed to spawn {program}: {e}"))?;
         if status.success() {
@@ -2948,6 +2948,29 @@ mod platform {
         } else {
             Err(format!("{program} failed with status {status}"))
         }
+    }
+    fn command_base(program: &str, args: &[&str]) -> Result<Command, String> {
+        let resolved = resolve_program_path(program)?;
+        let mut cmd = Command::new(resolved);
+        cmd.args(args);
+        Ok(cmd)
+    }
+    fn resolve_program_path(program: &str) -> Result<&'static str, String> {
+        let candidates: &[&str] = match program {
+            "kill" => &["/bin/kill", "/usr/bin/kill"],
+            #[cfg(target_os = "linux")]
+            "iptables" => &["/usr/sbin/iptables", "/sbin/iptables"],
+            #[cfg(target_os = "linux")]
+            "ip" => &["/usr/sbin/ip", "/sbin/ip"],
+            #[cfg(target_os = "macos")]
+            "ifconfig" => &["/sbin/ifconfig"],
+            _ => &[],
+        };
+        candidates
+            .iter()
+            .copied()
+            .find(|path| Path::new(path).exists())
+            .ok_or_else(|| format!("required system binary for {program} not found"))
     }
 
     #[cfg(target_os = "linux")]
