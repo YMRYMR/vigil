@@ -71,6 +71,25 @@ png = "0.17"
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
 
+# Strip the gtk3 / glib 0.18 chain from Cargo.lock.
+#
+# `tray-icon` declares `libappindicator` as a hard `cfg(linux)` dependency in
+# its own Cargo.toml (not behind a feature flag). Cargo's resolver records
+# target-specific transitive deps in Cargo.lock regardless of the build target,
+# so even though we never use tray-icon on Linux (we use ksni), libappindicator
+# and its glib/gtk 0.18 subtree would still appear in the lockfile and trip
+# Dependabot on GHSA-wrw7-89jp-8q8g (unsound glib::VariantStrIter).
+#
+# The stub below is an empty crate with zero dependencies. tray-icon only
+# references `libappindicator` from `#[cfg(all(unix, not(target_os = "macos")))]`
+# blocks, which don't compile on Windows or macOS, so the stub's body is never
+# referenced. On Linux `tray-icon` isn't pulled in at all. Net effect:
+# glib/gtk/libappindicator disappear from Cargo.lock without changing any
+# compiled behavior.
+[patch.crates-io]
+libappindicator = { path = "stubs/libappindicator" }
+gtk             = { path = "stubs/gtk" }
+
 [workspace.metadata.dist]
 cargo-dist-version = "0.22.1"
 ci                 = "github"

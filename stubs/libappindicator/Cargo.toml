@@ -1,0 +1,9 @@
+[package]
+name = "libappindicator"
+version = "0.9.0"
+edition = "2021"
+description = "Empty stub overriding crates.io `libappindicator` via [patch.crates-io]. Vigil never uses this crate: on Linux the tray is implemented with `ksni`; on Windows/macOS `tray-icon` references `libappindicator` only inside `#[cfg(all(unix, not(target_os = \"macos\")))]` blocks that don't compile. The stub removes the gtk3/glib 0.18 transitive chain from Cargo.lock."
+license = "MIT OR Apache-2.0"
+
+[lib]
+path = "lib.rs"
