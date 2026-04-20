@@ -384,7 +384,8 @@ mod imp {
     use super::*;
     use ksni::blocking::TrayMethods;
     use ksni::menu::{MenuItem as KsniMenuItem, StandardItem};
-    use ksni::{Handle, Tray};
+    use ksni::blocking::Handle;
+    use ksni::Tray;
     use std::sync::atomic::Ordering;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
