@@ -39,6 +39,7 @@ pub fn uninstall() -> CmdResult {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::path::Path;
     use std::process::Command;
 
@@ -47,7 +48,7 @@ mod platform {
     pub fn install(exe: &Path) -> CmdResult {
         // sc create Vigil binPath= "\"C:\path\to\vigil.exe\"" start= auto
         let bin_path = format!("\"{}\"", exe.display());
-        let status = Command::new("sc")
+        let status = Command::new(command_paths::resolve("sc")?)
             .args([
                 "create",
                 SVC_NAME,
@@ -66,7 +67,9 @@ mod platform {
                 .into());
         }
 
-        let _ = Command::new("sc").args(["start", SVC_NAME]).status();
+        let _ = Command::new(command_paths::resolve("sc")?)
+            .args(["start", SVC_NAME])
+            .status();
         Ok(format!(
             "Installed Windows service `{SVC_NAME}` and started it.  \
              It will auto-start at boot from now on.\n\
@@ -75,8 +78,10 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
-        let _ = Command::new("sc").args(["stop", SVC_NAME]).status();
-        let status = Command::new("sc")
+        let _ = Command::new(command_paths::resolve("sc")?)
+            .args(["stop", SVC_NAME])
+            .status();
+        let status = Command::new(command_paths::resolve("sc")?)
             .args(["delete", SVC_NAME])
             .status()
             .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
@@ -92,6 +97,7 @@ mod platform {
 #[cfg(target_os = "macos")]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::path::Path;
     use std::process::Command;
 
@@ -130,14 +136,14 @@ mod platform {
         std::fs::write(&path, plist.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
         // Permissions: root:wheel 0644
-        let _ = Command::new("chown")
+        let _ = Command::new(command_paths::resolve("chown")?)
             .args(["root:wheel", &path.display().to_string()])
             .status();
-        let _ = Command::new("chmod")
+        let _ = Command::new(command_paths::resolve("chmod")?)
             .args(["644", &path.display().to_string()])
             .status();
 
-        let status = Command::new("launchctl")
+        let status = Command::new(command_paths::resolve("launchctl")?)
             .args(["load", "-w", &path.display().to_string()])
             .status()
             .map_err(|e| format!("failed to spawn `launchctl`: {e}"))?;
@@ -158,7 +164,7 @@ mod platform {
         }
         let path = plist_path();
         if path.exists() {
-            let _ = Command::new("launchctl")
+            let _ = Command::new(command_paths::resolve("launchctl")?)
                 .args(["unload", "-w", &path.display().to_string()])
                 .status();
             std::fs::remove_file(&path)
@@ -190,6 +196,7 @@ mod platform {
 #[cfg(all(unix, not(target_os = "macos")))]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::path::Path;
     use std::process::Command;
 
@@ -229,8 +236,10 @@ mod platform {
         std::fs::write(&path, unit.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
 
-        let _ = Command::new("systemctl").args(["daemon-reload"]).status();
-        let enable = Command::new("systemctl")
+        let _ = Command::new(command_paths::resolve("systemctl")?)
+            .args(["daemon-reload"])
+            .status();
+        let enable = Command::new(command_paths::resolve("systemctl")?)
             .args(["enable", "--now", UNIT_NAME])
             .status()
             .map_err(|e| format!("failed to spawn `systemctl`: {e}"))?;
@@ -252,7 +261,7 @@ mod platform {
         if !is_root() {
             return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
-        let _ = Command::new("systemctl")
+        let _ = Command::new(command_paths::resolve("systemctl")?)
             .args(["disable", "--now", UNIT_NAME])
             .status();
         let path = unit_path();
@@ -260,7 +269,9 @@ mod platform {
             std::fs::remove_file(&path)
                 .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
         }
-        let _ = Command::new("systemctl").args(["daemon-reload"]).status();
+        let _ = Command::new(command_paths::resolve("systemctl")?)
+            .args(["daemon-reload"])
+            .status();
         Ok(format!("Removed systemd unit `{UNIT_NAME}`."))
     }
 

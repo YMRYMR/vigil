@@ -314,9 +314,7 @@ mod platform {
     /// Relaunch Vigil under root privileges via pkexec.
     #[cfg(target_os = "linux")]
     fn relaunch_with_pkexec() -> Result<(), String> {
-        let exe =
-            std::env::current_exe().map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
-        let target = elevation_target_path().unwrap_or(exe);
+        let target = elevation_target_path()?;
         let mut cmd = Command::new("pkexec");
         cmd.arg("env");
 
@@ -370,8 +368,7 @@ mod platform {
 
     #[cfg(target_os = "linux")]
     fn launch_elevated_child_impl() -> Result<(), String> {
-        let target =
-            elevation_target_path().ok_or_else(|| "could not locate Vigil binary".to_string())?;
+        let target = elevation_target_path()?;
         let mut args = Vec::new();
         for arg in std::env::args_os().skip(1) {
             if arg != std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
@@ -392,26 +389,13 @@ mod platform {
     }
 
     #[cfg(target_os = "linux")]
-    fn elevation_target_path() -> Option<PathBuf> {
-        if let Some(path) = std::env::var_os("APPIMAGE")
-            .map(PathBuf::from)
-            .filter(|path| path.exists())
-        {
-            return Some(path);
+    fn elevation_target_path() -> Result<PathBuf, String> {
+        let current =
+            std::env::current_exe().map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
+        if current.exists() {
+            Ok(current)
+        } else {
+            Err("could not locate Vigil binary".into())
         }
-
-        if let Some(path) = std::env::args_os()
-            .next()
-            .map(PathBuf::from)
-            .filter(|path| path.exists())
-        {
-            return Some(path);
-        }
-
-        let current = std::env::current_exe().ok()?;
-        if current.to_string_lossy().contains("/tmp/.mount_") {
-            return None;
-        }
-        Some(current)
     }
 }

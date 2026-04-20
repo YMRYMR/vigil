@@ -115,6 +115,7 @@ fn safe_name(text: &str) -> String {
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use crate::platform::command_paths;
     use std::process::Command;
 
     pub fn capture_process_dump(info: &ConnInfo, cfg: &Config) -> Result<PathBuf, String> {
@@ -132,7 +133,7 @@ mod platform {
         );
         let out = dir.join(filename);
 
-        let status = Command::new("rundll32.exe")
+        let status = Command::new(command_paths::resolve("rundll32.exe")?)
             .arg("C:\\Windows\\System32\\comsvcs.dll,MiniDump")
             .arg(info.pid.to_string())
             .arg(&out)
