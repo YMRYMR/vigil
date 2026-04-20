@@ -5,6 +5,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  pull_request_review:
+    types: [submitted]
   schedule:
     - cron: '0 4 * * 1'
   workflow_dispatch:
@@ -14,13 +16,13 @@ permissions:
 
 jobs:
   sbom-scan:
+    if: (github.event_name != 'pull_request_review' || github.event.review.state == 'approved') && secrets.SNYK_TOKEN != ''
     name: Snyk OSS SBOM scan
-    if: ${{ secrets.SNYK_TOKEN != '' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
