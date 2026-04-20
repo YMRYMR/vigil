@@ -61,7 +61,7 @@ eframe = { version = "0.34", default-features = false, features = ["default_font
 aya = "0.13"
 bytes = "1"
 libc = "0.2"
-ksni = { version = "0.3", default-features = false, features = ["blocking"] }
+ksni = { version = "0.3", features = ["blocking"] }
 
 [target.'cfg(target_os = "linux")'.build-dependencies]
 
