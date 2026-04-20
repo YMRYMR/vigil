@@ -240,30 +240,10 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 - [x] **Forensic global rate limiting** — process dumps throttled to one per 30s globally (in addition to per-PID cooldown); PCAP captures throttled to one per 60s globally
 - [x] **Pipeline profiling instrumentation** — per-connection microsecond timing for each enrichment step (process collect, geoip, blocklist, revdns, fswatch, baseline, TLS, scoring, tamper); debug-level logging; last 100 entries stored for diagnostics
 - [x] **Low-noise defaults** — 5ms time budget on UI event drain prevents frame stalls under burst load
-- [x] **eBPF module** — `src/monitor/ebpf.rs` with real `aya`-based TCP tracepoint on Linux (stub on other platforms); `Monitor::start()` attempts eBPF alongside ETW, merging into single receiver
+- [x] **eBPF module** — `src/monitor/ebpf.rs` with real `aya`-based TCP tracepoint on Linux (stub on other platforms); `Monitor::start()` attempts eBPF alongside ETW, merging into single receiver. Attaches to `tracepoint:sock:inet_sock_set_state` via `aya::EbpfLoader` for sub-100ms connect/accept/close events; pre-compiled BPF object embedded as `&[u8]` const (8 KB); graceful fallback to `/proc/net/tcp` polling if kernel too old or user lacks `CAP_BPF`/`CAP_SYS_ADMIN`
 - [x] **Performance test fixtures** — scoring benchmark (1000 inputs under 50ms), baseline profile cap enforcement test
 - [x] **Linux system tray** — full AppIndicator integration: GTK init, themed icon names for GNOME dock, GLib MainContext D-Bus iteration, menu event handling (Open Vigil / Open Logs Folder / Quit), left-click to show window, graceful fallback when no display or running as root
-
-### Native kernel-level monitoring (Linux + macOS)
-
-Replace the polling fallback on non-Windows platforms with real-time, kernel-level connection monitoring — the same principle as Windows ETW but using each OS's native tracing subsystem. This is the single biggest latency and efficiency win for cross-platform deployments.
-
-**Linux — eBPF**
-- [x] **eBPF TCP tracepoint module** — `src/monitor/ebpf.rs` attaches to `tracepoint:sock:inet_sock_set_state` via `aya::EbpfLoader` for sub-100ms connect/accept/close events with PID, sport, dport, family, and state
-- [x] **libbpf / aya integration** — `aya` 0.13 crate (Linux-gated dependency); pre-compiled BPF object embedded as `&[u8]` const (8 KB); ring buffer reader in background thread
-- [x] **Graceful fallback** — if kernel too old (< 5.8) or user lacks `CAP_BPF`/`CAP_SYS_ADMIN`, logs warning and falls back to `/proc/net/tcp` polling transparently
-- [ ] **Privilege UX** — explain the capability requirement clearly in Settings and Help; offer a one-shot `setcap` helper or a polkit prompt where appropriate
-
-**macOS — Endpoint Security Framework**
-- [ ] **Endpoint Security system extension** — build a signed `EndpointSecurity.framework` subscriber that receives `ES_EVENT_TYPE_NOTIFY_EXEC`, `ES_EVENT_TYPE_NOTIFY_CONNECT`, and related event types with full process-token and ancestor metadata
-- [ ] **Network Extension visibility** — supplement with `NEFilterProvider` / `NEAppProxyProvider` for traffic-level metadata where Endpoint Security alone is insufficient
-- [ ] **Code-signing and notarization path** — document the Apple Developer signing, entitlement (`com.apple.developer.endpoint-security.client`), and notarization requirements; gate behind a build feature flag so development builds still work without signing
-- [ ] **DTrace as a fallback** — if the system extension is unavailable (e.g. SIP-enabled environments without admin approval), use `dtrace` TCP probes (`tcp:::connect-established`, `tcp:::state-change`) as a degraded-realtime path; note that most useful DTrace probes require `csrutil disable` and are therefore a niche fallback
-- [ ] **Graceful fallback** — if the system extension is not approved or the binary is not signed, fall back to the existing `netstat`-style polling with a visible "Endpoint Security unavailable" operator notice
-
-**Shared integration**
-- [ ] **Monitor trait unification** — refactor `src/monitor/` so the existing ETW fast path, the new eBPF module, and the new ES module all implement a common `EventSource` trait consumed by the same `Monitor` hub, with `tokio::select!` merging whichever sources are active
-- [ ] **Cross-platform latency benchmark** — measure p50/p95 detection latency on each platform with the new backends and compare against the polling baseline; target < 200ms on Linux (eBPF) and < 300ms on macOS (Endpoint Security)
+- [x] **Privilege UX** — explain the capability requirement clearly in Settings and Help; offer a one-shot `setcap` helper via pkexec where appropriate
 
 ---
 
@@ -274,12 +254,14 @@ Replace the polling fallback on non-Windows platforms with real-time, kernel-lev
 - [ ] Privilege-gated policy edits
 - [ ] Self-protection and tamper evidence
 - [ ] Secure update channel
-- [ ] **Linux active-response parity** — all response actions must work cross-platform:
-  - Network isolation via `iptables`/`nftables` (gated on `CAP_NET_ADMIN` or root)
-  - Kill TCP connection via `ss -K` or `/proc` socket lookup
+- [x] **Linux active-response parity** — all response actions work cross-platform:
+  - Network isolation via `iptables` DROP policies (gated on `CAP_NET_ADMIN` or root)
+  - Kill TCP connection via `ss -K` and `/proc/net/tcp` parsing
   - Suspend/resume process via `kill -STOP`/`kill -CONT`
-  - Block IP via `iptables -A INPUT -s <ip> -j DROP`
-  - Elevated check: verify effective capabilities, not just uid 0
+  - Block IP via iptables with comment-based rule management
+  - Block program via iptables owner match (UID from `stat()`)
+  - Block domain via `/etc/hosts` manipulation + DNS flush
+  - Elevated check: `CAP_NET_ADMIN` from `/proc/self/status` `CapEff:` field
 
 ---
 
@@ -337,11 +319,18 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 
 ## Phase 18 — Cross-platform Detection Parity (OPEN backlog)
 
-Windows is currently the first-class detection target. Broadening macOS and Linux unlocks half the addressable market and makes the PRO fleet console actually useful to mixed-OS shops. Mobile is explicitly out of scope.
+Windows and Linux now have first-class detection and active-response support. Broadening to macOS and unifying the monitor architecture unlocks mixed-OS deployments. Mobile is explicitly out of scope.
 
-- [ ] **Linux eBPF monitor** — drop-in equivalent to ETW semantics using eBPF / BCC / aya for connect / accept / exec events, with graceful fallback to polling when eBPF is unavailable
-- [ ] **macOS Endpoint Security framework monitor** — real-time process and network events via the Apple ES framework, signed with an appropriate entitlement path for distribution
-- [ ] **Scoring and active-response parity** — bring LoLBAS-equivalent heuristics, blocking primitives (pf / iptables-nft), process kill / suspend, and isolation to macOS and Linux
+**macOS — Endpoint Security Framework**
+- [ ] **Endpoint Security system extension** — build a signed `EndpointSecurity.framework` subscriber that receives `ES_EVENT_TYPE_NOTIFY_EXEC`, `ES_EVENT_TYPE_NOTIFY_CONNECT`, and related event types with full process-token and ancestor metadata
+- [ ] **Network Extension visibility** — supplement with `NEFilterProvider` / `NEAppProxyProvider` for traffic-level metadata where Endpoint Security alone is insufficient
+- [ ] **Code-signing and notarization path** — document the Apple Developer signing, entitlement (`com.apple.developer.endpoint-security.client`), and notarization requirements; gate behind a build feature flag so development builds still work without signing
+- [ ] **DTrace as a fallback** — if the system extension is unavailable (e.g. SIP-enabled environments without admin approval), use `dtrace` TCP probes as a degraded-realtime path
+- [ ] **Graceful fallback** — if the system extension is not approved or the binary is not signed, fall back to the existing `netstat`-style polling with a visible "Endpoint Security unavailable" operator notice
+
+**Shared integration**
+- [ ] **Monitor trait unification** — refactor `src/monitor/` so the existing ETW fast path, the eBPF module, and the new ES module all implement a common `EventSource` trait consumed by the same `Monitor` hub, with `tokio::select!` merging whichever sources are active
+- [ ] **Cross-platform latency benchmark** — measure p50/p95 detection latency on each platform with the new backends and compare against the polling baseline; target < 200ms on Linux (eBPF) and < 300ms on macOS (Endpoint Security)
 - [ ] **Installer and autostart parity** — launchd / systemd service units, signed installers, pkg / deb / rpm / AppImage polish
 - [ ] **Cross-platform test fixtures** — CI coverage and detection regression tests on all three OSes
 

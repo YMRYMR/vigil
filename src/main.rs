@@ -49,8 +49,12 @@ mod ui;
 
 use config::Config;
 use monitor::Monitor;
+use single_instance::SingleInstance;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+
+const SINGLE_INSTANCE_ID: &str = "com.ymrymr.vigil.single_instance";
 fn load_app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil_icon.png"))
         .or_else(|_| eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil.png")))
@@ -61,19 +65,78 @@ fn load_app_icon() -> Option<egui::IconData> {
         .ok()
 }
 
+fn acquire_single_instance(wait_for_release: bool) -> Result<SingleInstance, String> {
+    if !wait_for_release {
+        return SingleInstance::new(SINGLE_INSTANCE_ID)
+            .map_err(|err| format!("Could not acquire Vigil instance lock: {err}"));
+    }
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(12);
+    let sleep_interval = Duration::from_millis(150);
+    loop {
+        let guard = SingleInstance::new(SINGLE_INSTANCE_ID)
+            .map_err(|err| format!("Could not acquire Vigil instance lock: {err}"))?;
+        if guard.is_single() {
+            return Ok(guard);
+        }
+        if start.elapsed() >= timeout {
+            return Err("Another Vigil instance is still running after elevation handoff.".into());
+        }
+        drop(guard);
+        std::thread::sleep(sleep_interval);
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let mut elevated_relaunch = false;
+    let mut elevated_launcher = false;
     for a in &args[1..] {
         match a.as_str() {
             "--install-service" => std::process::exit(service::run_cmd("install")),
             "--uninstall-service" => std::process::exit(service::run_cmd("uninstall")),
             "--break-glass-recover" => std::process::exit(break_glass::recover_if_stale()),
+            autostart::ELEVATED_RELAUNCH_FLAG => {
+                elevated_relaunch = true;
+            }
+            autostart::ELEVATED_LAUNCHER_FLAG => {
+                elevated_launcher = true;
+            }
             "--help" | "-h" => {
                 println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service      register Vigil as a boot-time service\n  --uninstall-service    remove the boot-time service\n  --break-glass-recover  watchdog entrypoint for network recovery\n  -h, --help             show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
         }
+    }
+
+    if elevated_launcher {
+        match autostart::launch_elevated_child() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let _single_instance_guard = match acquire_single_instance(elevated_relaunch) {
+        Ok(guard) => guard,
+        Err(err) => {
+            if !elevated_relaunch && err.contains("instance lock") {
+                eprintln!("{err}");
+            } else if !elevated_relaunch {
+                eprintln!("Vigil is already running.");
+            } else {
+                eprintln!("{err}");
+            }
+            std::process::exit(1);
+        }
+    };
+    if !_single_instance_guard.is_single() {
+        eprintln!("Vigil is already running.");
+        return;
     }
 
     let (_log_dir, _log_guard) = logger::init();
@@ -164,7 +227,15 @@ fn main() {
 
     std::thread::Builder::new()
         .name("vigil-tray".into())
-        .spawn(move || tray::run(tray_rx, show_window_tray, log_dir, pending_nav_tray, egui_ctx_tray))
+        .spawn(move || {
+            tray::run(
+                tray_rx,
+                show_window_tray,
+                log_dir,
+                pending_nav_tray,
+                egui_ctx_tray,
+            )
+        })
         .expect("failed to spawn tray thread");
 
     let mut viewport = egui::ViewportBuilder::default()

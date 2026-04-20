@@ -38,8 +38,11 @@ use tokio::time::{sleep, Duration};
 /// Stores the last 100 pipeline timing snapshots for diagnostics.
 const TIMING_HISTORY_CAP: usize = 100;
 
-fn timing_history() -> &'static std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>> {
-    static HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>>> = std::sync::OnceLock::new();
+fn timing_history(
+) -> &'static std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>> {
+    static HISTORY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>>,
+    > = std::sync::OnceLock::new();
     HISTORY.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::new()))
 }
 
@@ -182,6 +185,18 @@ async fn poll_loop(
                         if !known.contains_key(&key) {
                             let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
                             process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
+                        } else if is_terminal_state(&raw_conn.status) {
+                            // eBPF fires on every TCP state transition. When a known
+                            // connection transitions to a terminal state (CLOSED,
+                            // TIME_WAIT, etc.), remove it immediately instead of
+                            // waiting for the slower polling cleanup pass.
+                            if let Some(info) = known.remove(&key) {
+                                let _ = tx.send(ConnEvent::Closed {
+                                    pid: info.pid,
+                                    local: info.local_addr.clone(),
+                                    remote: info.remote_addr.clone(),
+                                });
+                            }
                         }
                     }
                     None => {
@@ -222,6 +237,12 @@ async fn poll_loop(
     }
 }
 
+/// States that indicate the connection has finished and should be removed
+/// from the active set immediately rather than waiting for polling cleanup.
+fn is_terminal_state(status: &str) -> bool {
+    matches!(status, "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB")
+}
+
 #[allow(clippy::too_many_arguments)]
 fn process_conn(
     raw_conn: &RawConn,
@@ -239,12 +260,11 @@ fn process_conn(
     // Fast skip: loopback and link-local connections always score 0.
     // Skip the expensive enrichment pipeline (process collection, geoip,
     // blocklist, revdns, fswatch, baseline, TLS, scoring, tamper).
+    // Note: LISTEN sockets (empty remote) are NOT treated as loopback
+    // so they get full process attribution when log_all_connections is on.
     let remote = &raw_conn.remote_ip;
-    let is_loopback = remote.is_empty()
-        || remote == "0.0.0.0"
-        || remote == "127.0.0.1"
-        || remote == "::1"
-        || remote == "::";
+    let is_loopback = !remote.is_empty()
+        && (remote == "0.0.0.0" || remote == "127.0.0.1" || remote == "::1" || remote == "::");
     if is_loopback {
         // Still track in known so stale-detection works.
         let key = ConnKey::from(raw_conn);
@@ -287,7 +307,9 @@ fn process_conn(
         };
         known.insert(key, info);
         if log_all {
-            let _ = tx.send(ConnEvent::New(known.get(&ConnKey::from(raw_conn)).unwrap().clone()));
+            let _ = tx.send(ConnEvent::New(
+                known.get(&ConnKey::from(raw_conn)).unwrap().clone(),
+            ));
         }
         return;
     }

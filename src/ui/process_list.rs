@@ -270,7 +270,11 @@ pub fn show(
                                             &format!(
                                                 "{} endpoint{}",
                                                 group.endpoint_rows.len(),
-                                                if group.endpoint_rows.len() == 1 { "" } else { "s" }
+                                                if group.endpoint_rows.len() == 1 {
+                                                    ""
+                                                } else {
+                                                    "s"
+                                                }
                                             ),
                                             theme::TEXT2,
                                             theme::SURFACE2,
@@ -293,13 +297,31 @@ pub fn show(
                                             );
                                         }
                                         if group.script_host_suspicious {
-                                            pill(ui, "Script host", theme::WARN, theme::WARN_BG, theme::WARN);
+                                            pill(
+                                                ui,
+                                                "Script host",
+                                                theme::WARN,
+                                                theme::WARN_BG,
+                                                theme::WARN,
+                                            );
                                         }
                                         if group.baseline_deviation {
-                                            pill(ui, "Baseline drift", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                            pill(
+                                                ui,
+                                                "Baseline drift",
+                                                theme::ACCENT,
+                                                theme::ACCENT_BG,
+                                                theme::ACCENT,
+                                            );
                                         }
                                         if group.tls_enriched {
-                                            pill(ui, "TLS", theme::ACCENT, theme::ACCENT_BG, theme::ACCENT);
+                                            pill(
+                                                ui,
+                                                "TLS",
+                                                theme::ACCENT,
+                                                theme::ACCENT_BG,
+                                                theme::ACCENT,
+                                            );
                                         }
                                     });
 
@@ -395,7 +417,8 @@ pub fn show(
                                             Some(sel_conn),
                                         )
                                     });
-                                if let Some(clicked) = endpoint_line(ui, endpoint, kind, conn_selected)
+                                if let Some(clicked) =
+                                    endpoint_line(ui, endpoint, kind, conn_selected)
                                 {
                                     *selected = Some(selection_from_group(group, Some(clicked)));
                                 }
@@ -407,7 +430,11 @@ pub fn show(
                                 RichText::new(format!(
                                     "{} endpoint row{} hidden",
                                     group.endpoint_rows.len(),
-                                    if group.endpoint_rows.len() == 1 { "" } else { "s" }
+                                    if group.endpoint_rows.len() == 1 {
+                                        ""
+                                    } else {
+                                        "s"
+                                    }
                                 ))
                                 .color(theme::TEXT3)
                                 .size(10.2),
@@ -455,7 +482,10 @@ pub fn selection_for_pid(
 /// Used by tab bar labels.
 pub fn count_distinct_processes(rows: &VecDeque<ConnInfo>) -> usize {
     use std::collections::HashSet;
-    rows.iter().map(|info| info.pid).collect::<HashSet<u32>>().len()
+    rows.iter()
+        .map(|info| info.pid)
+        .collect::<HashSet<u32>>()
+        .len()
 }
 
 fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kind) {
@@ -753,7 +783,11 @@ impl<'a> EndpointAccumulator<'a> {
 }
 
 fn endpoint_key(conn: &ConnInfo) -> String {
-    format!("{}|{}", conn.remote_addr, conn.hostname.as_deref().unwrap_or_default())
+    format!(
+        "{}|{}",
+        conn.remote_addr,
+        conn.hostname.as_deref().unwrap_or_default()
+    )
 }
 
 fn dedup_reasons(mut reasons: Vec<String>) -> Vec<String> {
@@ -808,7 +842,8 @@ fn sort_groups(groups: &mut [ProcessGroup<'_>], state: &TableState) {
                 .len()
                 .cmp(&b.endpoint_rows.len())
                 .then_with(|| a.conn_count.cmp(&b.conn_count)),
-            3 => status_rank(&[a.latest_status.to_string()]).cmp(&status_rank(&[b.latest_status.to_string()])),
+            3 => status_rank(&[a.latest_status.to_string()])
+                .cmp(&status_rank(&[b.latest_status.to_string()])),
             4 => a.score.cmp(&b.score),
             _ => a.latest_timestamp.cmp(b.latest_timestamp),
         };
@@ -820,7 +855,11 @@ fn sort_groups(groups: &mut [ProcessGroup<'_>], state: &TableState) {
             .then_with(|| a.latest_timestamp.cmp(b.latest_timestamp))
             .then_with(|| a.proc_name.to_lowercase().cmp(&b.proc_name.to_lowercase()))
             .then_with(|| a.pid.cmp(&b.pid));
-        if state.sort_asc { ord } else { ord.reverse() }
+        if state.sort_asc {
+            ord
+        } else {
+            ord.reverse()
+        }
     });
 }
 
@@ -829,7 +868,10 @@ fn sort_endpoint_rows(group: &mut ProcessGroup<'_>, state: &TableState) {
         let primary = match state.sort_col {
             0 => a.latest_timestamp.cmp(b.latest_timestamp),
             1 => a.remote_addr.cmp(b.remote_addr),
-            2 => a.conn_count.cmp(&b.conn_count).then_with(|| a.local_port_count.cmp(&b.local_port_count)),
+            2 => a
+                .conn_count
+                .cmp(&b.conn_count)
+                .then_with(|| a.local_port_count.cmp(&b.local_port_count)),
             3 => status_rank(&a.statuses).cmp(&status_rank(&b.statuses)),
             4 => a.max_score.cmp(&b.max_score),
             _ => a.max_score.cmp(&b.max_score),
@@ -842,7 +884,11 @@ fn sort_endpoint_rows(group: &mut ProcessGroup<'_>, state: &TableState) {
             .then_with(|| a.primary_local_port.cmp(&b.primary_local_port))
             .then_with(|| a.latest_timestamp.cmp(b.latest_timestamp))
             .then_with(|| a.remote_addr.cmp(b.remote_addr));
-        if state.sort_asc { ord } else { ord.reverse() }
+        if state.sort_asc {
+            ord
+        } else {
+            ord.reverse()
+        }
     });
 }
 
@@ -856,7 +902,11 @@ fn endpoint_line(
     let h = 30.0;
     let (rect, resp) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), h), egui::Sense::click());
-    let fill = if selected { theme::SURFACE3 } else { theme::SURFACE2 };
+    let fill = if selected {
+        theme::SURFACE3
+    } else {
+        theme::SURFACE2
+    };
     ui.painter()
         .rect_filled(rect.shrink2(egui::vec2(1.0, 0.5)), 8.0, fill);
     ui.painter().rect_stroke(
@@ -930,7 +980,11 @@ fn endpoint_line(
                                 endpoint.conn_count,
                                 if endpoint.conn_count == 1 { "" } else { "s" },
                                 endpoint.local_port_count,
-                                if endpoint.local_port_count == 1 { "" } else { "s" }
+                                if endpoint.local_port_count == 1 {
+                                    ""
+                                } else {
+                                    "s"
+                                }
                             ))
                             .color(theme::TEXT3)
                             .size(9.4),
@@ -1022,17 +1076,38 @@ fn matches_filter(info: &ConnInfo, lower: &str, _kind: Kind) -> bool {
         || info.status.to_ascii_lowercase().contains(lower)
         || info.proc_path.to_ascii_lowercase().contains(lower)
         || info.local_addr.to_ascii_lowercase().contains(lower)
-        || info.attack_tags.iter().any(|tag| tag.to_ascii_lowercase().contains(lower))
-        || info.tls_sni.as_deref().map(|s| s.to_ascii_lowercase().contains(lower)).unwrap_or(false)
-        || info.tls_ja3.as_deref().map(|s| s.to_ascii_lowercase().contains(lower)).unwrap_or(false);
+        || info
+            .attack_tags
+            .iter()
+            .any(|tag| tag.to_ascii_lowercase().contains(lower))
+        || info
+            .tls_sni
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase().contains(lower))
+            .unwrap_or(false)
+        || info
+            .tls_ja3
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase().contains(lower))
+            .unwrap_or(false);
 
     if base {
         return true;
     }
 
-    info.reasons.iter().any(|s| s.to_ascii_lowercase().contains(lower))
-        || info.hostname.as_deref().map(|h| h.to_ascii_lowercase().contains(lower)).unwrap_or(false)
-        || info.country.as_deref().map(|c| c.to_ascii_lowercase().contains(lower)).unwrap_or(false)
+    info.reasons
+        .iter()
+        .any(|s| s.to_ascii_lowercase().contains(lower))
+        || info
+            .hostname
+            .as_deref()
+            .map(|h| h.to_ascii_lowercase().contains(lower))
+            .unwrap_or(false)
+        || info
+            .country
+            .as_deref()
+            .map(|c| c.to_ascii_lowercase().contains(lower))
+            .unwrap_or(false)
 }
 
 fn summary_bar_color(score: u8, kind: Kind) -> egui::Color32 {
@@ -1055,7 +1130,12 @@ fn status_summary_color(statuses: &[String]) -> egui::Color32 {
         theme::WARN
     } else if statuses.iter().any(|s| s == "ESTABLISHED") {
         theme::ACCENT
-    } else if statuses.iter().any(|s| matches!(s.as_str(), "FIN_WAIT1" | "FIN_WAIT2" | "CLOSE_WAIT" | "TIME_WAIT" | "LAST_ACK" | "CLOSING")) {
+    } else if statuses.iter().any(|s| {
+        matches!(
+            s.as_str(),
+            "FIN_WAIT1" | "FIN_WAIT2" | "CLOSE_WAIT" | "TIME_WAIT" | "LAST_ACK" | "CLOSING"
+        )
+    }) {
         theme::TEXT3
     } else {
         theme::TEXT2
@@ -1072,17 +1152,30 @@ fn remote_label(remote: &str) -> String {
 }
 
 fn parse_port(addr: &str) -> Option<u16> {
-    addr.rsplit_once(':').and_then(|(_, port)| port.parse().ok())
+    addr.rsplit_once(':')
+        .and_then(|(_, port)| port.parse().ok())
 }
 
 fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> u8 {
     let mut bonus = 0;
-    if conns >= 2 { bonus += 1; }
-    if conns >= 4 { bonus += 1; }
-    if ports >= 2 { bonus += 1; }
-    if ports >= 4 { bonus += 1; }
-    if remotes >= 3 { bonus += 1; }
-    if statuses >= 3 { bonus += 1; }
+    if conns >= 2 {
+        bonus += 1;
+    }
+    if conns >= 4 {
+        bonus += 1;
+    }
+    if ports >= 2 {
+        bonus += 1;
+    }
+    if ports >= 4 {
+        bonus += 1;
+    }
+    if remotes >= 3 {
+        bonus += 1;
+    }
+    if statuses >= 3 {
+        bonus += 1;
+    }
     bonus.min(4)
 }
 
@@ -1118,9 +1211,13 @@ fn summary_height(group: &ProcessGroup<'_>, width: f32, collapsed: bool) -> f32 
     let state_lines = if group.statuses.is_empty() {
         0
     } else {
-        wrap_lines(&format!("States seen: {}", group.statuses.join(", ")), chars_per_line)
+        wrap_lines(
+            &format!("States seen: {}", group.statuses.join(", ")),
+            chars_per_line,
+        )
     };
-    SUMMARY_BASE_H + ((meta_lines.saturating_sub(1) + state_lines.saturating_sub(1)) as f32 * SUMMARY_LINE_H)
+    SUMMARY_BASE_H
+        + ((meta_lines.saturating_sub(1) + state_lines.saturating_sub(1)) as f32 * SUMMARY_LINE_H)
 }
 
 fn wrap_lines(text: &str, chars_per_line: usize) -> usize {
@@ -1146,7 +1243,18 @@ fn status_rank(statuses: &[String]) -> u8 {
         0
     } else if statuses.iter().any(|s| s == "ESTABLISHED") {
         1
-    } else if statuses.iter().any(|s| matches!(s.as_str(), "CLOSE_WAIT" | "FIN_WAIT1" | "FIN_WAIT2" | "LAST_ACK" | "TIME_WAIT" | "CLOSING" | "DELETE_TCB")) {
+    } else if statuses.iter().any(|s| {
+        matches!(
+            s.as_str(),
+            "CLOSE_WAIT"
+                | "FIN_WAIT1"
+                | "FIN_WAIT2"
+                | "LAST_ACK"
+                | "TIME_WAIT"
+                | "CLOSING"
+                | "DELETE_TCB"
+        )
+    }) {
         2
     } else if statuses.iter().any(|s| s == "LISTEN") {
         3
@@ -1181,15 +1289,33 @@ fn badge_rank(endpoint: &EndpointRow<'_>) -> u8 {
 
 fn badge_signature(endpoint: &EndpointRow<'_>) -> String {
     let mut parts = Vec::new();
-    if endpoint.baseline_deviation { parts.push("BASE"); }
-    if endpoint.script_host_suspicious { parts.push("SCR"); }
-    if endpoint.reputation_hit { parts.push("REP"); }
-    if endpoint.pre_login { parts.push("PL"); }
-    if endpoint.dga_like { parts.push("DGA"); }
-    if endpoint.recently_dropped { parts.push("DRP"); }
-    if endpoint.long_lived { parts.push("LL"); }
-    if endpoint.tls_enriched { parts.push("TLS"); }
-    if endpoint.conn_count > 1 { parts.push("XN"); }
+    if endpoint.baseline_deviation {
+        parts.push("BASE");
+    }
+    if endpoint.script_host_suspicious {
+        parts.push("SCR");
+    }
+    if endpoint.reputation_hit {
+        parts.push("REP");
+    }
+    if endpoint.pre_login {
+        parts.push("PL");
+    }
+    if endpoint.dga_like {
+        parts.push("DGA");
+    }
+    if endpoint.recently_dropped {
+        parts.push("DRP");
+    }
+    if endpoint.long_lived {
+        parts.push("LL");
+    }
+    if endpoint.tls_enriched {
+        parts.push("TLS");
+    }
+    if endpoint.conn_count > 1 {
+        parts.push("XN");
+    }
     parts.join("|")
 }
 
