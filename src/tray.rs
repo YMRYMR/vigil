@@ -21,7 +21,7 @@
 use crate::types::ConnInfo;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc::Receiver, Arc, Mutex};
+use std::sync::{mpsc::Receiver, Arc, Mutex, OnceLock};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
     MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -112,6 +112,73 @@ fn apply_tray_visual_state(tray: &TrayIcon, icons: &TrayIcons, in_alert: bool, i
     }
 }
 
+// ── Linux themed icon helpers ─────────────────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn linux_icon_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h))
+        .unwrap_or_default()
+        .join(".local/share/icons/hicolor/32x32/apps")
+}
+
+/// Decode embedded ICO assets and write PNG files to the themed icon directory
+/// so AppIndicator can find them by name.
+#[cfg(target_os = "linux")]
+fn ensure_themed_icons() {
+    let dir = linux_icon_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("tray: cannot create icon dir {:?}: {e}", dir);
+        return;
+    }
+
+    let icons: &[(&str, &[u8])] = &[
+        ("vigil-tray-green.png", TRAY_GREEN_ICO),
+        ("vigil-tray-orange.png", TRAY_ORANGE_ICO),
+        ("vigil-tray-red.png", TRAY_RED_ICO),
+    ];
+
+    for &(name, ico_bytes) in icons {
+        let path = dir.join(name);
+        if path.exists() {
+            continue;
+        }
+        match image::load_from_memory_with_format(ico_bytes, image::ImageFormat::Ico) {
+            Ok(img) => {
+                let img = img.resize_exact(32, 32, image::imageops::FilterType::Lanczos3);
+                if let Err(e) = img.save(&path) {
+                    tracing::warn!("tray: failed to write {:?}: {e}", path);
+                }
+            }
+            Err(e) => {
+                tracing::warn!("tray: failed to decode icon {name}: {e}");
+            }
+        }
+    }
+}
+
+/// Switch the AppIndicator themed icon by name (e.g. "vigil-tray-orange").
+#[cfg(target_os = "linux")]
+fn set_linux_tray_icon(tray: &TrayIcon, name: &str) {
+    unsafe {
+        let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
+        if !ai.is_null() {
+            (*ai).set_icon_full(name, "");
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn linux_tray_icon_name(in_alert: bool, in_lockdown: bool) -> &'static str {
+    if in_lockdown {
+        "vigil-tray-red"
+    } else if in_alert {
+        "vigil-tray-orange"
+    } else {
+        "vigil-tray-green"
+    }
+}
+
 // ── Public entry point ────────────────────────────────────────────────────────
 
 struct TrayIcons {
@@ -132,46 +199,119 @@ pub fn run(
     show_window: Arc<AtomicBool>,
     log_dir: PathBuf,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     let icons = load_tray_icons();
 
-    // ── Context menu ──────────────────────────────────────────────────────────
-    let menu = Menu::new();
-    let open_item = MenuItem::new("Open Vigil", true, None);
-    let logs_item = MenuItem::new("Open Logs Folder", true, None);
-    let quit_item = MenuItem::new("Quit", true, None);
-    let _ = menu.append_items(&[
-        &open_item,
-        &logs_item,
-        &PredefinedMenuItem::separator(),
-        &quit_item,
-    ]);
-    let open_id = open_item.id().clone();
-    let logs_id = logs_item.id().clone();
-    let quit_id = quit_item.id().clone();
+    #[cfg(target_os = "linux")]
+    ensure_themed_icons();
 
-    // ── Tray icon ─────────────────────────────────────────────────────────────
-    // menu_on_left_click = false → left click fires TrayIconEvent (we open the
-    // window ourselves); right click still shows the context menu.
-    let tray = TrayIconBuilder::new()
-        .with_tooltip("Vigil — Network Monitor  ●")
-        .with_icon(icons.ok.clone())
-        .with_menu(Box::new(menu))
-        .with_menu_on_left_click(false)
-        .build()
-        .expect("Failed to create tray icon");
+    // On non-Windows, the tray-icon crate uses GTK which requires a working
+    // display. Running under sudo or without a desktop session means GTK
+    // can't connect. Skip the entire GTK init to avoid panics and C-level
+    // warning spam on stderr.
+    #[cfg(not(windows))]
+    {
+        let has_display = std::env::var("DISPLAY").is_ok()
+            || std::env::var("WAYLAND_DISPLAY").is_ok();
+        let is_root = unsafe { libc::geteuid() == 0 };
+        if !has_display || is_root {
+            tracing::info!("system tray skipped ({}{})", if is_root { "running as root" } else { "no display" }, if !has_display { "" } else { " — display auth may fail" });
+            notification_only_loop(cmd_rx, show_window, pending_nav);
+            return;
+        }
+    }
+    let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // GTK must be initialized before any GTK operations (menu, tray icon).
+        // The tray-icon crate on Linux uses libappindicator which depends on GTK.
+        #[cfg(not(windows))]
+        {
+            if gtk::init().is_err() {
+                return Err("GTK init failed — tray icon unavailable".into());
+            }
+        }
 
-    event_loop(
-        tray,
-        icons,
-        cmd_rx,
-        quit_id,
-        open_id,
-        logs_id,
-        log_dir,
-        show_window,
-        pending_nav,
-    );
+        // ── Context menu ──────────────────────────────────────────────────
+        let menu = Menu::new();
+        let open_item = MenuItem::new("Open Vigil", true, None);
+        let logs_item = MenuItem::new("Open Logs Folder", true, None);
+        let quit_item = MenuItem::new("Quit", true, None);
+        let _ = menu.append_items(&[
+            &open_item,
+            &logs_item,
+            &PredefinedMenuItem::separator(),
+            &quit_item,
+        ]);
+        let open_id = open_item.id().clone();
+        let logs_id = logs_item.id().clone();
+        let quit_id = quit_item.id().clone();
+
+        let tray = TrayIconBuilder::new()
+            .with_tooltip("Vigil — Network Monitor  ●")
+            .with_icon(icons.ok.clone())
+            .with_menu(Box::new(menu))
+            .with_menu_on_left_click(false)
+            .build().map_err(|e| e.to_string())?;
+
+        // On Linux, override the icon with a themed name so GNOME's
+        // AppIndicator extension can render it (raw pixel paths don't work).
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let ai = tray.app_indicator() as *mut libappindicator::AppIndicator;
+            if !ai.is_null() {
+                let icon_dir = linux_icon_dir();
+                if icon_dir.exists() {
+                    (*ai).set_icon_theme_path(icon_dir.to_str().unwrap_or(""));
+                    (*ai).set_icon_full("vigil-tray-green", "");
+                }
+            }
+        }
+
+        Ok::<_, String>((tray, quit_id, open_id, logs_id))
+    }));
+
+    match init_result {
+        Ok(Ok((tray, quit_id, open_id, logs_id))) => {
+            event_loop(
+                tray,
+                icons,
+                cmd_rx,
+                quit_id,
+                open_id,
+                logs_id,
+                log_dir,
+                show_window,
+                pending_nav,
+                egui_ctx,
+            );
+        }
+        _ => {
+            tracing::warn!("tray init failed — running without tray icon");
+            notification_only_loop(cmd_rx, show_window, pending_nav);
+        }
+    }
+}
+
+fn notification_only_loop(
+    cmd_rx: Receiver<TrayCmd>,
+    show_window: Arc<AtomicBool>,
+    pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+) {
+    loop {
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                TrayCmd::Alert(info) => {
+                    crate::notifier::send_alert(
+                        &info,
+                        show_window.clone(),
+                        pending_nav.clone(),
+                    );
+                }
+                TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 // ── Platform event loops ──────────────────────────────────────────────────────
@@ -188,6 +328,7 @@ fn event_loop(
     log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    _egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
     use windows::Win32::UI::WindowsAndMessaging::{
         DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
@@ -259,28 +400,88 @@ fn event_loop(
 #[cfg(not(windows))]
 #[allow(clippy::too_many_arguments)]
 fn event_loop(
-    _tray: TrayIcon,
+    tray: TrayIcon,
     _icons: TrayIcons,
     cmd_rx: Receiver<TrayCmd>,
-    _quit_id: tray_icon::menu::MenuId,
-    _open_id: tray_icon::menu::MenuId,
-    _logs_id: tray_icon::menu::MenuId,
-    _log_dir: PathBuf,
+    quit_id: tray_icon::menu::MenuId,
+    open_id: tray_icon::menu::MenuId,
+    logs_id: tray_icon::menu::MenuId,
+    log_dir: PathBuf,
     show_window: Arc<AtomicBool>,
     pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    egui_ctx: Arc<OnceLock<egui::Context>>,
 ) {
+    let _tray = tray;
+    let ctx = glib::MainContext::default();
+    let mut in_alert = false;
+    let mut in_lockdown = false;
+    let mut alert_since: Option<std::time::Instant> = None;
+    const ALERT_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
+
     loop {
+        // Process pending GLib events (required for AppIndicator D-Bus).
+        while ctx.iteration(false) {}
+
+        // ── Tray icon click events ────────────────────────────────────────
+        while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = ev
+            {
+                show_window.store(true, Ordering::Relaxed);
+                if let Some(ec) = egui_ctx.get() {
+                    ec.request_repaint();
+                }
+            }
+        }
+
+        // ── Menu events ───────────────────────────────────────────────────
+        while let Ok(ev) = MenuEvent::receiver().try_recv() {
+            if ev.id == quit_id {
+                std::process::exit(0);
+            } else if ev.id == open_id {
+                show_window.store(true, Ordering::Relaxed);
+                if let Some(ec) = egui_ctx.get() {
+                    ec.request_repaint();
+                }
+            } else if ev.id == logs_id {
+                let _ = open::that(&log_dir);
+            }
+        }
+
+        // ── Commands from UI / monitor ────────────────────────────────────
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 TrayCmd::Alert(info) => {
                     crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
+                    in_alert = true;
+                    alert_since = Some(std::time::Instant::now());
+                    #[cfg(target_os = "linux")]
+                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
                 }
-                TrayCmd::ResetOk => {}
-                TrayCmd::SetLockdown(_) => {}
+                TrayCmd::ResetOk => {
+                    // On Linux/AppIndicator, hold the alert icon for at
+                    // least ALERT_HOLD so the user can see the state change
+                    // (otherwise ResetOk arrives on the same frame and the
+                    // icon flashes too fast to notice).
+                    if alert_since.map_or(true, |t| t.elapsed() >= ALERT_HOLD) {
+                        in_alert = false;
+                        alert_since = None;
+                        #[cfg(target_os = "linux")]
+                        set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
+                    }
+                }
+                TrayCmd::SetLockdown(active) => {
+                    in_lockdown = active;
+                    #[cfg(target_os = "linux")]
+                    set_linux_tray_icon(&_tray, linux_tray_icon_name(in_alert, in_lockdown));
+                }
             }
         }
-        let _ = show_window.load(Ordering::Relaxed);
-        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 

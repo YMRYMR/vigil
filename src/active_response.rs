@@ -2542,6 +2542,9 @@ mod platform {
     pub fn add_block_rule(_rule_name: &str, _target: &str) -> Result<(), String> {
         Err("Active response is not implemented on this platform.".into())
     }
+    pub fn terminate_active_tcp_connections() -> Result<usize, String> {
+        Err("TCP termination is not implemented on this platform.".into())
+    }
     pub fn add_block_all_rule(_rule_name: &str, _dir: &str) -> Result<(), String> {
         Err("Active response is not implemented on this platform.".into())
     }

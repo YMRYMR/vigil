@@ -56,16 +56,24 @@ fn main() {
     ensure_tray_ico("assets/vigil_tray_red.ico", 0xEF, 0x44, 0x44);
 
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
-        // Embed via winres. Requires the Windows SDK (rc.exe) or llvm-rc.
-        // Non-fatal: warn but don't abort the build if the toolchain is absent.
-        if let Err(e) = winres::WindowsResource::new()
-            .set_icon("assets/vigil_icon.ico")
-            .compile()
-        {
-            println!("cargo:warning=winres failed (Windows SDK / llvm-rc not found): {e}");
-        }
+        embed_windows_icon();
     }
 }
+
+#[cfg(windows)]
+fn embed_windows_icon() {
+    // Embed via winres. Requires the Windows SDK (rc.exe) or llvm-rc.
+    // Non-fatal: warn but don't abort the build if the toolchain is absent.
+    if let Err(e) = winres::WindowsResource::new()
+        .set_icon("assets/vigil_icon.ico")
+        .compile()
+    {
+        println!("cargo:warning=winres failed (Windows SDK / llvm-rc not found): {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon() {}
 
 fn ensure_tray_ico(path: &str, r: u8, g: u8, b: u8) {
     if std::path::Path::new(path).exists() {

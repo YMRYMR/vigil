@@ -410,4 +410,29 @@ mod tests {
             .iter()
             .any(|r| r.contains("TLS SNI") || r.contains("xj3kq9z2a.example")));
     }
+
+    #[test]
+    fn scoring_1000_inputs_within_budget() {
+        use std::time::Instant;
+        let cfg = cfg();
+        let start = Instant::now();
+        for i in 0..1000u32 {
+            let name = "benchmark_proc";
+            let path = "/usr/bin/benchmark";
+            let port = (443 + (i % 100) as u16) as u16;
+            let mut inp = input(name, path, "203.0.113.5", port, "ESTABLISHED");
+            if i % 3 == 0 {
+                inp.beaconing = true;
+            }
+            if i % 5 == 0 {
+                inp.reputation_hit = Some("test-list");
+            }
+            let _ = score(&inp, &cfg);
+        }
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed.as_millis() < 50,
+            "1000 scoring calls took {elapsed:?} — budget is 50ms"
+        );
+    }
 }

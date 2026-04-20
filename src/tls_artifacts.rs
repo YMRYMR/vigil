@@ -32,6 +32,7 @@ struct CachedTlsMeta {
 }
 
 const CACHE_TTL_SECS: u64 = 6 * 60 * 60;
+const CACHE_MAX_ENTRIES: usize = 1024;
 
 pub fn analyze_capture(info: &ConnInfo, pcapng: &Path) -> Result<Option<PathBuf>, String> {
     let Some((remote_ip, remote_port)) = parse_remote_endpoint(&info.remote_addr) else {
@@ -83,6 +84,15 @@ fn cache() -> &'static Mutex<HashMap<String, CachedTlsMeta>> {
 fn prune_stale_locked(cache: &mut HashMap<String, CachedTlsMeta>) {
     let now = unix_now();
     cache.retain(|_, entry| now.saturating_sub(entry.observed_unix) <= CACHE_TTL_SECS);
+    // Enforce size cap: evict oldest entries when over limit.
+    if cache.len() > CACHE_MAX_ENTRIES {
+        let mut entries: Vec<_> = cache.iter().map(|(k, v)| (k.clone(), v.observed_unix)).collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+        let to_remove = cache.len() - CACHE_MAX_ENTRIES;
+        for (key, _) in entries.into_iter().take(to_remove) {
+            cache.remove(&key);
+        }
+    }
 }
 
 fn cache_key(remote_ip: &str, remote_port: u16) -> String {

@@ -73,13 +73,21 @@ impl TableState {
         if !self.collapsed_pids.insert(pid) {
             self.collapsed_pids.remove(&pid);
         }
+        if self.collapsed_pids.len() > COLLAPSED_PIDS_CAP {
+            self.collapsed_pids.clear();
+        }
     }
+    #[allow(dead_code)]
     pub fn is_endpoint_expanded(&self, endpoint_key: &str) -> bool {
         self.expanded_endpoints.contains(endpoint_key)
     }
+    #[allow(dead_code)]
     pub fn toggle_endpoint(&mut self, endpoint_key: &str) {
         if !self.expanded_endpoints.insert(endpoint_key.to_string()) {
             self.expanded_endpoints.remove(endpoint_key);
+        }
+        if self.expanded_endpoints.len() > EXPANDED_ENDPOINTS_CAP {
+            self.expanded_endpoints.clear();
         }
     }
 }
@@ -345,11 +353,27 @@ pub struct VigilApp {
     last_applied_pixels_per_point: Option<f32>,
     activity_table: TableState,
     alerts_table: TableState,
+    /// Monotonically increasing version counter for activity/alerts data.
+    /// Incremented when new events are drained. Used to invalidate UI caches.
+    data_version: u64,
+    /// Cached group view for the activity tab.
+    activity_cache: Option<process_list::CachedGroupView>,
+    /// Cached group view for the alerts tab.
+    alerts_cache: Option<process_list::CachedGroupView>,
+    /// Cached distinct process count for activity tab labels.
+    cached_activity_process_count: usize,
+    /// Cached distinct process count for alerts tab labels.
+    cached_alerts_process_count: usize,
 }
 const UI_EVENT_BUDGET: usize = 128;
+/// Maximum time spent draining events per frame (prevents frame stalls under burst load).
+const UI_EVENT_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
 const UI_IDLE_REPAINT: std::time::Duration = std::time::Duration::from_secs(1);
 const UI_BUSY_REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
 const NOTIFICATION_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const COLLAPSED_PIDS_CAP: usize = 256;
+#[allow(dead_code)]
+const EXPANDED_ENDPOINTS_CAP: usize = 128;
 
 fn apply_pixels_per_point(ctx: &egui::Context, scale: f32) {
     let native_ppp = ctx.native_pixels_per_point().unwrap_or(1.0);
@@ -366,8 +390,10 @@ impl VigilApp {
         show_window: Arc<AtomicBool>,
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
         paused_flag: Arc<AtomicBool>,
+        egui_ctx: Arc<std::sync::OnceLock<egui::Context>>,
     ) -> Self {
         theme::apply(&cc.egui_ctx);
+        let _ = egui_ctx.set(cc.egui_ctx.clone());
         let initial_ui_scale = {
             let c = cfg.read().unwrap();
             c.sanitised_ui_scale()
@@ -414,6 +440,11 @@ impl VigilApp {
             last_applied_pixels_per_point: None,
             activity_table: persisted.activity_table,
             alerts_table: persisted.alerts_table,
+            data_version: 0,
+            activity_cache: None,
+            alerts_cache: None,
+            cached_activity_process_count: 0,
+            cached_alerts_process_count: 0,
         }
     }
     fn handle_font_zoom_shortcut(&mut self, ctx: &egui::Context) {
@@ -463,8 +494,12 @@ impl VigilApp {
     }
     fn drain_events(&mut self, max_events: usize) -> bool {
         let mut handled = false;
+        let deadline = std::time::Instant::now() + UI_EVENT_TIME_BUDGET;
         let (activity_cap, alerts_cap) = self.history_caps();
         for _ in 0..max_events {
+            if std::time::Instant::now() > deadline {
+                break;
+            }
             match self.ui_rx.try_recv() {
                 Ok(message) => {
                     handled = true;
@@ -497,6 +532,13 @@ impl VigilApp {
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
+        }
+        if handled {
+            self.data_version = self.data_version.wrapping_add(1);
+            self.cached_activity_process_count =
+                process_list::count_distinct_processes(&self.activity);
+            self.cached_alerts_process_count =
+                process_list::count_distinct_processes(&self.alerts);
         }
         handled
     }
@@ -871,10 +913,12 @@ impl eframe::App for VigilApp {
         self.sync_tray_state();
         self.trim_history_buffers();
         if self.show_window.swap(false, Ordering::Relaxed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         if let Some(nav) = self.pending_nav.lock().unwrap().take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             self.active_tab = Tab::Alerts;
@@ -918,8 +962,8 @@ impl eframe::App for VigilApp {
                 tab_bar::tab_bar(
                     ui,
                     self.active_tab,
-                    process_count(&self.activity),
-                    process_count(&self.alerts),
+                    self.cached_activity_process_count,
+                    self.cached_alerts_process_count,
                 )
             })
             .inner;
@@ -964,6 +1008,8 @@ impl eframe::App for VigilApp {
                         &self.activity,
                         &mut self.selected_activity,
                         &mut self.activity_table,
+                        self.data_version,
+                        &mut self.activity_cache,
                     ) {
                         self.activity.clear();
                         self.selected_activity = None;
@@ -975,6 +1021,8 @@ impl eframe::App for VigilApp {
                         &self.alerts,
                         &mut self.selected_alert,
                         &mut self.alerts_table,
+                        self.data_version,
+                        &mut self.alerts_cache,
                     ) {
                         self.alerts.clear();
                         self.selected_alert = None;
@@ -1620,13 +1668,6 @@ pub fn conn_matches_selection(info: &ConnInfo, selected: Option<&ConnInfo>) -> b
 }
 fn remove_pid(rows: &mut VecDeque<ConnInfo>, pid: u32) {
     rows.retain(|info| info.pid != pid);
-}
-fn process_count(rows: &VecDeque<ConnInfo>) -> usize {
-    use std::collections::HashSet;
-    rows.iter()
-        .map(|info| info.pid)
-        .collect::<HashSet<_>>()
-        .len()
 }
 fn kill_process(pid: u32) {
     use sysinfo::{Pid, ProcessesToUpdate, System};
