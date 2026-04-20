@@ -173,6 +173,10 @@ cargo test
   tracepoint) — requires `CAP_BPF`, `CAP_NET_ADMIN`, `CAP_PERFMON`,
   `CAP_DAC_READ_SEARCH`, and `CAP_DAC_OVERRIDE`; falls back to
   `/proc/net/tcp` polling if unavailable.
+- Active response: network isolation via iptables, TCP kill via `ss -K`,
+  process suspend/resume via SIGSTOP/SIGCONT, IP blocking via iptables
+  comment rules, domain blocking via `/etc/hosts`. All gated on
+  `CAP_NET_ADMIN` (checked from `/proc/self/status`) or root.
 - System tray via libappindicator (GNOME AppIndicator); uses themed icon
   names — install PNG icons at
   `~/.local/share/icons/hicolor/32x32/apps/`.

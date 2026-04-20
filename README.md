@@ -47,7 +47,7 @@ notification, and a full GUI — the moment something looks wrong.
   Inspector, auto-save Settings, persisted grid sort/window state, a
   polished Help screen, and a header that clearly shows whether Vigil is
   elevated
-- **Active response** — reversible Windows actions for killing a live TCP
+- **Active response** — reversible actions (Windows + Linux) for killing a live TCP
   connection, suspending or resuming a process during investigation,
   blocking a remote IP for 1 hour, 24 hours, or permanently, blocking a
   process by executable path, or isolating the machine, with confirmation
@@ -197,19 +197,19 @@ The top bar also reflects privilege state: it shows an `Admin` badge when
 Vigil is elevated, or a `Run as Admin` button that relaunches the app with
 UAC if it is not.
 
-When Vigil is running with administrator privileges, the Inspector can take
-reversible action:
+When Vigil is running with elevated privileges (admin on Windows,
+`CAP_NET_ADMIN` or root on Linux), the Inspector can take reversible action:
 
 - **Kill connection** immediately tears down the selected live TCP socket.
 - **Suspend process** freezes the selected PID without killing it; **Resume process** continues it later.
-- **Block remote** (Windows) lets you choose a 1 hour, 24 hour, or permanent outbound
+- **Block remote** lets you choose a 1 hour, 24 hour, or permanent outbound
   firewall rule for the selected connection's remote IP. Temporary blocks show
   a live countdown and an inline unblock button.
-- **Block process** (Windows) lets you choose a 1 hour, 24 hour, or permanent firewall
+- **Block process** lets you choose a 1 hour, 24 hour, or permanent firewall
   rule for all traffic from the selected executable path. Temporary blocks
   show a live countdown and an inline unblock button.
 - **Isolate network** (Windows, Linux, macOS) now uses strict containment:
-  it first applies firewall-level isolation and verifies outbound reachability.
+  it first applies firewall-level isolation (iptables on Linux) and verifies outbound reachability.
   If outbound traffic is still possible, Vigil falls back to emergency adapter
   cutoff and keeps snapshot state for restore.
 - **Restore network** restores the saved firewall and adapter state.

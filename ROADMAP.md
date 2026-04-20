@@ -274,12 +274,14 @@ Replace the polling fallback on non-Windows platforms with real-time, kernel-lev
 - [ ] Privilege-gated policy edits
 - [ ] Self-protection and tamper evidence
 - [ ] Secure update channel
-- [ ] **Linux active-response parity** — all response actions must work cross-platform:
-  - Network isolation via `iptables`/`nftables` (gated on `CAP_NET_ADMIN` or root)
-  - Kill TCP connection via `ss -K` or `/proc` socket lookup
+- [x] **Linux active-response parity** — all response actions work cross-platform:
+  - Network isolation via `iptables` DROP policies (gated on `CAP_NET_ADMIN` or root)
+  - Kill TCP connection via `ss -K` and `/proc/net/tcp` parsing
   - Suspend/resume process via `kill -STOP`/`kill -CONT`
-  - Block IP via `iptables -A INPUT -s <ip> -j DROP`
-  - Elevated check: verify effective capabilities, not just uid 0
+  - Block IP via iptables with comment-based rule management
+  - Block program via iptables owner match (UID from `stat()`)
+  - Block domain via `/etc/hosts` manipulation + DNS flush
+  - Elevated check: `CAP_NET_ADMIN` from `/proc/self/status` `CapEff:` field
 
 ---
 
@@ -339,9 +341,9 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 
 Windows is currently the first-class detection target. Broadening macOS and Linux unlocks half the addressable market and makes the PRO fleet console actually useful to mixed-OS shops. Mobile is explicitly out of scope.
 
-- [ ] **Linux eBPF monitor** — drop-in equivalent to ETW semantics using eBPF / BCC / aya for connect / accept / exec events, with graceful fallback to polling when eBPF is unavailable
+- [x] **Linux eBPF monitor** — drop-in equivalent to ETW semantics using eBPF / aya for connect / accept / exec events, with graceful fallback to polling when eBPF is unavailable
 - [ ] **macOS Endpoint Security framework monitor** — real-time process and network events via the Apple ES framework, signed with an appropriate entitlement path for distribution
-- [ ] **Scoring and active-response parity** — bring LoLBAS-equivalent heuristics, blocking primitives (pf / iptables-nft), process kill / suspend, and isolation to macOS and Linux
+- [x] **Scoring and active-response parity** — iptables blocking, process suspend/resume, TCP kill, domain blocking, and network isolation on Linux (macOS pending)
 - [ ] **Installer and autostart parity** — launchd / systemd service units, signed installers, pkg / deb / rpm / AppImage polish
 - [ ] **Cross-platform test fixtures** — CI coverage and detection regression tests on all three OSes
 
