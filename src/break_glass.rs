@@ -356,6 +356,7 @@ mod platform {
     #[cfg(target_os = "linux")]
     mod imp {
         use std::io::Write;
+        use std::path::Path;
         use std::process::{Command, Stdio};
         const CRON_MARKER: &str = "# Vigil Break Glass Recovery";
         pub fn task_exists() -> bool {
@@ -389,7 +390,7 @@ mod platform {
             ))
         }
         fn read_crontab() -> Result<String, String> {
-            let output = Command::new("crontab")
+            let output = Command::new(crontab_path()?)
                 .arg("-l")
                 .output()
                 .map_err(|e| format!("failed to spawn crontab -l: {e}"))?;
@@ -405,7 +406,7 @@ mod platform {
             }
         }
         fn write_crontab(content: &str) -> Result<(), String> {
-            let mut child = Command::new("crontab")
+            let mut child = Command::new(crontab_path()?)
                 .arg("-")
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
@@ -434,6 +435,12 @@ mod platform {
                 ))
             }
         }
+        fn crontab_path() -> Result<&'static str, String> {
+            ["/usr/bin/crontab", "/bin/crontab"]
+                .into_iter()
+                .find(|path| Path::new(path).exists())
+                .ok_or_else(|| "required system binary for crontab not found".to_string())
+        }
     }
     #[cfg(target_os = "macos")]
     mod imp {
@@ -449,10 +456,10 @@ mod platform {
             let plist = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{PLIST_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--break-glass-recover</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>60</integer>\n</dict>\n</plist>\n", xml_escape(&exe.display().to_string()));
             std::fs::write(plist_path(), plist)
                 .map_err(|e| format!("failed to write launchd plist: {e}"))?;
-            let _ = Command::new("launchctl")
+            let _ = Command::new("/bin/launchctl")
                 .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
                 .status();
-            let status = Command::new("launchctl")
+            let status = Command::new("/bin/launchctl")
                 .args([
                     "bootstrap",
                     "system",
@@ -467,7 +474,7 @@ mod platform {
             }
         }
         pub fn delete_recovery_task() -> Result<(), String> {
-            let _ = Command::new("launchctl")
+            let _ = Command::new("/bin/launchctl")
                 .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
                 .status();
             if plist_path().exists() {
