@@ -38,8 +38,11 @@ use tokio::time::{sleep, Duration};
 /// Stores the last 100 pipeline timing snapshots for diagnostics.
 const TIMING_HISTORY_CAP: usize = 100;
 
-fn timing_history() -> &'static std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>> {
-    static HISTORY: std::sync::OnceLock<std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>>> = std::sync::OnceLock::new();
+fn timing_history(
+) -> &'static std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>> {
+    static HISTORY: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::VecDeque<crate::types::PipelineTimings>>,
+    > = std::sync::OnceLock::new();
     HISTORY.get_or_init(|| std::sync::Mutex::new(std::collections::VecDeque::new()))
 }
 
@@ -85,6 +88,8 @@ pub struct Monitor {
     _cmd_tx: mpsc::Sender<MonitorCmd>,
 }
 
+const EBPF_EVENT_QUEUE_CAPACITY: usize = 8192;
+
 impl Monitor {
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
         let (tx, _) = broadcast::channel(4096);
@@ -108,21 +113,12 @@ impl Monitor {
         let etw_rx = if using_etw { Some(etw_rx) } else { None };
 
         // Try eBPF on Linux (stub for now — always returns false on Windows).
-        let (ebpf_tx, ebpf_rx) = mpsc::unbounded_channel::<RawConn>();
+        let (ebpf_tx, ebpf_rx) = mpsc::channel::<RawConn>(EBPF_EVENT_QUEUE_CAPACITY);
         let using_ebpf = ebpf::start(ebpf_tx);
         if using_ebpf {
             tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
         }
 
-        // Merge ETW and eBPF into a single receiver.
-        // When both are inactive, etw_rx is None and ebpf_rx is unused (no thread reading it).
-        let merged_rx = if using_etw {
-            etw_rx
-        } else if using_ebpf {
-            Some(ebpf_rx)
-        } else {
-            None
-        };
         let realtime_active = using_etw || using_ebpf;
 
         if realtime_active {
@@ -135,7 +131,13 @@ impl Monitor {
         honeypot::start(config.clone(), tx.clone(), threshold);
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
-            rt.block_on(poll_loop(config, tx, merged_rx, using_etw))
+            rt.block_on(poll_loop(
+                config,
+                tx,
+                etw_rx,
+                if using_ebpf { Some(ebpf_rx) } else { None },
+                using_etw,
+            ))
         })
     }
 }
@@ -147,10 +149,18 @@ async fn recv_etw(rx: &mut Option<mpsc::UnboundedReceiver<RawConn>>) -> Option<R
     }
 }
 
+async fn recv_ebpf(rx: &mut Option<mpsc::Receiver<RawConn>>) -> Option<RawConn> {
+    match rx.as_mut() {
+        Some(r) => r.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 async fn poll_loop(
     config: Arc<RwLock<Config>>,
     tx: broadcast::Sender<ConnEvent>,
     mut etw_rx: Option<mpsc::UnboundedReceiver<RawConn>>,
+    mut ebpf_rx: Option<mpsc::Receiver<RawConn>>,
     etw_expected: bool,
 ) {
     let mut etw_active = etw_rx.is_some();
@@ -188,6 +198,20 @@ async fn poll_loop(
                         tracing::warn!("ETW channel closed; falling back to polling");
                         etw_rx = None;
                         etw_active = false;
+                    }
+                }
+            }
+            raw = recv_ebpf(&mut ebpf_rx), if etw_rx.is_none() => {
+                match raw {
+                    Some(raw_conn) => {
+                        let key = ConnKey::from(&raw_conn);
+                        if !known.contains_key(&key) {
+                            let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
+                            process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
+                        }
+                    }
+                    None => {
+                        ebpf_rx = None;
                     }
                 }
             }
@@ -287,7 +311,9 @@ fn process_conn(
         };
         known.insert(key, info);
         if log_all {
-            let _ = tx.send(ConnEvent::New(known.get(&ConnKey::from(raw_conn)).unwrap().clone()));
+            let _ = tx.send(ConnEvent::New(
+                known.get(&ConnKey::from(raw_conn)).unwrap().clone(),
+            ));
         }
         return;
     }
