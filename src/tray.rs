@@ -206,11 +206,11 @@ pub fn run(
     #[cfg(target_os = "linux")]
     ensure_themed_icons();
 
-    // On non-Windows, the tray-icon crate uses GTK which requires a working
+    // On Linux, the tray-icon crate uses GTK which requires a working
     // display. Running under sudo or without a desktop session means GTK
     // can't connect. Skip the entire GTK init to avoid panics and C-level
     // warning spam on stderr.
-    #[cfg(not(windows))]
+    #[cfg(target_os = "linux")]
     {
         let has_display = std::env::var("DISPLAY").is_ok()
             || std::env::var("WAYLAND_DISPLAY").is_ok();
@@ -221,10 +221,15 @@ pub fn run(
             return;
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        notification_only_loop(cmd_rx, show_window, pending_nav);
+        return;
+    }
     let init_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // GTK must be initialized before any GTK operations (menu, tray icon).
         // The tray-icon crate on Linux uses libappindicator which depends on GTK.
-        #[cfg(not(windows))]
+        #[cfg(target_os = "linux")]
         {
             if gtk::init().is_err() {
                 return Err("GTK init failed — tray icon unavailable".into());
@@ -397,7 +402,7 @@ fn event_loop(
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn event_loop(
     tray: TrayIcon,

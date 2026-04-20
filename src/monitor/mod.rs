@@ -260,12 +260,14 @@ fn process_conn(
     // Fast skip: loopback and link-local connections always score 0.
     // Skip the expensive enrichment pipeline (process collection, geoip,
     // blocklist, revdns, fswatch, baseline, TLS, scoring, tamper).
+    // Note: LISTEN sockets (empty remote) are NOT treated as loopback
+    // so they get full process attribution when log_all_connections is on.
     let remote = &raw_conn.remote_ip;
-    let is_loopback = remote.is_empty()
-        || remote == "0.0.0.0"
-        || remote == "127.0.0.1"
-        || remote == "::1"
-        || remote == "::";
+    let is_loopback = !remote.is_empty()
+        && (remote == "0.0.0.0"
+            || remote == "127.0.0.1"
+            || remote == "::1"
+            || remote == "::");
     if is_loopback {
         // Still track in known so stale-detection works.
         let key = ConnKey::from(raw_conn);

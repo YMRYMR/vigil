@@ -138,11 +138,11 @@ mod linux_impl {
         .map_err(|e| format!("perf event array error: {e}"))?;
 
         // Open a buffer for each online CPU.
-        let num_cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+        // Use /sys/devices/system/cpu/online to handle cpuset/container
+        // setups with non-contiguous CPU IDs, rather than assuming 0..N.
+        let cpu_ids = online_cpu_ids();
         let mut buffers = Vec::new();
-        for cpu in 0..num_cpus as u32 {
+        for cpu in cpu_ids {
             let buf = perf_array
                 .open(cpu, None)
                 .map_err(|e| format!("perf buffer open failed for cpu {cpu}: {e}"))?;
@@ -197,8 +197,9 @@ mod linux_impl {
                         continue;
                     }
 
-                    let event: &TcpEvent =
-                        unsafe { &*(data.as_ptr() as *const TcpEvent) };
+                    let event: TcpEvent = unsafe {
+                        std::ptr::read_unaligned(data.as_ptr() as *const TcpEvent)
+                    };
 
                     let raw = event_to_raw_conn(event);
                     if tx.send(raw).is_err() {
@@ -210,6 +211,29 @@ mod linux_impl {
             // Brief sleep to avoid busy-looping when idle.
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
+    }
+
+    /// Parse online CPU IDs from /sys/devices/system/cpu/online.
+    /// Handles non-contiguous ranges like "0-1,4-5" in cpuset/container setups.
+    fn online_cpu_ids() -> Vec<u32> {
+        let mut ids = Vec::new();
+        if let Ok(s) = std::fs::read_to_string("/sys/devices/system/cpu/online") {
+            for part in s.trim().split(',') {
+                if let Some((lo, hi)) = part.trim().split_once('-') {
+                    if let (Ok(a), Ok(b)) = (lo.parse::<u32>(), hi.parse::<u32>()) {
+                        ids.extend(a..=b);
+                        continue;
+                    }
+                }
+                if let Ok(id) = part.trim().parse::<u32>() {
+                    ids.push(id);
+                }
+            }
+        }
+        if ids.is_empty() {
+            ids.push(0);
+        }
+        ids
     }
 
     fn event_to_raw_conn(event: &TcpEvent) -> RawConn {
