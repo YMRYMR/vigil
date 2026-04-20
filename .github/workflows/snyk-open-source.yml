@@ -27,15 +27,14 @@ jobs:
           toolchain: stable
 
       - name: Install cargo-cyclonedx
-        run: cargo install cargo-cyclonedx --locked
+        run: cargo install cargo-cyclonedx --locked --version 0.5.9
 
       - name: Generate CycloneDX SBOM
         shell: bash
         run: |
-          cargo cyclonedx -f json --manifest-path Cargo.toml
+          cargo cyclonedx -f json --manifest-path Cargo.toml --override-filename bom
           test -f bom.json
-          cp bom.json vigil.cdx.json
-          ls -l vigil.cdx.json
+          ls -l bom.json
 
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04
