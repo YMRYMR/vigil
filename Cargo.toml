@@ -30,7 +30,7 @@ dashmap = "5"
 auto-launch = "0.6.0"
 maxminddb = "0.27"
 notify = "6"
-dns-lookup = "2"
+dns-lookup = "3"
 ipnetwork = "0.20"
 
 [target.'cfg(windows)'.dependencies]
