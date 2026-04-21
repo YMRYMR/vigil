@@ -8,13 +8,15 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish:
     name: Publish Vigil package image
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
