@@ -189,9 +189,9 @@ jobs:
 
           # ── appimagetool ──────────────────────────────────────────────────
           curl -fsSL \
-            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage" \
+            "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage" \
             -o appimagetool
-          echo "a6d71e2b6cd66f8e8d16c37ad164658985e0cf5fcaa950c90a482890cb9d13e0  appimagetool" | sha256sum -c -
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  appimagetool" | sha256sum -c -
           chmod +x appimagetool
           # AppImage tools need FUSE; use extract-and-run as a workaround on CI.
           ./appimagetool --appimage-extract
