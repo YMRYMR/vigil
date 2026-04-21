@@ -340,15 +340,15 @@ mod platform {
         cmd.arg(&target);
         let mut launcher_present = false;
         for arg in std::env::args_os().skip(1) {
-            if arg == std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+            if arg == std::ffi::OsStr::new(super::ELEVATED_LAUNCHER_FLAG) {
                 launcher_present = true;
             }
-            if arg != std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG) {
+            if arg != std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG) {
                 cmd.arg(arg);
             }
         }
         if !launcher_present {
-            cmd.arg(ELEVATED_LAUNCHER_FLAG);
+            cmd.arg(super::ELEVATED_LAUNCHER_FLAG);
         }
 
         let status = cmd.status().map_err(|e| {
@@ -371,15 +371,15 @@ mod platform {
         let target = elevation_target_path()?;
         let mut args = Vec::new();
         for arg in std::env::args_os().skip(1) {
-            if arg != std::ffi::OsStr::new(ELEVATED_LAUNCHER_FLAG) {
+            if arg != std::ffi::OsStr::new(super::ELEVATED_LAUNCHER_FLAG) {
                 args.push(arg);
             }
         }
         if !args
             .iter()
-            .any(|arg| arg == std::ffi::OsStr::new(ELEVATED_RELAUNCH_FLAG))
+            .any(|arg| arg == std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG))
         {
-            args.push(OsString::from(ELEVATED_RELAUNCH_FLAG));
+            args.push(OsString::from(super::ELEVATED_RELAUNCH_FLAG));
         }
         Command::new(target)
             .args(args)

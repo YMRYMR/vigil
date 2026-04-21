@@ -138,7 +138,7 @@ pub enum SocketKillError {
     UnsupportedAddressFamily,
     PlatformUnsupported,
     PermissionDenied,
-    OsError(u32),
+    OsError(String),
 }
 impl std::fmt::Display for SocketKillError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -157,7 +157,7 @@ impl std::fmt::Display for SocketKillError {
                 f,
                 "administrator privileges are required to kill a TCP connection"
             ),
-            Self::OsError(code) => write!(f, "Windows returned error code {code}"),
+            Self::OsError(msg) => write!(f, "OS error: {msg}"),
         }
     }
 }
@@ -1697,7 +1697,7 @@ mod platform {
                 match err {
                     // Some Windows builds report 317 for already-closed sockets;
                     // it is noisy but does not prevent isolation.
-                    SocketKillError::OsError(317) => continue,
+                    SocketKillError::OsError(msg) if msg == "317" => continue,
                     SocketKillError::UnsupportedAddressFamily => continue,
                     other => return Err(other.to_string()),
                 }
@@ -1895,7 +1895,7 @@ mod platform {
         } else if status == ERROR_ACCESS_DENIED.0 {
             Err(SocketKillError::PermissionDenied)
         } else {
-            Err(SocketKillError::OsError(status))
+            Err(SocketKillError::OsError(status.to_string()))
         }
     }
     pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
@@ -2434,7 +2434,12 @@ mod platform {
                         .strip_prefix("policy ")
                         .and_then(|s| s.strip_suffix(')'))
                     {
-                        profiles.push(format!("{chain}:{policy}"));
+                        profiles.push(FirewallProfileState {
+                            name: chain.to_string(),
+                            enabled: !policy.eq_ignore_ascii_case("DROP"),
+                            inbound_action: policy.to_string(),
+                            outbound_action: policy.to_string(),
+                        });
                     }
                 }
             }
@@ -2457,12 +2462,14 @@ mod platform {
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            for entry in &_snapshot.profiles {
-                let mut parts = entry.splitn(2, ':');
-                let chain = parts.next().unwrap_or("");
-                let policy = parts.next().unwrap_or("ACCEPT");
-                if !chain.is_empty() {
-                    command_status("iptables", &["-P", chain, policy])?;
+            for profile in &_snapshot.profiles {
+                let policy = if profile.enabled {
+                    profile.outbound_action.as_str()
+                } else {
+                    "DROP"
+                };
+                if !profile.name.is_empty() {
+                    command_status("iptables", &["-P", &profile.name, policy])?;
                 }
             }
             return Ok(());
@@ -2476,7 +2483,11 @@ mod platform {
             if !snapshot.profiles.is_empty() {
                 // Check if current iptables policies are DROP.
                 let current = snapshot_firewall_profiles()?;
-                let all_drop = current.profiles.iter().all(|p| p.ends_with(":DROP"));
+                let all_drop = current.profiles.iter().all(|profile| {
+                    profile.enabled
+                        && profile.inbound_action.eq_ignore_ascii_case("DROP")
+                        && profile.outbound_action.eq_ignore_ascii_case("DROP")
+                });
                 if all_drop {
                     return Ok(true);
                 }
@@ -2662,17 +2673,27 @@ mod platform {
     pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
         #[cfg(target_os = "linux")]
         {
+            let local_ip = target.local.ip().to_string();
+            let local_port = target.local.port().to_string();
+            let remote_ip = target.remote.ip().to_string();
+            let remote_port = target.remote.port().to_string();
             let status = command_base(
                 "ss",
                 &[
                     "-K",
                     "dst",
-                    &target.remote_ip.to_string(),
+                    &remote_ip,
                     "dport",
                     "=",
-                    &target.remote_port.to_string(),
+                    &remote_port,
+                    "src",
+                    &local_ip,
+                    "sport",
+                    "=",
+                    &local_port,
                 ],
-            )?
+            )
+            .map_err(SocketKillError::OsError)?
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
