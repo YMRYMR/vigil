@@ -31,7 +31,7 @@ auto-launch = "0.6.0"
 maxminddb = "0.27"
 notify = "6"
 dns-lookup = "2"
-ipnetwork = "0.20"
+ipnetwork = "0.21"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
