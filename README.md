@@ -14,6 +14,14 @@ Real-time network threat monitor for Windows, macOS, and Linux.
 - [All supported OSs bundle](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-all-supported-os.zip)
 - [Signed update manifest](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-update-manifest.json)
 - [Manifest signature](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-update-manifest.json.sig)
+- GHCR Linux package image: `ghcr.io/YMRYMR/vigil`
+
+The GHCR image tracks the latest released Linux AppImage as a container package
+so it is easy to mirror, automate, or consume in CI environments:
+
+```bash
+docker pull ghcr.io/YMRYMR/vigil:latest
+```
 
 Each release asset is published with a GitHub artifact attestation. Verify a
 downloaded file with:

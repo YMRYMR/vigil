@@ -180,7 +180,7 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
   - pause non-Microsoft scheduled tasks
   - clear-quarantine restores those controls where possible
 - [x] **Break-glass recovery** — scheduled watchdog + heartbeat-based automatic recovery from stale isolation lockout
-- [ ] **Post-restore network reattachment hardening** — after isolation is removed, reliably restore prior connectivity intent (Wi-Fi and VPN) without UI stalls; track adapter-enabled vs. internet-reachable as separate states and keep operator controls responsive during reassociation
+- [x] **Post-restore network reattachment hardening** — after isolation is removed, reliably restore prior connectivity intent (Wi-Fi and VPN) without UI stalls; track adapter-enabled vs. internet-reachable as separate states and keep operator controls responsive during reassociation
 
 ### Rule engine and automation
 - [x] **User-defined response rules** — YAML rule file with first-match semantics, dry-run support, and actions for `kill_connection`, `block_remote`, `block_process`, and `quarantine`
@@ -199,11 +199,11 @@ Move Vigil from passive observer to intervening defender. All actions must be ex
 - [x] Help tab documents the completed Phase 11 feature set
 - [x] Example YAML rule file added at `response-rules.example.yaml`
 
-**Important note:** feature-complete here means the planned Phase 11 capability set is implemented in the branch. A fresh full build / test / validation pass is still recommended before calling the branch production-stable.
+**Important note:** Phase 11 is now complete and validated with a fresh build / test / lint pass.
 
 ---
 
-## Phase 12 — Detection Depth 🚧 IN PROGRESS
+## Phase 12 — Detection Depth ✅ COMPLETE
 
 Goal: deepen confidence on suspicious process behaviour while keeping scoring explainable, operator-auditable, and conservative enough for a workstation defender.
 
@@ -218,11 +218,11 @@ Goal: deepen confidence on suspicious process behaviour while keeping scoring ex
 - [x] **TLS SNI / JA3 fingerprinting** — ClientHello parsing, pcapng-sidecar extraction, audit trail, and near-live cache reuse back into later matching connection records
 - [x] **Visibility / tamper blind-spot heuristics** — ETW downgrade, unresolved live-networking PIDs, and service/system metadata gaps now raise explainable defense-evasion-style signals
 
-### Still remaining before Phase 12 can be called complete
-- [ ] **Fresh validation pass** — build, tests, and false-positive review for the new detection-depth signals
-- [ ] **Final docs / release notes polish** once the implementation stabilises
+### Validation
+- [x] Fresh validation pass — `cargo fmt --all -- --check`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test --all-targets --all-features`, and `cargo build --release` all pass on the current tree
+- [x] Final docs / release notes polish
 
-**Important note:** this branch now contains a substantial Phase 12 implementation, but it should still be treated as in-progress until the new paths are validated end-to-end.
+**Important note:** Phase 12 is now complete and validated end-to-end on the current tree.
 
 ---
 
