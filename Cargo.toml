@@ -67,7 +67,7 @@ ksni = { version = "0.3", default-features = false, features = ["blocking"] }
 [target.'cfg(target_os = "linux")'.build-dependencies]
 
 [build-dependencies]
-png = "0.17"
+png = "0.18"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
