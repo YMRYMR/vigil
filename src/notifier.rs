@@ -15,9 +15,8 @@
 //!            build), we fall back to `notify-rust` so the user still sees the
 //!            notification (without the click-to-navigate behaviour).
 //!
-//! macOS / Linux — `notify-rust` which returns a handle with
-//!                 `wait_for_action(closure)`.  A background thread waits on it
-//!                 so the caller is never blocked.
+//! macOS / Linux — `notify-rust` for a lightweight toast. We keep the call
+//!                 fire-and-forget so the caller is never blocked.
 
 use crate::types::ConnInfo;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -131,8 +130,8 @@ mod platform {
 
     pub fn send(
         info: &ConnInfo,
-        show_window: Arc<AtomicBool>,
-        pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+        _show_window: Arc<AtomicBool>,
+        _pending_nav: Arc<Mutex<Option<ConnInfo>>>,
     ) {
         let body = format!(
             "{} → {}   score: {}\n{}",
@@ -142,24 +141,12 @@ mod platform {
             info.reasons.first().map(|r| r.as_str()).unwrap_or(""),
         );
 
-        let handle = notify_rust::Notification::new()
+        if let Err(e) = notify_rust::Notification::new()
             .summary("⚠  Vigil — Threat Detected")
             .body(&body)
-            .show();
-
-        if let Ok(handle) = handle {
-            let nav_info = info.clone();
-            // `wait_for_action` blocks until the notification is dismissed or
-            // clicked, so run it on a background thread.
-            std::thread::spawn(move || {
-                handle.wait_for_action(move |action| {
-                    // "__closed" = dismissed without clicking.
-                    if action != "__closed" {
-                        *pending_nav.lock().unwrap() = Some(nav_info);
-                        show_window.store(true, Ordering::Relaxed);
-                    }
-                });
-            });
+            .show()
+        {
+            tracing::warn!("notify-rust failed: {e}");
         }
     }
 }

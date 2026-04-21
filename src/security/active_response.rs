@@ -138,7 +138,7 @@ pub enum SocketKillError {
     UnsupportedAddressFamily,
     PlatformUnsupported,
     PermissionDenied,
-    OsError(u32),
+    OsError(String),
 }
 impl std::fmt::Display for SocketKillError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -157,7 +157,7 @@ impl std::fmt::Display for SocketKillError {
                 f,
                 "administrator privileges are required to kill a TCP connection"
             ),
-            Self::OsError(code) => write!(f, "Windows returned error code {code}"),
+            Self::OsError(msg) => write!(f, "OS error: {msg}"),
         }
     }
 }
@@ -1697,7 +1697,7 @@ mod platform {
                 match err {
                     // Some Windows builds report 317 for already-closed sockets;
                     // it is noisy but does not prevent isolation.
-                    SocketKillError::OsError(317) => continue,
+                    SocketKillError::OsError(msg) if msg == "317" => continue,
                     SocketKillError::UnsupportedAddressFamily => continue,
                     other => return Err(other.to_string()),
                 }
@@ -1895,7 +1895,7 @@ mod platform {
         } else if status == ERROR_ACCESS_DENIED.0 {
             Err(SocketKillError::PermissionDenied)
         } else {
-            Err(SocketKillError::OsError(status))
+            Err(SocketKillError::OsError(status.to_string()))
         }
     }
     pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
