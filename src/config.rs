@@ -551,9 +551,11 @@ mod tests {
     }
     #[test]
     fn history_caps_are_sanitised() {
-        let mut cfg = Config::default();
-        cfg.activity_history_cap = 1;
-        cfg.alerts_history_cap = usize::MAX;
+        let cfg = Config {
+            activity_history_cap: 1,
+            alerts_history_cap: usize::MAX,
+            ..Config::default()
+        };
         assert_eq!(cfg.sanitised_activity_history_cap(), 256);
         assert_eq!(cfg.sanitised_alerts_history_cap(), 8_192);
     }

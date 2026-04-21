@@ -237,10 +237,12 @@ mod tests {
         // Insert more profiles than the cap allows.
         for i in 0..MAX_PROFILES + 100 {
             let key = format!("test-profile-{i}");
-            let mut entry = BaselineEntry::default();
-            entry.observations = 1;
-            entry.first_seen_unix = 1000 + i as u64;
-            entry.last_seen_unix = 1000 + i as u64;
+            let entry = BaselineEntry {
+                observations: 1,
+                first_seen_unix: 1000 + i as u64,
+                last_seen_unix: 1000 + i as u64,
+                ..BaselineEntry::default()
+            };
             state.entries.insert(key, entry);
         }
         // Simulate the eviction logic from observe() — evicts one LRU entry per call.

@@ -426,6 +426,7 @@ fn load_vigil_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
 }
 
 impl VigilApp {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cc: &eframe::CreationContext<'_>,
         cfg: Arc<RwLock<Config>>,
