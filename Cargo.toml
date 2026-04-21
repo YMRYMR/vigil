@@ -29,7 +29,7 @@ open = "5"
 dashmap = "6"
 auto-launch = "0.6.0"
 maxminddb = "0.27"
-notify = "6"
+notify = "8"
 dns-lookup = "3"
 ipnetwork = "0.21"
 
