@@ -387,9 +387,9 @@ mod imp {
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
-    use ksni::blocking::TrayMethods;
+    use ksni::blocking::{Handle, TrayMethods};
     use ksni::menu::{MenuItem as KsniMenuItem, StandardItem};
-    use ksni::{Handle, Tray};
+    use ksni::Tray;
     use std::sync::atomic::Ordering;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
