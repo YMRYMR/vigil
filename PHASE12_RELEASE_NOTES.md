@@ -2,6 +2,13 @@
 
 This branch extends Vigil's detection depth while keeping operator output explainable.
 
+Validation on the current tree is complete:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --all-targets --all-features -- -D warnings`
+- `cargo test --all-targets --all-features`
+- `cargo build --release`
+
 ## Included in Phase 12
 
 - Behavioural baseline tracking for mature process novelty
