@@ -1,4 +1,4 @@
 #!/bin/bash
 set -euxo pipefail
 
-exec "$(dirname "$0")/.clusterfuzzlite/build.sh"
+exec /src/vigil/.clusterfuzzlite/build.sh
