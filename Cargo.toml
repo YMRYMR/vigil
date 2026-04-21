@@ -26,11 +26,11 @@ tracing-subscriber  = { version = "0.3", features = ["env-filter"] }
 tracing-appender    = "0.2"
 chrono = { version = "0.4", features = ["serde"] }
 open = "5"
-dashmap = "5"
+dashmap = "6"
 auto-launch = "0.6.0"
 maxminddb = "0.27"
 notify = "6"
-dns-lookup = "2"
+dns-lookup = "3"
 ipnetwork = "0.21"
 
 [target.'cfg(windows)'.dependencies]
@@ -67,7 +67,7 @@ ksni = { version = "0.3", default-features = false, features = ["blocking"] }
 [target.'cfg(target_os = "linux")'.build-dependencies]
 
 [build-dependencies]
-png = "0.17"
+png = "0.18"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1"
