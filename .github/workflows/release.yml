@@ -64,7 +64,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Move-Item installer\windows\output\*.exe dist\
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: installer-windows
           path: dist/
@@ -129,7 +129,7 @@ jobs:
             -format UDZO \
             "dist/Vigil-${VERSION}-aarch64.dmg"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: installer-macos
           path: dist/
@@ -200,7 +200,7 @@ jobs:
             "$APPDIR" \
             "dist/Vigil-${VERSION}-x86_64.AppImage"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: installer-linux
           path: dist/
