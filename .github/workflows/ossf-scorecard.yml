@@ -8,8 +8,6 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  pull_request_review:
-    types: [submitted]
   workflow_dispatch:
 
 permissions:
@@ -18,7 +16,6 @@ permissions:
 
 jobs:
   analysis:
-    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
     name: Scorecard analysis
     runs-on: ubuntu-latest
     permissions:
