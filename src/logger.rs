@@ -47,6 +47,8 @@ pub fn init() -> (PathBuf, LogGuard) {
         .with_timer(LocalTimer)
         .init();
 
+    crate::audit::init();
+
     (log_dir, LogGuard { _inner: guard })
 }
 

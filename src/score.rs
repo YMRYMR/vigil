@@ -419,7 +419,7 @@ mod tests {
         for i in 0..1000u32 {
             let name = "benchmark_proc";
             let path = "/usr/bin/benchmark";
-            let port = (443 + (i % 100) as u16) as u16;
+            let port = 443 + (i % 100) as u16;
             let mut inp = input(name, path, "203.0.113.5", port, "ESTABLISHED");
             if i % 3 == 0 {
                 inp.beaconing = true;

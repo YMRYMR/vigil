@@ -12,6 +12,8 @@ Real-time network threat monitor for Windows, macOS, and Linux.
 - [macOS DMG](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-macos-aarch64.dmg)
 - [Linux AppImage](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-linux-x86_64.AppImage)
 - [All supported OSs bundle](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-all-supported-os.zip)
+- [Signed update manifest](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-update-manifest.json)
+- [Manifest signature](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-update-manifest.json.sig)
 
 Each release asset is published with a GitHub artifact attestation. Verify a
 downloaded file with:
@@ -23,6 +25,14 @@ gh attestation verify PATH/TO/FILE -R YMRYMR/vigil
 The release workflow also emits SLSA3 provenance for the published assets via
 the GitHub Actions SLSA generator. That provenance is attached to the release
 for users who prefer `slsa-verifier`-style supply-chain checks.
+
+The signed update manifest is the trust anchor for Vigil's update channel. It
+lists the release assets and their SHA-256 digests, then gets signed with an
+embedded Ed25519 public key in the app. You can verify it offline with:
+
+```bash
+vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
+```
 
 Vigil watches every TCP/UDP connection on your machine, scores each one for
 suspicious behaviour, and alerts you — via a system tray icon, desktop
