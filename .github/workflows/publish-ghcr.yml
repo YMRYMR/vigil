@@ -45,6 +45,12 @@ jobs:
         run: |
           cp packaging/ghcr/Dockerfile ghcr-context/Dockerfile
 
+      - name: Normalize GHCR repository name
+        id: repo
+        shell: bash
+        run: |
+          echo "image_repository=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
@@ -62,5 +68,5 @@ jobs:
           file: ghcr-context/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ steps.release.outputs.tag }}
+            ghcr.io/${{ steps.repo.outputs.image_repository }}:latest
+            ghcr.io/${{ steps.repo.outputs.image_repository }}:${{ steps.release.outputs.tag }}
