@@ -1,6 +1,8 @@
 name: Publish Crate
 
 on:
+  push:
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
@@ -17,16 +19,12 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
 
-      - name: Verify registry token
+      - name: Publish crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: |
           if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
-            echo "CARGO_REGISTRY_TOKEN is not configured."
-            exit 1
+            echo "CARGO_REGISTRY_TOKEN is not configured; skipping crates.io publish."
+            exit 0
           fi
-
-      - name: Publish crate
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
+          cargo publish --locked --token "$CARGO_REGISTRY_TOKEN"
