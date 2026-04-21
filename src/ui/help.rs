@@ -131,6 +131,13 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "fswatch_enabled", "Correlate fresh file drops with new connections.");
                         bullet(ui, "reverse_dns_enabled", "Off by default because it leaks inspection activity.");
                     });
+
+                    card(ui, "Secure updates", |ui| {
+                        body(ui, "Vigil ships signed update manifests with each release. The manifest lists the release assets and their SHA-256 hashes, and the app can verify that metadata offline before trusting a download.");
+                        ui.add_space(6.0);
+                        bullet(ui, "Release assets", "Windows, macOS, Linux, and the all-platform bundle are published together with the manifest and signature.");
+                        bullet(ui, "Offline check", "Use vigil --verify-update-manifest MANIFEST.json MANIFEST.json.sig to validate a downloaded release manifest against the embedded trust anchor.");
+                    });
                 });
             });
         } else {
@@ -140,6 +147,7 @@ pub fn show(ui: &mut egui::Ui) {
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
             card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
             card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings."); });
+            card(ui, "Secure updates", |ui| { body(ui, "Each release ships a signed update manifest and signature. Vigil can verify the manifest offline against the embedded trust anchor before you trust a downloaded asset."); });
             card(ui, "Break-glass recovery", |ui| { body(ui, "Watchdog-based recovery can restore networking after an isolation lockout if Vigil dies and the heartbeat goes stale."); });
         }
 

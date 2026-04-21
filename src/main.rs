@@ -40,11 +40,14 @@ mod types;
 mod ui;
 
 pub use platform::{autostart, break_glass, service, tray};
-pub use security::{active_response, auto_response, quarantine, registry, response_rules, tamper};
+pub use security::{
+    active_response, auto_response, quarantine, registry, response_rules, tamper, update,
+};
 
 use config::Config;
 use monitor::Monitor;
 use single_instance::SingleInstance;
+use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -85,6 +88,29 @@ fn acquire_single_instance(wait_for_release: bool) -> Result<SingleInstance, Str
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    if let Some(idx) = args.iter().position(|a| a == "--verify-update-manifest") {
+        let manifest = args.get(idx + 1).unwrap_or_else(|| {
+            eprintln!(
+                "Missing manifest path.\n\nUsage: vigil --verify-update-manifest MANIFEST.json MANIFEST.json.sig"
+            );
+            std::process::exit(1);
+        });
+        let signature = args.get(idx + 2).unwrap_or_else(|| {
+            eprintln!(
+                "Missing signature path.\n\nUsage: vigil --verify-update-manifest MANIFEST.json MANIFEST.json.sig"
+            );
+            std::process::exit(1);
+        });
+        match update::run_cli(Path::new(manifest), Path::new(signature)) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     for a in &args[1..] {
@@ -99,7 +125,7 @@ fn main() {
                 elevated_launcher = true;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service      register Vigil as a boot-time service\n  --uninstall-service    remove the boot-time service\n  --break-glass-recover  watchdog entrypoint for network recovery\n  -h, --help             show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}

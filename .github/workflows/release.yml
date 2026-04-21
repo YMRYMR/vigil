@@ -240,6 +240,72 @@ jobs:
           cp dist/Vigil-${VERSION}-x86_64.AppImage dist/Vigil-latest-linux-x86_64.AppImage
           cp dist/Vigil-${VERSION}-all-supported-os.zip dist/Vigil-latest-all-supported-os.zip
 
+      - name: Generate signed update manifest
+        env:
+          VIGIL_UPDATE_SIGNING_KEY: ${{ secrets.VIGIL_UPDATE_SIGNING_KEY }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${VIGIL_UPDATE_SIGNING_KEY:-}" ]; then
+            echo "VIGIL_UPDATE_SIGNING_KEY is not configured; release signing is required."
+            exit 1
+          fi
+
+          TAG="$VERSION"
+          VERSION="${VERSION#v}"
+          KEY_FILE="$(mktemp)"
+          SIG_RAW="$(mktemp)"
+          MANIFEST="dist/Vigil-${VERSION}-update-manifest.json"
+          SIGNATURE="dist/Vigil-${VERSION}-update-manifest.json.sig"
+          trap 'rm -f "$KEY_FILE" "$SIG_RAW"' EXIT
+
+          printf '%s\n' "$VIGIL_UPDATE_SIGNING_KEY" > "$KEY_FILE"
+
+          export VERSION TAG
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          tag = os.environ["TAG"]
+          dist = Path("dist")
+          excluded = {
+              f"Vigil-{version}-update-manifest.json",
+              f"Vigil-{version}-update-manifest.json.sig",
+              "Vigil-latest-update-manifest.json",
+              "Vigil-latest-update-manifest.json.sig",
+          }
+          assets = []
+          for path in sorted(dist.iterdir()):
+              if not path.is_file() or path.name in excluded:
+                  continue
+              assets.append(
+                  {
+                      "name": path.name,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  }
+              )
+
+          manifest = {
+              "schema_version": 1,
+              "channel": "stable",
+              "tag": tag,
+              "version": version,
+              "assets": assets,
+          }
+          (dist / f"Vigil-{version}-update-manifest.json").write_text(
+              json.dumps(manifest, separators=(",", ":"), ensure_ascii=False),
+              encoding="utf-8",
+          )
+          PY
+
+          openssl pkeyutl -sign -rawin -inkey "$KEY_FILE" -in "$MANIFEST" -out "$SIG_RAW"
+          base64 -w0 "$SIG_RAW" > "$SIGNATURE"
+          cp "$MANIFEST" dist/Vigil-latest-update-manifest.json
+          cp "$SIGNATURE" dist/Vigil-latest-update-manifest.json.sig
+
       - name: Hash release assets
         id: hash
         shell: bash

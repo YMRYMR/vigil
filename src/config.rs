@@ -426,25 +426,24 @@ pub fn config_path() -> PathBuf {
 impl Config {
     pub fn load() -> Self {
         let path = config_path();
-        if !path.exists() {
-            return Self::default();
-        }
-        std::fs::read_to_string(&path)
+        let Some(bytes) = crate::security::policy::load_json_with_integrity(&path)
             .ok()
-            .and_then(|s| serde_json::from_str::<Config>(&s).ok())
-            .unwrap_or_default()
+            .flatten()
+        else {
+            return Self::default();
+        };
+        serde_json::from_slice::<Config>(&bytes).unwrap_or_else(|err| {
+            tracing::warn!("failed to parse config {}: {err}", path.display());
+            Self::default()
+        })
     }
     pub fn save(&self) {
         let path = config_path();
-        if let Some(parent) = path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!("failed to create config directory: {e}");
-                return;
-            }
-        }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
+                if let Err(e) =
+                    crate::security::policy::save_json_with_integrity(&path, json.as_bytes())
+                {
                     tracing::warn!("failed to save config: {e}");
                 }
             }

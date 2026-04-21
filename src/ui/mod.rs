@@ -622,6 +622,13 @@ impl VigilApp {
                     if !has_known_location(&info) {
                         return;
                     }
+                    if !crate::autostart::is_elevated() {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            "Admin Mode is required to trust a process.",
+                        );
+                        return;
+                    }
                     let mut cfg = self.cfg.write().unwrap();
                     if cfg.add_trusted(&info.proc_name) {
                         cfg.save();
@@ -1111,7 +1118,8 @@ impl eframe::App for VigilApp {
                     }
                 }
                 Tab::Settings => {
-                    let changed = settings::show(ui, &mut self.settings);
+                    let elevated = crate::autostart::is_elevated();
+                    let changed = settings::show(ui, &mut self.settings, elevated);
                     if self.settings.grant_capabilities_requested {
                         self.settings.grant_capabilities_requested = false;
                         match crate::autostart::relaunch_as_admin() {
@@ -1127,9 +1135,12 @@ impl eframe::App for VigilApp {
                         }
                     }
                     if changed {
+                        let locked_policy_changes;
                         {
                             let mut cfg = self.cfg.write().unwrap();
-                            self.settings.apply_to(&mut cfg);
+                            locked_policy_changes =
+                                !elevated && self.settings.policy_edits_pending(&cfg);
+                            self.settings.apply_to(&mut cfg, elevated);
                             if cfg.autostart {
                                 if crate::autostart::enable() {
                                     cfg.autostart = true;
@@ -1138,10 +1149,23 @@ impl eframe::App for VigilApp {
                                 crate::autostart::disable();
                             }
                             cfg.save();
+                            self.settings = settings::SettingsDraft::from_config(&cfg);
+                        }
+                        if locked_policy_changes {
+                            self.settings.status_msg = Some((
+                                "Admin Mode is required to save policy changes; only non-sensitive preferences were persisted.".into(),
+                                std::time::Instant::now(),
+                            ));
+                            self.push_notification(
+                                NotificationKind::Warning,
+                                "Policy edits require Admin Mode. Only non-sensitive preferences were saved.",
+                            );
                         }
                         self.sync_ui_scale(&ctx);
-                        self.settings.status_msg =
-                            Some(("Settings auto-saved.".into(), std::time::Instant::now()));
+                        if self.settings.status_msg.is_none() {
+                            self.settings.status_msg =
+                                Some(("Settings auto-saved.".into(), std::time::Instant::now()));
+                        }
                     }
                 }
                 Tab::Help => help::show(ui),

@@ -247,13 +247,13 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 14 — Hardening & Self-defence (OPEN backlog)
+## Phase 14 — Hardening & Self-defence ✅ COMPLETE
 
-- [ ] Protected policy store
-- [ ] Policy integrity verification
-- [ ] Privilege-gated policy edits
-- [ ] Self-protection and tamper evidence
-- [ ] Secure update channel
+- [x] Protected policy store — `vigil.json` now carries a local integrity signature and signed backup; legacy installs migrate on first load
+- [x] Policy integrity verification — HMAC-backed load-time verification restores from the last known-good backup when tampering is detected
+- [x] Privilege-gated policy edits — policy-sensitive settings and trust actions require Admin Mode to persist
+- [x] Self-protection and tamper evidence — audit actions are now hash-chained and verified at startup so log tampering is visible
+- [x] Secure update channel — release assets now ship with a signed update manifest and signature; the app can verify the manifest offline with the embedded trust anchor
 - [x] **Linux active-response parity** — all response actions work cross-platform:
   - Network isolation via `iptables` DROP policies (gated on `CAP_NET_ADMIN` or root)
   - Kill TCP connection via `ss -K` and `/proc/net/tcp` parsing
