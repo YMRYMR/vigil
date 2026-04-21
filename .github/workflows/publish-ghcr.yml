@@ -1,0 +1,64 @@
+name: Publish GHCR package image
+
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: Publish Vigil package image
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Resolve release tag
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view latest -R "${{ github.repository }}" --json tagName -q .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download release AppImage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p ghcr-context
+          gh release download "${{ steps.release.outputs.tag }}" \
+            -R "${{ github.repository }}" \
+            --pattern 'Vigil-latest-linux-x86_64.AppImage' \
+            --dir ghcr-context
+          chmod +x ghcr-context/Vigil-latest-linux-x86_64.AppImage
+          ls -lh ghcr-context/
+
+      - name: Prepare Docker build context
+        run: |
+          cp packaging/ghcr/Dockerfile ghcr-context/Dockerfile
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f
+
+      - name: Build and push image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8
+        with:
+          context: ghcr-context
+          file: ghcr-context/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ steps.release.outputs.tag }}
