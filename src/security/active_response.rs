@@ -2484,8 +2484,7 @@ mod platform {
                 // Check if current iptables policies are DROP.
                 let current = snapshot_firewall_profiles()?;
                 let all_drop = current.profiles.iter().all(|profile| {
-                    profile.enabled
-                        && profile.inbound_action.eq_ignore_ascii_case("DROP")
+                    profile.inbound_action.eq_ignore_ascii_case("DROP")
                         && profile.outbound_action.eq_ignore_ascii_case("DROP")
                 });
                 if all_drop {
