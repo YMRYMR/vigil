@@ -14,7 +14,8 @@ report bugs, propose features, and submit pull requests.
 5. [Pull request process](#pull-request-process)
 6. [Coding style](#coding-style)
 7. [Testing requirements](#testing-requirements)
-8. [Platform notes](#platform-notes)
+8. [Fuzzing](#fuzzing)
+9. [Platform notes](#platform-notes)
 
 ---
 
@@ -149,6 +150,21 @@ Run the full suite with:
 ```sh
 cargo test
 ```
+
+## Fuzzing
+
+Vigil keeps a small continuous fuzzing setup for parser-style code paths.
+The current fuzz target exercises the TLS ClientHello parser used by the
+monitoring stack.
+
+To run it locally:
+
+```sh
+cd fuzz
+cargo fuzz run parse_client_hello
+```
+
+Pull requests are fuzzed in CI through ClusterFuzzLite.
 
 ---
 
