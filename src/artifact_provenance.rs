@@ -7,7 +7,7 @@
 
 use crate::types::ConnInfo;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
@@ -187,6 +187,7 @@ fn encode_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::ConnInfo;
+    use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
