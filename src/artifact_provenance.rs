@@ -30,14 +30,25 @@ pub struct ArtifactManifest {
 struct AlertProvenance {
     pid: u32,
     proc_name: String,
-    path: String,
+    proc_path: String,
+    proc_user: String,
+    parent_name: String,
+    parent_pid: u32,
+    service_name: String,
+    publisher: String,
+    command_line: String,
     score: u8,
     reasons: Vec<String>,
+    attack_tags: Vec<String>,
     local_addr: String,
     remote_addr: String,
-    remote_host: String,
-    country: String,
-    asn: String,
+    status: String,
+    hostname: Option<String>,
+    country: Option<String>,
+    asn: Option<u32>,
+    asn_org: Option<String>,
+    tls_sni: Option<String>,
+    tls_ja3: Option<String>,
 }
 
 pub fn write_manifest(
@@ -81,14 +92,25 @@ fn build_manifest(
         alert: AlertProvenance {
             pid: info.pid,
             proc_name: info.proc_name.clone(),
-            path: info.path.clone(),
+            proc_path: info.proc_path.clone(),
+            proc_user: info.proc_user.clone(),
+            parent_name: info.parent_name.clone(),
+            parent_pid: info.parent_pid,
+            service_name: info.service_name.clone(),
+            publisher: info.publisher.clone(),
+            command_line: info.command_line.clone(),
             score: info.score,
             reasons: info.reasons.clone(),
+            attack_tags: info.attack_tags.clone(),
             local_addr: info.local_addr.clone(),
             remote_addr: info.remote_addr.clone(),
-            remote_host: info.remote_host.clone(),
+            status: info.status.clone(),
+            hostname: info.hostname.clone(),
             country: info.country.clone(),
-            asn: info.asn.clone(),
+            asn: info.asn,
+            asn_org: info.asn_org.clone(),
+            tls_sni: info.tls_sni.clone(),
+            tls_ja3: info.tls_ja3.clone(),
         },
         extra,
     })
@@ -175,17 +197,37 @@ mod tests {
         fs::write(&artifact, b"abc").unwrap();
 
         let info = ConnInfo {
-            pid: 42,
+            timestamp: "2026-04-24T00:00:00Z".into(),
             proc_name: "evil.exe".into(),
-            path: "C:/tmp/evil.exe".into(),
+            pid: 42,
+            proc_path: "C:/tmp/evil.exe".into(),
+            proc_user: "user".into(),
+            parent_user: "user".into(),
+            parent_name: "cmd.exe".into(),
+            parent_pid: 7,
+            service_name: String::new(),
+            publisher: "Unknown".into(),
+            command_line: "evil.exe --connect".into(),
             local_addr: "127.0.0.1:1234".into(),
             remote_addr: "203.0.113.10:443".into(),
-            remote_host: "example.test".into(),
-            country: "ZZ".into(),
-            asn: "AS64500".into(),
+            status: "ESTABLISHED".into(),
             score: 12,
             reasons: vec!["test reason".into()],
-            ..Default::default()
+            attack_tags: vec!["T1105".into()],
+            ancestor_chain: vec![("cmd.exe".into(), 7)],
+            pre_login: false,
+            hostname: Some("example.test".into()),
+            country: Some("ZZ".into()),
+            asn: Some(64500),
+            asn_org: Some("Example ASN".into()),
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            tls_sni: Some("example.test".into()),
+            tls_ja3: Some("ja3".into()),
         };
 
         let manifest = write_manifest(&artifact, "pcap", &info, json!({ "seconds": 5 })).unwrap();
@@ -193,6 +235,7 @@ mod tests {
         assert!(text.contains("\"artifact_kind\": \"pcap\""));
         assert!(text.contains("\"pid\": 42"));
         assert!(text.contains("\"score\": 12"));
+        assert!(text.contains("\"proc_path\": \"C:/tmp/evil.exe\""));
         assert!(text.contains("\"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""));
 
         let _ = fs::remove_dir_all(dir);
