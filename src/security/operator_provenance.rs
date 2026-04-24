@@ -184,7 +184,14 @@ fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
 }
 
 fn load_registry(path: &Path) -> Result<Registry, String> {
+    let existed_before_load = path.exists();
     let Some(bytes) = crate::security::policy::load_json_with_integrity(path)? else {
+        if existed_before_load {
+            return Err(format!(
+                "operator provenance registry {} failed integrity verification and could not be recovered",
+                path.display()
+            ));
+        }
         return Ok(Registry::default());
     };
     serde_json::from_slice(&bytes)
@@ -312,6 +319,25 @@ mod tests {
             .expect_err("corrupt registry must fail closed");
         assert!(err.contains("failed to parse operator provenance registry"));
         assert_eq!(fs::read_to_string(&registry).unwrap(), "not-json");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unrecoverable_protected_registry_does_not_reset_provenance() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rules.yaml");
+        let registry = dir.join("registry.json");
+        fs::write(&file, b"rules: []\n").unwrap();
+        let original = br#"{"files":{"existing":{"kind":"response_rules","path":"rules.yaml","sha256":"abc","size_bytes":1,"modified_unix":null,"first_seen_unix":1,"last_changed_unix":1,"change_count":0}}}"#;
+        crate::security::policy::save_json_with_integrity(&registry, original).unwrap();
+        fs::write(&registry, b"tampered-current").unwrap();
+        fs::write(registry.with_extension("json.bak"), b"tampered-backup").unwrap();
+
+        let err = observe_operator_file_inner("response_rules", &file, &registry, false)
+            .expect_err("unrecoverable protected registry must fail closed");
+        assert!(err.contains("failed integrity verification"));
+        assert_eq!(fs::read_to_string(&registry).unwrap(), "tampered-current");
         let _ = fs::remove_dir_all(dir);
     }
 
