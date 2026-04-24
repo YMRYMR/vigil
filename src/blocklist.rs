@@ -38,6 +38,11 @@ struct Blocklist {
 
 impl Blocklist {
     fn load(path: &Path) -> Option<Self> {
+        #[cfg(not(test))]
+        let _observation = crate::security::operator_provenance::observe_operator_file(
+            "blocklist",
+            path,
+        );
         let raw = match std::fs::read_to_string(path) {
             Ok(s) => s,
             Err(e) => {

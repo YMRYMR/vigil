@@ -13,6 +13,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
@@ -109,7 +110,12 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 }
 
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
-    let text = std::fs::read_to_string(path)
+    let path_ref = Path::new(path);
+    let _observation = crate::security::operator_provenance::observe_operator_file(
+        "response_rules",
+        path_ref,
+    );
+    let text = std::fs::read_to_string(path_ref)
         .map_err(|e| format!("failed to read rule file {path}: {e}"))?;
     let file: RuleFile = serde_yaml::from_str(&text)
         .map_err(|e| format!("failed to parse YAML rule file {path}: {e}"))?;
