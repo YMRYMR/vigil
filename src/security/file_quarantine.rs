@@ -47,18 +47,24 @@ fn move_if_present(path: &Path, dest_dir: &Path, moved: &mut Vec<String>) -> Res
     if !path.exists() {
         return Ok(());
     }
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("failed to stat {} before quarantine: {e}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "refusing to quarantine non-regular file {}",
+            path.display()
+        ));
+    }
     let dest = unique_destination(dest_dir, path);
-    fs::rename(path, &dest).or_else(|_| {
-        fs::copy(path, &dest)
-            .and_then(|_| fs::remove_file(path))
-            .map(|_| ())
-    }).map_err(|e| {
-        format!(
-            "failed to move {} to {}: {e}",
-            path.display(),
-            dest.display()
-        )
-    })?;
+    fs::rename(path, &dest)
+        .or_else(|_| fs::copy(path, &dest).and_then(|_| fs::remove_file(path)).map(|_| ()))
+        .map_err(|e| {
+            format!(
+                "failed to move {} to {}: {e}",
+                path.display(),
+                dest.display()
+            )
+        })?;
     moved.push(dest.display().to_string());
     Ok(())
 }
@@ -90,9 +96,10 @@ fn safe_name(path: &Path) -> String {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
                 c
             } else {
-                '_'
+                c
             }
         })
+        .map(|c| if c == std::path::MAIN_SEPARATOR { '_' } else { c })
         .collect::<String>()
         .trim_matches('_')
         .chars()
@@ -127,6 +134,21 @@ mod tests {
         let path = PathBuf::from("bad/name:with*chars.json");
         assert!(!safe_name(&path).contains('/'));
         assert!(!safe_name(&path).contains(':'));
+    }
+
+    #[test]
+    fn refuses_to_move_directories() {
+        let dir = unique_temp_dir();
+        let source_dir = dir.join("source-dir");
+        let dest_dir = dir.join("dest");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::create_dir_all(&dest_dir).unwrap();
+        let mut moved = Vec::new();
+        let err = move_if_present(&source_dir, &dest_dir, &mut moved).unwrap_err();
+        assert!(err.contains("refusing to quarantine non-regular file"));
+        assert!(source_dir.exists());
+        assert!(moved.is_empty());
+        let _ = fs::remove_dir_all(dir);
     }
 
     fn unique_temp_dir() -> PathBuf {
