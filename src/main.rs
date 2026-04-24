@@ -35,6 +35,7 @@ mod revdns;
 mod score;
 mod security;
 mod session;
+mod startup_integrity;
 mod tls;
 mod tls_artifacts;
 mod types;
@@ -166,6 +167,7 @@ fn main() {
 
     tracing::info!("Vigil v{} starting", env!("CARGO_PKG_VERSION"));
     tracing::info!("pre-login session: {}", session::is_pre_login());
+    startup_integrity::run();
 
     #[cfg(windows)]
     {
