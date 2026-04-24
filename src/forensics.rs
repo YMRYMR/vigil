@@ -4,7 +4,7 @@
 //! high-confidence alerts. The feature is opt-in, Windows-only, audited, and
 //! rate-limited per PID so a noisy process does not flood disk with dumps.
 
-use crate::{audit, config::Config, types::ConnInfo};
+use crate::{artifact_provenance, audit, config::Config, types::ConnInfo};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -48,6 +48,31 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
             if let Ok(mut global_last) = global_gate.lock() {
                 *global_last = now;
             }
+            let manifest = match artifact_provenance::write_manifest(
+                &path,
+                "process_dump",
+                info,
+                json!({
+                    "dump_format": "full",
+                    "capture_method": "rundll32 comsvcs MiniDump",
+                }),
+            ) {
+                Ok(manifest) => Some(manifest),
+                Err(err) => {
+                    audit::record(
+                        "artifact_manifest",
+                        "error",
+                        json!({
+                            "artifact_kind": "process_dump",
+                            "artifact_path": path.display().to_string(),
+                            "pid": info.pid,
+                            "proc_name": info.proc_name,
+                            "error": err,
+                        }),
+                    );
+                    None
+                }
+            };
             audit::record(
                 "process_dump_on_alert",
                 "success",
@@ -55,10 +80,11 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
                     "pid": info.pid,
                     "proc_name": info.proc_name,
                     "path": path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
                     "score": info.score,
                 }),
             );
-            tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %path.display(), "captured process dump on alert");
+            tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %path.display(), manifest = ?manifest.as_ref().map(|p| p.display().to_string()), "captured process dump on alert");
         }
         Err(err) => {
             audit::record(
