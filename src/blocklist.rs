@@ -4,13 +4,16 @@
 //! (AbuseIPDB, Shodan, VirusTotal) are deferred — they require API keys and
 //! a network round-trip per check.  A static blocklist is almost as useful:
 //! users can subscribe to community feeds (FireHOL, Emerging Threats,
-//! AbuseIPDB daily dumps) and drop them into `%LOCALAPPDATA%\Vigil\blocklists\`
+//! AbuseIPDB daily dumps) and drop them into `%LOCALAPPDATA%\\Vigil\\blocklists\\`
 //! then list the paths in `blocklist_paths` in `vigil.json`.
 //!
 //! ## File format
 //! - One IP (v4 or v6) or CIDR per line.
 //! - `#` to end-of-line is a comment.
 //! - Blank lines are ignored.
+//! - Optional integrity sidecar: place `<blocklist>.sha256` beside the file,
+//!   containing a SHA-256 digest in standard `sha256sum` format. If present,
+//!   Vigil verifies it before parsing and fails closed on mismatch.
 //!
 //! Example `abuseipdb.txt`:
 //! ```text
@@ -20,6 +23,7 @@
 //! 2001:db8::/32      # Research net
 //! ```
 
+use crate::security::integrity;
 use ipnetwork::IpNetwork;
 use std::net::IpAddr;
 use std::path::Path;
@@ -43,10 +47,24 @@ impl Blocklist {
             "blocklist",
             path,
         );
-        let raw = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        let raw = match integrity::read_verified_to_string(path, "blocklist") {
+            Ok((text, integrity::VerificationStatus::Verified { sidecar })) => {
+                tracing::info!(
+                    "verified blocklist {} with sidecar {}",
+                    path.display(),
+                    sidecar.display()
+                );
+                text
+            }
+            Ok((text, integrity::VerificationStatus::Unsigned)) => {
+                tracing::warn!(
+                    "blocklist {} has no SHA-256 sidecar; loading as legacy unsigned input",
+                    path.display()
+                );
+                text
+            }
             Err(e) => {
-                tracing::warn!("failed to read blocklist {}: {e}", path.display());
+                tracing::warn!("refusing blocklist {}: {e}", path.display());
                 return None;
             }
         };
@@ -170,6 +188,7 @@ pub fn stats() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
     use std::io::Write;
 
     fn mktmp(content: &str, name: &str) -> std::path::PathBuf {
@@ -178,6 +197,25 @@ mod tests {
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(content.as_bytes()).unwrap();
         p
+    }
+
+    fn write_sidecar(path: &Path, content: &str) {
+        let digest = Sha256::digest(content.as_bytes());
+        std::fs::write(
+            integrity::sidecar_path(path),
+            format!("{}  {}\n", hex(&digest), path.file_name().unwrap().to_string_lossy()),
+        )
+        .unwrap();
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
     }
 
     #[test]
@@ -211,5 +249,25 @@ mod tests {
         let hit = eng.lookup("1.2.3.4").unwrap();
         // Stem is something like "vigil_bl_test_<pid>_source"
         assert!(hit.contains("source"));
+    }
+
+    #[test]
+    fn verified_sidecar_is_accepted() {
+        let content = "203.0.113.4\n";
+        let p = mktmp(content, "signed");
+        write_sidecar(&p, content);
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert!(eng.lookup("203.0.113.4").is_some());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
+    }
+
+    #[test]
+    fn bad_sidecar_rejects_blocklist() {
+        let p = mktmp("203.0.113.5\n", "tampered");
+        write_sidecar(&p, "198.51.100.9\n");
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert_eq!(eng.list_count(), 0);
+        assert!(eng.lookup("203.0.113.5").is_none());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 }
