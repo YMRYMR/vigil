@@ -3,6 +3,12 @@
 //! Vigil keeps the authoritative user policy in `vigil.json`, but the file is
 //! wrapped with an integrity sidecar and a signed backup so casual tampering or
 //! corruption can be detected and repaired on load.
+//!
+//! The same integrity envelope is also used for operator-controlled security
+//! inputs such as response-rule YAML and local blocklists. Those files are
+//! intentionally trust-on-first-use for legacy/manual installs, then verified on
+//! every subsequent load so a local attacker cannot silently rewrite them into a
+//! weaker policy or a poisoned reputation feed.
 
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
@@ -18,6 +24,23 @@ const BACKUP_SUFFIX: &str = "bak";
 const SECRET_LEN: usize = 32;
 
 pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    load_bytes_with_integrity(path, "policy")
+}
+
+pub fn save_json_with_integrity(path: &Path, data: &[u8]) -> Result<(), String> {
+    save_bytes_with_integrity(path, data)
+}
+
+pub fn load_bytes_with_integrity(path: &Path, artifact_label: &str) -> Result<Option<Vec<u8>>, String> {
+    load_artifact_with_integrity(path, artifact_label)
+}
+
+pub fn save_bytes_with_integrity(path: &Path, data: &[u8]) -> Result<(), String> {
+    let secret = load_or_create_secret(path)?;
+    save_current_and_backup(path, &secret, data)
+}
+
+fn load_artifact_with_integrity(path: &Path, artifact_label: &str) -> Result<Option<Vec<u8>>, String> {
     if !path.exists() {
         return Ok(None);
     }
@@ -31,7 +54,7 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
             return Ok(Some(current));
         }
         tracing::warn!(
-            "policy integrity check failed for {} — attempting backup restore",
+            "{artifact_label} integrity check failed for {} — attempting backup restore",
             path.display()
         );
         if let Some(restored) = restore_from_backup(path, &secret)? {
@@ -42,7 +65,7 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
 
     if had_secret || backup_data_path(path).exists() || backup_sig_path(path).exists() {
         tracing::warn!(
-            "policy signature missing for existing store {}; attempting backup restore",
+            "{artifact_label} signature missing for existing store {}; attempting backup restore",
             path.display()
         );
         if let Some(restored) = restore_from_backup(path, &secret)? {
@@ -51,19 +74,14 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
         return Ok(None);
     }
 
-    // Migration path for existing installs: accept the legacy unsigned config
+    // Migration path for existing installs: accept the legacy unsigned artifact
     // once, then seed the integrity sidecars so future loads are protected.
     tracing::info!(
-        "seeding policy integrity metadata for legacy store {}",
+        "seeding {artifact_label} integrity metadata for legacy artifact {}",
         path.display()
     );
     seed_integrity_artifacts(path, &secret, &current)?;
     Ok(Some(current))
-}
-
-pub fn save_json_with_integrity(path: &Path, data: &[u8]) -> Result<(), String> {
-    let secret = load_or_create_secret(path)?;
-    save_current_and_backup(path, &secret, data)
 }
 
 fn restore_from_backup(path: &Path, secret: &[u8]) -> Result<Option<Vec<u8>>, String> {
@@ -168,15 +186,20 @@ fn protect_secret_file(_path: &Path) -> Result<(), String> {
 }
 
 fn signature_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("json.{SIGNATURE_SUFFIX}"))
+    path.with_extension(format!("{}.{}", path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"), SIGNATURE_SUFFIX))
 }
 
 fn backup_data_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("json.{BACKUP_SUFFIX}"))
+    path.with_extension(format!("{}.{}", path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"), BACKUP_SUFFIX))
 }
 
 fn backup_sig_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("json.{BACKUP_SUFFIX}.{SIGNATURE_SUFFIX}"))
+    path.with_extension(format!(
+        "{}.{}.{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"),
+        BACKUP_SUFFIX,
+        SIGNATURE_SUFFIX
+    ))
 }
 
 fn secret_path(path: &Path) -> PathBuf {
@@ -295,6 +318,22 @@ mod tests {
         assert_eq!(loaded, json);
         assert!(signature_path(&path).exists());
         assert!(backup_data_path(&path).exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn non_json_artifact_uses_native_extension_sidecars() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("rules.yaml");
+        let yaml = b"rules:\n  - name: dry-run\n";
+        save_bytes_with_integrity(&path, yaml).unwrap();
+
+        assert!(base.join("rules.yaml.sig").exists());
+        assert!(base.join("rules.yaml.bak").exists());
+        assert!(base.join("rules.yaml.bak.sig").exists());
+        assert_eq!(load_bytes_with_integrity(&path, "test").unwrap().unwrap(), yaml);
+
         let _ = fs::remove_dir_all(base);
     }
 
