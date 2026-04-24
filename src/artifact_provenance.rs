@@ -237,7 +237,9 @@ mod tests {
         assert!(text.contains("\"pid\": 42"));
         assert!(text.contains("\"score\": 12"));
         assert!(text.contains("\"proc_path\": \"C:/tmp/sample-suspicious.exe\""));
-        assert!(text.contains("\"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""));
+        assert!(text.contains(
+            "\"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
+        ));
 
         let _ = fs::remove_dir_all(dir);
     }
