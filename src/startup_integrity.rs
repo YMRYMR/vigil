@@ -137,7 +137,10 @@ fn scan_artifact_manifests(summary: &mut ScanSummary) {
             Ok(()) => summary.ok += 1,
             Err(err) => {
                 summary.failures += 1;
-                let related = related_artifact_paths(&manifest_path).unwrap_or_default();
+                let related = related_artifact_paths(&manifest_path, &root).unwrap_or_else(|related_err| {
+                    tracing::warn!(manifest = %manifest_path.display(), %related_err, "could not derive related artifact paths for quarantine");
+                    Vec::new()
+                });
                 match file_quarantine::quarantine_integrity_failure(&manifest_path, &related, &err) {
                     Ok(dest) => tracing::error!(manifest = %manifest_path.display(), quarantine = %dest.display(), %err, "forensic artifact manifest verification failed and was quarantined"),
                     Err(quarantine_err) => tracing::error!(manifest = %manifest_path.display(), %err, %quarantine_err, "forensic artifact manifest verification failed and quarantine failed"),
@@ -147,12 +150,42 @@ fn scan_artifact_manifests(summary: &mut ScanSummary) {
     }
 }
 
-fn related_artifact_paths(manifest_path: &Path) -> Result<Vec<PathBuf>, String> {
+fn related_artifact_paths(manifest_path: &Path, artifact_root: &Path) -> Result<Vec<PathBuf>, String> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| format!("failed to read manifest for quarantine: {e}"))?;
     let manifest: ArtifactManifestScan = serde_json::from_str(&text)
         .map_err(|e| format!("failed to parse manifest for quarantine: {e}"))?;
-    Ok(vec![PathBuf::from(manifest.artifact_path)])
+    let artifact_path = PathBuf::from(manifest.artifact_path);
+    if !artifact_path.exists() {
+        return Ok(Vec::new());
+    }
+    let artifact_root = artifact_root.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize artifact root {}: {e}",
+            artifact_root.display()
+        )
+    })?;
+    let artifact_path = artifact_path.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize manifest artifact path {}: {e}",
+            artifact_path.display()
+        )
+    })?;
+    if !artifact_path.starts_with(&artifact_root) {
+        return Err(format!(
+            "refusing to quarantine artifact outside Vigil artifact directory: {}",
+            artifact_path.display()
+        ));
+    }
+    let metadata = fs::metadata(&artifact_path)
+        .map_err(|e| format!("failed to stat manifest artifact path {}: {e}", artifact_path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "refusing to quarantine non-regular artifact path {}",
+            artifact_path.display()
+        ));
+    }
+    Ok(vec![artifact_path])
 }
 
 fn collect_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
@@ -194,6 +227,12 @@ fn verify_artifact_manifest(manifest_path: &Path) -> Result<(), String> {
             artifact_path.display()
         )
     })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "referenced artifact {} is not a regular file",
+            artifact_path.display()
+        ));
+    }
     if metadata.len() != manifest.size_bytes {
         return Err(format!(
             "artifact size mismatch for {}: manifest={} actual={}",
@@ -273,11 +312,13 @@ mod tests {
     }
 
     #[test]
-    fn related_artifact_paths_reads_manifest_artifact() {
+    fn related_artifact_paths_reads_manifest_artifact_under_root() {
         let dir = unique_temp_dir();
-        fs::create_dir_all(&dir).unwrap();
-        let artifact = dir.join("sample.bin");
-        let manifest = dir.join("sample.bin.manifest.json");
+        let root = dir.join("artifacts");
+        fs::create_dir_all(&root).unwrap();
+        let artifact = root.join("sample.bin");
+        fs::write(&artifact, b"abc").unwrap();
+        let manifest = root.join("sample.bin.manifest.json");
         fs::write(
             &manifest,
             format!(
@@ -286,7 +327,29 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(related_artifact_paths(&manifest).unwrap(), vec![artifact]);
+        assert_eq!(related_artifact_paths(&manifest, &root).unwrap(), vec![artifact.canonicalize().unwrap()]);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn related_artifact_paths_rejects_paths_outside_artifact_root() {
+        let dir = unique_temp_dir();
+        let root = dir.join("artifacts");
+        fs::create_dir_all(&root).unwrap();
+        let outside = dir.join("outside.bin");
+        fs::write(&outside, b"abc").unwrap();
+        let manifest = root.join("crafted.manifest.json");
+        fs::write(
+            &manifest,
+            format!(
+                "{{\"artifact_path\":\"{}\",\"size_bytes\":3,\"sha256\":\"abc\"}}",
+                outside.display().to_string().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        let err = related_artifact_paths(&manifest, &root).unwrap_err();
+        assert!(err.contains("outside Vigil artifact directory"));
+        assert!(outside.exists());
         let _ = fs::remove_dir_all(dir);
     }
 
