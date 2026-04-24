@@ -88,7 +88,8 @@ fn unique_destination(dest_dir: &Path, source: &Path) -> PathBuf {
 }
 
 fn safe_name(path: &Path) -> String {
-    path.file_name()
+    let cleaned = path
+        .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("file")
         .chars()
@@ -96,15 +97,16 @@ fn safe_name(path: &Path) -> String {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' {
                 c
             } else {
-                c
+                '_'
             }
         })
-        .map(|c| if c == std::path::MAIN_SEPARATOR { '_' } else { c })
-        .collect::<String>()
-        .trim_matches('_')
-        .chars()
-        .take(80)
-        .collect::<String>()
+        .collect::<String>();
+    let trimmed = cleaned.trim_matches('_');
+    if trimmed.is_empty() {
+        "file".to_string()
+    } else {
+        trimmed.chars().take(80).collect::<String>()
+    }
 }
 
 fn unix_now() -> u64 {
@@ -134,6 +136,7 @@ mod tests {
         let path = PathBuf::from("bad/name:with*chars.json");
         assert!(!safe_name(&path).contains('/'));
         assert!(!safe_name(&path).contains(':'));
+        assert!(safe_name(&path).contains("name_with_chars.json"));
     }
 
     #[test]
