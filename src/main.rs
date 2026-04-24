@@ -183,7 +183,9 @@ fn main() {
         .expect("failed to build tokio runtime");
     let _guard = rt.enter();
 
-    let cfg = Arc::new(RwLock::new(Config::load()));
+    let loaded_cfg = Config::load();
+    startup_integrity::scan_operator_inputs(&loaded_cfg);
+    let cfg = Arc::new(RwLock::new(loaded_cfg));
     let cfg_bootstrap = cfg.clone();
     std::thread::Builder::new()
         .name("vigil-bootstrap".into())
