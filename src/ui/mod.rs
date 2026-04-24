@@ -611,19 +611,20 @@ impl VigilApp {
         handled
     }
     fn execute_uninstall_from_settings(&mut self) {
-        if !crate::autostart::is_elevated() {
-            self.settings.status_msg = Some((
-                "Admin Mode is required to uninstall Vigil.".into(),
-                std::time::Instant::now(),
-            ));
-            self.push_notification(
-                NotificationKind::Warning,
-                "Admin Mode is required to uninstall Vigil.",
-            );
-            return;
-        }
-
         let autostart_removed = crate::autostart::disable();
+
+        // Persist the user's uninstall intent before exiting. Otherwise a later
+        // manual launch would reload `autostart = true` and re-enable login
+        // startup during bootstrap.
+        {
+            let mut cfg = self.cfg.write().unwrap();
+            if cfg.autostart {
+                cfg.autostart = false;
+                cfg.save();
+            }
+        }
+        self.settings.autostart = false;
+
         match crate::service::uninstall() {
             Ok(service_msg) => {
                 crate::audit::record(
