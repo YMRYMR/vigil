@@ -129,15 +129,23 @@ fn scan_artifact_manifests(summary: &mut ScanSummary) {
     if !root.exists() {
         return;
     }
+    let artifact_root = match root.canonicalize() {
+        Ok(root) => root,
+        Err(err) => {
+            summary.failures += 1;
+            tracing::error!(path = %root.display(), %err, "could not canonicalize artifact root for integrity scan");
+            return;
+        }
+    };
     let mut manifests = Vec::new();
-    collect_manifest_paths(&root, &mut manifests, 0);
+    collect_manifest_paths(&artifact_root, &artifact_root, &mut manifests, 0);
     for manifest_path in manifests {
         summary.checked += 1;
         match verify_artifact_manifest(&manifest_path) {
             Ok(()) => summary.ok += 1,
             Err(err) => {
                 summary.failures += 1;
-                let related = related_artifact_paths(&manifest_path, &root).unwrap_or_else(|related_err| {
+                let related = related_artifact_paths(&manifest_path, &artifact_root).unwrap_or_else(|related_err| {
                     tracing::warn!(manifest = %manifest_path.display(), %related_err, "could not derive related artifact paths for quarantine");
                     Vec::new()
                 });
@@ -159,12 +167,7 @@ fn related_artifact_paths(manifest_path: &Path, artifact_root: &Path) -> Result<
     if !artifact_path.exists() {
         return Ok(Vec::new());
     }
-    let artifact_root = artifact_root.canonicalize().map_err(|e| {
-        format!(
-            "failed to canonicalize artifact root {}: {e}",
-            artifact_root.display()
-        )
-    })?;
+    let artifact_root = canonical_artifact_root(artifact_root)?;
     let artifact_path = artifact_path.canonicalize().map_err(|e| {
         format!(
             "failed to canonicalize manifest artifact path {}: {e}",
@@ -188,7 +191,16 @@ fn related_artifact_paths(manifest_path: &Path, artifact_root: &Path) -> Result<
     Ok(vec![artifact_path])
 }
 
-fn collect_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
+fn canonical_artifact_root(artifact_root: &Path) -> Result<PathBuf, String> {
+    artifact_root.canonicalize().map_err(|e| {
+        format!(
+            "failed to canonicalize artifact root {}: {e}",
+            artifact_root.display()
+        )
+    })
+}
+
+fn collect_manifest_paths(dir: &Path, artifact_root: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     if depth > 6 || out.len() >= 512 {
         return;
     }
@@ -198,8 +210,19 @@ fn collect_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            collect_manifest_paths(&path, out, depth + 1);
+        let Ok(file_type) = entry.file_type() else {
+            tracing::warn!(path = %path.display(), "could not inspect artifact path type during integrity scan");
+            continue;
+        };
+        if file_type.is_symlink() {
+            tracing::warn!(path = %path.display(), "skipping symlink during artifact integrity scan");
+            continue;
+        }
+        if file_type.is_dir() {
+            collect_manifest_paths(&path, artifact_root, out, depth + 1);
+            continue;
+        }
+        if !file_type.is_file() {
             continue;
         }
         if path
@@ -207,7 +230,11 @@ fn collect_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(".manifest.json"))
         {
-            out.push(path);
+            match path.canonicalize() {
+                Ok(canonical) if canonical.starts_with(artifact_root) => out.push(canonical),
+                Ok(canonical) => tracing::warn!(path = %canonical.display(), "skipping manifest outside artifact root after canonicalization"),
+                Err(err) => tracing::warn!(path = %path.display(), %err, "could not canonicalize manifest path during integrity scan"),
+            }
             if out.len() >= 512 {
                 break;
             }
@@ -350,6 +377,26 @@ mod tests {
         let err = related_artifact_paths(&manifest, &root).unwrap_err();
         assert!(err.contains("outside Vigil artifact directory"));
         assert!(outside.exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn collect_manifest_paths_skips_symlinked_directories() {
+        let dir = unique_temp_dir();
+        let root = dir.join("artifacts");
+        let outside = dir.join("outside");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let outside_manifest = outside.join("outside.manifest.json");
+        fs::write(&outside_manifest, b"{}").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("link-out")).unwrap();
+            let mut manifests = Vec::new();
+            let root = root.canonicalize().unwrap();
+            collect_manifest_paths(&root, &root, &mut manifests, 0);
+            assert!(manifests.is_empty());
+        }
         let _ = fs::remove_dir_all(dir);
     }
 
