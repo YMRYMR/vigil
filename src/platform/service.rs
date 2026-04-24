@@ -78,6 +78,14 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let query = Command::new(command_paths::resolve("sc")?)
+            .args(["query", SVC_NAME])
+            .status()
+            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+        if !query.success() {
+            return Ok(format!("Windows service `{SVC_NAME}` was not installed."));
+        }
+
         let _ = Command::new(command_paths::resolve("sc")?)
             .args(["stop", SVC_NAME])
             .status();
