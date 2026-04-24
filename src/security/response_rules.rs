@@ -18,6 +18,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Default)]
 pub struct EngineState {
     cooldowns: HashMap<String, Instant>,
+    last_rule_load_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,8 +72,14 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
         return None;
     }
     let rules = match load_rules(&cfg.response_rules_path) {
-        Ok(rules) => rules,
+        Ok(rules) => {
+            state.clear_rule_load_error();
+            rules
+        }
         Err(err) => {
+            if !state.note_rule_load_error(&cfg.response_rules_path, &err) {
+                return None;
+            }
             audit::record(
                 "response_rule",
                 "integrity_failure",
@@ -291,6 +298,19 @@ impl EngineState {
         self.cooldowns.insert(key, now);
         true
     }
+
+    fn note_rule_load_error(&mut self, path: &str, err: &str) -> bool {
+        let key = format!("{path}:{err}");
+        if self.last_rule_load_error.as_deref() == Some(key.as_str()) {
+            return false;
+        }
+        self.last_rule_load_error = Some(key);
+        true
+    }
+
+    fn clear_rule_load_error(&mut self) {
+        self.last_rule_load_error = None;
+    }
 }
 
 #[cfg(test)]
@@ -316,6 +336,19 @@ mod tests {
         assert_eq!(rules[0].name, "signed");
 
         let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn repeated_rule_load_failures_are_reported_once_until_success() {
+        let mut state = EngineState::default();
+
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
+        assert!(!state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "yaml parse failed"));
+
+        state.clear_rule_load_error();
+
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
     }
 
     fn write_file(path: &Path, content: &str) {
