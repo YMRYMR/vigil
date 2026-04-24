@@ -58,6 +58,11 @@ jobs:
               '.png', '.jpg', '.jpeg', '.ico', '.icns', '.svg', '.webp'
           }
           max_allowed_binary_bytes = 512 * 1024
+          # Explicitly documented, human-reviewable source image assets.
+          # Generated installers, archives, libraries, and executables remain blocked above.
+          approved_large_binary_assets = {
+              Path('assets/vigil_logo.png'),
+          }
           offenders = []
           for path in Path('.').rglob('*'):
               if not path.is_file():
@@ -66,6 +71,8 @@ jobs:
                   continue
               data = path.read_bytes()
               if b'\0' not in data[:4096]:
+                  continue
+              if path in approved_large_binary_assets and path.suffix.lower() in allowed_binary_suffixes:
                   continue
               if path.suffix.lower() in allowed_binary_suffixes and len(data) <= max_allowed_binary_bytes:
                   continue
