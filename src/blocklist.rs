@@ -38,8 +38,21 @@ struct Blocklist {
 
 impl Blocklist {
     fn load(path: &Path) -> Option<Self> {
-        let raw = match std::fs::read_to_string(path) {
-            Ok(s) => s,
+        let raw = match crate::security::policy::load_bytes_with_integrity(path, "blocklist") {
+            Ok(Some(bytes)) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(e) => {
+                    tracing::warn!("blocklist {} is not valid UTF-8: {e}", path.display());
+                    return None;
+                }
+            },
+            Ok(None) => {
+                tracing::warn!(
+                    "blocklist {} failed integrity verification and no trusted backup was available",
+                    path.display()
+                );
+                return None;
+            }
             Err(e) => {
                 tracing::warn!("failed to read blocklist {}: {e}", path.display());
                 return None;
@@ -182,6 +195,7 @@ mod tests {
         assert!(eng.lookup("1.2.3.4").is_some());
         assert!(eng.lookup("185.220.101.1").is_some());
         assert!(eng.lookup("8.8.8.8").is_none());
+        let _ = cleanup_integrity_files(&p);
     }
 
     #[test]
@@ -190,6 +204,7 @@ mod tests {
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("10.1.2.3").is_some());
         assert!(eng.lookup("11.1.2.3").is_none());
+        let _ = cleanup_integrity_files(&p);
     }
 
     #[test]
@@ -197,6 +212,7 @@ mod tests {
         let p = mktmp("# comment\n\n 1.1.1.1 # trailing\n", "cmt");
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("1.1.1.1").is_some());
+        let _ = cleanup_integrity_files(&p);
     }
 
     #[test]
@@ -206,5 +222,38 @@ mod tests {
         let hit = eng.lookup("1.2.3.4").unwrap();
         // Stem is something like "vigil_bl_test_<pid>_source"
         assert!(hit.contains("source"));
+        let _ = cleanup_integrity_files(&p);
+    }
+
+    #[test]
+    fn tampered_blocklist_restores_last_signed_copy() {
+        let p = mktmp("203.0.113.10\n", "integrity");
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert!(eng.lookup("203.0.113.10").is_some());
+
+        std::fs::write(&p, "198.51.100.7\n").unwrap();
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert!(eng.lookup("203.0.113.10").is_some());
+        assert!(eng.lookup("198.51.100.7").is_none());
+
+        let _ = cleanup_integrity_files(&p);
+    }
+
+    fn cleanup_integrity_files(path: &std::path::Path) -> std::io::Result<()> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("artifact");
+        for candidate in [
+            path.to_path_buf(),
+            path.with_extension(format!("{ext}.sig")),
+            path.with_extension(format!("{ext}.bak")),
+            path.with_extension(format!("{ext}.bak.sig")),
+            path.parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join("vigil-policy.key"),
+        ] {
+            if candidate.exists() {
+                std::fs::remove_file(candidate)?;
+            }
+        }
+        Ok(())
     }
 }
