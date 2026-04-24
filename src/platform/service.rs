@@ -41,7 +41,7 @@ mod platform {
     use super::*;
     use crate::platform::command_paths;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Output};
 
     const SVC_NAME: &str = "Vigil";
 
@@ -78,6 +78,20 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let query = Command::new(command_paths::resolve("sc")?)
+            .args(["query", SVC_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+        if !query.status.success() {
+            if service_does_not_exist(&query) {
+                return Ok(format!("Windows service `{SVC_NAME}` was not installed."));
+            }
+            return Err(format!(
+                "`sc query {SVC_NAME}` failed unexpectedly: {}",
+                command_output_summary(&query)
+            ));
+        }
+
         let _ = Command::new(command_paths::resolve("sc")?)
             .args(["stop", SVC_NAME])
             .status();
@@ -89,6 +103,28 @@ mod platform {
             return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
         }
         Ok(format!("Removed Windows service `{SVC_NAME}`."))
+    }
+
+    fn service_does_not_exist(output: &Output) -> bool {
+        let text = command_output_text(output).to_ascii_lowercase();
+        text.contains("1060")
+            || text.contains("does not exist")
+            || text.contains("does not exist as an installed service")
+    }
+
+    fn command_output_summary(output: &Output) -> String {
+        let text = command_output_text(output);
+        if text.trim().is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            format!("exit status {}; {}", output.status, text.trim())
+        }
+    }
+
+    fn command_output_text(output: &Output) -> String {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        format!("{stdout}{stderr}")
     }
 }
 
@@ -159,17 +195,18 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let path = plist_path();
+        if !path.exists() {
+            return Ok(format!("launchd daemon `{LABEL}` was not installed."));
+        }
         if !is_root() {
             return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
-        let path = plist_path();
-        if path.exists() {
-            let _ = Command::new(command_paths::resolve("launchctl")?)
-                .args(["unload", "-w", &path.display().to_string()])
-                .status();
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
-        }
+        let _ = Command::new(command_paths::resolve("launchctl")?)
+            .args(["unload", "-w", &path.display().to_string()])
+            .status();
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
         Ok(format!("Removed launchd daemon `{LABEL}`."))
     }
 
@@ -258,17 +295,18 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let path = unit_path();
+        if !path.exists() {
+            return Ok(format!("systemd unit `{UNIT_NAME}` was not installed."));
+        }
         if !is_root() {
             return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
         let _ = Command::new(command_paths::resolve("systemctl")?)
             .args(["disable", "--now", UNIT_NAME])
             .status();
-        let path = unit_path();
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
-        }
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
         let _ = Command::new(command_paths::resolve("systemctl")?)
             .args(["daemon-reload"])
             .status();
