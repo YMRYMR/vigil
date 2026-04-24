@@ -31,7 +31,7 @@ struct ProvenanceEntry {
     size_bytes: u64,
     modified_unix: Option<u64>,
     first_seen_unix: u64,
-    last_seen_unix: u64,
+    last_changed_unix: u64,
     change_count: u64,
 }
 
@@ -102,9 +102,6 @@ fn observe_operator_file_inner(
     let mut registry = load_registry(registry_path).unwrap_or_default();
     match registry.files.get_mut(&canonical) {
         Some(entry) if entry.sha256 == fingerprint.sha256 && entry.size_bytes == fingerprint.size_bytes => {
-            entry.last_seen_unix = now;
-            entry.modified_unix = fingerprint.modified_unix;
-            save_registry(registry_path, &registry)?;
             Ok(Observation::Unchanged)
         }
         Some(entry) => {
@@ -115,7 +112,7 @@ fn observe_operator_file_inner(
             entry.sha256 = fingerprint.sha256.clone();
             entry.size_bytes = fingerprint.size_bytes;
             entry.modified_unix = fingerprint.modified_unix;
-            entry.last_seen_unix = now;
+            entry.last_changed_unix = now;
             entry.change_count = entry.change_count.saturating_add(1);
             save_registry(registry_path, &registry)?;
             if audit_events {
@@ -144,7 +141,7 @@ fn observe_operator_file_inner(
                     size_bytes: fingerprint.size_bytes,
                     modified_unix: fingerprint.modified_unix,
                     first_seen_unix: now,
-                    last_seen_unix: now,
+                    last_changed_unix: now,
                     change_count: 0,
                 },
             );
@@ -256,10 +253,12 @@ mod tests {
             observe_operator_file_inner("response_rules", &file, &registry, false).unwrap(),
             Observation::FirstSeen
         );
+        let before = fs::read_to_string(&registry).unwrap();
         assert_eq!(
             observe_operator_file_inner("response_rules", &file, &registry, false).unwrap(),
             Observation::Unchanged
         );
+        assert_eq!(fs::read_to_string(&registry).unwrap(), before);
         let _ = fs::remove_dir_all(dir);
     }
 
