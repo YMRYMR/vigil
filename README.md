@@ -12,6 +12,15 @@ notification, and a full GUI — the moment something looks wrong.
 
 ---
 
+## Documentation
+
+- [User guide](docs/USER-GUIDE.md) — released functionality and basic operation
+- [Security policy](SECURITY.md) — vulnerability reporting and security contacts
+- [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
+- [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
+
+---
+
 ## Download the latest build
 
 - [Windows installer](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-windows-x86_64.exe)
