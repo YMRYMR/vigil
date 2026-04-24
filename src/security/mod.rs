@@ -1,5 +1,6 @@
 pub mod active_response;
 pub mod auto_response;
+pub mod file_quarantine;
 pub mod operator_provenance;
 pub mod policy;
 pub mod quarantine;
