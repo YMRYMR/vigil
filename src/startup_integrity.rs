@@ -4,7 +4,7 @@
 //! integrity metadata without silently changing operator-managed files. Existing
 //! load paths still perform their own recovery where recovery is safe.
 
-use crate::{audit, config};
+use crate::{audit, config, security::operator_provenance};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -31,7 +31,41 @@ pub fn run() {
     let mut summary = ScanSummary::default();
     scan_policy_sidecars(&mut summary);
     scan_artifact_manifests(&mut summary);
+    record_summary("startup_integrity_scan", &summary);
+}
 
+pub fn scan_operator_inputs(cfg: &config::Config) {
+    let mut summary = ScanSummary::default();
+    for path in &cfg.blocklist_paths {
+        if path.trim().is_empty() {
+            continue;
+        }
+        observe_operator_path(&mut summary, "blocklist", Path::new(path.trim()));
+    }
+    if !cfg.response_rules_path.trim().is_empty() {
+        observe_operator_path(
+            &mut summary,
+            "response_rules",
+            Path::new(cfg.response_rules_path.trim()),
+        );
+    }
+    record_summary("startup_operator_file_scan", &summary);
+}
+
+fn observe_operator_path(summary: &mut ScanSummary, kind: &str, path: &Path) {
+    summary.checked += 1;
+    match operator_provenance::observe_operator_file(kind, path) {
+        operator_provenance::Observation::Unchanged => summary.ok += 1,
+        operator_provenance::Observation::FirstSeen | operator_provenance::Observation::Changed => {
+            summary.warnings += 1;
+        }
+        operator_provenance::Observation::Missing | operator_provenance::Observation::Unreadable => {
+            summary.failures += 1;
+        }
+    }
+}
+
+fn record_summary(action: &str, summary: &ScanSummary) {
     let outcome = if summary.failures > 0 {
         "error"
     } else if summary.warnings > 0 {
@@ -40,7 +74,7 @@ pub fn run() {
         "success"
     };
     audit::record(
-        "startup_integrity_scan",
+        action,
         outcome,
         json!({
             "checked": summary.checked,
@@ -50,9 +84,9 @@ pub fn run() {
         }),
     );
     match outcome {
-        "success" => tracing::info!(checked = summary.checked, "startup integrity scan completed cleanly"),
-        "warning" => tracing::warn!(checked = summary.checked, warnings = summary.warnings, "startup integrity scan completed with warnings"),
-        _ => tracing::error!(checked = summary.checked, failures = summary.failures, "startup integrity scan found integrity failures"),
+        "success" => tracing::info!(action, checked = summary.checked, "integrity scan completed cleanly"),
+        "warning" => tracing::warn!(action, checked = summary.checked, warnings = summary.warnings, "integrity scan completed with warnings"),
+        _ => tracing::error!(action, checked = summary.checked, failures = summary.failures, "integrity scan found failures"),
     }
 }
 
