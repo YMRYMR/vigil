@@ -54,7 +54,7 @@ fn load_artifact_with_integrity(path: &Path, artifact_label: &str) -> Result<Opt
             return Ok(Some(current));
         }
         tracing::warn!(
-            "{artifact_label} integrity check failed for {} — attempting backup restore",
+            "{artifact_label} integrity check failed for {} - attempting backup restore",
             path.display()
         );
         if let Some(restored) = restore_from_backup(path, &secret)? {
@@ -63,7 +63,7 @@ fn load_artifact_with_integrity(path: &Path, artifact_label: &str) -> Result<Opt
         return Ok(None);
     }
 
-    if had_secret || backup_data_path(path).exists() || backup_sig_path(path).exists() {
+    if backup_data_path(path).exists() || backup_sig_path(path).exists() {
         tracing::warn!(
             "{artifact_label} signature missing for existing store {}; attempting backup restore",
             path.display()
@@ -74,12 +74,20 @@ fn load_artifact_with_integrity(path: &Path, artifact_label: &str) -> Result<Opt
         return Ok(None);
     }
 
-    // Migration path for existing installs: accept the legacy unsigned artifact
-    // once, then seed the integrity sidecars so future loads are protected.
-    tracing::info!(
-        "seeding {artifact_label} integrity metadata for legacy artifact {}",
-        path.display()
-    );
+    // Migration path for existing installs: accept a legacy unsigned artifact
+    // once, then seed integrity sidecars so future loads are protected. This
+    // remains valid even when a shared directory already has a policy secret.
+    if had_secret {
+        tracing::info!(
+            "seeding {artifact_label} integrity metadata for unsigned artifact {} using existing shared secret",
+            path.display()
+        );
+    } else {
+        tracing::info!(
+            "seeding {artifact_label} integrity metadata for legacy artifact {}",
+            path.display()
+        );
+    }
     seed_integrity_artifacts(path, &secret, &current)?;
     Ok(Some(current))
 }
@@ -186,11 +194,19 @@ fn protect_secret_file(_path: &Path) -> Result<(), String> {
 }
 
 fn signature_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("{}.{}", path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"), SIGNATURE_SUFFIX))
+    path.with_extension(format!(
+        "{}.{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"),
+        SIGNATURE_SUFFIX
+    ))
 }
 
 fn backup_data_path(path: &Path) -> PathBuf {
-    path.with_extension(format!("{}.{}", path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"), BACKUP_SUFFIX))
+    path.with_extension(format!(
+        "{}.{}",
+        path.extension().and_then(|e| e.to_str()).unwrap_or("artifact"),
+        BACKUP_SUFFIX
+    ))
 }
 
 fn backup_sig_path(path: &Path) -> PathBuf {
@@ -318,6 +334,27 @@ mod tests {
         assert_eq!(loaded, json);
         assert!(signature_path(&path).exists());
         assert!(backup_data_path(&path).exists());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn unsigned_new_artifact_can_seed_using_existing_shared_secret() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+
+        let policy_path = base.join("vigil.json");
+        save_json_with_integrity(&policy_path, br#"{"version":1}"#).unwrap();
+
+        let rules_path = base.join("rules.yaml");
+        let yaml = b"rules:\n  - name: dry-run\n";
+        fs::write(&rules_path, yaml).unwrap();
+
+        let loaded = load_bytes_with_integrity(&rules_path, "rules").unwrap().unwrap();
+        assert_eq!(loaded, yaml);
+        assert!(base.join("rules.yaml.sig").exists());
+        assert!(base.join("rules.yaml.bak").exists());
+        assert!(base.join("rules.yaml.bak.sig").exists());
+
         let _ = fs::remove_dir_all(base);
     }
 
