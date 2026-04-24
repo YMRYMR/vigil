@@ -1,10 +1,14 @@
 //! Startup integrity scan for Phase 15.
 //!
-//! This is intentionally read-only: it surfaces missing or inconsistent
-//! integrity metadata without silently changing operator-managed files. Existing
-//! load paths still perform their own recovery where recovery is safe.
+//! This is intentionally read-only for operator-managed files, but it can move
+//! corrupted Vigil-owned forensic artifacts into an integrity quarantine so they
+//! no longer sit beside trusted evidence. Existing load paths still perform
+//! their own recovery where recovery is safe.
 
-use crate::{audit, config, security::operator_provenance};
+use crate::{
+    audit, config,
+    security::{file_quarantine, operator_provenance},
+};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -133,10 +137,22 @@ fn scan_artifact_manifests(summary: &mut ScanSummary) {
             Ok(()) => summary.ok += 1,
             Err(err) => {
                 summary.failures += 1;
-                tracing::error!(manifest = %manifest_path.display(), %err, "forensic artifact manifest verification failed");
+                let related = related_artifact_paths(&manifest_path).unwrap_or_default();
+                match file_quarantine::quarantine_integrity_failure(&manifest_path, &related, &err) {
+                    Ok(dest) => tracing::error!(manifest = %manifest_path.display(), quarantine = %dest.display(), %err, "forensic artifact manifest verification failed and was quarantined"),
+                    Err(quarantine_err) => tracing::error!(manifest = %manifest_path.display(), %err, %quarantine_err, "forensic artifact manifest verification failed and quarantine failed"),
+                }
             }
         }
     }
+}
+
+fn related_artifact_paths(manifest_path: &Path) -> Result<Vec<PathBuf>, String> {
+    let text = fs::read_to_string(manifest_path)
+        .map_err(|e| format!("failed to read manifest for quarantine: {e}"))?;
+    let manifest: ArtifactManifestScan = serde_json::from_str(&text)
+        .map_err(|e| format!("failed to parse manifest for quarantine: {e}"))?;
+    Ok(vec![PathBuf::from(manifest.artifact_path)])
 }
 
 fn collect_manifest_paths(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
@@ -253,6 +269,24 @@ mod tests {
         )
         .unwrap();
         assert!(verify_artifact_manifest(&manifest).is_err());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn related_artifact_paths_reads_manifest_artifact() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let artifact = dir.join("sample.bin");
+        let manifest = dir.join("sample.bin.manifest.json");
+        fs::write(
+            &manifest,
+            format!(
+                "{{\"artifact_path\":\"{}\",\"size_bytes\":3,\"sha256\":\"abc\"}}",
+                artifact.display().to_string().replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        assert_eq!(related_artifact_paths(&manifest).unwrap(), vec![artifact]);
         let _ = fs::remove_dir_all(dir);
     }
 
