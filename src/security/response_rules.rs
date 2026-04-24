@@ -70,7 +70,17 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
     {
         return None;
     }
-    let rules = load_rules(&cfg.response_rules_path).ok()?;
+    let rules = match load_rules(&cfg.response_rules_path) {
+        Ok(rules) => rules,
+        Err(err) => {
+            audit::record(
+                "response_rule",
+                "integrity_failure",
+                json!({"path": cfg.response_rules_path, "error": err}),
+            );
+            return Some(format!("Response rules unavailable: {err}"));
+        }
+    };
     let rule = rules.into_iter().find(|rule| matches_rule(rule, conn))?;
     let action = plan_action(&rule, conn)?;
     let cooldown = Duration::from_secs(cfg.auto_response_cooldown_secs.max(30));
@@ -109,8 +119,13 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 }
 
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read rule file {path}: {e}"))?;
+    let bytes = crate::security::policy::load_bytes_with_integrity(
+        std::path::Path::new(path),
+        "response rules",
+    )?
+    .ok_or_else(|| format!("rule file {path} failed integrity verification and no trusted backup was available"))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|e| format!("rule file {path} is not valid UTF-8: {e}"))?;
     let file: RuleFile = serde_yaml::from_str(&text)
         .map_err(|e| format!("failed to parse YAML rule file {path}: {e}"))?;
     Ok(file.rules)
@@ -275,5 +290,44 @@ impl EngineState {
         }
         self.cooldowns.insert(key, now);
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn tampered_rule_file_restores_signed_backup() {
+        let base = unique_temp_dir();
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("response-rules.yaml");
+        write_file(&path, "rules:\n  - name: signed\n    min_score: 9\n    action: block_remote\n");
+        let rules = load_rules(&path.to_string_lossy()).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "signed");
+
+        write_file(&path, "rules:\n  - name: tampered\n    min_score: 0\n    action: quarantine\n");
+        let rules = load_rules(&path.to_string_lossy()).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "signed");
+
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        let mut file = std::fs::File::create(path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+    }
+
+    fn unique_temp_dir() -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-rules-test-{nanos}"))
     }
 }
