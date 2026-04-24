@@ -28,9 +28,37 @@ permissions:
   contents: read
 
 jobs:
+  validate-release-metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+      version: ${{ steps.validate.outputs.version }}
+    steps:
+      - name: Validate release tag
+        id: validate
+        shell: bash
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid release tag: $REF_NAME" >&2
+            echo "Expected vMAJOR.MINOR.PATCH with optional prerelease/build suffix." >&2
+            exit 1
+          fi
+          VERSION="${REF_NAME#v}"
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]]; then
+            echo "Invalid normalized version: $VERSION" >&2
+            exit 1
+          fi
+          echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
   # ── Windows — Inno Setup EXE ───────────────────────────────────────────────
   build-windows:
     name: Build Windows installer
+    needs: validate-release-metadata
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -50,8 +78,13 @@ jobs:
       # iscc (Inno Setup Compiler) is pre-installed on windows-latest.
       - name: Build Inno Setup installer
         shell: pwsh
+        env:
+          VIGIL_RELEASE_VERSION: ${{ needs.validate-release-metadata.outputs.version }}
         run: |
-          $version = "${{ github.ref_name }}".TrimStart('v')
+          $version = $env:VIGIL_RELEASE_VERSION
+          if ($version -notmatch '^[0-9A-Za-z][0-9A-Za-z.-]*$') {
+            throw "Invalid release version: $version"
+          }
           # Stage the binary next to the .iss file
           Copy-Item `
             target\x86_64-pc-windows-msvc\release\vigil.exe `
@@ -72,6 +105,7 @@ jobs:
   # ── macOS — DMG with .app bundle ──────────────────────────────────────────
   build-macos:
     name: Build macOS DMG
+    needs: validate-release-metadata
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -89,9 +123,14 @@ jobs:
         run: cargo build --release --target aarch64-apple-darwin
 
       - name: Build macOS DMG
+        env:
+          VERSION: ${{ needs.validate-release-metadata.outputs.version }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
           ICON_PNG="assets/vigil_icon.png"
           if [ ! -f "$ICON_PNG" ]; then
             ICON_PNG="assets/vigil.png"
@@ -137,6 +176,7 @@ jobs:
   # ── Linux — AppImage ──────────────────────────────────────────────────────
   build-linux:
     name: Build Linux AppImage
+    needs: validate-release-metadata
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -161,9 +201,14 @@ jobs:
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Build Linux AppImage
+        env:
+          VERSION: ${{ needs.validate-release-metadata.outputs.version }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
           ICON_PNG="assets/vigil_icon.png"
           if [ ! -f "$ICON_PNG" ]; then
             ICON_PNG="assets/vigil.png"
@@ -208,7 +253,7 @@ jobs:
   # ── Publish GitHub Release ────────────────────────────────────────────────
   publish:
     name: Publish release
-    needs: [build-windows, build-macos, build-linux]
+    needs: [validate-release-metadata, build-windows, build-macos, build-linux]
     runs-on: ubuntu-latest
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
@@ -228,9 +273,14 @@ jobs:
           merge-multiple: true
 
       - name: Build all-platforms bundle and stable aliases
+        env:
+          VERSION: ${{ needs.validate-release-metadata.outputs.version }}
         run: |
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"
+          set -euo pipefail
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
 
           zip -j "dist/Vigil-${VERSION}-all-supported-os.zip" \
             dist/*.exe dist/*.dmg dist/*.AppImage
@@ -243,16 +293,23 @@ jobs:
       - name: Generate signed update manifest
         env:
           VIGIL_UPDATE_SIGNING_KEY: ${{ secrets.VIGIL_UPDATE_SIGNING_KEY }}
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ needs.validate-release-metadata.outputs.version }}
+          TAG: ${{ needs.validate-release-metadata.outputs.tag }}
         run: |
           set -euo pipefail
           if [ -z "${VIGIL_UPDATE_SIGNING_KEY:-}" ]; then
             echo "VIGIL_UPDATE_SIGNING_KEY is not configured; release signing is required."
             exit 1
           fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid release tag: $TAG" >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9A-Za-z][0-9A-Za-z.-]*$ ]]; then
+            echo "Invalid release version: $VERSION" >&2
+            exit 1
+          fi
 
-          TAG="$VERSION"
-          VERSION="${VERSION#v}"
           KEY_FILE="$(mktemp)"
           SIG_RAW="$(mktemp)"
           MANIFEST="dist/Vigil-${VERSION}-update-manifest.json"
@@ -317,8 +374,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda
         with:
-          tag_name: ${{ github.ref_name }}
-          name: Vigil ${{ github.ref_name }}
+          tag_name: ${{ needs.validate-release-metadata.outputs.tag }}
+          name: Vigil ${{ needs.validate-release-metadata.outputs.tag }}
           generate_release_notes: true
           files: dist/*
 
