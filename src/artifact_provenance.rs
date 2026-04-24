@@ -199,16 +199,16 @@ mod tests {
 
         let info = ConnInfo {
             timestamp: "2026-04-24T00:00:00Z".into(),
-            proc_name: "evil.exe".into(),
+            proc_name: "sample-suspicious.exe".into(),
             pid: 42,
-            proc_path: "C:/tmp/evil.exe".into(),
+            proc_path: "C:/tmp/sample-suspicious.exe".into(),
             proc_user: "user".into(),
             parent_user: "user".into(),
             parent_name: "cmd.exe".into(),
             parent_pid: 7,
             service_name: String::new(),
             publisher: "Unknown".into(),
-            command_line: "evil.exe --connect".into(),
+            command_line: "sample-suspicious.exe --connect".into(),
             local_addr: "127.0.0.1:1234".into(),
             remote_addr: "203.0.113.10:443".into(),
             status: "ESTABLISHED".into(),
@@ -236,7 +236,7 @@ mod tests {
         assert!(text.contains("\"artifact_kind\": \"pcap\""));
         assert!(text.contains("\"pid\": 42"));
         assert!(text.contains("\"score\": 12"));
-        assert!(text.contains("\"proc_path\": \"C:/tmp/evil.exe\""));
+        assert!(text.contains("\"proc_path\": \"C:/tmp/sample-suspicious.exe\""));
         assert!(text.contains("\"sha256\": \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""));
 
         let _ = fs::remove_dir_all(dir);
