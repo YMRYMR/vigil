@@ -195,17 +195,18 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let path = plist_path();
+        if !path.exists() {
+            return Ok(format!("launchd daemon `{LABEL}` was not installed."));
+        }
         if !is_root() {
             return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
-        let path = plist_path();
-        if path.exists() {
-            let _ = Command::new(command_paths::resolve("launchctl")?)
-                .args(["unload", "-w", &path.display().to_string()])
-                .status();
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
-        }
+        let _ = Command::new(command_paths::resolve("launchctl")?)
+            .args(["unload", "-w", &path.display().to_string()])
+            .status();
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
         Ok(format!("Removed launchd daemon `{LABEL}`."))
     }
 
@@ -294,17 +295,18 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let path = unit_path();
+        if !path.exists() {
+            return Ok(format!("systemd unit `{UNIT_NAME}` was not installed."));
+        }
         if !is_root() {
             return Err("Re-run with:  sudo vigil --uninstall-service".into());
         }
         let _ = Command::new(command_paths::resolve("systemctl")?)
             .args(["disable", "--now", UNIT_NAME])
             .status();
-        let path = unit_path();
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
-        }
+        std::fs::remove_file(&path)
+            .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
         let _ = Command::new(command_paths::resolve("systemctl")?)
             .args(["daemon-reload"])
             .status();
