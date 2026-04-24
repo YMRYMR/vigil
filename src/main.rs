@@ -12,6 +12,7 @@
     windows_subsystem = "windows"
 )]
 
+mod artifact_provenance;
 mod audit;
 mod baseline;
 mod beacon;

@@ -5,7 +5,7 @@
 //! fires. The capture is opt-in, audited, and globally serialized so multiple
 //! alerts do not race the capture session.
 
-use crate::{audit, config::Config, tls_artifacts, types::ConnInfo};
+use crate::{artifact_provenance, audit, config::Config, tls_artifacts, types::ConnInfo};
 use serde_json::json;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -99,15 +99,58 @@ pub fn maybe_capture_pcap(info: &ConnInfo, cfg: &Config) {
                             None
                         }
                     };
+                    let manifest = match artifact_provenance::write_manifest(
+                        &path,
+                        "pcap",
+                        &info,
+                        json!({
+                            "seconds": cfg.pcap_duration_secs,
+                            "packet_size_bytes": cfg.pcap_packet_size_bytes,
+                            "capture_method": "pktmon",
+                            "tls_sidecar": tls_sidecar.as_ref().map(|p| p.display().to_string()),
+                        }),
+                    ) {
+                        Ok(manifest) => Some(manifest),
+                        Err(err) => {
+                            audit::record("artifact_manifest", "error", json!({
+                                "artifact_kind": "pcap",
+                                "artifact_path": path.display().to_string(),
+                                "pid": info.pid,
+                                "proc_name": info.proc_name,
+                                "error": err,
+                            }));
+                            None
+                        }
+                    };
+                    if let Some(sidecar_path) = tls_sidecar.as_ref() {
+                        if let Err(err) = artifact_provenance::write_manifest(
+                            sidecar_path,
+                            "tls_sidecar",
+                            &info,
+                            json!({
+                                "source_pcap": path.display().to_string(),
+                                "source_pcap_manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                            }),
+                        ) {
+                            audit::record("artifact_manifest", "error", json!({
+                                "artifact_kind": "tls_sidecar",
+                                "artifact_path": sidecar_path.display().to_string(),
+                                "pid": info.pid,
+                                "proc_name": info.proc_name,
+                                "error": err,
+                            }));
+                        }
+                    }
                     audit::record("pcap_on_alert", "success", json!({
                         "pid": info.pid,
                         "proc_name": info.proc_name,
                         "path": path.display().to_string(),
+                        "manifest": manifest.as_ref().map(|p| p.display().to_string()),
                         "tls_sidecar": tls_sidecar.as_ref().map(|p| p.display().to_string()),
                         "score": info.score,
                         "seconds": cfg.pcap_duration_secs,
                     }));
-                    tracing::warn!(pid = info.pid, proc = %info.proc_name, pcap = %path.display(), tls = ?tls_sidecar.as_ref().map(|p| p.display().to_string()), "captured pcap window on alert");
+                    tracing::warn!(pid = info.pid, proc = %info.proc_name, pcap = %path.display(), manifest = ?manifest.as_ref().map(|p| p.display().to_string()), tls = ?tls_sidecar.as_ref().map(|p| p.display().to_string()), "captured pcap window on alert");
                 }
                 Err(err) => {
                     audit::record("pcap_on_alert", "error", json!({

@@ -257,12 +257,16 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 Make sure no file used by Vigil can be silently tampered with without detection, recovery, or operator visibility.
 
-- [ ] Signed or cryptographically verified policy / configuration files
-- [ ] Integrity verification for blocklists, rules, caches, and generated state
-- [ ] Secure audit-log chaining or append-only protections
-- [ ] Forensic artifact provenance and checksum manifests
+### Completed slices
+- [x] Signed or cryptographically verified policy / configuration files — `vigil.json` carries a local integrity sidecar and signed backup, with legacy installs seeded on first load
+- [x] Integrity verification for Vigil-owned generated state — behavioural baselines, active-response state, break-glass recovery state, and quarantine state now use the same integrity sidecar / backup recovery path as the policy store
+- [x] Secure audit-log chaining — audit entries are hash-chained and verified at startup so edits or removal become visible
+- [x] Forensic artifact provenance and checksum manifests — PCAP captures, TLS sidecars, and process dumps now get `.manifest.json` sidecars with SHA-256, size, alert context, and capture metadata
+
+### Remaining backlog
+- [ ] Provenance model for operator-managed blocklists and response-rule YAML files that detects malicious tampering without treating intentional local edits as corruption
 - [ ] Startup integrity scan with clear operator-visible failure modes
-- [ ] Recovery / quarantine path for corrupted or untrusted Vigil-owned files
+- [ ] Recovery / quarantine path for corrupted or untrusted Vigil-owned files beyond the current signed-backup restore paths
 
 ---
 
@@ -402,10 +406,10 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 1.2.0 | 9 | Beaconing, DNS, registry, pre-login, service mode | ✅ Done |
 | 1.3.0 | 10 | Reputation, geolocation, file-drop correlation, long-lived, DGA | ✅ Done |
 | 3.0.0 | 11 | Active response: containment, quarantine, rule engine | ✅ Feature complete |
-| 3.x | 12 | Detection depth | 🚧 In progress |
+| 3.x | 12 | Detection depth | ✅ Done |
 | 4.x | 13 | Optimization & efficiency | ✅ Feature complete |
-| 5.x | 14 | Hardening & self-defence (OPEN) | 🔲 Backlog |
-| 5.x | 15 | File integrity & anti-tamper (OPEN) | 🔲 Backlog |
+| 5.x | 14 | Hardening & self-defence | ✅ Done |
+| 5.x | 15 | File integrity & anti-tamper (OPEN) | 🚧 In progress |
 | 6.x | 17 | Protocol expansion (OPEN) | 🔲 Backlog |
 | 7.x | 18 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
 | PRO 1.x | 16 | Cloud fleet console & integrations | 🔲 Backlog |
