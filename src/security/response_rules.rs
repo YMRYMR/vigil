@@ -3,22 +3,27 @@
 //! The rule file is optional and operator-controlled. Rules are evaluated in
 //! order; the first matching rule wins. Current actions intentionally reuse the
 //! existing active-response primitives so every action stays reversible and
-//! audited in the same way as the built-in controls.
+//! audited in the same way as the built-in controls. If `<rules-file>.sha256`
+//! exists beside the YAML file, Vigil verifies the SHA-256 digest before parsing
+//! and refuses tampered rule files.
 
 use crate::{
     active_response, audit,
     config::{normalise_name, Config},
+    security::integrity,
     types::ConnInfo,
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Default)]
 pub struct EngineState {
     cooldowns: HashMap<String, Instant>,
+    last_rule_load_error: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,7 +76,23 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
     {
         return None;
     }
-    let rules = load_rules(&cfg.response_rules_path).ok()?;
+    let rules = match load_rules(&cfg.response_rules_path) {
+        Ok(rules) => {
+            state.clear_rule_load_error();
+            rules
+        }
+        Err(err) => {
+            if !state.note_rule_load_error(&cfg.response_rules_path, &err) {
+                return None;
+            }
+            audit::record(
+                "response_rule",
+                "integrity_failure",
+                json!({"path": cfg.response_rules_path, "error": err}),
+            );
+            return Some(format!("Response rules unavailable: {err}"));
+        }
+    };
     let rule = rules.into_iter().find(|rule| matches_rule(rule, conn))?;
     let action = plan_action(&rule, conn)?;
     let cooldown = Duration::from_secs(cfg.auto_response_cooldown_secs.max(30));
@@ -111,15 +132,51 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
     let path_ref = Path::new(path);
+    #[cfg(not(test))]
     let _observation = crate::security::operator_provenance::observe_operator_file(
         "response_rules",
         path_ref,
     );
-    let text = std::fs::read_to_string(path_ref)
-        .map_err(|e| format!("failed to read rule file {path}: {e}"))?;
+    let (text, status) = integrity::read_verified_to_string(path_ref, "response rules")?;
+    match status {
+        integrity::VerificationStatus::Verified { sidecar } => {
+            info_verified_rules_once(path_ref, &sidecar)
+        }
+        integrity::VerificationStatus::Unsigned => warn_unsigned_rules_once(path_ref),
+    }
     let file: RuleFile = serde_yaml::from_str(&text)
         .map_err(|e| format!("failed to parse YAML rule file {path}: {e}"))?;
     Ok(file.rules)
+}
+
+fn info_verified_rules_once(path: &Path, sidecar: &Path) {
+    if note_logged_rule_path(&VERIFIED_RULE_PATHS, path) {
+        tracing::info!(
+            "verified response rules {} with sidecar {}",
+            path.display(),
+            sidecar.display()
+        );
+    }
+}
+
+fn warn_unsigned_rules_once(path: &Path) {
+    if !note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, path) {
+        return;
+    }
+    tracing::warn!("response rules {} loaded without a SHA-256 sidecar", path.display());
+}
+
+static VERIFIED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+static WARNED_UNSIGNED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+fn note_logged_rule_path(paths: &'static OnceLock<Mutex<HashSet<String>>>, path: &Path) -> bool {
+    let paths = paths.get_or_init(|| Mutex::new(HashSet::new()));
+    let Ok(mut paths) = paths.lock() else {
+        tracing::debug!("response rules logging cache unavailable for {}", path.display());
+        return false;
+    };
+    let path = path.display().to_string();
+    paths.insert(path)
 }
 
 fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
@@ -281,5 +338,108 @@ impl EngineState {
         }
         self.cooldowns.insert(key, now);
         true
+    }
+
+    fn note_rule_load_error(&mut self, path: &str, err: &str) -> bool {
+        let key = format!("{path}:{err}");
+        if self.last_rule_load_error.as_deref() == Some(key.as_str()) {
+            return false;
+        }
+        self.last_rule_load_error = Some(key);
+        true
+    }
+
+    fn clear_rule_load_error(&mut self) {
+        self.last_rule_load_error = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn signed_rule_file_loads() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.yaml");
+        let yaml = "rules:\n  - name: high score\n    min_score: 9\n    action: block_remote\n";
+        fs::write(&path, yaml).unwrap();
+        write_sidecar(&path, yaml);
+
+        let rules = load_rules(&path.to_string_lossy()).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].name, "high score");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn tampered_signed_rule_file_is_rejected() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.yaml");
+        let original = "rules: []\n";
+        fs::write(&path, original).unwrap();
+        write_sidecar(&path, original);
+        fs::write(&path, "rules:\n  - name: tampered\n").unwrap();
+
+        let err = load_rules(&path.to_string_lossy()).unwrap_err();
+        assert!(err.contains("failed SHA-256 verification"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn repeated_rule_paths_only_log_once() {
+        let path = Path::new("rules.yaml");
+        assert!(note_logged_rule_path(&VERIFIED_RULE_PATHS, path));
+        assert!(!note_logged_rule_path(&VERIFIED_RULE_PATHS, path));
+
+        let other = Path::new("unsigned.yaml");
+        assert!(note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, other));
+        assert!(!note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, other));
+    }
+
+    #[test]
+    fn repeated_rule_load_failures_are_reported_once_until_success() {
+        let mut state = EngineState::default();
+
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
+        assert!(!state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "yaml parse failed"));
+
+        state.clear_rule_load_error();
+
+        assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
+    }
+
+    fn write_sidecar(path: &Path, content: &str) {
+        let digest = Sha256::digest(content.as_bytes());
+        fs::write(
+            integrity::sidecar_path(path),
+            format!("{}  {}\n", hex(&digest), path.file_name().unwrap().to_string_lossy()),
+        )
+        .unwrap();
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = String::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            out.push(HEX[(byte >> 4) as usize] as char);
+            out.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        out
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-response-rules-test-{nanos}"))
     }
 }
