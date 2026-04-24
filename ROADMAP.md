@@ -2,18 +2,6 @@
 
 Each phase ends with a working, runnable binary. No phase leaves the project broken.
 
-## Edition split
-
-Vigil will have two editions:
-- **OPEN** — free, single-endpoint, local-only. The funnel and the reference implementation.
-- **PRO** — paid, recurring. Everything that requires a hosted backend, a subscription feed, or business-grade reporting.
-
-The roadmap split is:
-- **OPEN roadmap**: phases 0–15, plus phase 17 (protocol expansion) and phase 18 (cross-platform parity). Core detection, active response, hardening, anti-tamper, and broader protocol / platform coverage stay free.
-- **PRO roadmap**: phase 16 (fleet + integrations) and phases 19+ (monetization layer — MSP multi-tenant, managed threat-intel feed, compliance reporting, identity context, playbook builder, SaaS-session visibility).
-
-**Solo-dev constraint:** the roadmap intentionally avoids anything that requires a team of humans to run (e.g. an MDR / 24x7 analyst service). Everything on the PRO roadmap is productisable by a single maintainer plus AI tooling.
-
 ---
 
 ## Phase 0 — Scaffolding ✅ COMPLETE
