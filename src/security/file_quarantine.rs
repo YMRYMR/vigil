@@ -19,8 +19,12 @@ pub fn quarantine_integrity_failure(
         .join("quarantine")
         .join("integrity")
         .join(format!("{}-{}", unix_now(), safe_name(primary)));
-    fs::create_dir_all(&dest_dir)
-        .map_err(|e| format!("failed to create quarantine dir {}: {e}", dest_dir.display()))?;
+    fs::create_dir_all(&dest_dir).map_err(|e| {
+        format!(
+            "failed to create quarantine dir {}: {e}",
+            dest_dir.display()
+        )
+    })?;
 
     let mut moved = Vec::new();
     move_if_present(primary, &dest_dir, &mut moved)?;
@@ -57,7 +61,11 @@ fn move_if_present(path: &Path, dest_dir: &Path, moved: &mut Vec<String>) -> Res
     }
     let dest = unique_destination(dest_dir, path);
     fs::rename(path, &dest)
-        .or_else(|_| fs::copy(path, &dest).and_then(|_| fs::remove_file(path)).map(|_| ()))
+        .or_else(|_| {
+            fs::copy(path, &dest)
+                .and_then(|_| fs::remove_file(path))
+                .map(|_| ())
+        })
         .map_err(|e| {
             format!(
                 "failed to move {} to {}: {e}",
@@ -127,7 +135,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let source = dir.join("sample.manifest.json");
         let dest = unique_destination(&dir, &source);
-        assert_eq!(dest.file_name().and_then(|n| n.to_str()), Some("sample.manifest.json"));
+        assert_eq!(
+            dest.file_name().and_then(|n| n.to_str()),
+            Some("sample.manifest.json")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
