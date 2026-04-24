@@ -38,6 +38,7 @@ struct Blocklist {
 
 impl Blocklist {
     fn load(path: &Path) -> Option<Self> {
+        #[cfg(not(test))]
         let _observation = crate::security::operator_provenance::observe_operator_file(
             "blocklist",
             path,
