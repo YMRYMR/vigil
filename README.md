@@ -4,7 +4,13 @@
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
-<code style="color: red"><strong>WARNING! The current version of Vigil works only as a monitor; all active features, like the panic button, are under heavy development.</strong></code>
+Vigil watches every TCP/UDP connection on your machine, scores each one for
+suspicious behaviour, and alerts you — via a system tray icon, desktop
+notification, and a full GUI — the moment something looks wrong.
+
+![Vigil current UI](docs/images/vigil-current.png)
+
+---
 
 ## Download the latest build
 
@@ -41,12 +47,6 @@ embedded Ed25519 public key in the app. You can verify it offline with:
 ```bash
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
-
-Vigil watches every TCP/UDP connection on your machine, scores each one for
-suspicious behaviour, and alerts you — via a system tray icon, desktop
-notification, and a full GUI — the moment something looks wrong.
-
-![Vigil current UI](docs/images/vigil-current.png)
 
 ---
 
