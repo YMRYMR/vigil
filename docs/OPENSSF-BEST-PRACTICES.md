@@ -34,6 +34,17 @@ Required GitHub ruleset / branch protection settings for `master`:
 - block force pushes
 - block direct pushes
 
+Suggested required status checks:
+
+- CI / Format & lint
+- CI / Build & test (x86_64-pc-windows-msvc)
+- CI / Build & test (aarch64-apple-darwin)
+- CI / Build & test (x86_64-unknown-linux-gnu)
+- Artifact hygiene / Check for generated executables and large binaries
+- Secret scan / Scan for common plaintext secret patterns
+- Dependency Review
+- CodeQL
+
 ### OSPS-AC-03.02 — primary branch deletion is sensitive
 
 GitHub repository rulesets / branch protection must prevent deleting `master` or require explicit administrator action outside ordinary development flow.
@@ -55,6 +66,7 @@ Repository controls:
 - workflows use pinned third-party actions where practical
 - release tag metadata is validated before it is used in shell, filenames, manifests, or release assets
 - branch-name use in workflow commands must be sanitized or avoided
+- release filenames are built only from a normalized version string produced by the `validate-release-metadata` job
 
 ### OSPS-BR-01.03 — untrusted code snapshots cannot access privileged credentials
 
@@ -65,6 +77,7 @@ Repository controls:
 - `pull_request` CI uses `permissions: contents: read`
 - release signing and publishing only run on trusted tag pushes in `release.yml`
 - release jobs require repository secrets only in the release workflow, not PR validation workflows
+- workflows must not use `pull_request_target` for untrusted code checkout or build execution
 
 ### OSPS-BR-07.01 — avoid storing secrets in version control
 
@@ -82,7 +95,7 @@ The README and `docs/USER-GUIDE.md` document basic functionality for released bu
 
 ### OSPS-QA-02.01 — dependency list
 
-Rust direct dependencies are declared in `Cargo.toml`. Exact resolved dependencies are tracked in `Cargo.lock` for reproducible application builds.
+Rust direct dependencies are declared in `Cargo.toml`. Exact resolved dependencies are tracked in `Cargo.lock` for reproducible application builds. `docs/DEPENDENCIES.md` summarizes the direct dependency inventory for human review.
 
 ### OSPS-QA-04.01 — codebase inventory
 
