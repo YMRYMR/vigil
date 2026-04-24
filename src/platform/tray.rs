@@ -298,10 +298,6 @@ mod imp {
         }
     }
 
-    // macOS: tray-icon crate runs its event loop via the AppKit run loop
-    // driven by the process's main thread. Since the tray thread here is
-    // a dedicated std::thread, we just poll commands and let tray-icon's
-    // internal handlers process events on their own.
     #[cfg(target_os = "macos")]
     #[allow(clippy::too_many_arguments)]
     fn event_loop(
@@ -380,10 +376,6 @@ mod imp {
     }
 }
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Linux: ksni (pure-Rust StatusNotifierItem, no gtk3)
-// ═════════════════════════════════════════════════════════════════════════════
-
 #[cfg(target_os = "linux")]
 mod imp {
     use super::*;
@@ -417,9 +409,6 @@ mod imp {
         }
     }
 
-    /// Tray state owned by ksni's background task. Menu activation
-    /// callbacks run here and mutate the `Arc<AtomicBool>` / open the
-    /// logs folder directly — no cross-thread channel needed for them.
     struct VigilTray {
         state: IconState,
         show_window: Arc<AtomicBool>,
@@ -431,6 +420,17 @@ mod imp {
         fn wake_ui(&self) {
             self.show_window.store(true, Ordering::Relaxed);
             if let Some(ec) = self.egui_ctx.get() {
+                // Queue the restore commands from the tray callback itself so
+                // Wayland/GNOME can wake a minimized window reliably.
+                ec.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                ec.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ec.send_viewport_cmd(egui::ViewportCommand::Focus);
+                ec.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::AlwaysOnTop,
+                ));
+                ec.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::WindowLevel::Normal,
+                ));
                 ec.request_repaint();
             }
         }
@@ -461,7 +461,6 @@ mod imp {
         }
 
         fn activate(&mut self, _x: i32, _y: i32) {
-            // Left-click on the icon itself.
             self.wake_ui();
         }
 
@@ -500,8 +499,6 @@ mod imp {
             .join(".local/share/icons/hicolor/32x32/apps")
     }
 
-    /// Write embedded ICOs as PNGs to the user's hicolor theme dir so SNI
-    /// hosts (GNOME AppIndicator, KDE tray, etc.) can render them by name.
     fn ensure_themed_icons() {
         let dir = linux_icon_dir();
         if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -541,7 +538,6 @@ mod imp {
         pending_nav: Arc<Mutex<Option<ConnInfo>>>,
         egui_ctx: Arc<OnceLock<egui::Context>>,
     ) {
-        // No display → no SNI host. Skip the tray, still deliver notifications.
         let has_display =
             std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
         let is_root = unsafe { libc::geteuid() == 0 };
@@ -608,8 +604,6 @@ mod imp {
                         apply(&handle, in_alert, in_lockdown);
                     }
                     TrayCmd::ResetOk => {
-                        // Hold the alert icon for ALERT_HOLD so the colour
-                        // change is noticeable.
                         if alert_since.map_or(true, |t| t.elapsed() >= ALERT_HOLD) {
                             in_alert = false;
                             alert_since = None;
@@ -623,7 +617,6 @@ mod imp {
                 }
             }
 
-            // Deferred ResetOk (holding period expired).
             if let Some(t) = alert_since {
                 if t.elapsed() >= ALERT_HOLD && in_alert {
                     in_alert = false;
