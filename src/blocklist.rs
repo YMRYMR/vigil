@@ -1,7 +1,7 @@
 //! IP reputation via user-supplied plain-text blocklists.
 //!
 //! This is the "offline reputation" half of Phase 10.  Active online lookups
-//! (AbuseIPDB, Shodan, VirusTotal) are deferred — they require API keys and
+//! (AbuseIPDB, Shodan, VirusTotal) are deferred - they require API keys and
 //! a network round-trip per check.  A static blocklist is almost as useful:
 //! users can subscribe to community feeds (FireHOL, Emerging Threats,
 //! AbuseIPDB daily dumps) and drop them into `%LOCALAPPDATA%\Vigil\blocklists\`
@@ -25,7 +25,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::RwLock;
 
-// ── One loaded list ──────────────────────────────────────────────────────────
+// -- One loaded list ---------------------------------------------------------
 
 struct Blocklist {
     /// File stem shown in alerts (e.g. "abuseipdb").
@@ -114,7 +114,7 @@ impl Blocklist {
     }
 }
 
-// ── Engine ───────────────────────────────────────────────────────────────────
+// -- Engine ------------------------------------------------------------------
 
 #[derive(Default)]
 pub struct BlocklistEngine {
@@ -153,7 +153,7 @@ impl BlocklistEngine {
     }
 }
 
-// ── Global singleton ─────────────────────────────────────────────────────────
+// -- Global singleton --------------------------------------------------------
 
 static ENGINE: RwLock<Option<BlocklistEngine>> = RwLock::new(None);
 
@@ -173,16 +173,18 @@ pub fn stats() -> (usize, usize) {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// -- Tests -------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn mktmp(content: &str, name: &str) -> std::path::PathBuf {
-        let mut p = std::env::temp_dir();
-        p.push(format!("vigil_bl_test_{}_{}.txt", std::process::id(), name));
+        let dir = unique_temp_dir(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join(format!("{name}.txt"));
         let mut f = std::fs::File::create(&p).unwrap();
         f.write_all(content.as_bytes()).unwrap();
         p
@@ -195,7 +197,7 @@ mod tests {
         assert!(eng.lookup("1.2.3.4").is_some());
         assert!(eng.lookup("185.220.101.1").is_some());
         assert!(eng.lookup("8.8.8.8").is_none());
-        let _ = cleanup_integrity_files(&p);
+        let _ = cleanup_test_dir(&p);
     }
 
     #[test]
@@ -204,7 +206,7 @@ mod tests {
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("10.1.2.3").is_some());
         assert!(eng.lookup("11.1.2.3").is_none());
-        let _ = cleanup_integrity_files(&p);
+        let _ = cleanup_test_dir(&p);
     }
 
     #[test]
@@ -212,7 +214,7 @@ mod tests {
         let p = mktmp("# comment\n\n 1.1.1.1 # trailing\n", "cmt");
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("1.1.1.1").is_some());
-        let _ = cleanup_integrity_files(&p);
+        let _ = cleanup_test_dir(&p);
     }
 
     #[test]
@@ -220,9 +222,8 @@ mod tests {
         let p = mktmp("1.2.3.4\n", "source");
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         let hit = eng.lookup("1.2.3.4").unwrap();
-        // Stem is something like "vigil_bl_test_<pid>_source"
         assert!(hit.contains("source"));
-        let _ = cleanup_integrity_files(&p);
+        let _ = cleanup_test_dir(&p);
     }
 
     #[test]
@@ -236,24 +237,23 @@ mod tests {
         assert!(eng.lookup("203.0.113.10").is_some());
         assert!(eng.lookup("198.51.100.7").is_none());
 
-        let _ = cleanup_integrity_files(&p);
+        let _ = cleanup_test_dir(&p);
     }
 
-    fn cleanup_integrity_files(path: &std::path::Path) -> std::io::Result<()> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("artifact");
-        for candidate in [
-            path.to_path_buf(),
-            path.with_extension(format!("{ext}.sig")),
-            path.with_extension(format!("{ext}.bak")),
-            path.with_extension(format!("{ext}.bak.sig")),
-            path.parent()
-                .unwrap_or_else(|| std::path::Path::new("."))
-                .join("vigil-policy.key"),
-        ] {
-            if candidate.exists() {
-                std::fs::remove_file(candidate)?;
+    fn cleanup_test_dir(path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(dir) = path.parent() {
+            if dir.exists() {
+                std::fs::remove_dir_all(dir)?;
             }
         }
         Ok(())
+    }
+
+    fn unique_temp_dir(name: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-bl-test-{}-{nanos}", name))
     }
 }
