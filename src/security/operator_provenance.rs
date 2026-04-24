@@ -99,7 +99,7 @@ fn observe_operator_file_inner(
     };
 
     let now = unix_now();
-    let mut registry = load_registry(registry_path).unwrap_or_default();
+    let mut registry = load_registry(registry_path)?;
     match registry.files.get_mut(&canonical) {
         Some(entry) if entry.sha256 == fingerprint.sha256 && entry.size_bytes == fingerprint.size_bytes => {
             Ok(Observation::Unchanged)
@@ -296,6 +296,22 @@ mod tests {
             observe_operator_file_inner("blocklist", &file, &registry, false).unwrap(),
             Observation::Missing
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn registry_parse_failure_does_not_reset_provenance() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("rules.yaml");
+        let registry = dir.join("registry.json");
+        fs::write(&file, b"rules: []\n").unwrap();
+        fs::write(&registry, b"not-json").unwrap();
+
+        let err = observe_operator_file_inner("response_rules", &file, &registry, false)
+            .expect_err("corrupt registry must fail closed");
+        assert!(err.contains("failed to parse operator provenance registry"));
+        assert_eq!(fs::read_to_string(&registry).unwrap(), "not-json");
         let _ = fs::remove_dir_all(dir);
     }
 
