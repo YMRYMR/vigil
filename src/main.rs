@@ -182,6 +182,7 @@ fn main() {
         .expect("failed to build tokio runtime");
     let _guard = rt.enter();
 
+    startup_integrity::run();
     let loaded_cfg = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
@@ -189,7 +190,6 @@ fn main() {
             std::process::exit(1);
         }
     };
-    startup_integrity::run();
     startup_integrity::scan_operator_inputs(&loaded_cfg);
     let cfg = Arc::new(RwLock::new(loaded_cfg));
     let cfg_bootstrap = cfg.clone();
