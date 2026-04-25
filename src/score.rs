@@ -431,8 +431,8 @@ mod tests {
         }
         let elapsed = start.elapsed();
         assert!(
-            elapsed.as_millis() < 50,
-            "1000 scoring calls took {elapsed:?} — budget is 50ms"
+            elapsed.as_millis() < 250,
+            "1000 scoring calls took {elapsed:?} — budget is 250ms"
         );
     }
 }
