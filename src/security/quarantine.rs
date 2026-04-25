@@ -143,14 +143,30 @@ fn state_path() -> PathBuf {
 }
 fn load_state() -> Result<State, String> {
     let path = state_path();
-    crate::security::policy::load_struct_with_integrity(&path)
-        .map(|state| state.unwrap_or_default())
-        .map_err(|e| format!("failed to load quarantine state {}: {e}", path.display()))
+    load_state_from_path(&path)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    crate::security::policy::save_struct_with_integrity(&path, state)
+    save_state_to_path(&path, state)
         .map_err(|e| format!("failed to save quarantine state {}: {e}", path.display()))
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| format!("failed to load quarantine state {}: {e}", path.display()))?
+        .ok_or_else(|| {
+            format!(
+                "protected quarantine state {} could not be verified or restored",
+                path.display()
+            )
+        })
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &State) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
 }
 
 #[cfg(windows)]
@@ -248,5 +264,42 @@ mod platform {
                 &buffer[..len as usize],
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn protected_quarantine_state_load_fails_when_existing_state_cannot_be_restored() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil-quarantine-state.json");
+        let state = State {
+            usb_disabled: true,
+            paused_tasks: vec!["TaskA".into(), "TaskB".into()],
+        };
+        save_state_to_path(&path, &state).unwrap();
+        fs::write(&path, br#"{"tampered":true}"#).unwrap();
+        let _ = fs::remove_file(path.with_extension("json.sig"));
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+        let _ = fs::remove_file(path.with_extension("json.bak.sig"));
+
+        let err = load_state_from_path(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-quarantine-test-{nanos}"))
     }
 }
