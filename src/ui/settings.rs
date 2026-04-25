@@ -507,19 +507,11 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                 ui.label(RichText::new(format!("  ends at {:02}:{:02}", draft.scheduled_lockdown_end_hour, draft.scheduled_lockdown_end_minute)).color(theme::TEXT3).size(11.0));
             });
         });
-        ui.label(RichText::new("Overnight windows are supported. Example: 23:00 to 06:00 isolates overnight and restores in the morning.").color(theme::TEXT3).size(10.8));
     });
-    if !draft.scheduled_lockdown_enabled {
-        ui.label(
-            RichText::new("Scheduled lockdown is currently disabled.")
-                .color(theme::TEXT3)
-                .size(10.8),
-        );
-    }
 
     ui.add_space(16.0);
     section_header(ui, "Break-glass recovery");
-    ui.label(RichText::new("When machine isolation is active, Vigil always arms a recovery watchdog. It keeps touching a heartbeat file while the app is alive, and a scheduled watchdog task restores the network if the heartbeat goes stale past the timeout.").color(theme::TEXT2).size(12.0));
+    ui.label(RichText::new("Safety valve for network isolation. While a machine is isolated, Vigil refreshes a heartbeat file; if the heartbeat goes stale, the local OS scheduler runs the same Vigil binary with --break-glass-recover to restore networking automatically.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Fail-safe mode", |ui| {
         ui.label(
@@ -758,7 +750,9 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                     .corner_radius(6.0),
                 )
                 .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Ask for confirmation before uninstalling Vigil and closing the app.");
+                .on_hover_text(
+                    "Ask for confirmation before uninstalling Vigil and closing the app.",
+                );
             if uninstall.clicked() {
                 draft.uninstall_confirm_requested = true;
             }
