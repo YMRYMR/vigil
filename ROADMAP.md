@@ -270,7 +270,40 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 
 ---
 
-## Phase 16 — Cloud Fleet Console & Integrations (PRO backlog)
+## Phase 16 — Public Vulnerability Intelligence & Advisory Feeds (OPEN backlog)
+
+Use free public vulnerability and advisory sources to help Vigil keep the local machine secure, while keeping every decision explainable, conservative, and useful offline from the last trusted cache.
+
+### Source ingestion and normalization
+- [ ] **NVD ingestion** — scheduled pull + local cache for NVD CVE, CPE, CPE-match, and change-history data with source attribution, rate-limit-aware sync, and local incremental updates
+- [ ] **EUVD ingestion** — ingest EUVD records and preserve EU-specific aliases, references, mitigation guidance, exploitation indicators, and coordinator metadata
+- [ ] **JVN ingestion** — ingest MyJVN / JVN iPedia records and preserve vendor, product, advisory, and remediation metadata where it complements NVD coverage
+- [ ] **Public advisory ingestion for NCSC and BSI** — ingest public RSS, advisory, and malware-analysis content only; do not depend on closed, partner-only, or registration-gated feeds
+- [ ] **Normalized vulnerability record model** — shared schema for CVE/advisory/source/affected product/version/severity/exploitation/references/mitigation/provenance so multiple sources can coexist cleanly
+- [ ] **Signed local source cache** — store fetched records and source snapshots as tamper-evident local state with expiry, rollback-safe refresh, and operator-visible source health/status
+
+### Endpoint relevance and matching
+- [ ] **Local software inventory and version discovery** — broaden process, file, package, service, and installed-software collection so Vigil can reason about what is actually present on the machine, not just what is currently connecting
+- [ ] **Product normalization + vendor aliasing** — reconcile executable names, publishers, package names, app bundles, services, and installer metadata into stable vendor/product identities
+- [ ] **Version comparison engine** — compare installed versions against advisory ranges conservatively across semver, vendor-specific, and OS package version formats
+- [ ] **CPE / product matching pipeline** — map local software identities to CPEs or equivalent source-native product identifiers with confidence scoring and operator-visible explainability
+- [ ] **Connection-to-software correlation** — tie a live process or service back to the relevant installed product record so advisory matches can appear in the existing Inspector and Alerts workflows
+
+### Operator value and protection outcomes
+- [ ] **Local advisory inspector** — show matched public advisories, CVEs, severity, known-exploitation flags, fixed versions, mitigation links, and source references for the selected process or installed product
+- [ ] **Conservative scoring hooks** — optionally raise score only when a live process or exposed service maps with high confidence to a severe or exploited public vulnerability, with clear reasons and low-noise defaults
+- [ ] **Mitigation-aware response rules** — let operators build response rules around advisory attributes such as exploited status, vendor guidance, affected product, fixed-version absence, or exposure on the public internet
+- [ ] **Public-source-to-blocklist/rule-pack conversion** — derive optional signed local IP, domain, hash, or process rule packs from high-confidence public advisories and NCSC/BSI technical content where indicators are explicitly published
+- [ ] **Exposure-first prioritization** — prioritize vulnerabilities that are both relevant to the local machine and actually exposed through a running process, listening service, or browser-facing component
+- [ ] **Offline-first and fail-closed behaviour** — keep protection working from the last trusted cache, never weaken existing detection if source refresh fails, and surface stale or partial-source state clearly to the operator
+
+### Docs and policy
+- [ ] **Attribution / terms compliance** — document source-specific attribution, caching, redistribution, and update-frequency rules for NVD, EUVD, JVN, NCSC public content, and BSI public content
+- [ ] **Operator guidance** — explain what a “matched advisory” means, what confidence limits remain, and why a public CVE match is not by itself proof of compromise
+
+---
+
+## Phase 17 — Cloud Fleet Console & Integrations (PRO backlog)
 
 The single most important phase for turning Vigil into a business. Without a hosted console there is no recurring-revenue surface and no SMB / MSP path. Designed to be buildable and operable by a solo maintainer + AI tooling (managed service, Postgres + Rust/Axum backend, small React/egui-web frontend, no on-call rotation required).
 
@@ -292,7 +325,7 @@ The single most important phase for turning Vigil into a business. Without a hos
 
 ---
 
-## Phase 17 — Protocol Expansion (OPEN backlog)
+## Phase 18 — Protocol Expansion (OPEN backlog)
 
 Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
 
@@ -309,7 +342,7 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 
 ---
 
-## Phase 18 — Cross-platform Detection Parity (OPEN backlog)
+## Phase 19 — Cross-platform Detection Parity (OPEN backlog)
 
 Windows and Linux now have first-class detection and active-response support. Broadening to macOS and unifying the monitor architecture unlocks mixed-OS deployments. Mobile is explicitly out of scope.
 
@@ -328,9 +361,9 @@ Windows and Linux now have first-class detection and active-response support. Br
 
 ---
 
-## Phase 19 — MSP Multi-tenant & White-label (PRO backlog)
+## Phase 20 — MSP Multi-tenant & White-label (PRO backlog)
 
-Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 16.
+Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 17.
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails
@@ -340,7 +373,7 @@ Unlocks the highest-conversion channel for a solo-run security product: managed 
 
 ---
 
-## Phase 20 — Managed Threat Intel Feed (PRO backlog)
+## Phase 21 — Managed Threat Intel Feed (PRO backlog)
 
 Turns PRO from a one-time install into a subscription with a clear renewal trigger. Intentionally designed around curation of public and community feeds plus Vigil-specific derived signals, not an in-house research team.
 
@@ -352,7 +385,7 @@ Turns PRO from a one-time install into a subscription with a clear renewal trigg
 
 ---
 
-## Phase 21 — Compliance Reporting Pack (PRO backlog)
+## Phase 22 — Compliance Reporting Pack (PRO backlog)
 
 Single biggest lever for selling into regulated SMB verticals (legal, healthcare, financial advisors, MSPs serving them). Pairs naturally with the Phase 15 tamper-evident logging already in the OPEN tier.
 
@@ -364,7 +397,7 @@ Single biggest lever for selling into regulated SMB verticals (legal, healthcare
 
 ---
 
-## Phase 22 — Identity & User Context (PRO backlog)
+## Phase 23 — Identity & User Context (PRO backlog)
 
 Modern detections hinge on who, not just what. Adds identity attribution so alerts can differentiate a connection initiated by a domain admin from one initiated by a kiosk user.
 
@@ -376,7 +409,7 @@ Modern detections hinge on who, not just what. Adds identity attribution so aler
 
 ---
 
-## Phase 23 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+## Phase 24 — Playbook Builder & SaaS-session Visibility (PRO backlog)
 
 Two differentiators bundled together because each alone is narrow, but together they round out the "modern endpoint" story.
 
@@ -410,11 +443,12 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 4.x | 13 | Optimization & efficiency | ✅ Feature complete |
 | 5.x | 14 | Hardening & self-defence | ✅ Done |
 | 5.x | 15 | File integrity & anti-tamper (OPEN) | 🚧 In progress |
-| 6.x | 17 | Protocol expansion (OPEN) | 🔲 Backlog |
-| 7.x | 18 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
-| PRO 1.x | 16 | Cloud fleet console & integrations | 🔲 Backlog |
-| PRO 1.x | 19 | MSP multi-tenant & white-label | 🔲 Backlog |
-| PRO 1.x | 20 | Managed threat intel feed | 🔲 Backlog |
-| PRO 1.x | 21 | Compliance reporting pack | 🔲 Backlog |
-| PRO 1.x | 22 | Identity & user context | 🔲 Backlog |
-| PRO 1.x | 23 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
+| 6.x | 16 | Public vulnerability intelligence & advisory feeds (OPEN) | 🔲 Backlog |
+| 7.x | 18 | Protocol expansion (OPEN) | 🔲 Backlog |
+| 8.x | 19 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
+| PRO 1.x | 17 | Cloud fleet console & integrations | 🔲 Backlog |
+| PRO 1.x | 20 | MSP multi-tenant & white-label | 🔲 Backlog |
+| PRO 1.x | 21 | Managed threat intel feed | 🔲 Backlog |
+| PRO 1.x | 22 | Compliance reporting pack | 🔲 Backlog |
+| PRO 1.x | 23 | Identity & user context | 🔲 Backlog |
+| PRO 1.x | 24 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
