@@ -4,7 +4,7 @@
 //! wrapped with an integrity sidecar and a signed backup so casual tampering or
 //! corruption can be detected and repaired on load.
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
 use std::fs;
 use std::io::Write;

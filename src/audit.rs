@@ -174,7 +174,10 @@ fn verify_chain_at(path: &PathBuf) -> Result<(String, bool), String> {
 }
 
 fn hash_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 fn audit_state() -> &'static Mutex<AuditState> {
