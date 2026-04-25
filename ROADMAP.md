@@ -303,7 +303,43 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 
 ---
 
-## Phase 17 — Cloud Fleet Console & Integrations (PRO backlog)
+## Phase 17 — Protocol Expansion (OPEN backlog)
+
+Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
+
+### Planned scope
+- [ ] **QUIC visibility** — add QUIC-aware monitoring as the highest-priority protocol expansion, including UDP-based flow visibility, protocol tagging, and conservative detection/scoring hooks where attribution is strong enough
+- [ ] **ICMP telemetry** — add ICMP as a separate diagnostics / network-signal stream rather than as fake connection rows, covering operator-useful events such as echo activity and other notable ICMP behaviour
+- [ ] **Protocol-aware core model** — generalise the internal event / connection model so protocol, confidence, and protocol-specific semantics are first-class instead of assuming every record behaves like TCP
+- [ ] **UI protocol surfacing** — show protocol identity and protocol-specific summaries clearly in the Activity / Alerts views and inspector
+- [ ] **Protocol-aware baselining and scoring** — keep QUIC and other future protocols separable from TCP baselines so novelty and risk remain explainable
+
+### Optional scope
+- [ ] **SCTP support (optional)** — add SCTP visibility only if a concrete deployment need justifies the extra protocol-specific complexity
+- [ ] **DCCP support (optional)** — add DCCP visibility only if a clear real-world use case appears; otherwise keep it out of the default scope
+
+---
+
+## Phase 18 — Cross-platform Detection Parity (OPEN backlog)
+
+Windows and Linux now have first-class detection and active-response support. Broadening to macOS and unifying the monitor architecture unlocks mixed-OS deployments. Mobile is explicitly out of scope.
+
+**macOS — Endpoint Security Framework**
+- [ ] **Endpoint Security system extension** — build a signed `EndpointSecurity.framework` subscriber that receives `ES_EVENT_TYPE_NOTIFY_EXEC`, `ES_EVENT_TYPE_NOTIFY_CONNECT`, and related event types with full process-token and ancestor metadata
+- [ ] **Network Extension visibility** — supplement with `NEFilterProvider` / `NEAppProxyProvider` for traffic-level metadata where Endpoint Security alone is insufficient
+- [ ] **Code-signing and notarization path** — document the Apple Developer signing, entitlement (`com.apple.developer.endpoint-security.client`), and notarization requirements; gate behind a build feature flag so development builds still work without signing
+- [ ] **DTrace as a fallback** — if the system extension is unavailable (e.g. SIP-enabled environments without admin approval), use `dtrace` TCP probes as a degraded-realtime path
+- [ ] **Graceful fallback** — if the system extension is not approved or the binary is not signed, fall back to the existing `netstat`-style polling with a visible "Endpoint Security unavailable" operator notice
+
+**Shared integration**
+- [ ] **Monitor trait unification** — refactor `src/monitor/` so the existing ETW fast path, the eBPF module, and the new ES module all implement a common `EventSource` trait consumed by the same `Monitor` hub, with `tokio::select!` merging whichever sources are active
+- [ ] **Cross-platform latency benchmark** — measure p50/p95 detection latency on each platform with the new backends and compare against the polling baseline; target < 200ms on Linux (eBPF) and < 300ms on macOS (Endpoint Security)
+- [ ] **Installer and autostart parity** — launchd / systemd service units, signed installers, pkg / deb / rpm / AppImage polish
+- [ ] **Cross-platform test fixtures** — CI coverage and detection regression tests on all three OSes
+
+---
+
+## Phase 19 — Cloud Fleet Console & Integrations (PRO backlog)
 
 The single most important phase for turning Vigil into a business. Without a hosted console there is no recurring-revenue surface and no SMB / MSP path. Designed to be buildable and operable by a solo maintainer + AI tooling (managed service, Postgres + Rust/Axum backend, small React/egui-web frontend, no on-call rotation required).
 
@@ -325,45 +361,9 @@ The single most important phase for turning Vigil into a business. Without a hos
 
 ---
 
-## Phase 18 — Protocol Expansion (OPEN backlog)
-
-Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
-
-### Planned scope
-- [ ] **QUIC visibility** — add QUIC-aware monitoring as the highest-priority protocol expansion, including UDP-based flow visibility, protocol tagging, and conservative detection/scoring hooks where attribution is strong enough
-- [ ] **ICMP telemetry** — add ICMP as a separate diagnostics / network-signal stream rather than as fake connection rows, covering operator-useful events such as echo activity and other notable ICMP behaviour
-- [ ] **Protocol-aware core model** — generalise the internal event / connection model so protocol, confidence, and protocol-specific semantics are first-class instead of assuming every record behaves like TCP
-- [ ] **UI protocol surfacing** — show protocol identity and protocol-specific summaries clearly in the Activity / Alerts views and inspector
-- [ ] **Protocol-aware baselining and scoring** — keep QUIC and other future protocols separable from TCP baselines so novelty and risk remain explainable
-
-### Optional scope
-- [ ] **SCTP support (optional)** — add SCTP visibility only if a concrete deployment need justifies the extra protocol-specific complexity
-- [ ] **DCCP support (optional)** — add DCCP visibility only if a clear real-world use case appears; otherwise keep it out of the default scope
-
----
-
-## Phase 19 — Cross-platform Detection Parity (OPEN backlog)
-
-Windows and Linux now have first-class detection and active-response support. Broadening to macOS and unifying the monitor architecture unlocks mixed-OS deployments. Mobile is explicitly out of scope.
-
-**macOS — Endpoint Security Framework**
-- [ ] **Endpoint Security system extension** — build a signed `EndpointSecurity.framework` subscriber that receives `ES_EVENT_TYPE_NOTIFY_EXEC`, `ES_EVENT_TYPE_NOTIFY_CONNECT`, and related event types with full process-token and ancestor metadata
-- [ ] **Network Extension visibility** — supplement with `NEFilterProvider` / `NEAppProxyProvider` for traffic-level metadata where Endpoint Security alone is insufficient
-- [ ] **Code-signing and notarization path** — document the Apple Developer signing, entitlement (`com.apple.developer.endpoint-security.client`), and notarization requirements; gate behind a build feature flag so development builds still work without signing
-- [ ] **DTrace as a fallback** — if the system extension is unavailable (e.g. SIP-enabled environments without admin approval), use `dtrace` TCP probes as a degraded-realtime path
-- [ ] **Graceful fallback** — if the system extension is not approved or the binary is not signed, fall back to the existing `netstat`-style polling with a visible "Endpoint Security unavailable" operator notice
-
-**Shared integration**
-- [ ] **Monitor trait unification** — refactor `src/monitor/` so the existing ETW fast path, the eBPF module, and the new ES module all implement a common `EventSource` trait consumed by the same `Monitor` hub, with `tokio::select!` merging whichever sources are active
-- [ ] **Cross-platform latency benchmark** — measure p50/p95 detection latency on each platform with the new backends and compare against the polling baseline; target < 200ms on Linux (eBPF) and < 300ms on macOS (Endpoint Security)
-- [ ] **Installer and autostart parity** — launchd / systemd service units, signed installers, pkg / deb / rpm / AppImage polish
-- [ ] **Cross-platform test fixtures** — CI coverage and detection regression tests on all three OSes
-
----
-
 ## Phase 20 — MSP Multi-tenant & White-label (PRO backlog)
 
-Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 17.
+Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 19.
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails
@@ -444,9 +444,9 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 5.x | 14 | Hardening & self-defence | ✅ Done |
 | 5.x | 15 | File integrity & anti-tamper (OPEN) | 🚧 In progress |
 | 6.x | 16 | Public vulnerability intelligence & advisory feeds (OPEN) | 🔲 Backlog |
-| 7.x | 18 | Protocol expansion (OPEN) | 🔲 Backlog |
-| 8.x | 19 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
-| PRO 1.x | 17 | Cloud fleet console & integrations | 🔲 Backlog |
+| 7.x | 17 | Protocol expansion (OPEN) | 🔲 Backlog |
+| 8.x | 18 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
+| PRO 1.x | 19 | Cloud fleet console & integrations | 🔲 Backlog |
 | PRO 1.x | 20 | MSP multi-tenant & white-label | 🔲 Backlog |
 | PRO 1.x | 21 | Managed threat intel feed | 🔲 Backlog |
 | PRO 1.x | 22 | Compliance reporting pack | 🔲 Backlog |
