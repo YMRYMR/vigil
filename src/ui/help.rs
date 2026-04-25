@@ -84,11 +84,26 @@ pub fn show(ui: &mut egui::Ui) {
                     });
 
                     card(ui, "Integrity and provenance", |ui| {
-                        body(ui, "Vigil treats operator-managed inputs differently from its own generated state. Blocklists and response-rule YAML may change on purpose, so Vigil records first-seen and changed hashes in a protected local provenance registry instead of treating every edit as corruption.");
+                        body(
+                            ui,
+                            "Vigil treats operator-managed inputs differently from its own generated state. Blocklists and response-rule YAML may change on purpose, so Vigil records first-seen and changed hashes in a protected local provenance registry instead of treating every edit as corruption.",
+                        );
                         ui.add_space(6.0);
-                        bullet(ui, "Optional sidecars", "Place <filename>.sha256 beside a blocklist or rules file in normal sha256sum format to require an exact hash match before Vigil loads it.");
-                        bullet(ui, "Startup scan", "Each launch records integrity scan results in the audit trail so missing, unreadable, changed, or newly seen inputs are visible to the operator.");
-                        bullet(ui, "Artifact quarantine", "If a Vigil-owned forensic artifact no longer matches its manifest, Vigil logs the failure and moves the manifest and related files into the integrity quarantine instead of leaving them beside trusted evidence.");
+                        bullet(
+                            ui,
+                            "Optional sidecars",
+                            "Place <filename>.sha256 beside a blocklist or rules file in normal sha256sum format to require an exact hash match before Vigil loads it.",
+                        );
+                        bullet(
+                            ui,
+                            "Startup scan",
+                            "Each launch records integrity scan results in the audit trail so missing, unreadable, changed, or newly seen inputs are visible to the operator.",
+                        );
+                        bullet(
+                            ui,
+                            "Artifact quarantine",
+                            "If a Vigil-owned forensic artifact no longer matches its manifest, Vigil logs the failure and moves the manifest and related files into the integrity quarantine instead of leaving them beside trusted evidence.",
+                        );
                     });
 
                     card(ui, "Forensics and honeypots", |ui| {
@@ -154,7 +169,12 @@ pub fn show(ui: &mut egui::Ui) {
             card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, TLS ClientHello enrichment, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
             card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
-            card(ui, "Integrity and provenance", |ui| { body(ui, "Optional .sha256 sidecars can hard-verify blocklists and response-rule files. Vigil also records first-seen and changed hashes for those operator-managed inputs, logs startup integrity results, and quarantines corrupted forensic artifacts when their manifests no longer match."); });
+            card(ui, "Integrity and provenance", |ui| {
+                body(
+                    ui,
+                    "Optional .sha256 sidecars can hard-verify blocklists and response-rule files. Vigil also records first-seen and changed hashes for those operator-managed inputs, logs startup integrity results, and quarantines corrupted forensic artifacts when their manifests no longer match.",
+                );
+            });
             card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings."); });
             card(ui, "Secure updates", |ui| { body(ui, "Each release ships a signed update manifest and signature. Vigil can verify the manifest offline against the embedded trust anchor before you trust a downloaded asset."); });
             card(ui, "Break-glass recovery", |ui| { body(ui, "Watchdog-based recovery can restore networking after an isolation lockout if Vigil dies and the heartbeat goes stale."); });
