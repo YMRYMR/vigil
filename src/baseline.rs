@@ -193,24 +193,40 @@ fn state_path() -> PathBuf {
 
 fn load_state() -> Result<BaselineState, String> {
     let path = state_path();
-    crate::security::policy::load_struct_with_integrity(&path)
-        .map(|state| state.unwrap_or_default())
-        .map_err(|e| {
-            format!(
-                "failed to load behavioural baselines {}: {e}",
-                path.display()
-            )
-        })
+    load_state_from_path(&path)
 }
 
 fn save_state(state: &BaselineState) -> Result<(), String> {
     let path = state_path();
-    crate::security::policy::save_struct_with_integrity(&path, state).map_err(|e| {
+    save_state_to_path(&path, state).map_err(|e| {
         format!(
             "failed to save behavioural baselines {}: {e}",
             path.display()
         )
     })
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<BaselineState, String> {
+    if !path.exists() {
+        return Ok(BaselineState::default());
+    }
+    crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| {
+            format!(
+                "failed to load behavioural baselines {}: {e}",
+                path.display()
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "protected behavioural baselines {} could not be verified or restored",
+                path.display()
+            )
+        })
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &BaselineState) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
 }
 
 fn unix_now() -> u64 {
@@ -223,6 +239,9 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn profile_key_uses_normalised_components() {
@@ -282,5 +301,42 @@ mod tests {
             !state.entries.contains_key("test-profile-0"),
             "oldest profile should have been evicted"
         );
+    }
+
+    #[test]
+    fn protected_baselines_load_fails_when_existing_state_cannot_be_restored() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil-behaviour-baselines.json");
+        let mut state = BaselineState::default();
+        state.entries.insert(
+            "powershell|microsoft|powershell.exe".into(),
+            BaselineEntry {
+                observations: 9,
+                first_seen_unix: 1,
+                last_seen_unix: 2,
+                remotes: vec!["203.0.113.10".into()],
+                ports: vec![443],
+                countries: vec!["us".into()],
+            },
+        );
+        save_state_to_path(&path, &state).unwrap();
+        fs::write(&path, br#"{"tampered":true}"#).unwrap();
+        let _ = fs::remove_file(path.with_extension("json.sig"));
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+        let _ = fs::remove_file(path.with_extension("json.bak.sig"));
+
+        let err = load_state_from_path(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-baseline-test-{nanos}"))
     }
 }
