@@ -109,8 +109,13 @@ pub fn observe(
         || observations % 16 == 0;
     if should_save {
         let state = runtime.state.clone();
-        if save_state(&state).is_ok() {
-            runtime.last_save_unix = now;
+        match save_state(&state) {
+            Ok(()) => {
+                runtime.last_save_unix = now;
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to save protected behavioural baseline state");
+            }
         }
     }
 
@@ -126,7 +131,13 @@ pub fn observe(
 fn manager() -> &'static Mutex<RuntimeState> {
     static MANAGER: OnceLock<Mutex<RuntimeState>> = OnceLock::new();
     MANAGER.get_or_init(|| {
-        let state = load_state().unwrap_or_default();
+        let state = match load_state() {
+            Ok(state) => state,
+            Err(err) => {
+                tracing::error!(%err, "failed to load protected behavioural baseline state");
+                BaselineState::default()
+            }
+        };
         Mutex::new(RuntimeState {
             state,
             last_save_unix: unix_now(),
@@ -182,23 +193,15 @@ fn state_path() -> PathBuf {
 
 fn load_state() -> Result<BaselineState, String> {
     let path = state_path();
-    if !path.exists() {
-        return Ok(BaselineState::default());
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    crate::security::policy::load_struct_with_integrity(&path)
+        .map(|state| state.unwrap_or_default())
+        .map_err(|e| format!("failed to load behavioural baselines {}: {e}", path.display()))
 }
 
 fn save_state(state: &BaselineState) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise behavioural baselines: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    crate::security::policy::save_struct_with_integrity(&path, state)
+        .map_err(|e| format!("failed to save behavioural baselines {}: {e}", path.display()))
 }
 
 fn unix_now() -> u64 {

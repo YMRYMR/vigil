@@ -17,6 +17,8 @@ This guide covers the basic functionality available in released Vigil builds.
 2. Drag `Vigil.app` to Applications.
 3. Launch Vigil and approve any operating system prompts that are required for network visibility.
 
+Current macOS builds use a degraded fallback path because the native Endpoint Security backend is not integrated yet. When `dtrace` is available and permitted, Vigil uses DTrace-assisted polling to surface new connections faster; otherwise it falls back to polling-only. Detection remains functional, but coverage is still behind the Windows ETW and Linux eBPF paths, and privileged features currently require launching from an elevated shell.
+
 ### Linux
 
 1. Download the Linux AppImage from the latest GitHub Release.
@@ -98,6 +100,8 @@ Generated artifacts are stored under the Vigil data directory unless a custom pa
 Vigil writes rolling logs and an audit stream under the per-user Vigil data directory. The tray menu includes an **Open Logs Folder** shortcut.
 
 Audit events include active response actions, integrity scan summaries, uninstall attempts, and other security-relevant state changes.
+
+At launch, Vigil also verifies protected policy state, operator-managed blocklists and rule files, and forensic artifact manifests. Blocklists and response-rule YAML files must have matching SHA-256 sidecars; Vigil combines that verification with a protected local provenance registry, so an expected local edit shows up as a warning while a missing sidecar, mismatch, or unreadable file is treated as a failure. Corrupted forensic artifact sets are moved under `quarantine/integrity/` in the Vigil data directory so they are no longer mixed with trusted evidence.
 
 ## Boot-time service mode
 

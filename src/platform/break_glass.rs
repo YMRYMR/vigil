@@ -48,8 +48,17 @@ pub fn sync_watchdog(cfg: &Config) -> Result<(), String> {
 }
 
 pub fn recover_if_stale() -> i32 {
-    let Some(state) = load_state().ok().flatten() else {
-        return 0;
+    let state = match load_state() {
+        Ok(Some(state)) => state,
+        Ok(None) => return 0,
+        Err(err) => {
+            audit::record(
+                "break_glass_recovery",
+                "error",
+                json!({ "error": err, "reason": "failed to load protected break-glass state" }),
+            );
+            return 1;
+        }
     };
     if !active_response::status().isolated {
         let _ = disarm();
@@ -113,7 +122,7 @@ fn arm(cfg: &Config) -> Result<(), String> {
     }
     if let Err(err) = touch_heartbeat() {
         let _ = platform::delete_recovery_task(TASK_NAME);
-        let _ = std::fs::remove_file(state_path());
+        let _ = crate::security::policy::remove_json_with_integrity(&state_path());
         return Err(err);
     }
     audit::record(
@@ -130,7 +139,7 @@ fn arm(cfg: &Config) -> Result<(), String> {
 
 pub fn disarm() -> Result<(), String> {
     let _ = platform::delete_recovery_task(TASK_NAME);
-    let _ = std::fs::remove_file(state_path());
+    let _ = crate::security::policy::remove_json_with_integrity(&state_path());
     let _ = std::fs::remove_file(heartbeat_path());
     Ok(())
 }
@@ -168,24 +177,13 @@ fn unix_now() -> u64 {
 
 fn load_state() -> Result<Option<RecoveryState>, String> {
     let path = state_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    crate::security::policy::load_struct_with_integrity(&path)
+        .map_err(|e| format!("failed to load break-glass state {}: {e}", path.display()))
 }
 fn save_state(state: &RecoveryState) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise break-glass state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    crate::security::policy::save_struct_with_integrity(&path, state)
+        .map_err(|e| format!("failed to save break-glass state {}: {e}", path.display()))
 }
 
 #[cfg(windows)]

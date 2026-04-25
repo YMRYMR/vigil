@@ -3,9 +3,9 @@
 //! The rule file is optional and operator-controlled. Rules are evaluated in
 //! order; the first matching rule wins. Current actions intentionally reuse the
 //! existing active-response primitives so every action stays reversible and
-//! audited in the same way as the built-in controls. If `<rules-file>.sha256`
-//! exists beside the YAML file, Vigil verifies the SHA-256 digest before parsing
-//! and refuses tampered rule files.
+//! audited in the same way as the built-in controls. `<rules-file>.sha256`
+//! is required beside the YAML file; Vigil verifies the SHA-256 digest before
+//! parsing and refuses missing or tampered rule files.
 
 use crate::{
     active_response, audit,
@@ -140,7 +140,6 @@ fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
         integrity::VerificationStatus::Verified { sidecar } => {
             info_verified_rules_once(path_ref, &sidecar)
         }
-        integrity::VerificationStatus::Unsigned => warn_unsigned_rules_once(path_ref),
     }
     let file: RuleFile = serde_yaml::from_str(&text)
         .map_err(|e| format!("failed to parse YAML rule file {path}: {e}"))?;
@@ -157,18 +156,7 @@ fn info_verified_rules_once(path: &Path, sidecar: &Path) {
     }
 }
 
-fn warn_unsigned_rules_once(path: &Path) {
-    if !note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, path) {
-        return;
-    }
-    tracing::warn!(
-        "response rules {} loaded without a SHA-256 sidecar",
-        path.display()
-    );
-}
-
 static VERIFIED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-static WARNED_UNSIGNED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 fn note_logged_rule_path(paths: &'static OnceLock<Mutex<HashSet<String>>>, path: &Path) -> bool {
     let paths = paths.get_or_init(|| Mutex::new(HashSet::new()));
@@ -397,14 +385,22 @@ mod tests {
     }
 
     #[test]
+    fn missing_sidecar_rule_file_is_rejected() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.yaml");
+        fs::write(&path, "rules: []\n").unwrap();
+
+        let err = load_rules(&path.to_string_lossy()).unwrap_err();
+        assert!(err.contains("missing required SHA-256 sidecar"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn repeated_rule_paths_only_log_once() {
         let path = Path::new("rules.yaml");
         assert!(note_logged_rule_path(&VERIFIED_RULE_PATHS, path));
         assert!(!note_logged_rule_path(&VERIFIED_RULE_PATHS, path));
-
-        let other = Path::new("unsigned.yaml");
-        assert!(note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, other));
-        assert!(!note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, other));
     }
 
     #[test]

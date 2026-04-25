@@ -11,7 +11,7 @@ use serde_json::json;
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
@@ -187,7 +187,16 @@ impl DurationPreset {
 }
 
 pub fn status() -> Status {
-    let state = load_state().unwrap_or_default();
+    let state = match load_state() {
+        Ok(state) => state,
+        Err(err) => {
+            note_state_load_error_once("status", &err);
+            return Status {
+                isolated: platform::isolation_controls_active(&State::default()).unwrap_or(false),
+                ..Status::default()
+            };
+        }
+    };
     let now = unix_now();
     Status {
         blocked_rules: state.blocked.len() + state.blocked_processes.len(),
@@ -200,7 +209,9 @@ pub fn status() -> Status {
     }
 }
 pub fn has_frozen_autoruns() -> bool {
-    load_state().ok().and_then(|s| s.autorun_snapshot).is_some()
+    load_state_for_query("has_frozen_autoruns")
+        .and_then(|s| s.autorun_snapshot)
+        .is_some()
 }
 pub fn can_modify_firewall() -> bool {
     platform::is_supported() && platform::is_elevated()
@@ -227,7 +238,7 @@ pub fn can_apply_quarantine_profile(pid: u32, path: &str) -> bool {
 pub fn freeze_autoruns() -> Result<String, String> {
     ensure_modifiable()?;
     let snapshot = platform::snapshot_autoruns()?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let count = snapshot.entries.len();
     state.autorun_snapshot = Some(snapshot);
     save_state(&state)?;
@@ -239,7 +250,7 @@ pub fn freeze_autoruns() -> Result<String, String> {
 }
 pub fn revert_frozen_autoruns() -> Result<String, String> {
     ensure_modifiable()?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let Some(snapshot) = state.autorun_snapshot.clone() else {
         return Err("No autorun baseline has been captured yet.".into());
     };
@@ -295,7 +306,7 @@ pub fn suspend_process(pid: u32, path: &str, proc_name: &str) -> Result<String, 
     platform::suspend_process(pid)?;
     let path = path.trim().to_string();
     let proc_name = proc_name.trim().to_string();
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     state
         .suspended_processes
         .retain(|entry| !suspended_process_matches(entry, pid, &path));
@@ -325,7 +336,7 @@ pub fn resume_process(pid: u32, path: &str) -> Result<String, String> {
     }
     platform::resume_process(pid)?;
     let path = path.trim().to_string();
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let before = state.suspended_processes.len();
     state
         .suspended_processes
@@ -349,7 +360,7 @@ pub fn block_domain(domain: &str) -> Result<String, String> {
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
     platform::add_domain_block(&domain, &marker)?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     state.blocked_domains.retain(|entry| entry.domain != domain);
     state.blocked_domains.push(BlockedDomain {
         domain: domain.clone(),
@@ -368,7 +379,7 @@ pub fn unblock_domain(domain: &str) -> Result<String, String> {
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
     platform::remove_domain_block(&domain, &marker)?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let before = state.blocked_domains.len();
     state.blocked_domains.retain(|entry| entry.domain != domain);
     let removed = before.saturating_sub(state.blocked_domains.len());
@@ -498,6 +509,7 @@ pub fn reconcile() {
         return;
     }
     let Ok(mut state) = load_state() else {
+        note_state_load_error_once("reconcile", "failed to load protected active-response state");
         return;
     };
     let now = unix_now();
@@ -515,9 +527,15 @@ pub fn reconcile() {
         state.network_snapshot = None;
         state.isolation_started_unix = None;
         state.isolation_expires_unix = None;
-        let _ = save_state(&state);
-        let cfg = crate::config::Config::load();
-        let _ = crate::break_glass::sync_watchdog(&cfg);
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("reconcile_stale_isolation_state_save", &err);
+        }
+        match crate::config::Config::load() {
+            Ok(cfg) => {
+                let _ = crate::break_glass::sync_watchdog(&cfg);
+            }
+            Err(err) => note_state_load_error_once("reconcile_config", &err),
+        }
         audit::record(
             "reconcile_stale_isolation_state",
             "success",
@@ -550,7 +568,9 @@ pub fn reconcile() {
         platform::delete_rule(rule_name).is_ok()
     });
     if changed {
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("reconcile_save", &err);
+        }
     }
 }
 pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
@@ -562,7 +582,7 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
     let _ = platform::delete_rule(&rule_name);
     platform::add_block_rule(&rule_name, &target)?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     state.blocked.retain(|rule| rule.target != target);
     state.blocked.push(BlockedTarget {
         target: target.clone(),
@@ -585,7 +605,7 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
 pub fn unblock_remote(target: &str) -> Result<String, String> {
     ensure_modifiable()?;
     let target = normalise_target(target)?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let mut removed = 0usize;
     let mut kept = Vec::with_capacity(state.blocked.len());
     let mut delete_failed = false;
@@ -634,7 +654,7 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         let _ = platform::delete_rule(&outbound_rule_name);
         return Err(err);
     }
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     state
         .blocked_processes
         .retain(|rule| !process_block_matches(rule, &path));
@@ -661,7 +681,7 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
 pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     ensure_modifiable()?;
     let path = normalise_target(path)?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let mut removed = 0usize;
     let mut kept = Vec::with_capacity(state.blocked_processes.len());
     let mut delete_failed = false;
@@ -700,9 +720,9 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
     let now = unix_now();
-    let cfg = crate::config::Config::load();
+    let cfg = crate::config::Config::load()?;
     let timeout_secs = (cfg.break_glass_timeout_mins.clamp(1, 240) * 60).min(ISOLATION_MAX_SECS);
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let controls_active = platform::isolation_controls_active(&state).unwrap_or(false);
     if controls_active {
         state.isolated = true;
@@ -728,7 +748,9 @@ pub fn isolate_machine() -> Result<String, String> {
         state.network_snapshot = None;
         state.isolation_started_unix = None;
         state.isolation_expires_unix = None;
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("isolate_machine_clear_stale_state", &err);
+        }
     }
     let firewall_snapshot = platform::snapshot_firewall_profiles().ok();
     state.firewall_snapshot = firewall_snapshot.clone();
@@ -743,7 +765,9 @@ pub fn isolate_machine() -> Result<String, String> {
         state.isolation_started_unix = None;
         state.isolation_expires_unix = None;
         state.isolated = false;
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("isolate_machine_watchdog_abort", &err);
+        }
         return Err(format!(
             "Could not arm crash-recovery watchdog; isolation aborted: {err}"
         ));
@@ -797,7 +821,7 @@ pub fn isolate_machine() -> Result<String, String> {
         if let Some(snapshot) = firewall_snapshot.as_ref() {
             let _ = platform::restore_firewall_profiles(snapshot);
         }
-        let recovery_state = load_state().unwrap_or_default();
+        let recovery_state = load_state()?;
         if let Some(snapshot) = recovery_state.network_snapshot.as_ref() {
             let _ = platform::enable_active_adapters(snapshot);
         }
@@ -810,7 +834,9 @@ pub fn isolate_machine() -> Result<String, String> {
         state.isolation_started_unix = None;
         state.isolation_expires_unix = None;
         state.isolated = false;
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("isolate_machine_probe_failure", &err);
+        }
         let _ = crate::break_glass::sync_watchdog(&cfg);
         let details = if warnings.is_empty() {
             "outbound connectivity is still reachable".to_string()
@@ -864,7 +890,7 @@ pub fn isolate_machine() -> Result<String, String> {
 }
 pub fn restore_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let mut state = load_state().unwrap_or_default();
+    let mut state = load_state()?;
     let had_isolation_intent =
         state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
     let firewall_snapshot = state.firewall_snapshot.clone();
@@ -949,9 +975,13 @@ pub fn restore_machine() -> Result<String, String> {
             state.isolation_started_unix = None;
             state.isolation_expires_unix = None;
             save_state(&state)?;
-            let cfg = crate::config::Config::load();
-            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
-                warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+            match crate::config::Config::load() {
+                Ok(cfg) => {
+                    if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+                        warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+                    }
+                }
+                Err(err) => warnings.push(format!("config load failed during watchdog cleanup: {err}")),
             }
             audit::record(
                 "restore_machine_stale_state_cleared",
@@ -971,9 +1001,13 @@ pub fn restore_machine() -> Result<String, String> {
     state.isolation_started_unix = None;
     state.isolation_expires_unix = None;
     save_state(&state)?;
-    let cfg = crate::config::Config::load();
-    if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
-        warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+    match crate::config::Config::load() {
+        Ok(cfg) => {
+            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
+                warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
+            }
+        }
+        Err(err) => warnings.push(format!("config load failed during watchdog cleanup: {err}")),
     }
     audit::record(
         "restore_machine",
@@ -994,8 +1028,7 @@ pub fn is_blocked(target: &str) -> bool {
     let Ok(target) = normalise_target(target) else {
         return false;
     };
-    load_state()
-        .ok()
+    load_state_for_query("is_blocked")
         .map(|state| state.blocked.iter().any(|r| r.target == target))
         .unwrap_or(false)
 }
@@ -1003,8 +1036,7 @@ pub fn is_domain_blocked(domain: &str) -> bool {
     let Ok(domain) = normalise_domain(domain) else {
         return false;
     };
-    load_state()
-        .ok()
+    load_state_for_query("is_domain_blocked")
         .map(|state| {
             state
                 .blocked_domains
@@ -1016,8 +1048,7 @@ pub fn is_domain_blocked(domain: &str) -> bool {
 pub fn remote_block_remaining(target: &str) -> Option<Duration> {
     let target = normalise_target(target).ok()?;
     let now = unix_now();
-    load_state()
-        .ok()
+    load_state_for_query("remote_block_remaining")
         .and_then(|state| {
             state
                 .blocked
@@ -1032,8 +1063,7 @@ pub fn is_process_blocked(_pid: u32, path: &str) -> bool {
     let Ok(path) = normalise_target(path) else {
         return false;
     };
-    load_state()
-        .ok()
+    load_state_for_query("is_process_blocked")
         .map(|state| {
             state
                 .blocked_processes
@@ -1045,8 +1075,7 @@ pub fn is_process_blocked(_pid: u32, path: &str) -> bool {
 pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
     let path = normalise_target(path).ok()?;
     let now = unix_now();
-    load_state()
-        .ok()
+    load_state_for_query("process_block_remaining")
         .and_then(|state| {
             state
                 .blocked_processes
@@ -1058,8 +1087,7 @@ pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 pub fn is_process_suspended(pid: u32, path: &str) -> bool {
-    load_state()
-        .ok()
+    load_state_for_query("is_process_suspended")
         .map(|state| {
             state
                 .suspended_processes
@@ -1260,28 +1288,48 @@ fn load_state() -> Result<State, String> {
     }
 
     let path = state_path();
-    let state = if !path.exists() {
-        State::default()
-    } else {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-        serde_json::from_str(&text)
-            .map_err(|e| format!("failed to parse {}: {e}", path.display()))?
-    };
+    let state = crate::security::policy::load_struct_with_integrity(&path)
+        .map_err(|e| format!("failed to load active-response state {}: {e}", path.display()))?
+        .unwrap_or_default();
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(state)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise active-response state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))?;
+    crate::security::policy::save_struct_with_integrity(&path, state)
+        .map_err(|e| format!("failed to save active-response state {}: {e}", path.display()))?;
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(())
+}
+
+fn load_state_for_query(context: &str) -> Option<State> {
+    match load_state() {
+        Ok(state) => Some(state),
+        Err(err) => {
+            note_state_load_error_once(context, &err);
+            None
+        }
+    }
+}
+
+fn note_state_load_error_once(context: &str, err: &str) {
+    static LAST_ERROR: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+    let cache = LAST_ERROR.get_or_init(|| Mutex::new(None));
+    let message = format!("{context}:{err}");
+    let Ok(mut last) = cache.lock() else {
+        tracing::error!(context, %err, "active-response state load failed");
+        return;
+    };
+    if last.as_deref() == Some(message.as_str()) {
+        return;
+    }
+    *last = Some(message);
+    tracing::error!(context, %err, "active-response state load failed");
+    audit::record(
+        "active_response_state",
+        "error",
+        json!({ "context": context, "error": err }),
+    );
 }
 fn state_cache() -> &'static RwLock<Option<State>> {
     static CACHE: OnceLock<RwLock<Option<State>>> = OnceLock::new();

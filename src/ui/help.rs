@@ -76,7 +76,7 @@ pub fn show(ui: &mut egui::Ui) {
                     });
 
                     card(ui, "User-defined response rules", |ui| {
-                        body(ui, "Response rules are loaded from an operator-supplied YAML file. Rules are evaluated in order, first match wins, and they can either dry-run or execute the same containment primitives used elsewhere in Vigil.");
+                        body(ui, "Response rules are loaded from an operator-supplied YAML file. Rules are evaluated in order, first match wins, and they can either dry-run or execute the same containment primitives used elsewhere in Vigil. The YAML file must have a matching .sha256 sidecar beside it or Vigil refuses to load it.");
                         ui.add_space(6.0);
                         bullet(ui, "Supported conditions", "Minimum score, unsigned, pre-login, reputation hit, DGA-like hostname, recently dropped, long-lived, process name contains, and remote/hostname contains.");
                         bullet(ui, "Supported actions", "kill_connection, block_remote, block_process, and quarantine.");
@@ -98,6 +98,15 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
                         bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
                         bullet(ui, "Watchdog task", "Vigil uses an OS scheduler entry to run the same binary with --break-glass-recover (Windows Task Scheduler, Linux cron, macOS launchd).");
+                    });
+
+                    #[cfg(target_os = "macos")]
+                    card(ui, "macOS status", |ui| {
+                        body(ui, "The current macOS build still lacks the native Endpoint Security backend. When DTrace is available, Vigil uses DTrace-assisted polling to surface new connections faster; otherwise it falls back to polling-only. Vigil remains usable, but several active-response features are still behind Windows and Linux.");
+                        ui.add_space(6.0);
+                        bullet(ui, "Monitoring", "DTrace-assisted polling is the preferred macOS fallback; plain polling remains the final degraded path.");
+                        bullet(ui, "Privileges", "Privileged features currently require launching Vigil from an elevated shell; in-app elevation is not available yet.");
+                        bullet(ui, "Response scope", "macOS currently supports network isolation, but not the full per-process, per-domain, and per-connection response surface.");
                     });
 
                     #[cfg(target_os = "linux")]
@@ -127,7 +136,7 @@ pub fn show(ui: &mut egui::Ui) {
                         ui.add_space(6.0);
                         bullet(ui, "geoip_city_db / geoip_asn_db", "MaxMind files that add country and ASN metadata.");
                         bullet(ui, "allowed_countries", "Restrict normal destinations to known-good countries.");
-                        bullet(ui, "blocklist_paths", "Plain-text IP or CIDR lists for offline reputation hits.");
+                        bullet(ui, "blocklist_paths", "Plain-text IP or CIDR lists for offline reputation hits. Each listed file must also have a matching .sha256 sidecar.");
                         bullet(ui, "fswatch_enabled", "Correlate fresh file drops with new connections.");
                         bullet(ui, "reverse_dns_enabled", "Off by default because it leaks inspection activity.");
                     });
@@ -142,11 +151,12 @@ pub fn show(ui: &mut egui::Ui) {
             });
         } else {
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
-            card(ui, "Active response", |ui| { body(ui, "Active response includes connection kill, remote and process blocking, domain blocking, suspension, autorun freeze / revert, full quarantine, and machine isolation. Isolation is strict and reversible across supported platforms."); });
+            card(ui, "Active response", |ui| { body(ui, "Active response includes machine isolation on supported platforms, with broader per-connection and per-process controls where the current OS backend supports them. Isolation is strict and reversible across supported platforms."); });
             card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, TLS ClientHello enrichment, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
             card(ui, "Auto response and allowlisting", |ui| { body(ui, "Auto response is optional and can dry-run. Allowlist-only mode can force containment for traffic from processes outside the trusted list, explicit allowlist, and current Microsoft-signed system processes."); });
-            card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. See response-rules.example.yaml."); });
-            card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings."); });
+            card(ui, "User-defined response rules", |ui| { body(ui, "Operator-supplied YAML rules can dry-run or execute kill_connection, block_remote, block_process, and quarantine actions. The YAML file must have a matching .sha256 sidecar. See response-rules.example.yaml."); });
+            card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings. Forensic capture support is currently broadest on Windows."); });
+            card(ui, "Startup integrity", |ui| { body(ui, "At launch, Vigil verifies protected policy state, operator-managed inputs, and forensic artifact manifests. Warnings and failures show up as in-app notifications, and corrupted artifact sets are moved under quarantine/integrity in the Vigil data directory."); });
             card(ui, "Secure updates", |ui| { body(ui, "Each release ships a signed update manifest and signature. Vigil can verify the manifest offline against the embedded trust anchor before you trust a downloaded asset."); });
             card(ui, "Break-glass recovery", |ui| { body(ui, "Watchdog-based recovery can restore networking after an isolation lockout if Vigil dies and the heartbeat goes stale."); });
         }

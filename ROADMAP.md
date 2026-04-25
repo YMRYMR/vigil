@@ -262,10 +262,10 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 - [x] Integrity verification for Vigil-owned generated state — behavioural baselines, active-response state, break-glass recovery state, and quarantine state now use the same integrity sidecar / backup recovery path as the policy store
 - [x] Secure audit-log chaining — audit entries are hash-chained and verified at startup so edits or removal become visible
 - [x] Forensic artifact provenance and checksum manifests — PCAP captures, TLS sidecars, and process dumps now get `.manifest.json` sidecars with SHA-256, size, alert context, and capture metadata
+- [x] Startup integrity scan with clear operator-visible failure modes — startup scans now persist a protected report, surface warnings/failures in the app, and quarantine corrupted forensic artifact sets instead of leaving them beside trusted evidence
 
 ### Remaining backlog
-- [ ] Provenance model for operator-managed blocklists and response-rule YAML files that detects malicious tampering without treating intentional local edits as corruption
-- [ ] Startup integrity scan with clear operator-visible failure modes
+- [x] Provenance model for operator-managed blocklists and response-rule YAML files that detects malicious tampering without treating intentional local edits as corruption
 - [ ] Recovery / quarantine path for corrupted or untrusted Vigil-owned files beyond the current signed-backup restore paths
 
 ---
@@ -328,8 +328,8 @@ Windows and Linux now have first-class detection and active-response support. Br
 - [ ] **Endpoint Security system extension** — build a signed `EndpointSecurity.framework` subscriber that receives `ES_EVENT_TYPE_NOTIFY_EXEC`, `ES_EVENT_TYPE_NOTIFY_CONNECT`, and related event types with full process-token and ancestor metadata
 - [ ] **Network Extension visibility** — supplement with `NEFilterProvider` / `NEAppProxyProvider` for traffic-level metadata where Endpoint Security alone is insufficient
 - [ ] **Code-signing and notarization path** — document the Apple Developer signing, entitlement (`com.apple.developer.endpoint-security.client`), and notarization requirements; gate behind a build feature flag so development builds still work without signing
-- [ ] **DTrace as a fallback** — if the system extension is unavailable (e.g. SIP-enabled environments without admin approval), use `dtrace` TCP probes as a degraded-realtime path
-- [ ] **Graceful fallback** — if the system extension is not approved or the binary is not signed, fall back to the existing `netstat`-style polling with a visible "Endpoint Security unavailable" operator notice
+- [x] **DTrace as a fallback** — current macOS builds now use `dtrace` connect triggers as a degraded-realtime path when available, then resolve real socket metadata through an immediate trusted re-poll
+- [x] **Graceful fallback** — if the native macOS backend is unavailable, Vigil now shows an explicit operator notice and falls back to DTrace-assisted polling when possible, or `netstat`-style polling when not
 
 **Shared integration**
 - [ ] **Monitor trait unification** — refactor `src/monitor/` so the existing ETW fast path, the eBPF module, and the new ES module all implement a common `EventSource` trait consumed by the same `Monitor` hub, with `tokio::select!` merging whichever sources are active

@@ -45,7 +45,7 @@ pub enum Observation {
 }
 
 pub fn observe_operator_file(kind: &str, path: &Path) -> Observation {
-    match observe_operator_file_inner(kind, path, &registry_path(), true) {
+    match observe_operator_file_checked(kind, path) {
         Ok(observation) => observation,
         Err(err) => {
             audit::record(
@@ -60,6 +60,18 @@ pub fn observe_operator_file(kind: &str, path: &Path) -> Observation {
             Observation::Unreadable
         }
     }
+}
+
+pub fn observe_operator_file_checked(kind: &str, path: &Path) -> Result<Observation, String> {
+    observe_operator_file_inner(kind, path, &registry_path(), true)
+}
+
+pub(crate) fn observe_operator_file_at(
+    kind: &str,
+    path: &Path,
+    registry_path: &Path,
+) -> Result<Observation, String> {
+    observe_operator_file_inner(kind, path, registry_path, false)
 }
 
 fn observe_operator_file_inner(

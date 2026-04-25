@@ -232,11 +232,11 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         );
         *changed |= resp.changed();
     });
-    ui.label(RichText::new("Supported rule actions currently include kill_connection, block_remote, block_process, and quarantine.").color(theme::TEXT3).size(10.8));
+    ui.label(RichText::new("Supported rule actions currently include kill_connection, block_remote, block_process, and quarantine. The YAML file must have a matching .sha256 sidecar beside it or Vigil will refuse to load it.").color(theme::TEXT3).size(10.8));
 
     ui.add_space(16.0);
     section_header(ui, "Scheduled lockdown");
-    ui.label(RichText::new("Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible firewall rules as the panic button and is currently implemented on Windows.").color(theme::TEXT2).size(12.0));
+    ui.label(RichText::new("Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible network-isolation controls as the panic button and only runs when that capability is available on the current OS.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable schedule", |ui| {
         *changed |= ui

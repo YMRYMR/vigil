@@ -8,8 +8,8 @@
 //! <64 hex chars>  optional-filename
 //! ```
 //!
-//! Files without a sidecar are still loaded for backward compatibility, but a
-//! sidecar mismatch is treated as untrusted input and fails closed.
+//! Operator-managed inputs must now carry a sidecar. Missing, malformed, or
+//! mismatched sidecars are treated as untrusted input and fail closed.
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -21,12 +21,11 @@ const SIDECAR_SUFFIX: &str = "sha256";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VerificationStatus {
     Verified { sidecar: PathBuf },
-    Unsigned,
 }
 
 /// Read a file and verify it against `<filename>.sha256` when that sidecar is
-/// present. Missing sidecars are allowed so existing deployments keep working;
-/// malformed sidecars or digest mismatches are hard failures.
+/// present. Missing sidecars, malformed sidecars, or digest mismatches are
+/// hard failures.
 pub fn read_verified(path: &Path, purpose: &str) -> Result<(Vec<u8>, VerificationStatus), String> {
     let data =
         fs::read(path).map_err(|e| format!("failed to read {purpose} {}: {e}", path.display()))?;
@@ -34,7 +33,11 @@ pub fn read_verified(path: &Path, purpose: &str) -> Result<(Vec<u8>, Verificatio
     match fs::symlink_metadata(&sidecar) {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok((data, VerificationStatus::Unsigned));
+            return Err(format!(
+                "{purpose} {} is missing required SHA-256 sidecar {}",
+                path.display(),
+                sidecar.display()
+            ));
         }
         Err(e) => {
             return Err(format!(
@@ -161,14 +164,14 @@ mod tests {
     }
 
     #[test]
-    fn missing_sidecar_is_legacy_unsigned() {
+    fn missing_sidecar_fails_closed() {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("legacy.txt");
-        fs::write(&path, b"legacy\n").unwrap();
+        let path = dir.join("strict.txt");
+        fs::write(&path, b"strict\n").unwrap();
 
-        let (_, status) = read_verified(&path, "legacy").unwrap();
-        assert_eq!(status, VerificationStatus::Unsigned);
+        let err = read_verified(&path, "strict").unwrap_err();
+        assert!(err.contains("missing required SHA-256 sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 

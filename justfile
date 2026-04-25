@@ -11,9 +11,6 @@ build:
 release:
     cargo build --release
 
-# Alias kept for backward compat with the roadmap
-build-windows: release
-
 # Run the test suite
 test:
     cargo test

@@ -22,7 +22,17 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
         use crate::audit;
         use serde_json::json;
 
-        let mut state = load_state().unwrap_or_default();
+        let mut state = match load_state() {
+            Ok(state) => state,
+            Err(err) => {
+                audit::record(
+                    "quarantine_extended_apply",
+                    "error",
+                    json!({ "error": err }),
+                );
+                return (Vec::new(), vec![format!("quarantine state load failed: {err}")]);
+            }
+        };
         let mut applied = Vec::new();
         let mut warnings = Vec::new();
         match platform::disable_usb_storage() {
@@ -43,7 +53,9 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
             }
             Err(err) => warnings.push(format!("scheduled-task pause failed: {err}")),
         }
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            warnings.push(format!("quarantine state save failed: {err}"));
+        }
         audit::record(
             "quarantine_extended_apply",
             if warnings.is_empty() {
@@ -70,7 +82,17 @@ pub fn clear() -> (Vec<String>, Vec<String>) {
         use crate::audit;
         use serde_json::json;
 
-        let state = load_state().unwrap_or_default();
+        let state = match load_state() {
+            Ok(state) => state,
+            Err(err) => {
+                audit::record(
+                    "quarantine_extended_clear",
+                    "error",
+                    json!({ "error": err }),
+                );
+                return (Vec::new(), vec![format!("quarantine state load failed: {err}")]);
+            }
+        };
         let mut cleared = Vec::new();
         let mut warnings = Vec::new();
         if state.usb_disabled {
@@ -89,7 +111,7 @@ pub fn clear() -> (Vec<String>, Vec<String>) {
                 Err(err) => warnings.push(format!("scheduled-task resume failed: {err}")),
             }
         }
-        let _ = std::fs::remove_file(state_path());
+        let _ = crate::security::policy::remove_json_with_integrity(&state_path());
         audit::record(
             "quarantine_extended_clear",
             if warnings.is_empty() {
@@ -115,22 +137,14 @@ fn state_path() -> PathBuf {
 }
 fn load_state() -> Result<State, String> {
     let path = state_path();
-    if !path.exists() {
-        return Ok(State::default());
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    crate::security::policy::load_struct_with_integrity(&path)
+        .map(|state| state.unwrap_or_default())
+        .map_err(|e| format!("failed to load quarantine state {}: {e}", path.display()))
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
-    }
-    let text = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise quarantine state: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    crate::security::policy::save_struct_with_integrity(&path, state)
+        .map_err(|e| format!("failed to save quarantine state {}: {e}", path.display()))
 }
 
 #[cfg(windows)]

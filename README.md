@@ -70,8 +70,13 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
 ## Features
 
 - **Sub-100 ms detection** on Windows via ETW (Event Tracing for Windows);
-  on Linux via eBPF (`sock:inet_sock_set_state` tracepoint); polling fallback
-  on macOS and older kernels
+  on Linux via eBPF (`sock:inet_sock_set_state` tracepoint); DTrace-assisted
+  fallback on macOS when available; polling fallback on older kernels and other
+  degraded paths
+- **Visible backend status** — the header now makes it clear whether Vigil is
+  running on ETW, eBPF, DTrace-assisted fallback, or a polling fallback, and
+  current macOS builds show an explicit native-backend fallback notice instead
+  of implying full Endpoint Security coverage
 - **Multi-signal threat scoring** (0–10+) across eight detection categories
 - **Full ancestor process tree** — see exactly which process spawned which,
   up to 8 levels deep
@@ -231,8 +236,9 @@ unknown, and disables `Kill` for unresolved PID placeholder rows like
 ### Active response
 
 The top bar also reflects privilege state: it shows an `Admin` badge when
-Vigil is elevated, or a `Run as Admin` button that relaunches the app with
-UAC if it is not.
+Vigil is elevated. On Windows and Linux, the app can also offer an in-app
+elevation action when that relaunch path is supported. Current macOS builds
+require starting Vigil from an elevated shell for privileged features.
 
 When Vigil is running with elevated privileges (admin on Windows,
 `CAP_NET_ADMIN` or root on Linux), the Inspector can take reversible action:
@@ -350,8 +356,10 @@ Drop plain-text blocklists anywhere and list them:
 }
 ```
 
-Format: one IP or CIDR per line, `#` starts a comment. Hits add **+3**
-and the Alerts row gets a red `REP` badge naming the source list.
+Format: one IP or CIDR per line, `#` starts a comment. Each blocklist file
+must have a matching `<filename>.sha256` sidecar in standard `sha256sum`
+format or Vigil will refuse to load it. Hits add **+3** and the Alerts row
+gets a red `REP` badge naming the source list.
 
 ### File-drop correlation
 

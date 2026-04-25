@@ -11,9 +11,9 @@
 //! - One IP (v4 or v6) or CIDR per line.
 //! - `#` to end-of-line is a comment.
 //! - Blank lines are ignored.
-//! - Optional integrity sidecar: place `<blocklist>.sha256` beside the file,
-//!   containing a SHA-256 digest in standard `sha256sum` format. If present,
-//!   Vigil verifies it before parsing and fails closed on mismatch.
+//! - Required integrity sidecar: place `<blocklist>.sha256` beside the file,
+//!   containing a SHA-256 digest in standard `sha256sum` format. Vigil verifies
+//!   it before parsing and fails closed if it is missing or mismatched.
 //!
 //! Example `abuseipdb.txt`:
 //! ```text
@@ -51,13 +51,6 @@ impl Blocklist {
                     "verified blocklist {} with sidecar {}",
                     path.display(),
                     sidecar.display()
-                );
-                text
-            }
-            Ok((text, integrity::VerificationStatus::Unsigned)) => {
-                tracing::warn!(
-                    "blocklist {} has no SHA-256 sidecar; loading as legacy unsigned input",
-                    path.display()
                 );
                 text
             }
@@ -271,5 +264,13 @@ mod tests {
         assert_eq!(eng.list_count(), 0);
         assert!(eng.lookup("203.0.113.5").is_none());
         let _ = std::fs::remove_file(integrity::sidecar_path(&p));
+    }
+
+    #[test]
+    fn missing_sidecar_rejects_blocklist() {
+        let p = mktmp("203.0.113.6\n", "unsigned");
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert_eq!(eng.list_count(), 0);
+        assert!(eng.lookup("203.0.113.6").is_none());
     }
 }
