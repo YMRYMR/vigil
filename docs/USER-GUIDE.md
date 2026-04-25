@@ -2,6 +2,19 @@
 
 This guide covers the basic functionality available in released Vigil builds.
 
+## What Vigil is for
+
+Vigil is a local machine protection tool with a network-first view.
+
+It is built to help you:
+
+- see suspicious network and process activity quickly
+- understand which local process is responsible and why it looks risky
+- contain a process, connection, or machine when you decide the risk is real
+- preserve evidence and an audit trail for follow-up investigation
+
+Vigil is intentionally conservative about action. Scores and advisory context are there to help an operator make better decisions, not to pretend every suspicious connection is a confirmed compromise.
+
 ## Install and launch
 
 ### Windows
@@ -69,9 +82,18 @@ Policy-sensitive settings require Admin Mode when protected policy editing is en
 
 The Help tab summarizes scoring, controls, and safe operating guidance inside the app.
 
-## Active response
+## Common operator workflows
 
-When Vigil has the needed privileges, it can perform reversible response actions:
+### Investigate a suspicious connection
+
+1. Open **Alerts** or **Activity**.
+2. Select the process or connection.
+3. Review the Inspector for the executable path, parent chain, remote endpoint, score reasons, and any enrichment badges.
+4. Decide whether the activity is expected, merely unusual, or worth containing.
+
+### Contain something without losing the thread
+
+When Vigil is elevated and the selected item supports it, you can take reversible action from the Inspector:
 
 - kill a live TCP connection
 - suspend or resume a process
@@ -81,6 +103,27 @@ When Vigil has the needed privileges, it can perform reversible response actions
 - restore networking after isolation
 
 Temporary actions show countdowns and unblock controls. Isolation always arms break-glass recovery so networking can be restored if Vigil crashes.
+
+### Capture evidence on high-confidence alerts
+
+When forensic capture is enabled, Vigil can preserve:
+
+- process memory dumps
+- short PCAP captures
+- TLS sidecar metadata
+- provenance manifests with SHA-256 and alert context
+
+Generated artifacts are stored under the Vigil data directory unless a custom path is configured.
+
+## Privileges and visibility
+
+Vigil does more with elevated privileges, but it is still usable without them.
+
+- On Windows, elevation enables ETW-backed near-real-time visibility and active response actions.
+- On Linux, elevated privileges or the needed capabilities are required for actions such as firewall-based containment and some deeper monitoring paths.
+- On macOS, the app may rely on OS-granted visibility and falls back where deeper system hooks are unavailable.
+
+The header and controls are meant to make that state visible so you can tell when Vigil is observing only, and when it is able to act.
 
 ## Forensics
 
