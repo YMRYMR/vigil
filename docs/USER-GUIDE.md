@@ -77,6 +77,10 @@ The Settings tab stores changes automatically. Common settings include:
 - uninstall confirmation flow
 
 Policy-sensitive settings require Admin Mode when protected policy editing is enabled.
+Configured blocklists and response-rule YAML stay operator-managed: Vigil can
+verify optional `.sha256` sidecars when you provide them, and it also records
+first-seen and changed hashes in its protected local provenance registry so
+later edits are visible without treating every intentional update as corruption.
 
 ### Help
 
@@ -141,6 +145,11 @@ Generated artifacts are stored under the Vigil data directory unless a custom pa
 Vigil writes rolling logs and an audit stream under the per-user Vigil data directory. The tray menu includes an **Open Logs Folder** shortcut.
 
 Audit events include active response actions, integrity scan summaries, uninstall attempts, and other security-relevant state changes.
+At startup, Vigil also checks configured operator-managed inputs and Vigil-owned
+forensic artifact manifests. Changed blocklists or response-rule files are
+recorded as provenance events, while unreadable or tampered Vigil-owned
+artifacts are logged as integrity failures and may be moved into the integrity
+quarantine under the data directory.
 
 ## Boot-time service mode
 

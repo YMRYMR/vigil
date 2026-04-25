@@ -379,6 +379,12 @@ Drop plain-text blocklists anywhere and list them:
 
 Format: one IP or CIDR per line, `#` starts a comment. Hits add **+3**
 and the Alerts row gets a red `REP` badge naming the source list.
+If you place `<blocklist>.sha256` beside the file in normal `sha256sum`
+format, Vigil verifies the list before loading it and refuses mismatched
+content. Even without a sidecar, Vigil still records first-seen and changed
+hashes for configured blocklists and response-rule files in its protected
+local provenance registry so silent edits show up in the audit trail instead
+of being mistaken for normal application state.
 
 ### File-drop correlation
 
