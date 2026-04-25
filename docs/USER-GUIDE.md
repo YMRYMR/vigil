@@ -11,7 +11,7 @@ It is built to help you:
 - see suspicious network and process activity quickly
 - understand which local process is responsible and why it looks risky
 - contain a process, connection, or machine when you decide the risk is real
-- preserve evidence and an audit trail for follow-up investigation
+- preserve an audit trail for follow-up investigation and, on Windows today, capture forensic artifacts
 
 Vigil is intentionally conservative about action. Scores and advisory context are there to help an operator make better decisions, not to pretend every suspicious connection is a confirmed compromise.
 
@@ -72,7 +72,7 @@ The Settings tab stores changes automatically. Common settings include:
 - user-defined response rules
 - scheduled lockdown
 - break-glass recovery timeout
-- forensic capture options
+- forensic capture options (Windows today)
 - honeypot decoy settings
 - uninstall confirmation flow
 
