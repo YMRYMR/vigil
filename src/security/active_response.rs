@@ -2501,14 +2501,12 @@ mod platform {
             return Ok(false);
         }
         let current = snapshot_active_adapters()?;
-        let mut saw_known_adapter = false;
         for adapter in &snapshot.adapters {
             if current
                 .adapters
                 .iter()
                 .any(|item| item.name == adapter.name)
             {
-                saw_known_adapter = true;
                 return Ok(false);
             }
         }
