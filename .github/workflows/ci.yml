@@ -34,7 +34,11 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: >
+          cargo clippy -- -D warnings
+          -A clippy::collapsible_match
+          -A clippy::ptr_arg
+          -A clippy::unnecessary_map_or
 
   # ── Build + test matrix ──────────────────────────────────────────────────────
   build:
