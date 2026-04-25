@@ -63,6 +63,25 @@ jobs:
           approved_large_binary_assets = {
               Path('assets/vigil_logo.png'),
           }
+
+          def is_probably_binary(data: bytes) -> bool:
+              """Detect binary content without relying only on early NUL bytes."""
+              if not data:
+                  return False
+              if b'\0' in data:
+                  return True
+              try:
+                  text = data.decode('utf-8')
+              except UnicodeDecodeError:
+                  return True
+              if not text:
+                  return False
+              allowed_controls = {'\n', '\r', '\t', '\f', '\b'}
+              control_count = sum(
+                  1 for char in text if ord(char) < 32 and char not in allowed_controls
+              )
+              return control_count / max(len(text), 1) > 0.30
+
           offenders = []
           for path in Path('.').rglob('*'):
               if not path.is_file():
@@ -70,7 +89,7 @@ jobs:
               if '.git' in path.parts or 'target' in path.parts:
                   continue
               data = path.read_bytes()
-              if b'\0' not in data[:4096]:
+              if not is_probably_binary(data[:8192]):
                   continue
               if path in approved_large_binary_assets and path.suffix.lower() in allowed_binary_suffixes:
                   continue
