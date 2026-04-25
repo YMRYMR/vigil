@@ -650,10 +650,7 @@ impl VigilApp {
                     format!("Uninstall failed: {err}"),
                     std::time::Instant::now(),
                 ));
-                self.push_notification(
-                    NotificationKind::Error,
-                    format!("Uninstall failed: {err}"),
-                );
+                self.push_notification(NotificationKind::Error, format!("Uninstall failed: {err}"));
             }
         }
     }
@@ -664,1155 +661,207 @@ impl VigilApp {
             Tab::Alerts => self.selected_alert.clone(),
             _ => None,
         };
+        let Some(info) = selected_info else {
+            return;
+        };
         match action {
-            inspector::Action::Trust => {
-                if let Some(info) = selected_info {
-                    if !has_known_location(&info) {
-                        return;
-                    }
-                    if !crate::autostart::is_elevated() {
-                        self.push_notification(
-                            NotificationKind::Error,
-                            "Admin Mode is required to trust a process.",
-                        );
-                        return;
-                    }
-                    let mut cfg = self.cfg.write().unwrap();
-                    if cfg.add_trusted(&info.proc_name) {
-                        cfg.save();
-                        self.settings = settings::SettingsDraft::from_config(&cfg);
-                    }
-                }
+            inspector::Action::KillConnection(conn) => {
+                self.response_confirm = Some(PendingResponse::KillConnection(Box::new(conn)));
             }
-            inspector::Action::OpenLocation => {
-                if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        let path = std::path::Path::new(&info.proc_path);
-                        let dir = path.parent().unwrap_or(path);
-                        let _ = open::that(dir);
-                    }
-                }
+            inspector::Action::BlockRemote { target, preset } => {
+                self.response_confirm = Some(PendingResponse::BlockRemote { target, preset });
             }
-            inspector::Action::Kill => self.kill_confirm = true,
+            inspector::Action::BlockDomain { domain } => {
+                self.response_confirm = Some(PendingResponse::BlockDomain { domain });
+            }
+            inspector::Action::BlockProcess { preset } => {
+                self.response_confirm = Some(PendingResponse::BlockProcess {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                    preset,
+                });
+            }
             inspector::Action::SuspendProcess => {
-                if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::SuspendProcess {
-                        pid: info.pid,
-                        path: info.proc_path,
-                        proc_name: info.proc_name,
-                    });
-                }
+                self.response_confirm = Some(PendingResponse::SuspendProcess {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                    proc_name: info.proc_name.clone(),
+                });
             }
             inspector::Action::ResumeProcess => {
-                if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::ResumeProcess {
-                        pid: info.pid,
-                        path: info.proc_path,
-                    });
-                }
+                self.response_confirm = Some(PendingResponse::ResumeProcess {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                });
             }
             inspector::Action::FreezeAutoruns => {
-                self.response_confirm = Some(PendingResponse::FreezeAutoruns)
+                self.response_confirm = Some(PendingResponse::FreezeAutoruns);
             }
             inspector::Action::RevertAutoruns => {
-                self.response_confirm = Some(PendingResponse::RevertAutoruns)
+                self.response_confirm = Some(PendingResponse::RevertAutoruns);
             }
             inspector::Action::QuarantineProfile => {
-                if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::QuarantineProfile {
-                        pid: info.pid,
-                        path: info.proc_path,
-                        proc_name: info.proc_name,
-                    });
-                }
+                self.response_confirm = Some(PendingResponse::QuarantineProfile {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                    proc_name: info.proc_name.clone(),
+                });
             }
             inspector::Action::ClearQuarantineProfile => {
-                if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::ClearQuarantineProfile {
-                        pid: info.pid,
-                        path: info.proc_path,
-                    });
-                }
+                self.response_confirm = Some(PendingResponse::ClearQuarantineProfile {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                });
             }
-            inspector::Action::BlockRemote(preset) => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
-                            self.response_confirm =
-                                Some(PendingResponse::BlockRemote { target, preset });
-                        }
-                    }
-                }
+            inspector::Action::UnblockRemote(target) => {
+                self.response_confirm = Some(PendingResponse::UnblockRemote(target));
             }
-            inspector::Action::BlockDomain => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(domain) = active_response::extract_domain_target(conn) {
-                            self.response_confirm = Some(PendingResponse::BlockDomain { domain });
-                        }
-                    }
-                }
-            }
-            inspector::Action::BlockProcess(preset) => {
-                if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::BlockProcess {
-                            pid: info.pid,
-                            path: info.proc_path,
-                            preset,
-                        });
-                    }
-                }
-            }
-            inspector::Action::KillConnection => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection {
-                        self.response_confirm =
-                            Some(PendingResponse::KillConnection(Box::new(conn)));
-                    }
-                }
-            }
-            inspector::Action::UnblockRemote => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
-                            self.response_confirm = Some(PendingResponse::UnblockRemote(target));
-                        }
-                    }
-                }
-            }
-            inspector::Action::UnblockDomain => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(domain) = active_response::extract_domain_target(conn) {
-                            self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
-                        }
-                    }
-                }
+            inspector::Action::UnblockDomain(domain) => {
+                self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
             }
             inspector::Action::UnblockProcess => {
-                if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::UnblockProcess {
-                            pid: info.pid,
-                            path: info.proc_path,
-                        });
-                    }
-                }
+                self.response_confirm = Some(PendingResponse::UnblockProcess {
+                    pid: info.pid,
+                    path: info.proc_path.clone(),
+                });
             }
             inspector::Action::IsolateMachine => {
-                self.start_network_operation(NetworkOperationKind::Isolate);
+                self.response_confirm = Some(PendingResponse::IsolateMachine);
             }
             inspector::Action::RestoreNetwork => {
-                self.start_network_operation(NetworkOperationKind::Restore);
+                self.response_confirm = Some(PendingResponse::RestoreNetwork);
             }
-            inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
-                Ok(()) => {
-                    // Exit immediately after spawning the elevated instance.
-                    // This avoids teardown races between egui shutdown and Tokio worker threads.
-                    std::process::exit(0);
-                }
-                Err(err) => {
-                    self.push_notification(
-                        NotificationKind::Error,
-                        format!("Could not elevate: {err}"),
-                    );
-                }
-            },
-            inspector::Action::KillConfirmed => {
-                if let Some(info) = selected_info {
-                    if !is_ghost_process_name(&info.proc_name) {
-                        kill_process(info.pid);
-                        remove_pid(&mut self.activity, info.pid);
-                        remove_pid(&mut self.alerts, info.pid);
-                        if self
-                            .selected_activity
-                            .as_ref()
-                            .is_some_and(|sel| sel.pid == info.pid)
-                        {
-                            self.selected_activity = None;
-                        }
-                        if self
-                            .selected_alert
-                            .as_ref()
-                            .is_some_and(|sel| sel.pid == info.pid)
-                        {
-                            self.selected_alert = None;
-                        }
-                        if self.alerts.is_empty() {
-                            self.unseen_alerts = 0;
-                            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-                        }
-                    }
-                }
-                self.kill_confirm = false;
-            }
-            inspector::Action::KillCancelled => self.kill_confirm = false,
         }
     }
-    fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
-        let mut action = None;
-        let network_busy = self.network_operation.is_some();
 
-        ui.horizontal_centered(|ui| {
-            ui.add_space(8.0);
-            if let Some(logo) = &self.vigil_logo {
-                let (logo_rect, _) =
-                    ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
-                let logo_rect = logo_rect.translate(egui::vec2(0.0, -4.0));
-                ui.painter().image(
-                    logo.id(),
-                    logo_rect,
-                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                    egui::Color32::WHITE,
-                );
-                ui.add_space(6.0);
-            }
-            ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(15.5).strong());
-            ui.add_space(8.0);
+    fn request_tray_refresh(&mut self) {
+        let _ = self.tray_tx.try_send(TrayCmd::Refresh);
+    }
 
-            let admin = crate::autostart::is_elevated();
-            let (label, color, filled) = if self.paused {
-                ("Paused", theme::TEXT2, false)
-            } else {
-                ("Monitoring", theme::ACCENT, true)
-            };
-
-            ui.horizontal_wrapped(|ui| {
-                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                if filled {
-                    ui.painter().circle_filled(dot_rect.center(), 4.0, color);
-                } else {
-                    ui.painter()
-                        .circle_stroke(dot_rect.center(), 4.0, egui::Stroke::new(1.4, color));
-                }
-
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(label).color(color).size(11.5));
-                ui.add_space(6.0);
-
-                if admin {
-                    admin_chip(ui);
-                } else {
-                    let btn_label = "Run as Admin";
-                    let hover = "Relaunch Vigil with elevated privileges so restricted monitoring and response features are available.";
-                    let relaunch = ui
-                        .add(admin_btn(btn_label))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(hover);
-                    if relaunch.clicked() {
-                        action = Some(inspector::Action::RequestAdmin);
-                    }
-                }
-
-                if self.settings.scheduled_lockdown_enabled {
-                    let schedule_label = if self.scheduled_lockdown_active {
-                        format!(
-                            " Scheduled {:02}:{:02}-{:02}:{:02} ",
-                            self.settings.scheduled_lockdown_start_hour,
-                            self.settings.scheduled_lockdown_start_minute,
-                            self.settings.scheduled_lockdown_end_hour,
-                            self.settings.scheduled_lockdown_end_minute
-                        )
-                    } else {
-                        format!(
-                            " Schedule {:02}:{:02}-{:02}:{:02} ",
-                            self.settings.scheduled_lockdown_start_hour,
-                            self.settings.scheduled_lockdown_start_minute,
-                            self.settings.scheduled_lockdown_end_hour,
-                            self.settings.scheduled_lockdown_end_minute
-                        )
-                    };
-                    ui.label(
-                        egui::RichText::new(schedule_label)
-                            .color(if self.scheduled_lockdown_active {
-                                theme::DANGER
-                            } else {
-                                theme::TEXT2
-                            })
-                            .background_color(if self.scheduled_lockdown_active {
-                                theme::DANGER_BG
-                            } else {
-                                theme::SURFACE2
-                            })
-                            .size(10.0)
-                            .strong(),
-                    );
-                }
-
-                if self.response_status.frozen_autoruns {
-                    ui.label(
-                        egui::RichText::new(" Autoruns frozen ")
-                            .color(theme::WARN)
-                            .background_color(theme::WARN_BG)
-                            .size(10.0)
-                            .strong(),
-                    );
-                }
+    fn maybe_reconcile_response_status(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_response_reconcile) < std::time::Duration::from_secs(2) {
+            return;
+        }
+        self.last_response_reconcile = now;
+        if self.reconcile_rx.is_none() {
+            let (tx, rx) = mpsc::channel();
+            self.reconcile_rx = Some(rx);
+            std::thread::spawn(move || {
+                let _ = tx.send(active_response::status());
             });
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.add_space(12.0);
-
-                let btn_label = if self.paused { "Resume" } else { "Pause" };
-                let btn = egui::Button::new(
-                    egui::RichText::new(btn_label)
-                        .color(theme::TEXT2)
-                        .size(11.0),
-                )
-                .fill(theme::SURFACE2)
-                .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                .corner_radius(4.0);
-                let resp = ui
-                    .add_enabled(!network_busy, btn)
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                let resp = if network_busy {
-                    resp.on_hover_text("A network action is already in progress.")
-                } else if self.paused {
-                    resp.on_hover_text("Resume live monitoring and detection updates.")
-                } else {
-                    resp.on_hover_text("Pause live monitoring and automatic response actions.")
-                };
-                if resp.clicked() {
-                    self.paused = !self.paused;
-                    self.paused_flag.store(self.paused, Ordering::Relaxed);
-                    if !self.paused {
-                        let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-                    }
-                }
-
-                ui.add_space(8.0);
-
-                let isolate_label = if self.response_status.isolated {
-                    "Restore Net"
-                } else {
-                    "Isolate Net"
-                };
-                let (net_fg, net_bg, net_border) = if self.response_status.isolated {
-                    (theme::ACCENT, theme::ACCENT_BG, theme::ACCENT)
-                } else {
-                    (theme::DANGER, theme::DANGER_BG, theme::DANGER)
-                };
-                let can_act = active_response::can_isolate_network();
-                let resp_btn = ui.add_enabled(
-                    can_act && !network_busy,
-                    egui::Button::new(
-                        egui::RichText::new(isolate_label)
-                            .color(net_fg)
-                            .size(11.0),
-                    )
-                    .fill(net_bg)
-                    .stroke(egui::Stroke::new(1.0, net_border))
-                    .corner_radius(4.0),
-                );
-                let resp_btn = if network_busy {
-                    resp_btn.on_hover_text("A network action is already in progress.")
-                } else if can_act {
-                    resp_btn
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text(if self.response_status.isolated {
-                            "Restore network connectivity and remove temporary isolation controls."
-                        } else {
-                            "Immediately isolate network traffic using active-response controls."
-                        })
-                } else {
-                    resp_btn.on_hover_text("Administrator privileges are required for network isolation.")
-                };
-                if resp_btn.clicked() {
-                    action = Some(if self.response_status.isolated {
-                        inspector::Action::RestoreNetwork
-                    } else {
-                        inspector::Action::IsolateMachine
-                    });
-                }
-            });
-        });
-        action
-    }
-}
-
-impl eframe::App for VigilApp {
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
-        self.handle_font_zoom_shortcut(&ctx);
-        self.sync_ui_scale(&ctx);
-        self.refresh_active_response_state();
-        self.poll_network_operation();
-        self.sync_tray_state();
-        self.trim_history_buffers();
-        if self.show_window.swap(false, Ordering::Relaxed) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        if let Some(nav) = self.pending_nav.lock().unwrap().take() {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            self.active_tab = Tab::Alerts;
-            self.kill_confirm = false;
-            self.unseen_alerts = 0;
-            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-            self.selected_alert = process_list::selection_for_pid(
-                &self.alerts,
-                nav.pid,
-                self.alerts.iter().find(|a| {
-                    a.timestamp == nav.timestamp
-                        && a.proc_name == nav.proc_name
-                        && a.remote_addr == nav.remote_addr
-                }),
-                process_list::Kind::Alerts,
-            );
-        }
-        if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
-            #[cfg(target_os = "linux")]
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            #[cfg(not(target_os = "linux"))]
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-        }
-        let handled_events = self.drain_events(UI_EVENT_BUDGET);
-        if handled_events {
-            ctx.request_repaint();
-        }
-        if self.active_tab == Tab::Alerts && self.unseen_alerts > 0 {
-            self.unseen_alerts = 0;
-            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-        }
-        let header_action = egui::Panel::top("header")
-            .exact_size(48.0)
-            .frame(egui::Frame::NONE.fill(theme::SURFACE))
-            .show_inside(ui, |ui| self.show_header(ui));
-        if let Some(action) = header_action.inner {
-            self.handle_inspector_action(action, &ctx);
-        }
-        let new_tab = egui::Panel::top("tabs")
-            .exact_size(36.0)
-            .frame(egui::Frame::NONE.fill(theme::SURFACE))
-            .show_inside(ui, |ui| {
-                tab_bar::tab_bar(
-                    ui,
-                    self.active_tab,
-                    self.cached_activity_process_count,
-                    self.cached_alerts_process_count,
-                )
-            })
-            .inner;
-        if new_tab != self.active_tab {
-            self.active_tab = new_tab;
-            self.kill_confirm = false;
-        }
-        let mut inspector_action: Option<inspector::Action> = None;
-        if matches!(self.active_tab, Tab::Activity | Tab::Alerts) {
-            let selected_info: Option<&ProcessSelection> = match self.active_tab {
-                Tab::Activity => self.selected_activity.as_ref(),
-                Tab::Alerts => self.selected_alert.as_ref(),
-                _ => None,
-            };
-            let kill_confirm = self.kill_confirm;
-            inspector_action = egui::Panel::right("inspector")
-                .exact_size(320.0)
-                .resizable(false)
-                .frame(
-                    egui::Frame::NONE
-                        .fill(theme::SURFACE)
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                        .inner_margin(egui::Margin::symmetric(12, 0)),
-                )
-                .show_inside(ui, |ui| inspector::show(ui, selected_info, kill_confirm))
-                .inner;
-        }
-        if let Some(action) = inspector_action {
-            self.handle_inspector_action(action, &ctx);
-        }
-        self.show_response_confirm(ctx.clone());
-        egui::CentralPanel::default()
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::BG)
-                    .inner_margin(egui::Margin::same(12)),
-            )
-            .show_inside(ui, |ui| match self.active_tab {
-                Tab::Activity => {
-                    if activity::show(
-                        ui,
-                        &self.activity,
-                        &mut self.selected_activity,
-                        &mut self.activity_table,
-                        self.data_version,
-                        &mut self.activity_cache,
-                    ) {
-                        self.activity.clear();
-                        self.selected_activity = None;
-                    }
-                }
-                Tab::Alerts => {
-                    if alerts::show(
-                        ui,
-                        &self.alerts,
-                        &mut self.selected_alert,
-                        &mut self.alerts_table,
-                        self.data_version,
-                        &mut self.alerts_cache,
-                    ) {
-                        self.alerts.clear();
-                        self.selected_alert = None;
-                        self.unseen_alerts = 0;
-                        let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
-                    }
-                }
-                Tab::Settings => {
-                    let elevated = crate::autostart::is_elevated();
-                    let changed = settings::show(ui, &mut self.settings, elevated);
-                    if self.settings.grant_capabilities_requested {
-                        self.settings.grant_capabilities_requested = false;
-                        match crate::autostart::relaunch_as_admin() {
-                            Ok(()) => {
-                                std::process::exit(0);
-                            }
-                            Err(err) => {
-                                self.push_notification(
-                                    NotificationKind::Error,
-                                    format!("Could not elevate: {err}"),
-                                );
-                            }
-                        }
-                    }
-                    if self.settings.uninstall_requested {
-                        self.settings.uninstall_requested = false;
-                        self.execute_uninstall_from_settings();
-                    }
-                    if changed {
-                        let locked_policy_changes;
-                        {
-                            let mut cfg = self.cfg.write().unwrap();
-                            locked_policy_changes =
-                                !elevated && self.settings.policy_edits_pending(&cfg);
-                            self.settings.apply_to(&mut cfg, elevated);
-                            if cfg.autostart {
-                                if crate::autostart::enable() {
-                                    cfg.autostart = true;
-                                }
-                            } else {
-                                crate::autostart::disable();
-                            }
-                            cfg.save();
-                            self.settings = settings::SettingsDraft::from_config(&cfg);
-                        }
-                        if locked_policy_changes {
-                            self.settings.status_msg = Some((
-                                "Admin Mode is required to save policy changes; only non-sensitive preferences were persisted.".into(),
-                                std::time::Instant::now(),
-                            ));
-                            self.push_notification(
-                                NotificationKind::Warning,
-                                "Policy edits require Admin Mode. Only non-sensitive preferences were saved.",
-                            );
-                        }
-                        self.sync_ui_scale(&ctx);
-                        if self.settings.status_msg.is_none() {
-                            self.settings.status_msg =
-                                Some(("Settings auto-saved.".into(), std::time::Instant::now()));
-                        }
-                    }
-                }
-                Tab::Help => help::show(ui),
-            });
-        self.show_notifications_overlay(&ctx);
-        self.show_network_operation_overlay(&ctx);
-        ctx.request_repaint_after(
-            if self.network_operation.is_some() || !self.notifications.is_empty() {
-                UI_BUSY_REPAINT
-            } else {
-                UI_IDLE_REPAINT
-            },
-        );
-    }
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        [
-            0x14 as f32 / 255.0,
-            0x15 as f32 / 255.0,
-            0x1A as f32 / 255.0,
-            1.0,
-        ]
-    }
-    fn save(&mut self, storage: &mut dyn eframe::Storage) {
-        let state = UiState {
-            active_tab: self.active_tab,
-            activity_table: self.activity_table.clone(),
-            alerts_table: self.alerts_table.clone(),
-        };
-        eframe::set_value(storage, "ui", &state);
-    }
-}
-
-fn admin_chip(ui: &mut egui::Ui) {
-    ui.label(
-        egui::RichText::new(" Admin Mode ")
-            .color(theme::ACCENT)
-            .background_color(theme::ACCENT_BG)
-            .size(10.5)
-            .strong(),
-    );
-}
-fn admin_btn(text: &str) -> egui::Button<'_> {
-    egui::Button::new(egui::RichText::new(text).color(theme::ACCENT).size(11.0))
-        .fill(theme::ACCENT_BG)
-        .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-        .corner_radius(4.0)
-}
-
-impl VigilApp {
-    fn sync_tray_state(&mut self) {
-        let isolated = self.response_status.isolated;
-        if isolated != self.tray_lockdown_sent
-            && self
-                .tray_tx
-                .try_send(TrayCmd::SetLockdown(isolated))
-                .is_ok()
-        {
-            self.tray_lockdown_sent = isolated;
-        }
-    }
-    fn refresh_active_response_state(&mut self) {
-        if let Some(rx) = self.reconcile_rx.as_ref() {
+        if let Some(rx) = &self.reconcile_rx {
             match rx.try_recv() {
                 Ok(status) => {
                     self.response_status = status;
                     self.reconcile_rx = None;
                 }
+                Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.reconcile_rx = None;
                 }
-                Err(mpsc::TryRecvError::Empty) => {}
             }
-        }
-        if self.last_response_reconcile.elapsed().as_secs() >= 1 {
-            if self.reconcile_rx.is_none() {
-                let (tx, rx) = mpsc::channel();
-                match std::thread::Builder::new()
-                    .name("vigil-active-response-reconcile".into())
-                    .spawn(move || {
-                        active_response::reconcile();
-                        let _ = tx.send(active_response::status());
-                    }) {
-                    Ok(_) => {
-                        self.reconcile_rx = Some(rx);
-                    }
-                    Err(err) => {
-                        self.push_notification(
-                            NotificationKind::Error,
-                            format!("Could not start reconcile worker: {err}"),
-                        );
-                    }
-                }
-            }
-            self.last_response_reconcile = std::time::Instant::now();
-        }
-        if self.last_schedule_check.elapsed().as_secs() >= 30 {
-            self.apply_scheduled_lockdown();
-            self.last_schedule_check = std::time::Instant::now();
         }
     }
-    fn apply_scheduled_lockdown(&mut self) {
-        if self.network_operation.is_some() {
+
+    fn maybe_run_scheduled_lockdown(&mut self) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.last_schedule_check) < std::time::Duration::from_secs(30) {
             return;
         }
+        self.last_schedule_check = now;
         let cfg = self.cfg.read().unwrap().clone();
         if !cfg.scheduled_lockdown_enabled {
-            self.scheduled_lockdown_active = false;
             return;
         }
-        if !active_response::can_isolate_network() {
-            return;
-        }
-        let now = Local::now();
-        let minute_of_day = now.hour() * 60 + now.minute();
-        let start = u32::from(cfg.scheduled_lockdown_start_hour.min(23)) * 60
-            + u32::from(cfg.scheduled_lockdown_start_minute.min(59));
-        let end = u32::from(cfg.scheduled_lockdown_end_hour.min(23)) * 60
-            + u32::from(cfg.scheduled_lockdown_end_minute.min(59));
-        let should_lock = if start == end {
+        let current = Local::now();
+        let current_minutes = current.hour() * 60 + current.minute();
+        let start = u32::from(cfg.scheduled_lockdown_start_hour) * 60
+            + u32::from(cfg.scheduled_lockdown_start_minute);
+        let end = u32::from(cfg.scheduled_lockdown_end_hour) * 60
+            + u32::from(cfg.scheduled_lockdown_end_minute);
+        let should_isolate = if start == end {
             false
         } else if start < end {
-            minute_of_day >= start && minute_of_day < end
+            current_minutes >= start && current_minutes < end
         } else {
-            minute_of_day >= start || minute_of_day < end
+            current_minutes >= start || current_minutes < end
         };
-        if should_lock && !self.scheduled_lockdown_active {
-            if self.start_network_operation(NetworkOperationKind::Isolate) {
-                self.scheduled_target = Some(true);
-                self.push_notification(
-                    NotificationKind::Info,
-                    "Scheduled lockdown started: isolating network…",
-                );
-            }
-        } else if !should_lock
-            && self.scheduled_lockdown_active
-            && self.start_network_operation(NetworkOperationKind::Restore)
-        {
-            self.scheduled_target = Some(false);
-            self.push_notification(
-                NotificationKind::Info,
-                "Scheduled lockdown window ended: restoring network…",
-            );
-        }
-    }
-    fn show_response_confirm(&mut self, ctx: egui::Context) {
-        let Some(pending) = self.response_confirm.clone() else {
+        if should_isolate == self.scheduled_lockdown_active {
             return;
-        };
-        let (title, body, confirm_label)=match &pending { PendingResponse::BlockRemote { target, preset } => { let (duration,label)=match preset { active_response::DurationPreset::OneHour => ("1 hour","Block 1h"), active_response::DurationPreset::OneDay => ("24 hours","Block 24h"), active_response::DurationPreset::Permanent => ("an unlimited duration","Block permanent") }; ("Block remote IP", format!("Temporarily block outbound traffic to {target} for {duration}?"), label.to_string()) } PendingResponse::BlockDomain { domain } => ("Block domain", format!("Redirect {domain} to the local machine through the Windows hosts file?"), "Block domain".to_string()), PendingResponse::BlockProcess { path, preset, .. } => { let (duration,label)=match preset { active_response::DurationPreset::OneHour => ("1 hour","Block process"), active_response::DurationPreset::OneDay => ("24 hours","Block process"), active_response::DurationPreset::Permanent => ("an unlimited duration","Block process") }; ("Block process", format!("Temporarily block inbound and outbound traffic for {path} for {duration}?"), label.to_string()) } PendingResponse::SuspendProcess { pid, path, .. } => ("Suspend process", if path.is_empty() { format!("Freeze PID {pid} until you explicitly resume it?") } else { format!("Freeze PID {pid} ({path}) until you explicitly resume it?") }, "Suspend".to_string()), PendingResponse::ResumeProcess { pid, path } => ("Resume process", if path.is_empty() { format!("Resume every suspended thread in PID {pid}?") } else { format!("Resume every suspended thread in PID {pid} ({path})?") }, "Resume".to_string()), PendingResponse::FreezeAutoruns => ("Freeze autoruns", "Capture the current Run and RunOnce autorun keys as a baseline so Vigil can later remove additions and restore baseline values.".to_string(), "Freeze".to_string()), PendingResponse::RevertAutoruns => ("Revert autoruns", "Remove autorun entries added after the baseline and restore any baseline Run / RunOnce values that changed?".to_string(), "Revert".to_string()), PendingResponse::QuarantineProfile { pid, path, .. } => ("Quarantine profile", if path.is_empty() { format!("Apply the quarantine preset to PID {pid}? This isolates the network and suspends the process when possible.") } else { format!("Apply the quarantine preset to PID {pid} ({path})? This isolates the network, blocks the executable path, and suspends the process when possible.") }, "Quarantine".to_string()), PendingResponse::ClearQuarantineProfile { pid, path } => ("Clear quarantine", if path.is_empty() { format!("Undo the quarantine preset for PID {pid}? This restores the network and resumes the process when possible.") } else { format!("Undo the quarantine preset for PID {pid} ({path})? This restores the network, removes the process block, and resumes the process when possible.") }, "Clear".to_string()), PendingResponse::KillConnection(conn) => ("Kill connection", format!("Immediately terminate the live TCP connection {} -> {}?", conn.local_addr, conn.remote_addr), "Kill connection".to_string()), PendingResponse::UnblockRemote(target) => ("Remove remote block", format!("Remove the temporary firewall rule for {target}?"), "Unblock".to_string()), PendingResponse::UnblockDomain(domain) => ("Remove domain block", format!("Remove the local hosts-file block for {domain}?"), "Unblock domain".to_string()), PendingResponse::UnblockProcess { path, .. } => ("Remove process block", format!("Remove the temporary firewall rules for {path}?"), "Unblock".to_string()), PendingResponse::IsolateMachine => ("Isolate machine", "Temporarily block inbound and outbound traffic with reversible firewall rules.".to_string(), "Isolate".to_string()), PendingResponse::RestoreNetwork => ("Restore network", "Remove the temporary network-isolation firewall rules?".to_string(), "Restore".to_string()) };
-        egui::Window::new(title)
-            .id(egui::Id::new("active_response_confirm"))
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::SURFACE2)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(12.0),
-            )
-            .show(&ctx, |ui| {
-                ui.set_min_width(360.0);
-                ui.label(egui::RichText::new(body).color(theme::TEXT2).size(11.5));
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    let confirm = ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new(confirm_label.as_str())
-                                    .color(theme::DANGER)
-                                    .size(11.0),
-                            )
-                            .fill(theme::DANGER_BG)
-                            .stroke(egui::Stroke::new(1.0, theme::DANGER))
-                            .corner_radius(6.0),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Execute this action now.");
-                    if confirm.clicked() {
-                        let result = Self::execute_pending_response(&pending);
-                        let kind = Self::kind_from_message(&result);
-                        self.push_notification(kind, result);
-                        self.response_status = active_response::status();
-                        self.response_confirm = None;
-                    }
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new("Cancel").color(theme::TEXT2).size(11.0),
-                            )
-                            .fill(theme::SURFACE3)
-                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                            .corner_radius(6.0),
-                        )
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Close this dialog without applying the action.")
-                        .clicked()
-                    {
-                        self.response_confirm = None;
-                    }
-                });
-            });
-    }
-    fn execute_pending_response(pending: &PendingResponse) -> String {
-        match pending {
-            PendingResponse::BlockRemote { target, preset } => {
-                match active_response::block_remote(target, *preset) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not block {target}: {err}"),
-                }
-            }
-            PendingResponse::BlockDomain { domain } => {
-                match active_response::block_domain(domain) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not block {domain}: {err}"),
-                }
-            }
-            PendingResponse::BlockProcess { pid, path, preset } => {
-                match active_response::block_process(*pid, path, *preset) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not block {path}: {err}"),
-                }
-            }
-            PendingResponse::SuspendProcess {
-                pid,
-                path,
-                proc_name,
-            } => match active_response::suspend_process(*pid, path, proc_name) {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not suspend PID {pid}: {err}"),
-            },
-            PendingResponse::ResumeProcess { pid, path } => {
-                match active_response::resume_process(*pid, path) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not resume PID {pid}: {err}"),
-                }
-            }
-            PendingResponse::FreezeAutoruns => match active_response::freeze_autoruns() {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not freeze autoruns: {err}"),
-            },
-            PendingResponse::RevertAutoruns => match active_response::revert_frozen_autoruns() {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not revert autoruns: {err}"),
-            },
-            PendingResponse::QuarantineProfile {
-                pid,
-                path,
-                proc_name,
-            } => match active_response::apply_quarantine_profile(*pid, path, proc_name) {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not apply quarantine profile: {err}"),
-            },
-            PendingResponse::ClearQuarantineProfile { pid, path } => {
-                match active_response::clear_quarantine_profile(*pid, path) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not clear quarantine profile: {err}"),
-                }
-            }
-            PendingResponse::KillConnection(conn) => {
-                match active_response::kill_connection(conn.as_ref()) {
-                    Ok(msg) => msg,
-                    Err(err) => format!(
-                        "Could not kill {} -> {}: {err}",
-                        conn.local_addr, conn.remote_addr
-                    ),
-                }
-            }
-            PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(target)
-            {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not unblock {target}: {err}"),
-            },
-            PendingResponse::UnblockDomain(domain) => match active_response::unblock_domain(domain)
-            {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not unblock {domain}: {err}"),
-            },
-            PendingResponse::UnblockProcess { pid, path } => {
-                match active_response::unblock_process(*pid, path) {
-                    Ok(msg) => msg,
-                    Err(err) => format!("Could not unblock {path}: {err}"),
-                }
-            }
-            PendingResponse::IsolateMachine => match active_response::isolate_machine() {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not isolate the machine: {err}"),
-            },
-            PendingResponse::RestoreNetwork => match active_response::restore_machine() {
-                Ok(msg) => msg,
-                Err(err) => format!("Could not restore the network: {err}"),
-            },
         }
-    }
-    fn start_network_operation(&mut self, kind: NetworkOperationKind) -> bool {
         if self.network_operation.is_some() {
-            return false;
-        }
-        let pending = match kind {
-            NetworkOperationKind::Isolate => PendingResponse::IsolateMachine,
-            NetworkOperationKind::Restore => PendingResponse::RestoreNetwork,
-        };
-        let (tx, rx) = mpsc::channel();
-        let thread_name = match kind {
-            NetworkOperationKind::Isolate => "vigil-isolate-machine",
-            NetworkOperationKind::Restore => "vigil-restore-network",
-        };
-        match std::thread::Builder::new()
-            .name(thread_name.into())
-            .spawn(move || {
-                let message = Self::execute_pending_response(&pending);
-                let status = active_response::status();
-                let _ = tx.send(NetworkOperationResult { message, status });
-            }) {
-            Ok(_) => {
-                self.network_operation = Some(NetworkOperation { kind, rx });
-                true
-            }
-            Err(err) => {
-                self.push_notification(
-                    NotificationKind::Error,
-                    format!("Could not start network action: {err}"),
-                );
-                false
-            }
-        }
-    }
-    fn poll_network_operation(&mut self) {
-        let Some(operation) = self.network_operation.as_ref() else {
             return;
-        };
-        match operation.rx.try_recv() {
-            Ok(result) => {
-                let operation_kind = operation.kind;
-                self.network_operation = None;
-                let message = result.message;
-                let notification_kind = Self::kind_from_message(&message);
-                let success = !matches!(notification_kind, NotificationKind::Error);
-                if let Some(target) = self.scheduled_target.take() {
-                    if success {
-                        self.scheduled_lockdown_active = target;
-                    }
-                } else if success {
-                    self.scheduled_lockdown_active =
-                        matches!(operation_kind, NetworkOperationKind::Isolate);
-                }
-                self.push_notification(notification_kind, message);
-                self.response_status = result.status;
-            }
-            Err(mpsc::TryRecvError::Empty) => {}
-            Err(mpsc::TryRecvError::Disconnected) => {
-                self.network_operation = None;
-                self.push_notification(
-                    NotificationKind::Error,
-                    "Network action worker stopped unexpectedly.",
-                );
-            }
         }
-    }
-    fn show_network_operation_overlay(&self, ctx: &egui::Context) {
-        let Some(operation) = self.network_operation.as_ref() else {
-            return;
-        };
-        let label = match operation.kind {
-            NetworkOperationKind::Isolate => "Isolating...",
-            NetworkOperationKind::Restore => "Restoring network...",
-        };
-        egui::Area::new(egui::Id::new("network_operation_modal"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 62.0))
-            .show(ctx, |ui| {
-                egui::Frame::NONE
-                    .fill(theme::SURFACE2)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(10.0)
-                    .inner_margin(egui::Margin::symmetric(12, 10))
-                    .show(ui, |ui| {
-                        ui.set_min_width(252.0);
-                        ui.horizontal(|ui| {
-                            ui.add(egui::Spinner::new().size(24.0).color(theme::ACCENT));
-                            ui.add_space(8.0);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new(label)
-                                        .color(theme::TEXT)
-                                        .size(11.8)
-                                        .strong(),
-                                );
-                                ui.label(
-                                    egui::RichText::new("Applying controls in background.")
-                                        .color(theme::TEXT3)
-                                        .size(10.4),
-                                );
-                            });
-                        });
-                    });
-            });
-    }
-    fn push_notification(&mut self, kind: NotificationKind, text: impl Into<String>) {
-        let now = std::time::Instant::now();
-        self.notifications.push_back(Notification {
-            id: self.next_notification_id,
-            kind,
-            text: text.into(),
-            expires_at: now + NOTIFICATION_TTL,
-        });
-        self.next_notification_id = self.next_notification_id.saturating_add(1);
-        while self.notifications.len() > 8 {
-            self.notifications.pop_front();
-        }
-    }
-    fn kind_from_message(text: &str) -> NotificationKind {
-        let lower = text.to_ascii_lowercase();
-        if lower.contains("enabled with warnings")
-            || lower.contains("removed with warnings")
-            || lower.contains("with warnings:")
-        {
-            NotificationKind::Warning
-        } else if lower.contains("could not")
-            || lower.contains("failed")
-            || lower.contains("error")
-            || lower.contains("denied")
-        {
-            NotificationKind::Error
-        } else if lower.contains("warning") {
-            NotificationKind::Warning
+        self.scheduled_target = Some(should_isolate);
+        let started = self.start_network_operation(if should_isolate {
+            NetworkOperationKind::Isolate
         } else {
-            NotificationKind::Success
+            NetworkOperationKind::Restore
+        });
+        if !started {
+            self.scheduled_target = None;
         }
     }
-    fn show_notifications_overlay(&mut self, ctx: &egui::Context) {
-        let now = std::time::Instant::now();
-        self.notifications.retain(|n| n.expires_at > now);
-        if self.notifications.is_empty() {
+
+    fn kind_from_status(status: &str) -> NotificationKind {
+        match status {
+            "success" => NotificationKind::Success,
+            "warning" => NotificationKind::Warning,
+            "error" => NotificationKind::Error,
+            _ => NotificationKind::Info,
+        }
+    }
+
+    fn restore_from_navigation(&mut self) {
+        let Ok(mut pending) = self.pending_nav.lock() else {
+            return;
+        };
+        if let Some(conn) = pending.take() {
+            self.active_tab = Tab::Alerts;
+            self.selected_alert = Some(ProcessSelection::from_conn(&conn, &self.alerts));
+            self.show_window.store(true, Ordering::Relaxed);
+            self.request_tray_refresh();
+        }
+    }
+
+    fn restore_window(&self, ctx: &egui::Context) {
+        if !self.show_window.swap(false, Ordering::Relaxed) {
             return;
         }
-        let screen = ctx.content_rect();
-        let width = (screen.width() - 24.0).max(360.0);
-        let max_height = (screen.height() * 0.34).clamp(120.0, 320.0);
-        egui::Area::new(egui::Id::new("notifications_overlay"))
-            .order(egui::Order::Foreground)
-            .anchor(egui::Align2::CENTER_BOTTOM, egui::vec2(0.0, -12.0))
-            .show(ctx, |ui| {
-                ui.set_max_width(width);
-                ui.set_width(width);
-                egui::Frame::NONE
-                    .fill(egui::Color32::from_black_alpha(168))
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                    .corner_radius(12.0)
-                    .inner_margin(egui::Margin::symmetric(10, 8))
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("Notifications")
-                                    .color(theme::TEXT2)
-                                    .size(10.5)
-                                    .strong(),
-                            );
-                            ui.add_space(6.0);
-                            ui.label(
-                                egui::RichText::new(format!("{} open", self.notifications.len()))
-                                    .color(theme::TEXT3)
-                                    .size(10.0),
-                            );
-                        });
-                        ui.add_space(6.0);
-                        egui::ScrollArea::vertical()
-                            .auto_shrink([false, false])
-                            .max_height(max_height)
-                            .show(ui, |ui| {
-                                let ids: Vec<u64> = self.notifications.iter().map(|n| n.id).collect();
-                                for id in ids {
-                                    let Some(index) = self.notifications.iter().position(|n| n.id == id)
-                                    else {
-                                        continue;
-                                    };
-                                    let (kind, text, expires_at) = {
-                                        let n = &self.notifications[index];
-                                        (n.kind, n.text.clone(), n.expires_at)
-                                    };
-                                    let remaining = expires_at
-                                        .saturating_duration_since(now)
-                                        .as_secs_f32()
-                                        / NOTIFICATION_TTL.as_secs_f32();
-                                    let secs_left = expires_at.saturating_duration_since(now).as_secs();
-                                    let (accent, label) = match kind {
-                                        NotificationKind::Info => (theme::ACCENT, "Info"),
-                                        NotificationKind::Success => (theme::ACCENT, "Success"),
-                                        NotificationKind::Warning => (theme::WARN, "Warning"),
-                                        NotificationKind::Error => (theme::DANGER, "Error"),
-                                    };
-                                    egui::Frame::NONE
-                                        .fill(theme::SURFACE2)
-                                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                                        .corner_radius(10.0)
-                                        .inner_margin(egui::Margin::symmetric(10, 9))
-                                        .show(ui, |ui| {
-                                            ui.horizontal_top(|ui| {
-                                                let countdown = Self::show_notification_countdown_circle(
-                                                    ui,
-                                                    remaining.clamp(0.0, 1.0),
-                                                    accent,
-                                                )
-                                                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                                .on_hover_text(format!(
-                                                    "Auto-dismiss in {secs_left}s. Click to reset to 60s."
-                                                ));
-                                                if countdown.clicked() {
-                                                    if let Some(notification) = self.notifications.iter_mut().find(|n| n.id == id) {
-                                                        notification.expires_at = std::time::Instant::now() + NOTIFICATION_TTL;
-                                                    }
-                                                }
-                                                ui.add_space(8.0);
-                                                let (bar_rect, _) = ui.allocate_exact_size(
-                                                    egui::vec2(3.0, 34.0),
-                                                    egui::Sense::hover(),
-                                                );
-                                                ui.painter().rect_filled(bar_rect, 2.0, accent);
-                                                ui.add_space(8.0);
-                                                ui.vertical(|ui| {
-                                                    ui.label(
-                                                        egui::RichText::new(label)
-                                                            .color(accent)
-                                                            .size(10.0)
-                                                            .strong(),
-                                                    );
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            egui::RichText::new(text)
-                                                                .color(theme::TEXT)
-                                                                .size(11.0),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                });
-                                                ui.with_layout(
-                                                    egui::Layout::right_to_left(egui::Align::TOP),
-                                                    |ui| {
-                                                        let close = ui
-                                                            .add(
-                                                                egui::Button::new(
-                                                                    egui::RichText::new("x")
-                                                                        .color(theme::TEXT2)
-                                                                        .size(10.5),
-                                                                )
-                                                                .fill(theme::SURFACE3)
-                                                                .stroke(egui::Stroke::new(
-                                                                    1.0,
-                                                                    theme::BORDER,
-                                                                ))
-                                                                .corner_radius(4.0),
-                                                            )
-                                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                                            .on_hover_text("Dismiss this notification.");
-                                                        if close.clicked() {
-                                                            self.notifications.remove(index);
-                                                        }
-                                                    },
-                                                );
-                                            });
-                                        });
-                                    ui.add_space(8.0);
-                                }
-                            });
-                    });
-            });
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
     }
-    fn show_notification_countdown_circle(
-        ui: &mut egui::Ui,
-        progress: f32,
-        accent: egui::Color32,
-    ) -> egui::Response {
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
-        let center = rect.center();
-        let radius = 7.0;
-        let stroke_bg = egui::Stroke::new(2.0, theme::BORDER);
-        let stroke_fg = egui::Stroke::new(2.2, accent);
-        ui.painter().circle_stroke(center, radius, stroke_bg);
-        let clamped = progress.clamp(0.0, 1.0);
-        if clamped > 0.0 {
-            let start_angle = -std::f32::consts::FRAC_PI_2;
-            let sweep = std::f32::consts::TAU * clamped;
-            let segments = ((sweep / std::f32::consts::TAU) * 40.0).ceil().max(2.0) as usize;
-            let mut points = Vec::with_capacity(segments + 1);
-            for i in 0..=segments {
-                let t = i as f32 / segments as f32;
-                let angle = start_angle + sweep * t;
-                points.push(egui::pos2(
-                    center.x + angle.cos() * radius,
-                    center.y + angle.sin() * radius,
-                ));
-            }
-            ui.painter().add(egui::Shape::line(points, stroke_fg));
-        }
-        response
+
+    fn toolbar(&mut self, ctx: &egui::Context, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 10.0;
+            ui.heading("Vigil");
+            ui.separator();
+            tab_bar::tab_button(ui, &mut self.active_tab, Tab::Activity, || {
+                format!("Activity ({})", self.cached_activity_process_count)
+            });
+            tab_bar::tab_button(ui, &mut self.active_tab, Tab::Alerts, || {
+                let suffix = if self.unseen_alerts > 0 {
+                    format!(" [{}]", self.unseen_alerts)
+                } else {
+                    String::new()
+                };
+                format!("Alerts ({}){}", self.cached_alerts_process_count, suffix)
+            });
+            tab_bar::tab_button(ui, &mut self.active_tab, Tab::Inspector, || "Inspector".into());
+            tab_bar::tab_button(ui, &mut self.active_tab, Tab::Settings, || "Settings".into());
+            tab_bar::tab_button(ui, &mut self.active_tab, Tab::Help, || "Help".into());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Quit").clicked() {
+                    self.exit_requested = true;
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            });
+        });
     }
 }
 
