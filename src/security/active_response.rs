@@ -2501,16 +2501,14 @@ mod platform {
             return Ok(false);
         }
         let current = snapshot_active_adapters()?;
-        for adapter in &snapshot.adapters {
-            if current
+        let any_saved_adapter_still_present = snapshot.adapters.iter().any(|adapter| {
+            current
                 .adapters
                 .iter()
                 .any(|item| item.name == adapter.name)
-            {
-                return Ok(false);
-            }
-        }
-        Ok(saw_known_adapter)
+        });
+
+        Ok(!any_saved_adapter_still_present)
     }
     pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
