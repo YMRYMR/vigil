@@ -253,7 +253,7 @@ Security remains paramount, but Vigil must stay light enough to protect a workst
 
 ---
 
-## Phase 15 — File Integrity & Anti-Tamper (OPEN backlog)
+## Phase 15 — File Integrity & Anti-Tamper ✅ COMPLETE
 
 Make sure no file used by Vigil can be silently tampered with without detection, recovery, or operator visibility.
 
@@ -263,10 +263,10 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 - [x] Secure audit-log chaining — audit entries are hash-chained and verified at startup so edits or removal become visible
 - [x] Forensic artifact provenance and checksum manifests — PCAP captures, TLS sidecars, and process dumps now get `.manifest.json` sidecars with SHA-256, size, alert context, and capture metadata
 
-### Remaining backlog
-- [ ] Provenance model for operator-managed blocklists and response-rule YAML files that detects malicious tampering without treating intentional local edits as corruption
-- [ ] Startup integrity scan with clear operator-visible failure modes
-- [ ] Recovery / quarantine path for corrupted or untrusted Vigil-owned files beyond the current signed-backup restore paths
+### Completed in this branch
+- [x] Provenance model for operator-managed blocklists and response-rule YAML files that detects malicious tampering without treating intentional local edits as corruption
+- [x] Startup integrity scan with clear operator-visible failure modes
+- [x] Recovery / quarantine path for corrupted or untrusted Vigil-owned files beyond the current signed-backup restore paths
 
 ---
 
