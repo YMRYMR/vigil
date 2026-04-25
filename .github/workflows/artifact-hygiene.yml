@@ -86,7 +86,9 @@ jobs:
           for path in Path('.').rglob('*'):
               if not path.is_file():
                   continue
-              if '.git' in path.parts or 'target' in path.parts:
+              if '.git' in path.parts:
+                  continue
+              if path.parts and path.parts[0] == 'target':
                   continue
               data = path.read_bytes()
               if not is_probably_binary(data[:8192]):
