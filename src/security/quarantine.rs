@@ -8,11 +8,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[cfg(windows)]
-use crate::audit;
-#[cfg(windows)]
-use serde_json::json;
-
 const STATE_FILE: &str = "vigil-quarantine-state.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -24,6 +19,9 @@ struct State {
 pub fn apply() -> (Vec<String>, Vec<String>) {
     #[cfg(windows)]
     {
+        use crate::audit;
+        use serde_json::json;
+
         let mut state = load_state().unwrap_or_default();
         let mut applied = Vec::new();
         let mut warnings = Vec::new();
@@ -69,6 +67,9 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
 pub fn clear() -> (Vec<String>, Vec<String>) {
     #[cfg(windows)]
     {
+        use crate::audit;
+        use serde_json::json;
+
         let state = load_state().unwrap_or_default();
         let mut cleared = Vec::new();
         let mut warnings = Vec::new();
