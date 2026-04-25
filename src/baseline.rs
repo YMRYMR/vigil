@@ -195,13 +195,22 @@ fn load_state() -> Result<BaselineState, String> {
     let path = state_path();
     crate::security::policy::load_struct_with_integrity(&path)
         .map(|state| state.unwrap_or_default())
-        .map_err(|e| format!("failed to load behavioural baselines {}: {e}", path.display()))
+        .map_err(|e| {
+            format!(
+                "failed to load behavioural baselines {}: {e}",
+                path.display()
+            )
+        })
 }
 
 fn save_state(state: &BaselineState) -> Result<(), String> {
     let path = state_path();
-    crate::security::policy::save_struct_with_integrity(&path, state)
-        .map_err(|e| format!("failed to save behavioural baselines {}: {e}", path.display()))
+    crate::security::policy::save_struct_with_integrity(&path, state).map_err(|e| {
+        format!(
+            "failed to save behavioural baselines {}: {e}",
+            path.display()
+        )
+    })
 }
 
 fn unix_now() -> u64 {

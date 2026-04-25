@@ -30,7 +30,10 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
                     "error",
                     json!({ "error": err }),
                 );
-                return (Vec::new(), vec![format!("quarantine state load failed: {err}")]);
+                return (
+                    Vec::new(),
+                    vec![format!("quarantine state load failed: {err}")],
+                );
             }
         };
         let mut applied = Vec::new();
@@ -90,7 +93,10 @@ pub fn clear() -> (Vec<String>, Vec<String>) {
                     "error",
                     json!({ "error": err }),
                 );
-                return (Vec::new(), vec![format!("quarantine state load failed: {err}")]);
+                return (
+                    Vec::new(),
+                    vec![format!("quarantine state load failed: {err}")],
+                );
             }
         };
         let mut cleared = Vec::new();

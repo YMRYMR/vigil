@@ -509,7 +509,10 @@ pub fn reconcile() {
         return;
     }
     let Ok(mut state) = load_state() else {
-        note_state_load_error_once("reconcile", "failed to load protected active-response state");
+        note_state_load_error_once(
+            "reconcile",
+            "failed to load protected active-response state",
+        );
         return;
     };
     let now = unix_now();
@@ -981,7 +984,9 @@ pub fn restore_machine() -> Result<String, String> {
                         warnings.push(format!("break-glass watchdog cleanup failed: {err}"));
                     }
                 }
-                Err(err) => warnings.push(format!("config load failed during watchdog cleanup: {err}")),
+                Err(err) => {
+                    warnings.push(format!("config load failed during watchdog cleanup: {err}"))
+                }
             }
             audit::record(
                 "restore_machine_stale_state_cleared",
@@ -1290,14 +1295,23 @@ fn load_state() -> Result<State, String> {
     let path = state_path();
     let state: State = crate::security::policy::load_struct_with_integrity(&path)
         .map(|state| state.unwrap_or_default())
-        .map_err(|e| format!("failed to load active-response state {}: {e}", path.display()))?;
+        .map_err(|e| {
+            format!(
+                "failed to load active-response state {}: {e}",
+                path.display()
+            )
+        })?;
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(state)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    crate::security::policy::save_struct_with_integrity(&path, state)
-        .map_err(|e| format!("failed to save active-response state {}: {e}", path.display()))?;
+    crate::security::policy::save_struct_with_integrity(&path, state).map_err(|e| {
+        format!(
+            "failed to save active-response state {}: {e}",
+            path.display()
+        )
+    })?;
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(())
 }

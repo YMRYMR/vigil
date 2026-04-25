@@ -111,7 +111,10 @@ fn operator_input_purpose(kind: &str) -> &'static str {
 fn verification_context(status: &integrity::VerificationStatus) -> String {
     match status {
         integrity::VerificationStatus::Verified { sidecar } => {
-            format!(" and its SHA-256 sidecar {} verified cleanly", sidecar.display())
+            format!(
+                " and its SHA-256 sidecar {} verified cleanly",
+                sidecar.display()
+            )
         }
     }
 }
@@ -568,9 +571,12 @@ fn load_report_at(path: &Path) -> Result<Option<StartupIntegrityReport>, String>
     let Some(bytes) = crate::security::policy::load_json_with_integrity(path)? else {
         return Ok(None);
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|e| format!("failed to parse startup integrity report {}: {e}", path.display()))
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| {
+        format!(
+            "failed to parse startup integrity report {}: {e}",
+            path.display()
+        )
+    })
 }
 
 fn save_report(report: &StartupIntegrityReport) -> Result<(), String> {
@@ -733,7 +739,10 @@ mod tests {
         assert_eq!(loaded.warnings, 1);
         assert_eq!(loaded.failures, 1);
         assert_eq!(loaded.issues.len(), 2);
-        assert_eq!(loaded.issues[1].quarantine_dir.as_deref(), Some("/tmp/quarantine"));
+        assert_eq!(
+            loaded.issues[1].quarantine_dir.as_deref(),
+            Some("/tmp/quarantine")
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -751,7 +760,7 @@ mod tests {
             &file,
             &registry,
         )
-            .unwrap();
+        .unwrap();
 
         let changed = "rules:\n  - name: isolate\n    action: quarantine\n";
         fs::write(&file, changed).unwrap();
@@ -763,10 +772,10 @@ mod tests {
         assert_eq!(report.checked, 1);
         assert_eq!(report.failures, 0);
         assert_eq!(report.warnings, 1);
-        assert!(report.issues[0].message.contains("changed since the last recorded startup"));
         assert!(report.issues[0]
             .message
-            .contains("SHA-256 sidecar"));
+            .contains("changed since the last recorded startup"));
+        assert!(report.issues[0].message.contains("SHA-256 sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -789,7 +798,9 @@ mod tests {
         assert_eq!(report.checked, 1);
         assert_eq!(report.warnings, 0);
         assert_eq!(report.failures, 1);
-        assert!(report.issues[0].message.contains("failed SHA-256 verification"));
+        assert!(report.issues[0]
+            .message
+            .contains("failed SHA-256 verification"));
         let _ = fs::remove_dir_all(dir);
     }
 
