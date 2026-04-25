@@ -6,8 +6,9 @@
 //! restore so the quarantine preset is closer to a real host-containment flow.
 
 use crate::audit;
-use serde::{Deserialize, Serialize};
 use serde_json::json;
+
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const STATE_FILE: &str = "vigil-quarantine-state.json";

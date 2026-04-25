@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_match)]
 //! TLS ClientHello parsing helpers for Phase 12.
 //!
 //! This module is intentionally dependency-light and conservative. It parses

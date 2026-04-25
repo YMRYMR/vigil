@@ -123,6 +123,7 @@ struct NetworkSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct TcpSessionState {
     local_address: String,
     local_port: u16,
@@ -2014,7 +2015,7 @@ mod platform {
             })
     }
     fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
-        let mut saw_known_adapter = false;
+        let saw_known_adapter = false;
         let mut saw_enabled_adapter = false;
         for adapter in &snapshot.adapters {
             let status = run_powershell(&format!(
@@ -2025,7 +2026,6 @@ mod platform {
             if status.is_empty() {
                 continue;
             }
-            saw_known_adapter = true;
             // "Disconnected" still means the adapter is enabled; only treat
             // explicit "Disabled" as still being isolated by adapter cutoff.
             if !status.eq_ignore_ascii_case("Disabled") {
@@ -2349,7 +2349,6 @@ mod platform {
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::Path;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
@@ -2501,14 +2500,13 @@ mod platform {
             return Ok(false);
         }
         let current = snapshot_active_adapters()?;
-        let mut saw_known_adapter = false;
+        let saw_known_adapter = false;
         for adapter in &snapshot.adapters {
             if current
                 .adapters
                 .iter()
                 .any(|item| item.name == adapter.name)
             {
-                saw_known_adapter = true;
                 return Ok(false);
             }
         }
