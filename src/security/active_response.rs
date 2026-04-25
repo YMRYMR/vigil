@@ -2015,7 +2015,7 @@ mod platform {
             })
     }
     fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
-        let saw_known_adapter = false;
+        let mut saw_known_adapter = false;
         let mut saw_enabled_adapter = false;
         for adapter in &snapshot.adapters {
             let status = run_powershell(&format!(
@@ -2026,6 +2026,7 @@ mod platform {
             if status.is_empty() {
                 continue;
             }
+            saw_known_adapter = true;
             // "Disconnected" still means the adapter is enabled; only treat
             // explicit "Disabled" as still being isolated by adapter cutoff.
             if !status.eq_ignore_ascii_case("Disabled") {
@@ -2500,13 +2501,14 @@ mod platform {
             return Ok(false);
         }
         let current = snapshot_active_adapters()?;
-        let saw_known_adapter = false;
+        let mut saw_known_adapter = false;
         for adapter in &snapshot.adapters {
             if current
                 .adapters
                 .iter()
                 .any(|item| item.name == adapter.name)
             {
+                saw_known_adapter = true;
                 return Ok(false);
             }
         }
