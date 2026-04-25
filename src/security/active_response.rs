@@ -1288,9 +1288,9 @@ fn load_state() -> Result<State, String> {
     }
 
     let path = state_path();
-    let state = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| format!("failed to load active-response state {}: {e}", path.display()))?
-        .unwrap_or_default();
+    let state: State = crate::security::policy::load_struct_with_integrity(&path)
+        .map(|state| state.unwrap_or_default())
+        .map_err(|e| format!("failed to load active-response state {}: {e}", path.display()))?;
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(state)
 }

@@ -10,11 +10,16 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Latest release](https://img.shields.io/github/v/release/YMRYMR/vigil?label=release)](https://github.com/YMRYMR/vigil/releases/latest)
 
-Real-time network threat monitor for Windows, macOS, and Linux.
+Cross-platform endpoint defense for Windows, macOS, and Linux.
 
-Vigil watches every TCP/UDP connection on your machine, scores each one for
-suspicious behaviour, and alerts you — via a system tray icon, desktop
-notification, and a full GUI — the moment something looks wrong.
+Vigil watches live network and process activity on your machine, scores suspicious
+behaviour, shows you the process and connection context behind each alert, and
+can take reversible containment actions when something needs to be stopped.
+
+It is designed for local machine protection first: detect suspicious outbound
+activity quickly, help the operator understand what is happening, preserve
+evidence when needed, and contain the machine or process without turning every
+high-noise event into a destructive action.
 
 ![Vigil current UI](docs/images/vigil-current.png)
 
@@ -22,7 +27,7 @@ notification, and a full GUI — the moment something looks wrong.
 
 ## Documentation
 
-- [User guide](docs/USER-GUIDE.md) — released functionality and basic operation
+- [User guide](docs/USER-GUIDE.md) — released functionality, operator workflows, and day-to-day use
 - [Security policy](SECURITY.md) — vulnerability reporting and security contacts
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
 - [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
@@ -67,7 +72,9 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
 
 ---
 
-## Features
+## What Vigil Does
+
+### Detect and surface suspicious activity
 
 - **Sub-100 ms detection** on Windows via ETW (Event Tracing for Windows);
   on Linux via eBPF (`sock:inet_sock_set_state` tracepoint); DTrace-assisted
@@ -77,28 +84,47 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
   running on ETW, eBPF, DTrace-assisted fallback, or a polling fallback, and
   current macOS builds show an explicit native-backend fallback notice instead
   of implying full Endpoint Security coverage
-- **Multi-signal threat scoring** (0–10+) across eight detection categories
+- **Multi-signal threat scoring** across behavioural, reputation, persistence,
+  and execution-context signals so alerts stay explainable instead of opaque
+- **Passive persistence and timing signals** including registry autoruns,
+  beaconing behaviour, pre-login activity, long-lived connections, and DGA-like
+  hostnames
+- **Offline enrichment** with local blocklists, geolocation, ASN data, reverse
+  DNS, and file-drop correlation
+
+### Help investigate what is happening
 - **Full ancestor process tree** — see exactly which process spawned which,
   up to 8 levels deep
-- **System tray** — amber icon + tooltip on alert; green when all-clear;
-  left-click opens the UI, right-click shows the menu (GNOME AppIndicator
-  on Linux uses themed icon names)
-- **Clickable notifications** — clicking a desktop alert opens Vigil and
-  navigates directly to the triggering connection
-- **Full GUI** — process-grouped Activity and Alerts views, a process-first
-  Inspector, auto-save Settings, persisted grid sort/window state, a
-  polished Help screen, and a header that clearly shows whether Vigil is
-  elevated
-- **Active response** — reversible actions (Windows + Linux) for killing a live TCP
-  connection, suspending or resuming a process during investigation,
+- **Process-first GUI** — Activity and Alerts views are grouped around the local
+  process, with a detailed Inspector for path, parent, publisher, user, remote
+  endpoint, score reasons, badges, and enrichment context
+- **Clickable notifications and tray workflow** — alerts can take you straight
+  into the relevant connection from the desktop or tray icon
+- **Boot-time service mode** — monitor before login so early persistence and
+  pre-user activity are still visible when the operator signs in
+
+### Protect and contain the machine
+
+- **Active response** — reversible actions (Windows + Linux) for killing a live
+  TCP connection, suspending or resuming a process during investigation,
   blocking a remote IP for 1 hour, 24 hours, or permanently, blocking a
-  process by executable path, or isolating the machine, with confirmation
-  prompts, live countdowns for temporary blocks, and one-click unblock
-  buttons
-- **Rolling daily log** at the per-user Vigil data directory under `logs/vigil.YYYY-MM-DD`
-- **Autostart at login** enabled on first run (configurable in Settings);
-  if Vigil is launched elevated on Windows, future autostart uses a
-  highest-privilege scheduled task so it keeps admin visibility
+  process by executable path, or isolating the machine
+- **Containment safety rails** — confirmation prompts for destructive actions,
+  live countdowns for temporary blocks, inline unblock controls, and break-glass
+  recovery for isolation
+- **Policy-driven automation** — user-defined response rules, scheduled
+  lockdown, allowlist-only mode, and threshold-based escalation planning
+
+### Preserve trust, evidence, and operator control
+
+- **Forensic capture on high-confidence alerts (Windows today)** — short PCAP
+  capture, process memory dump, TLS sidecar metadata, and provenance manifests
+- **Tamper-evident local state** — protected policy store, integrity-backed
+  generated state, audit-log chaining, and signed update manifests
+- **Daily rolling logs and audit trail** — operator-visible records for alerts,
+  actions, integrity events, and other security-relevant state changes
+- **Privilege-aware UX** — Vigil makes clear when elevated permissions are
+  required for deeper visibility or containment
 
 ---
 
@@ -128,7 +154,7 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +1 | Unusual destination port for an untrusted process |
 
 Trusted processes skip the **+2 unrecognised** and **+2 unsigned** penalties,
-so routine connections from browsers and system services score 0.  High-severity
+so routine connections from browsers and system services score 0. High-severity
 signals (malware ports, LoLBins, pre-login activity) still apply — if a trusted
 app suddenly dials a C2 port, you want to know.
 
@@ -196,7 +222,7 @@ just ci         # fmt-check + lint + test (mirrors CI)
 ### Windows icon embedding
 
 `build.rs` generates a multi-size `.ico` file and embeds it via
-[`winres`](https://crates.io/crates/winres).  This requires the Windows SDK
+[`winres`](https://crates.io/crates/winres). This requires the Windows SDK
 (`rc.exe`) or [`llvm-rc`](https://llvm.org/docs/CommandGuide/llvm-rc.html).
 If neither is present the build still succeeds — it just won't have the
 custom icon in the taskbar.
