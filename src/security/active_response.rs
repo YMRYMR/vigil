@@ -2597,7 +2597,7 @@ mod platform {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (rule_name, path, dir);
+            let _ = (rule_name, _path, dir);
             Err("Active response is not implemented on this platform.".into())
         }
     }
