@@ -12,6 +12,7 @@ pub mod process_list;
 pub mod settings;
 pub mod tab_bar;
 pub mod theme;
+pub mod uninstall;
 
 use crate::active_response;
 use crate::auto_response;
@@ -610,52 +611,9 @@ impl VigilApp {
         }
         handled
     }
+
     fn execute_uninstall_from_settings(&mut self) {
-        let autostart_removed = crate::autostart::disable();
-
-        // Persist the user's uninstall intent before exiting. Otherwise a later
-        // manual launch would reload `autostart = true` and re-enable login
-        // startup during bootstrap.
-        {
-            let mut cfg = self.cfg.write().unwrap();
-            if cfg.autostart {
-                cfg.autostart = false;
-                cfg.save();
-            }
-        }
-        self.settings.autostart = false;
-
-        match crate::service::uninstall() {
-            Ok(service_msg) => {
-                crate::audit::record(
-                    "settings_uninstall",
-                    "success",
-                    serde_json::json!({
-                        "autostart_removed": autostart_removed,
-                        "service_message": service_msg,
-                    }),
-                );
-                std::process::exit(0);
-            }
-            Err(err) => {
-                crate::audit::record(
-                    "settings_uninstall",
-                    "failure",
-                    serde_json::json!({
-                        "autostart_removed": autostart_removed,
-                        "error": &err,
-                    }),
-                );
-                self.settings.status_msg = Some((
-                    format!("Uninstall failed: {err}"),
-                    std::time::Instant::now(),
-                ));
-                self.push_notification(
-                    NotificationKind::Error,
-                    format!("Uninstall failed: {err}"),
-                );
-            }
-        }
+        uninstall::execute_from_settings(self);
     }
 
     fn handle_inspector_action(&mut self, action: inspector::Action, _ctx: &egui::Context) {
