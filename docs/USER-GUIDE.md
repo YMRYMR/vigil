@@ -106,7 +106,7 @@ Temporary actions show countdowns and unblock controls. Isolation always arms br
 
 ### Capture evidence on high-confidence alerts
 
-When forensic capture is enabled, Vigil can preserve:
+On Windows today, when forensic capture is enabled, Vigil can preserve:
 
 - process memory dumps
 - short PCAP captures
@@ -127,7 +127,7 @@ The header and controls are meant to make that state visible so you can tell whe
 
 ## Forensics
 
-When enabled, Vigil can capture forensic evidence for high-confidence alerts:
+On Windows today, when enabled, Vigil can capture forensic evidence for high-confidence alerts:
 
 - process memory dumps
 - short PCAP captures
