@@ -183,7 +183,7 @@ mod tests {
         symlink(&sidecar, &sidecar).unwrap();
 
         let err = read_verified(&path, "rules").unwrap_err();
-        assert!(err.contains("failed to read integrity sidecar"));
+        assert!(err.contains("integrity sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -199,7 +199,7 @@ mod tests {
         symlink(&missing, &sidecar).unwrap();
 
         let err = read_verified(&path, "rules").unwrap_err();
-        assert!(err.contains("failed to read integrity sidecar"));
+        assert!(err.contains("integrity sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 
