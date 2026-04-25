@@ -893,12 +893,30 @@ pub fn isolate_machine() -> Result<String, String> {
 }
 pub fn restore_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let mut state = load_state()?;
-    let had_isolation_intent =
-        state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
+    let (mut state, state_load_warning) = match load_state() {
+        Ok(state) => (state, None),
+        Err(err) => {
+            note_state_load_error_once("restore_machine", &err);
+            let mut state = State::default();
+            // Restore is the safety path. If the protected state is unreadable,
+            // still attempt legacy rule cleanup plus adapter re-enable instead
+            // of leaving the host isolated until manual intervention.
+            state.isolated = true;
+            (state, Some(err))
+        }
+    };
+    let had_isolation_intent = state_load_warning.is_some()
+        || state.isolated
+        || state.firewall_snapshot.is_some()
+        || state.network_snapshot.is_some();
     let firewall_snapshot = state.firewall_snapshot.clone();
     let network_snapshot = state.network_snapshot.clone();
     let mut warnings = Vec::new();
+    if let Some(err) = state_load_warning {
+        warnings.push(format!(
+            "protected isolation state could not be loaded; continuing with emergency restore path: {err}"
+        ));
+    }
     let mut critical_failure = false;
     let in_deleted = platform::delete_rule(ISOLATE_RULE_IN).is_ok();
     let out_deleted = platform::delete_rule(ISOLATE_RULE_OUT).is_ok();
@@ -1293,27 +1311,43 @@ fn load_state() -> Result<State, String> {
     }
 
     let path = state_path();
-    let state: State = crate::security::policy::load_struct_with_integrity(&path)
-        .map(|state| state.unwrap_or_default())
-        .map_err(|e| {
-            format!(
-                "failed to load active-response state {}: {e}",
-                path.display()
-            )
-        })?;
+    let state = load_state_from_path(&path)?;
     *state_cache().write().unwrap() = Some(state.clone());
     Ok(state)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    crate::security::policy::save_struct_with_integrity(&path, state).map_err(|e| {
+    save_state_to_path(&path, state)?;
+    *state_cache().write().unwrap() = Some(state.clone());
+    Ok(())
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| {
+            format!(
+                "failed to load active-response state {}: {e}",
+                path.display()
+            )
+        })?
+        .ok_or_else(|| {
+            format!(
+                "protected active-response state {} could not be verified or restored",
+                path.display()
+            )
+        })
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &State) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state).map_err(|e| {
         format!(
             "failed to save active-response state {}: {e}",
             path.display()
         )
-    })?;
-    *state_cache().write().unwrap() = Some(state.clone());
-    Ok(())
+    })
 }
 
 fn load_state_for_query(context: &str) -> Option<State> {
@@ -3068,6 +3102,10 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget {
         BlockedTarget {
             target: target.to_string(),
@@ -3258,5 +3296,42 @@ mod tests {
             Some("c2.bad.example")
         );
         assert_eq!(extract_domain_from_hostname("8.8.8.8"), None);
+    }
+
+    #[test]
+    fn protected_state_load_fails_when_existing_state_cannot_be_restored() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil-active-response.json");
+        let state = State {
+            blocked: Vec::new(),
+            blocked_processes: Vec::new(),
+            blocked_domains: Vec::new(),
+            suspended_processes: Vec::new(),
+            autorun_snapshot: None,
+            firewall_snapshot: None,
+            network_snapshot: None,
+            isolated: true,
+            isolation_started_unix: Some(1),
+            isolation_expires_unix: None,
+        };
+        save_state_to_path(&path, &state).unwrap();
+        fs::write(&path, br#"{"tampered":true}"#).unwrap();
+        let _ = fs::remove_file(path.with_extension("json.sig"));
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+        let _ = fs::remove_file(path.with_extension("json.bak.sig"));
+
+        let err = load_state_from_path(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-active-response-test-{nanos}"))
     }
 }
