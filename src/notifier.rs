@@ -19,7 +19,7 @@
 //!                 fire-and-forget so the caller is never blocked.
 
 use crate::types::ConnInfo;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 /// Fire a notification for `info`.  Clicking the notification will signal
@@ -37,6 +37,7 @@ pub fn send_alert(
 #[cfg(windows)]
 mod platform {
     use super::*;
+    use std::sync::atomic::Ordering;
     use windows::{
         Data::Xml::Dom::XmlDocument,
         Foundation::TypedEventHandler,
