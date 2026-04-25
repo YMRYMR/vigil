@@ -17,6 +17,7 @@
 
 #[cfg(not(target_os = "linux"))]
 use super::poll::RawConn;
+#[cfg(not(target_os = "linux"))]
 pub fn start(_tx: tokio::sync::mpsc::Sender<RawConn>) -> bool {
     tracing::debug!("eBPF monitoring not available on this platform");
     false
