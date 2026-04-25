@@ -63,7 +63,8 @@ fn observe_operator_path(summary: &mut ScanSummary, kind: &str, path: &Path) {
         operator_provenance::Observation::FirstSeen | operator_provenance::Observation::Changed => {
             summary.warnings += 1;
         }
-        operator_provenance::Observation::Missing | operator_provenance::Observation::Unreadable => {
+        operator_provenance::Observation::Missing
+        | operator_provenance::Observation::Unreadable => {
             summary.failures += 1;
         }
     }
@@ -88,9 +89,23 @@ fn record_summary(action: &str, summary: &ScanSummary) {
         }),
     );
     match outcome {
-        "success" => tracing::info!(action, checked = summary.checked, "integrity scan completed cleanly"),
-        "warning" => tracing::warn!(action, checked = summary.checked, warnings = summary.warnings, "integrity scan completed with warnings"),
-        _ => tracing::error!(action, checked = summary.checked, failures = summary.failures, "integrity scan found failures"),
+        "success" => tracing::info!(
+            action,
+            checked = summary.checked,
+            "integrity scan completed cleanly"
+        ),
+        "warning" => tracing::warn!(
+            action,
+            checked = summary.checked,
+            warnings = summary.warnings,
+            "integrity scan completed with warnings"
+        ),
+        _ => tracing::error!(
+            action,
+            checked = summary.checked,
+            failures = summary.failures,
+            "integrity scan found failures"
+        ),
     }
 }
 
@@ -111,10 +126,21 @@ fn scan_policy_sidecars(summary: &mut ScanSummary) {
         .map(|parent| parent.join("vigil-policy.key"))
         .unwrap_or_else(|| PathBuf::from("vigil-policy.key"));
 
-    let missing: Vec<String> = [(&sig, "signature"), (&bak, "backup"), (&bak_sig, "backup signature"), (&key, "local integrity key")]
-        .into_iter()
-        .filter_map(|(p, name)| if p.exists() { None } else { Some(name.to_string()) })
-        .collect();
+    let missing: Vec<String> = [
+        (&sig, "signature"),
+        (&bak, "backup"),
+        (&bak_sig, "backup signature"),
+        (&key, "local integrity key"),
+    ]
+    .into_iter()
+    .filter_map(|(p, name)| {
+        if p.exists() {
+            None
+        } else {
+            Some(name.to_string())
+        }
+    })
+    .collect();
     if missing.is_empty() {
         summary.ok += 1;
         tracing::info!(path = %path.display(), "policy integrity sidecars are present");
@@ -149,16 +175,24 @@ fn scan_artifact_manifests(summary: &mut ScanSummary) {
                     tracing::warn!(manifest = %manifest_path.display(), %related_err, "could not derive related artifact paths for quarantine");
                     Vec::new()
                 });
-                match file_quarantine::quarantine_integrity_failure(&manifest_path, &related, &err) {
-                    Ok(dest) => tracing::error!(manifest = %manifest_path.display(), quarantine = %dest.display(), %err, "forensic artifact manifest verification failed and was quarantined"),
-                    Err(quarantine_err) => tracing::error!(manifest = %manifest_path.display(), %err, %quarantine_err, "forensic artifact manifest verification failed and quarantine failed"),
+                match file_quarantine::quarantine_integrity_failure(&manifest_path, &related, &err)
+                {
+                    Ok(dest) => {
+                        tracing::error!(manifest = %manifest_path.display(), quarantine = %dest.display(), %err, "forensic artifact manifest verification failed and was quarantined")
+                    }
+                    Err(quarantine_err) => {
+                        tracing::error!(manifest = %manifest_path.display(), %err, %quarantine_err, "forensic artifact manifest verification failed and quarantine failed")
+                    }
                 }
             }
         }
     }
 }
 
-fn related_artifact_paths(manifest_path: &Path, artifact_root: &Path) -> Result<Vec<PathBuf>, String> {
+fn related_artifact_paths(
+    manifest_path: &Path,
+    artifact_root: &Path,
+) -> Result<Vec<PathBuf>, String> {
     let text = fs::read_to_string(manifest_path)
         .map_err(|e| format!("failed to read manifest for quarantine: {e}"))?;
     let manifest: ArtifactManifestScan = serde_json::from_str(&text)
@@ -180,8 +214,12 @@ fn related_artifact_paths(manifest_path: &Path, artifact_root: &Path) -> Result<
             artifact_path.display()
         ));
     }
-    let metadata = fs::metadata(&artifact_path)
-        .map_err(|e| format!("failed to stat manifest artifact path {}: {e}", artifact_path.display()))?;
+    let metadata = fs::metadata(&artifact_path).map_err(|e| {
+        format!(
+            "failed to stat manifest artifact path {}: {e}",
+            artifact_path.display()
+        )
+    })?;
     if !metadata.is_file() {
         return Err(format!(
             "refusing to quarantine non-regular artifact path {}",
@@ -232,8 +270,12 @@ fn collect_manifest_paths(dir: &Path, artifact_root: &Path, out: &mut Vec<PathBu
         {
             match path.canonicalize() {
                 Ok(canonical) if canonical.starts_with(artifact_root) => out.push(canonical),
-                Ok(canonical) => tracing::warn!(path = %canonical.display(), "skipping manifest outside artifact root after canonicalization"),
-                Err(err) => tracing::warn!(path = %path.display(), %err, "could not canonicalize manifest path during integrity scan"),
+                Ok(canonical) => {
+                    tracing::warn!(path = %canonical.display(), "skipping manifest outside artifact root after canonicalization")
+                }
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), %err, "could not canonicalize manifest path during integrity scan")
+                }
             }
             if out.len() >= 512 {
                 break;
@@ -243,10 +285,10 @@ fn collect_manifest_paths(dir: &Path, artifact_root: &Path, out: &mut Vec<PathBu
 }
 
 fn verify_artifact_manifest(manifest_path: &Path) -> Result<(), String> {
-    let text = fs::read_to_string(manifest_path)
-        .map_err(|e| format!("failed to read manifest: {e}"))?;
-    let manifest: ArtifactManifestScan = serde_json::from_str(&text)
-        .map_err(|e| format!("failed to parse manifest JSON: {e}"))?;
+    let text =
+        fs::read_to_string(manifest_path).map_err(|e| format!("failed to read manifest: {e}"))?;
+    let manifest: ArtifactManifestScan =
+        serde_json::from_str(&text).map_err(|e| format!("failed to parse manifest JSON: {e}"))?;
     let artifact_path = PathBuf::from(&manifest.artifact_path);
     let metadata = fs::metadata(&artifact_path).map_err(|e| {
         format!(
@@ -279,8 +321,8 @@ fn verify_artifact_manifest(manifest_path: &Path) -> Result<(), String> {
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path)
-        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 16 * 1024];
     loop {
@@ -354,7 +396,10 @@ mod tests {
             ),
         )
         .unwrap();
-        assert_eq!(related_artifact_paths(&manifest, &root).unwrap(), vec![artifact.canonicalize().unwrap()]);
+        assert_eq!(
+            related_artifact_paths(&manifest, &root).unwrap(),
+            vec![artifact.canonicalize().unwrap()]
+        );
         let _ = fs::remove_dir_all(dir);
     }
 
