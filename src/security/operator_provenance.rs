@@ -101,7 +101,9 @@ fn observe_operator_file_inner(
     let now = unix_now();
     let mut registry = load_registry(registry_path)?;
     match registry.files.get_mut(&canonical) {
-        Some(entry) if entry.sha256 == fingerprint.sha256 && entry.size_bytes == fingerprint.size_bytes => {
+        Some(entry)
+            if entry.sha256 == fingerprint.sha256 && entry.size_bytes == fingerprint.size_bytes =>
+        {
             Ok(Observation::Unchanged)
         }
         Some(entry) => {
@@ -171,8 +173,8 @@ struct Fingerprint {
 }
 
 fn fingerprint(path: &Path) -> Result<Fingerprint, String> {
-    let metadata = fs::metadata(path)
-        .map_err(|e| format!("failed to stat {}: {e}", path.display()))?;
+    let metadata =
+        fs::metadata(path).map_err(|e| format!("failed to stat {}: {e}", path.display()))?;
     if !metadata.is_file() {
         return Err(format!("{} is not a regular file", path.display()));
     }
@@ -216,8 +218,8 @@ fn canonical_key(path: &Path) -> String {
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
-    let mut file = fs::File::open(path)
-        .map_err(|e| format!("failed to open {}: {e}", path.display()))?;
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("failed to open {}: {e}", path.display()))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 16 * 1024];
     loop {
