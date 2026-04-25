@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_match)]
 //! Phase 12 detection-depth heuristics.
 //!
 //! These helpers intentionally stay explainable. Every score addition produces a

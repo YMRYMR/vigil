@@ -10,10 +10,62 @@ Thumbs.db
 
 # Vigil runtime files (generated, not source)
 vigil.json
+vigil-policy.key
+*.manifest.json
 /logs/
+/artifacts/
+/quarantine/
 
-# Secrets — never commit these
+# Secrets and local environment — never commit these
 *.env
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*_rsa
+*_dsa
+*_ecdsa
+*_ed25519
+secrets.*
+
+# Generated executables, installers, archives, and release artifacts
+*.exe
+*.dll
+*.dylib
+*.so
+*.app
+*.dmg
+*.AppImage
+*.msi
+*.pkg
+*.deb
+*.rpm
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.o
+*.obj
+*.rlib
+*.a
+*.lib
+/dist/
+/build/
+/out/
 
 # Claude Code session data
 .claude/
@@ -24,8 +76,8 @@ CLAUDE.md
 installer/windows/vigil.exe
 installer/windows/output/
 installer/windows/logs/
+installer/linux/output/
 
 # Generated icon assets (produced by build.rs from programmatic code)
 assets/vigil.ico
 assets/vigil.png
-installer/linux/output/

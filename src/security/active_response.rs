@@ -123,6 +123,7 @@ struct NetworkSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(dead_code)]
 struct TcpSessionState {
     local_address: String,
     local_port: u16,
@@ -2349,7 +2350,6 @@ mod platform {
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::Path;
     use std::process::Stdio;
     pub struct AutorunRevertResult {
         pub removed_additions: usize,
@@ -2501,18 +2501,14 @@ mod platform {
             return Ok(false);
         }
         let current = snapshot_active_adapters()?;
-        let mut saw_known_adapter = false;
-        for adapter in &snapshot.adapters {
-            if current
+        let any_saved_adapter_still_present = snapshot.adapters.iter().any(|adapter| {
+            current
                 .adapters
                 .iter()
                 .any(|item| item.name == adapter.name)
-            {
-                saw_known_adapter = true;
-                return Ok(false);
-            }
-        }
-        Ok(saw_known_adapter)
+        });
+
+        Ok(!any_saved_adapter_still_present)
     }
     pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
@@ -2574,7 +2570,7 @@ mod platform {
     pub fn add_block_program_rule(
         rule_name: &str,
         pid: u32,
-        path: &str,
+        _path: &str,
         dir: &str,
     ) -> Result<(), String> {
         #[cfg(target_os = "linux")]
@@ -2599,7 +2595,7 @@ mod platform {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (rule_name, path, dir);
+            let _ = (rule_name, _path, dir);
             Err("Active response is not implemented on this platform.".into())
         }
     }

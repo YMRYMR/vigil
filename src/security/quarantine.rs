@@ -5,9 +5,7 @@
 //! containment with optional USB storage disablement and scheduled-task pause /
 //! restore so the quarantine preset is closer to a real host-containment flow.
 
-use crate::audit;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::path::PathBuf;
 
 const STATE_FILE: &str = "vigil-quarantine-state.json";
@@ -21,6 +19,9 @@ struct State {
 pub fn apply() -> (Vec<String>, Vec<String>) {
     #[cfg(windows)]
     {
+        use crate::audit;
+        use serde_json::json;
+
         let mut state = load_state().unwrap_or_default();
         let mut applied = Vec::new();
         let mut warnings = Vec::new();
@@ -66,6 +67,9 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
 pub fn clear() -> (Vec<String>, Vec<String>) {
     #[cfg(windows)]
     {
+        use crate::audit;
+        use serde_json::json;
+
         let state = load_state().unwrap_or_default();
         let mut cleared = Vec::new();
         let mut warnings = Vec::new();

@@ -176,6 +176,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 fn capture_root(cfg: &Config) -> PathBuf {
     if !cfg.pcap_dir.trim().is_empty() {
         PathBuf::from(cfg.pcap_dir.trim())
@@ -184,6 +185,7 @@ fn capture_root(cfg: &Config) -> PathBuf {
     }
 }
 
+#[allow(dead_code)]
 fn safe_name(text: &str) -> String {
     let cleaned: String = text
         .chars()

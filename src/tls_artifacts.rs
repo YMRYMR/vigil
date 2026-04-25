@@ -1,3 +1,4 @@
+#![allow(clippy::collapsible_match)]
 //! Best-effort TLS metadata extraction from captured packet artifacts.
 //!
 //! This is a conservative post-capture enrichment path for Phase 12. When Vigil

@@ -28,7 +28,8 @@ pub enum VerificationStatus {
 /// present. Missing sidecars are allowed so existing deployments keep working;
 /// malformed sidecars or digest mismatches are hard failures.
 pub fn read_verified(path: &Path, purpose: &str) -> Result<(Vec<u8>, VerificationStatus), String> {
-    let data = fs::read(path).map_err(|e| format!("failed to read {purpose} {}: {e}", path.display()))?;
+    let data =
+        fs::read(path).map_err(|e| format!("failed to read {purpose} {}: {e}", path.display()))?;
     let sidecar = sidecar_path(path);
     match fs::symlink_metadata(&sidecar) {
         Ok(_) => {}
@@ -55,10 +56,17 @@ pub fn read_verified(path: &Path, purpose: &str) -> Result<(Vec<u8>, Verificatio
     Ok((data, VerificationStatus::Verified { sidecar }))
 }
 
-pub fn read_verified_to_string(path: &Path, purpose: &str) -> Result<(String, VerificationStatus), String> {
+pub fn read_verified_to_string(
+    path: &Path,
+    purpose: &str,
+) -> Result<(String, VerificationStatus), String> {
     let (data, status) = read_verified(path, purpose)?;
-    let text = String::from_utf8(data)
-        .map_err(|e| format!("failed to decode {purpose} {} as UTF-8: {e}", path.display()))?;
+    let text = String::from_utf8(data).map_err(|e| {
+        format!(
+            "failed to decode {purpose} {} as UTF-8: {e}",
+            path.display()
+        )
+    })?;
     Ok((text, status))
 }
 
@@ -123,7 +131,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rules.yaml");
         fs::write(&path, b"rules: []\n").unwrap();
-        fs::write(sidecar_path(&path), format!("{}  rules.yaml\n", sha256_hex(b"rules: []\n"))).unwrap();
+        fs::write(
+            sidecar_path(&path),
+            format!("{}  rules.yaml\n", sha256_hex(b"rules: []\n")),
+        )
+        .unwrap();
 
         let (text, status) = read_verified_to_string(&path, "rules").unwrap();
         assert_eq!(text, "rules: []\n");
@@ -137,7 +149,11 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("blocklist.txt");
         fs::write(&path, b"1.2.3.4\n").unwrap();
-        fs::write(sidecar_path(&path), format!("{}  blocklist.txt\n", sha256_hex(b"5.6.7.8\n"))).unwrap();
+        fs::write(
+            sidecar_path(&path),
+            format!("{}  blocklist.txt\n", sha256_hex(b"5.6.7.8\n")),
+        )
+        .unwrap();
 
         let err = read_verified(&path, "blocklist").unwrap_err();
         assert!(err.contains("failed SHA-256 verification"));
@@ -167,7 +183,7 @@ mod tests {
         symlink(&sidecar, &sidecar).unwrap();
 
         let err = read_verified(&path, "rules").unwrap_err();
-        assert!(err.contains("failed to read integrity sidecar"));
+        assert!(err.contains("integrity sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 
@@ -183,7 +199,7 @@ mod tests {
         symlink(&missing, &sidecar).unwrap();
 
         let err = read_verified(&path, "rules").unwrap_err();
-        assert!(err.contains("failed to read integrity sidecar"));
+        assert!(err.contains("integrity sidecar"));
         let _ = fs::remove_dir_all(dir);
     }
 

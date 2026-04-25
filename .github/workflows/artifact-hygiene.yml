@@ -1,0 +1,106 @@
+name: Artifact hygiene
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Check for generated executables and large binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+
+      - name: Reject generated executable artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -d '' generated < <(find . \
+            -path './.git' -prune -o \
+            -path './target' -prune -o \
+            -type f \( \
+              -name '*.exe' -o \
+              -name '*.dll' -o \
+              -name '*.dylib' -o \
+              -name '*.so' -o \
+              -name '*.app' -o \
+              -name '*.dmg' -o \
+              -name '*.AppImage' -o \
+              -name '*.msi' -o \
+              -name '*.pkg' -o \
+              -name '*.deb' -o \
+              -name '*.rpm' -o \
+              -name '*.o' -o \
+              -name '*.obj' -o \
+              -name '*.rlib' -o \
+              -name '*.a' -o \
+              -name '*.lib' \
+            \) -print0)
+          if ((${#generated[@]})); then
+            printf 'Generated executable artifacts must not be committed:\n'
+            printf ' - %s\n' "${generated[@]}"
+            exit 1
+          fi
+
+      - name: Reject unreviewable large binary blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          allowed_binary_suffixes = {
+              '.png', '.jpg', '.jpeg', '.ico', '.icns', '.svg', '.webp'
+          }
+          max_allowed_binary_bytes = 512 * 1024
+          # Explicitly documented, human-reviewable source image assets.
+          # Generated installers, archives, libraries, and executables remain blocked above.
+          approved_large_binary_assets = {
+              Path('assets/vigil_logo.png'),
+          }
+
+          def is_probably_binary(data: bytes) -> bool:
+              """Detect binary content without relying only on early NUL bytes."""
+              if not data:
+                  return False
+              if b'\0' in data:
+                  return True
+              try:
+                  text = data.decode('utf-8')
+              except UnicodeDecodeError:
+                  return True
+              if not text:
+                  return False
+              allowed_controls = {'\n', '\r', '\t', '\f', '\b'}
+              control_count = sum(
+                  1 for char in text if ord(char) < 32 and char not in allowed_controls
+              )
+              return control_count / max(len(text), 1) > 0.30
+
+          offenders = []
+          for path in Path('.').rglob('*'):
+              if not path.is_file():
+                  continue
+              if '.git' in path.parts:
+                  continue
+              if path.parts and path.parts[0] == 'target':
+                  continue
+              data = path.read_bytes()
+              if not is_probably_binary(data[:8192]):
+                  continue
+              if path in approved_large_binary_assets and path.suffix.lower() in allowed_binary_suffixes:
+                  continue
+              if path.suffix.lower() in allowed_binary_suffixes and len(data) <= max_allowed_binary_bytes:
+                  continue
+              offenders.append(str(path))
+          if offenders:
+              print('Unreviewable binary artifacts must not be committed:')
+              for item in offenders:
+                  print(f' - {item}')
+              raise SystemExit(1)
+          PY

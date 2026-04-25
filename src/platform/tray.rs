@@ -604,7 +604,7 @@ mod imp {
                         apply(&handle, in_alert, in_lockdown);
                     }
                     TrayCmd::ResetOk => {
-                        if alert_since.map_or(true, |t| t.elapsed() >= ALERT_HOLD) {
+                        if alert_since.is_none_or(|t| t.elapsed() >= ALERT_HOLD) {
                             in_alert = false;
                             alert_since = None;
                             apply(&handle, in_alert, in_lockdown);

@@ -5,6 +5,7 @@
 //! On Linux:   `/proc/net/tcp` + `/proc/net/tcp6`.
 //! On macOS:   falls back to parsing `netstat` output.
 
+#[cfg(any(windows, target_os = "linux"))]
 use std::net::Ipv4Addr;
 #[cfg(target_os = "linux")]
 use std::net::Ipv6Addr;
@@ -172,14 +173,14 @@ fn linux_parse_proc_content(
 
     for line in content.lines().skip(1) {
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() < 12 {
+        if fields.len() < 10 {
             continue;
         }
 
         let (local_ip, local_port) = parse_linux_addr(fields[1], ipv6);
         let (remote_ip, remote_port) = parse_linux_addr(fields[2], ipv6);
         let state_hex = u8::from_str_radix(fields[3], 16).unwrap_or(0);
-        let inode = fields[11].parse::<u64>().unwrap_or(0);
+        let inode = fields[9].parse::<u64>().unwrap_or(0);
         let pid = inode_to_pid.get(&inode).copied().unwrap_or(0);
 
         let status = linux_state_str(state_hex);

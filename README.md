@@ -1,6 +1,14 @@
 # Vigil
 
-[![Static Analysis](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil) [![Dependency Vulnerability Scan](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml) [![Dependency Change Review](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml/badge.svg?event=pull_request)](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml)
+[![CI](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil)
+[![Snyk](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/snyk-open-source.yml)
+[![Dependency Review](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml/badge.svg?event=pull_request)](https://github.com/YMRYMR/vigil/actions/workflows/dependency-review.yml)
+[![Artifact hygiene](https://github.com/YMRYMR/vigil/actions/workflows/artifact-hygiene.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/artifact-hygiene.yml)
+[![Secret scan](https://github.com/YMRYMR/vigil/actions/workflows/secret-scan.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/secret-scan.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/YMRYMR/vigil?label=release)](https://github.com/YMRYMR/vigil/releases/latest)
 
 Real-time network threat monitor for Windows, macOS, and Linux.
 
@@ -9,6 +17,15 @@ suspicious behaviour, and alerts you — via a system tray icon, desktop
 notification, and a full GUI — the moment something looks wrong.
 
 ![Vigil current UI](docs/images/vigil-current.png)
+
+---
+
+## Documentation
+
+- [User guide](docs/USER-GUIDE.md) — released functionality and basic operation
+- [Security policy](SECURITY.md) — vulnerability reporting and security contacts
+- [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
+- [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
 
 ---
 

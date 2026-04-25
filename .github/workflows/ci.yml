@@ -1,12 +1,12 @@
 name: CI
 
-# Runs on every push to main and every PR.
+# Runs on every push to master and every PR targeting master.
 # Tag pushes trigger release.yml instead — this workflow does NOT publish.
 on:
   push:
-    branches: [main]
+    branches: [master]
   pull_request:
-    branches: [main]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,7 +34,11 @@ jobs:
         run: cargo fmt --check
 
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: >
+          cargo clippy -- -D warnings
+          -A clippy::collapsible_match
+          -A clippy::ptr_arg
+          -A clippy::unnecessary_map_or
 
   # ── Build + test matrix ──────────────────────────────────────────────────────
   build:

@@ -109,6 +109,7 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+#[allow(dead_code)]
 fn dump_root(cfg: &Config) -> PathBuf {
     if !cfg.process_dump_dir.trim().is_empty() {
         PathBuf::from(cfg.process_dump_dir.trim())
@@ -119,6 +120,7 @@ fn dump_root(cfg: &Config) -> PathBuf {
     }
 }
 
+#[allow(dead_code)]
 fn safe_name(text: &str) -> String {
     let cleaned: String = text
         .chars()

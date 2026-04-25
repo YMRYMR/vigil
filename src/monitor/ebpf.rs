@@ -13,10 +13,10 @@
 //! 5. If eBPF is unavailable (old kernel, missing `CAP_BPF`), fall back to
 //!    `/proc/net/tcp` polling transparently.
 
-use super::poll::RawConn;
-
 // ── Non-Linux stub ───────────────────────────────────────────────────────────
 
+#[cfg(not(target_os = "linux"))]
+use super::poll::RawConn;
 #[cfg(not(target_os = "linux"))]
 pub fn start(_tx: tokio::sync::mpsc::Sender<RawConn>) -> bool {
     tracing::debug!("eBPF monitoring not available on this platform");
@@ -165,7 +165,7 @@ mod linux_impl {
     }
 
     fn reader_loop(
-        buffers: &mut Vec<aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>>,
+        buffers: &mut [aya::maps::perf::PerfEventArrayBuffer<aya::maps::MapData>],
         tx: mpsc::Sender<RawConn>,
     ) {
         use bytes::BytesMut;

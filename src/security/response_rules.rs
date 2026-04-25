@@ -133,10 +133,8 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
     let path_ref = Path::new(path);
     #[cfg(not(test))]
-    let _observation = crate::security::operator_provenance::observe_operator_file(
-        "response_rules",
-        path_ref,
-    );
+    let _observation =
+        crate::security::operator_provenance::observe_operator_file("response_rules", path_ref);
     let (text, status) = integrity::read_verified_to_string(path_ref, "response rules")?;
     match status {
         integrity::VerificationStatus::Verified { sidecar } => {
@@ -163,7 +161,10 @@ fn warn_unsigned_rules_once(path: &Path) {
     if !note_logged_rule_path(&WARNED_UNSIGNED_RULE_PATHS, path) {
         return;
     }
-    tracing::warn!("response rules {} loaded without a SHA-256 sidecar", path.display());
+    tracing::warn!(
+        "response rules {} loaded without a SHA-256 sidecar",
+        path.display()
+    );
 }
 
 static VERIFIED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
@@ -172,7 +173,10 @@ static WARNED_UNSIGNED_RULE_PATHS: OnceLock<Mutex<HashSet<String>>> = OnceLock::
 fn note_logged_rule_path(paths: &'static OnceLock<Mutex<HashSet<String>>>, path: &Path) -> bool {
     let paths = paths.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut paths) = paths.lock() else {
-        tracing::debug!("response rules logging cache unavailable for {}", path.display());
+        tracing::debug!(
+            "response rules logging cache unavailable for {}",
+            path.display()
+        );
         return false;
     };
     let path = path.display().to_string();
@@ -420,7 +424,11 @@ mod tests {
         let digest = Sha256::digest(content.as_bytes());
         fs::write(
             integrity::sidecar_path(path),
-            format!("{}  {}\n", hex(&digest), path.file_name().unwrap().to_string_lossy()),
+            format!(
+                "{}  {}\n",
+                hex(&digest),
+                path.file_name().unwrap().to_string_lossy()
+            ),
         )
         .unwrap();
     }
