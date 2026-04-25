@@ -2572,7 +2572,7 @@ mod platform {
     pub fn add_block_program_rule(
         rule_name: &str,
         pid: u32,
-        path: &str,
+        _path: &str,
         dir: &str,
     ) -> Result<(), String> {
         #[cfg(target_os = "linux")]
