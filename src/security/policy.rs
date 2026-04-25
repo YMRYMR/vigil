@@ -24,10 +24,10 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
     }
     let secret_path = secret_path(path);
     let had_secret = secret_path.exists();
-    let secret = load_or_create_secret(path)?;
     let current = fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let sig_path = signature_path(path);
     if let Some(signature) = read_signature(&sig_path)? {
+        let secret = load_or_create_secret(path)?;
         if verify_signature(&secret, &current, &signature) {
             return Ok(Some(current));
         }
@@ -42,6 +42,7 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
     }
 
     if had_secret || backup_data_path(path).exists() || backup_sig_path(path).exists() {
+        let secret = load_or_create_secret(path)?;
         tracing::warn!(
             "policy signature missing for existing store {}; attempting backup restore",
             path.display()
@@ -318,6 +319,24 @@ mod tests {
         fs::write(&path, json).unwrap();
         let err = load_json_with_integrity(&path).unwrap_err();
         assert!(err.contains("missing required integrity signature"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn unsigned_existing_store_does_not_create_secret_on_failed_load() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil.json");
+        fs::write(&path, br#"{"version":1}"#).unwrap();
+
+        let first = load_json_with_integrity(&path).unwrap_err();
+        assert!(first.contains("missing required integrity signature"));
+        assert!(!secret_path(&path).exists());
+
+        let second = load_json_with_integrity(&path).unwrap_err();
+        assert!(second.contains("missing required integrity signature"));
+        assert!(!secret_path(&path).exists());
+
         let _ = fs::remove_dir_all(base);
     }
 
