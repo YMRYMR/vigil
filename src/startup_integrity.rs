@@ -813,10 +813,7 @@ mod tests {
             path.parent().and_then(|parent| parent.file_name()),
             Some(OsStr::new(REPORT_DIR))
         );
-        assert_eq!(
-            path.file_name(),
-            Some(OsStr::new(REPORT_FILE))
-        );
+        assert_eq!(path.file_name(), Some(OsStr::new(REPORT_FILE)));
     }
 
     fn write_sidecar(path: &Path, content: &str) {
