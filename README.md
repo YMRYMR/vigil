@@ -113,8 +113,8 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
 
 ### Preserve trust, evidence, and operator control
 
-- **Forensic capture on high-confidence alerts** — short PCAP capture, process
-  memory dump, TLS sidecar metadata, and provenance manifests
+- **Forensic capture on high-confidence alerts (Windows today)** — short PCAP
+  capture, process memory dump, TLS sidecar metadata, and provenance manifests
 - **Tamper-evident local state** — protected policy store, integrity-backed
   generated state, audit-log chaining, and signed update manifests
 - **Daily rolling logs and audit trail** — operator-visible records for alerts,
