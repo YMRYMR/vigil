@@ -5,11 +5,13 @@
 //! containment with optional USB storage disablement and scheduled-task pause /
 //! restore so the quarantine preset is closer to a real host-containment flow.
 
-use crate::audit;
-use serde_json::json;
-
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+
+#[cfg(windows)]
+use crate::audit;
+#[cfg(windows)]
+use serde_json::json;
 
 const STATE_FILE: &str = "vigil-quarantine-state.json";
 
