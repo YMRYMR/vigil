@@ -5,16 +5,6 @@
 //! containment with optional USB storage disablement and scheduled-task pause /
 //! restore so the quarantine preset is closer to a real host-containment flow.
 
-<<<<<<< HEAD
-=======
-#[cfg(target_os = "windows")]
-#[cfg(target_os = "windows")]
-use crate::audit;
-#[cfg(target_os = "windows")]
-#[cfg(target_os = "windows")]
-use serde_json::json;
-
->>>>>>> 655a394 (Fix cross-platform clippy warnings)
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 

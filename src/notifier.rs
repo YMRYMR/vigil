@@ -20,11 +20,6 @@
 
 use crate::types::ConnInfo;
 use std::sync::atomic::AtomicBool;
-<<<<<<< HEAD
-=======
-#[cfg(target_os = "windows")]
-use std::sync::atomic::Ordering;
->>>>>>> 655a394 (Fix cross-platform clippy warnings)
 use std::sync::{Arc, Mutex};
 
 /// Fire a notification for `info`.  Clicking the notification will signal
