@@ -215,35 +215,47 @@ mod tests {
 
     #[test]
     fn exact_match() {
-        let p = mktmp("185.220.101.1\n1.2.3.4\n", "exact");
+        let content = "185.220.101.1\n1.2.3.4\n";
+        let p = mktmp(content, "exact");
+        write_sidecar(&p, content);
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("1.2.3.4").is_some());
         assert!(eng.lookup("185.220.101.1").is_some());
         assert!(eng.lookup("8.8.8.8").is_none());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 
     #[test]
     fn cidr_match() {
-        let p = mktmp("10.0.0.0/8\n", "cidr");
+        let content = "10.0.0.0/8\n";
+        let p = mktmp(content, "cidr");
+        write_sidecar(&p, content);
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("10.1.2.3").is_some());
         assert!(eng.lookup("11.1.2.3").is_none());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 
     #[test]
     fn comments_and_blanks_ok() {
-        let p = mktmp("# comment\n\n 1.1.1.1 # trailing\n", "cmt");
+        let content = "# comment\n\n 1.1.1.1 # trailing\n";
+        let p = mktmp(content, "cmt");
+        write_sidecar(&p, content);
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert!(eng.lookup("1.1.1.1").is_some());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 
     #[test]
     fn source_name_is_file_stem() {
-        let p = mktmp("1.2.3.4\n", "source");
+        let content = "1.2.3.4\n";
+        let p = mktmp(content, "source");
+        write_sidecar(&p, content);
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         let hit = eng.lookup("1.2.3.4").unwrap();
         // Stem is something like "vigil_bl_test_<pid>_source"
         assert!(hit.contains("source"));
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 
     #[test]

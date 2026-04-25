@@ -331,12 +331,12 @@ mod tests {
         let file = dir.join("rules.yaml");
         let registry = dir.join("registry.json");
         fs::write(&file, b"rules: []\n").unwrap();
-        fs::write(&registry, b"not-json").unwrap();
+        crate::security::policy::save_json_with_integrity(&registry, b"not-json").unwrap();
 
         let err = observe_operator_file_inner("response_rules", &file, &registry, false)
             .expect_err("corrupt registry must fail closed");
         assert!(err.contains("failed to parse operator provenance registry"));
-        assert_eq!(fs::read_to_string(&registry).unwrap(), "not-json");
+        assert_eq!(fs::read(&registry).unwrap(), b"not-json");
         let _ = fs::remove_dir_all(dir);
     }
 
