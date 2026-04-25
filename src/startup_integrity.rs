@@ -17,6 +17,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const REPORT_DIR: &str = "integrity-reports";
 const REPORT_FILE: &str = "startup-integrity-report.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -564,7 +565,7 @@ fn note_issue_with_quarantine(
 }
 
 fn report_path() -> PathBuf {
-    config::data_dir().join(REPORT_FILE)
+    config::data_dir().join(REPORT_DIR).join(REPORT_FILE)
 }
 
 fn load_report_at(path: &Path) -> Result<Option<StartupIntegrityReport>, String> {
@@ -600,6 +601,7 @@ fn unix_now() -> u64 {
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use std::ffi::OsStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -802,6 +804,19 @@ mod tests {
             .message
             .contains("failed SHA-256 verification"));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn startup_report_uses_dedicated_integrity_subdirectory() {
+        let path = report_path();
+        assert_eq!(
+            path.parent().and_then(|parent| parent.file_name()),
+            Some(OsStr::new(REPORT_DIR))
+        );
+        assert_eq!(
+            path.file_name(),
+            Some(OsStr::new(REPORT_FILE))
+        );
     }
 
     fn write_sidecar(path: &Path, content: &str) {
