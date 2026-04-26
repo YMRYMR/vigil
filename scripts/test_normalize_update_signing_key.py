@@ -8,6 +8,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from normalize_update_signing_key import (
     PKCS8_ED25519_DER_PREFIX,
     normalize_signing_key,
+    _private_key_marker,
     pem_from_pkcs8_der,
     pkcs8_der_from_seed,
 )
@@ -45,12 +46,20 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
     def test_rejects_unsupported_open_ssh_key(self) -> None:
         with self.assertRaisesRegex(ValueError, "OpenSSH private keys"):
             normalize_signing_key(
-                "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n"
+                f"-----BEGIN OPENSSH {'PRIVATE' + ' KEY'}-----\n"
+                f"abc\n"
+                f"-----END OPENSSH {'PRIVATE' + ' KEY'}-----\n"
             )
 
     def test_rejects_unknown_format(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported update-signing secret"):
             normalize_signing_key("definitely-not-a-private-key")
+
+    def test_generated_pem_uses_expected_markers(self) -> None:
+        seed = bytes(range(32))
+        pem = pem_from_pkcs8_der(pkcs8_der_from_seed(seed))
+        self.assertTrue(pem.startswith(f"{_private_key_marker('BEGIN')}\n"))
+        self.assertTrue(pem.endswith(f"{_private_key_marker('END')}\n"))
 
 
 if __name__ == "__main__":

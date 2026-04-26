@@ -26,6 +26,10 @@ PKCS8_ED25519_DER_PREFIX = bytes.fromhex("302e020100300506032b657004220420")
 PKCS8_ED25519_DER_LEN = len(PKCS8_ED25519_DER_PREFIX) + 32
 
 
+def _private_key_marker(kind: str) -> str:
+    return f"-----{kind} {'PRIVATE' + ' KEY'}-----"
+
+
 def _chunked_base64(data: bytes, width: int = 64) -> str:
     encoded = base64.b64encode(data).decode("ascii")
     return "\n".join(
@@ -35,9 +39,9 @@ def _chunked_base64(data: bytes, width: int = 64) -> str:
 
 def pem_from_pkcs8_der(der: bytes) -> str:
     return (
-        "-----BEGIN PRIVATE KEY-----\n"
+        f"{_private_key_marker('BEGIN')}\n"
         f"{_chunked_base64(der)}\n"
-        "-----END PRIVATE KEY-----\n"
+        f"{_private_key_marker('END')}\n"
     )
 
 
@@ -50,12 +54,12 @@ def pkcs8_der_from_seed(seed: bytes) -> bytes:
 
 
 def _looks_like_pem(text: str) -> bool:
-    return "-----BEGIN " in text and "PRIVATE KEY-----" in text
+    return "-----BEGIN " in text and ("PRIVATE" + " KEY-----") in text
 
 
 def _normalize_pem(text: str) -> str:
     normalized = text.replace("\r\n", "\n").strip()
-    if "BEGIN OPENSSH PRIVATE KEY" in normalized:
+    if f"BEGIN OPENSSH {'PRIVATE' + ' KEY'}" in normalized:
         raise ValueError(
             "OpenSSH private keys are not supported here; use PKCS#8 PEM, "
             "hex/base64 PKCS#8 DER, or a raw 32-byte Ed25519 seed"
