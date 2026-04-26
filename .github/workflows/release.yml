@@ -358,7 +358,38 @@ jobs:
           SIGNATURE="dist/Vigil-${VERSION}-update-manifest.json.sig"
           trap 'rm -f "$KEY_FILE" "$SIG_RAW"' EXIT
 
-          printf '%s\n' "$VIGIL_UPDATE_SIGNING_KEY" > "$KEY_FILE"
+          python3 scripts/normalize_update_signing_key.py \
+            --output "$KEY_FILE"
+
+          python3 - "$KEY_FILE" <<'PY'
+          import pathlib
+          import re
+          import subprocess
+          import sys
+
+          key_file = pathlib.Path(sys.argv[1])
+          update_rs = pathlib.Path("src/security/update.rs").read_text(encoding="utf-8")
+          match = re.search(
+              r'UPDATE_PUBLIC_KEY_HEX:\s*&str\s*=\s*"([0-9a-fA-F]+)"',
+              update_rs,
+          )
+          if match is None:
+              raise SystemExit("Could not find UPDATE_PUBLIC_KEY_HEX in src/security/update.rs")
+          expected_public_key = match.group(1).lower()
+          spki_der = subprocess.run(
+              ["openssl", "pkey", "-in", str(key_file), "-pubout", "-outform", "DER"],
+              check=True,
+              capture_output=True,
+          ).stdout
+          if len(spki_der) < 32:
+              raise SystemExit("Derived update public key was unexpectedly short")
+          actual_public_key = spki_der[-32:].hex()
+          if actual_public_key != expected_public_key:
+              raise SystemExit(
+                  "Configured VIGIL_UPDATE_SIGNING_KEY does not match the "
+                  "embedded update trust anchor in src/security/update.rs"
+              )
+          PY
 
           export VERSION TAG
           python3 - <<'PY'
