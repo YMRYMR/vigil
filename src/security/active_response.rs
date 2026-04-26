@@ -517,7 +517,7 @@ pub fn reconcile() {
             "failed to load protected active-response state",
         );
         return;
-    };
+    }
     let now = unix_now();
     let isolation_active =
         state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
@@ -693,9 +693,9 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     let mut delete_failed = false;
     for rule in state.blocked_processes.drain(..) {
         if process_block_matches(&rule, &path) {
-            if platform::delete_rule(&rule.inbound_rule_name).is_ok()
-                && platform::delete_rule(&rule.outbound_rule_name).is_ok()
-            {
+            let inbound_deleted = platform::delete_rule(&rule.inbound_rule_name).is_ok();
+            let outbound_deleted = platform::delete_rule(&rule.outbound_rule_name).is_ok();
+            if inbound_deleted && outbound_deleted {
                 removed += 1;
             } else {
                 delete_failed = true;
@@ -728,28 +728,34 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
     let timeout_secs = crate::config::Config::load()
-        .map(|cfg| cfg.break_glass_timeout_mins.max(1) * 60)
+        .map(|cfg| isolation_timeout_secs(cfg.break_glass_timeout_mins))
         .unwrap_or(300);
     let mut state = load_state()?;
     let firewall_snapshot = platform::snapshot_firewall()?;
     let network_snapshot = platform::snapshot_active_adapters()?;
     let previous_state = state.clone();
-    state.firewall_snapshot = Some(firewall_snapshot.clone());
-    state.network_snapshot = Some(network_snapshot.clone());
-    state.isolated = true;
     let now = unix_now();
-    state.isolation_started_unix = Some(now);
-    state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
+    stage_isolation_state(
+        &mut state,
+        firewall_snapshot.clone(),
+        network_snapshot.clone(),
+        now,
+        timeout_secs,
+    );
     save_state(&state)?;
 
     let mut warnings = Vec::new();
     let firewall_ok = match platform::outbound_block_supported() {
         Some(true) => {
-            platform::apply_firewall_isolation()?;
+            if let Err(err) = platform::apply_firewall_isolation() {
+                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+            }
             true
         }
         Some(false) => {
-            platform::apply_firewall_isolation_inbound_only()?;
+            if let Err(err) = platform::apply_firewall_isolation_inbound_only() {
+                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+            }
             warnings.push(
                 "firewall backend cannot confirm outbound connectivity; using failsafe adapter cutoff"
                     .to_string(),
@@ -757,21 +763,16 @@ pub fn isolate_machine() -> Result<String, String> {
             false
         }
         None => {
-            platform::apply_firewall_isolation()?;
+            if let Err(err) = platform::apply_firewall_isolation() {
+                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+            }
             true
         }
     };
 
     if !firewall_ok {
         if let Err(err) = platform::disable_active_adapters(&network_snapshot) {
-            let _ = platform::restore_firewall(&firewall_snapshot);
-            state.firewall_snapshot = None;
-            state.network_snapshot = None;
-            state.isolated = false;
-            state.isolation_started_unix = None;
-            state.isolation_expires_unix = None;
-            let _ = save_state(&state);
-            return Err(err);
+            return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
         }
     }
 
@@ -1110,6 +1111,57 @@ fn unix_now() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+
+fn isolation_timeout_secs(timeout_mins: u64) -> u64 {
+    timeout_mins.clamp(1, ISOLATION_MAX_SECS / 60) * 60
+}
+
+fn stage_isolation_state(
+    state: &mut State,
+    firewall_snapshot: FirewallSnapshot,
+    network_snapshot: NetworkSnapshot,
+    now: u64,
+    timeout_secs: u64,
+) {
+    state.firewall_snapshot = Some(firewall_snapshot);
+    state.network_snapshot = Some(network_snapshot);
+    state.isolated = true;
+    state.isolation_started_unix = Some(now);
+    state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
+}
+
+fn rollback_isolation_state(
+    previous_state: &State,
+    firewall_snapshot: &FirewallSnapshot,
+) -> Result<(), String> {
+    let mut rollback_errors = Vec::new();
+    if let Err(err) = platform::restore_firewall(firewall_snapshot) {
+        rollback_errors.push(format!("restore firewall: {err}"));
+    }
+    if let Err(err) = save_state(previous_state) {
+        rollback_errors.push(format!("restore saved state: {err}"));
+    }
+    if rollback_errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "failed to roll back partial isolation attempt: {}",
+            rollback_errors.join("; ")
+        ))
+    }
+}
+
+fn with_isolation_rollback(
+    err: String,
+    previous_state: &State,
+    firewall_snapshot: &FirewallSnapshot,
+) -> String {
+    match rollback_isolation_state(previous_state, firewall_snapshot) {
+        Ok(()) => err,
+        Err(rollback_err) => format!("{err}; {rollback_err}"),
+    }
+}
+
 fn outbound_probe_reachable() -> bool {
     TcpStream::connect_timeout(
         &SocketAddr::from(([1, 1, 1, 1], 443)),
@@ -1462,5 +1514,34 @@ mod tests {
         assert!(isolation_controls_still_effective(&state, true, false));
         assert!(!isolation_controls_still_effective(&state, true, true));
         assert!(!isolation_controls_still_effective(&state, false, false));
+    }
+
+    #[test]
+    fn isolation_timeout_preserves_existing_one_hour_cap() {
+        assert_eq!(isolation_timeout_secs(0), 60);
+        assert_eq!(isolation_timeout_secs(10), 600);
+        assert_eq!(isolation_timeout_secs(60), ISOLATION_MAX_SECS);
+        assert_eq!(isolation_timeout_secs(240), ISOLATION_MAX_SECS);
+    }
+
+    #[test]
+    fn staging_isolation_state_sets_timeout_and_snapshots() {
+        let mut state = State::default();
+        let firewall_snapshot = FirewallSnapshot { profiles: vec![] };
+        let network_snapshot = NetworkSnapshot { adapters: vec![] };
+
+        stage_isolation_state(
+            &mut state,
+            firewall_snapshot.clone(),
+            network_snapshot.clone(),
+            100,
+            600,
+        );
+
+        assert!(state.isolated);
+        assert_eq!(state.isolation_started_unix, Some(100));
+        assert_eq!(state.isolation_expires_unix, Some(700));
+        assert_eq!(state.firewall_snapshot, Some(firewall_snapshot));
+        assert_eq!(state.network_snapshot, Some(network_snapshot));
     }
 }
