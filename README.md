@@ -62,6 +62,11 @@ The release workflow also emits SLSA3 provenance for the published assets via
 the GitHub Actions SLSA generator. That provenance is attached to the release
 for users who prefer `slsa-verifier`-style supply-chain checks.
 
+Merged pull requests to `master` now cut the next patch release automatically
+after the `CI` workflow succeeds. That automated version bump creates the tag
+that feeds the existing signed release pipeline, so `releases/latest` and the
+signed update manifest stay in sync with merged code.
+
 The signed update manifest is the trust anchor for Vigil's update channel. It
 lists the release assets and their SHA-256 digests, then gets signed with an
 embedded Ed25519 public key in the app. You can verify it offline with:
