@@ -167,7 +167,6 @@ fn main() {
 
     tracing::info!("Vigil v{} starting", env!("CARGO_PKG_VERSION"));
     tracing::info!("pre-login session: {}", session::is_pre_login());
-    startup_integrity::run();
 
     #[cfg(windows)]
     {
@@ -183,7 +182,14 @@ fn main() {
         .expect("failed to build tokio runtime");
     let _guard = rt.enter();
 
-    let loaded_cfg = Config::load();
+    let loaded_cfg = match Config::load() {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+    };
+    startup_integrity::run();
     startup_integrity::scan_operator_inputs(&loaded_cfg);
     let cfg = Arc::new(RwLock::new(loaded_cfg));
     let cfg_bootstrap = cfg.clone();

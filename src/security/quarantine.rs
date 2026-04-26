@@ -22,9 +22,8 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
         use crate::audit;
         use serde_json::json;
 
-        let mut state = load_state().unwrap_or_default();
+        let (mut state, mut warnings) = state_for_apply(load_state());
         let mut applied = Vec::new();
-        let mut warnings = Vec::new();
         match platform::disable_usb_storage() {
             Ok(changed) => {
                 if changed {
@@ -43,7 +42,9 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
             }
             Err(err) => warnings.push(format!("scheduled-task pause failed: {err}")),
         }
-        let _ = save_state(&state);
+        if let Err(err) = save_state(&state) {
+            warnings.push(format!("quarantine state save failed: {err}"));
+        }
         audit::record(
             "quarantine_extended_apply",
             if warnings.is_empty() {
@@ -70,7 +71,20 @@ pub fn clear() -> (Vec<String>, Vec<String>) {
         use crate::audit;
         use serde_json::json;
 
-        let state = load_state().unwrap_or_default();
+        let state = match load_state() {
+            Ok(state) => state,
+            Err(err) => {
+                audit::record(
+                    "quarantine_extended_clear",
+                    "error",
+                    json!({ "error": err }),
+                );
+                return (
+                    Vec::new(),
+                    vec![format!("quarantine state load failed: {err}")],
+                );
+            }
+        };
         let mut cleared = Vec::new();
         let mut warnings = Vec::new();
         if state.usb_disabled {
@@ -89,7 +103,7 @@ pub fn clear() -> (Vec<String>, Vec<String>) {
                 Err(err) => warnings.push(format!("scheduled-task resume failed: {err}")),
             }
         }
-        let _ = std::fs::remove_file(state_path());
+        let _ = crate::security::policy::remove_json_with_integrity(&state_path());
         audit::record(
             "quarantine_extended_clear",
             if warnings.is_empty() {
@@ -115,22 +129,40 @@ fn state_path() -> PathBuf {
 }
 fn load_state() -> Result<State, String> {
     let path = state_path();
-    if !path.exists() {
-        return Ok(State::default());
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text).map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    load_state_from_path(&path)
 }
 fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    save_state_to_path(&path, state)
+        .map_err(|e| format!("failed to save quarantine state {}: {e}", path.display()))
+}
+
+fn state_for_apply(load_result: Result<State, String>) -> (State, Vec<String>) {
+    match load_result {
+        Ok(state) => (state, Vec::new()),
+        Err(err) => (
+            State::default(),
+            vec![format!("quarantine state load failed: {err}")],
+        ),
     }
-    let text = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise quarantine state: {e}"))?;
-    std::fs::write(&path, text).map_err(|e| format!("failed to write {}: {e}", path.display()))
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| format!("failed to load quarantine state {}: {e}", path.display()))?
+        .ok_or_else(|| {
+            format!(
+                "protected quarantine state {} could not be verified or restored",
+                path.display()
+            )
+        })
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &State) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
 }
 
 #[cfg(windows)]
@@ -228,5 +260,53 @@ mod platform {
                 &buffer[..len as usize],
             )))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn protected_quarantine_state_load_fails_when_existing_state_cannot_be_restored() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil-quarantine-state.json");
+        let state = State {
+            usb_disabled: true,
+            paused_tasks: vec!["TaskA".into(), "TaskB".into()],
+        };
+        save_state_to_path(&path, &state).unwrap();
+        fs::write(&path, br#"{"tampered":true}"#).unwrap();
+        let _ = fs::remove_file(path.with_extension("json.sig"));
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+        let _ = fs::remove_file(path.with_extension("json.bak.sig"));
+
+        let err = load_state_from_path(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn apply_continues_with_empty_state_when_prior_state_load_fails() {
+        let (state, warnings) = state_for_apply(Err("tampered state".into()));
+        assert!(!state.usb_disabled);
+        assert!(state.paused_tasks.is_empty());
+        assert_eq!(
+            warnings,
+            vec!["quarantine state load failed: tampered state"]
+        );
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-quarantine-test-{nanos}"))
     }
 }

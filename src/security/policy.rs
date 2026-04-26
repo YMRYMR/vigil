@@ -5,6 +5,7 @@
 //! corruption can be detected and repaired on load.
 
 use hmac::{Hmac, KeyInit, Mac};
+use serde::{de::DeserializeOwned, Serialize};
 use sha2::Sha256;
 use std::fs;
 use std::io::Write;
@@ -23,10 +24,10 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
     }
     let secret_path = secret_path(path);
     let had_secret = secret_path.exists();
-    let secret = load_or_create_secret(path)?;
     let current = fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
     let sig_path = signature_path(path);
     if let Some(signature) = read_signature(&sig_path)? {
+        let secret = load_or_create_secret(path)?;
         if verify_signature(&secret, &current, &signature) {
             return Ok(Some(current));
         }
@@ -41,6 +42,7 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
     }
 
     if had_secret || backup_data_path(path).exists() || backup_sig_path(path).exists() {
+        let secret = load_or_create_secret(path)?;
         tracing::warn!(
             "policy signature missing for existing store {}; attempting backup restore",
             path.display()
@@ -51,19 +53,47 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
         return Ok(None);
     }
 
-    // Migration path for existing installs: accept the legacy unsigned config
-    // once, then seed the integrity sidecars so future loads are protected.
-    tracing::info!(
-        "seeding policy integrity metadata for legacy store {}",
-        path.display()
-    );
-    seed_integrity_artifacts(path, &secret, &current)?;
-    Ok(Some(current))
+    Err(format!(
+        "policy store {} is missing required integrity signature {}",
+        path.display(),
+        sig_path.display()
+    ))
 }
 
 pub fn save_json_with_integrity(path: &Path, data: &[u8]) -> Result<(), String> {
     let secret = load_or_create_secret(path)?;
     save_current_and_backup(path, &secret, data)
+}
+
+pub fn load_struct_with_integrity<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+    let Some(bytes) = load_json_with_integrity(path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("failed to parse protected JSON {}: {e}", path.display()))
+}
+
+pub fn save_struct_with_integrity<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let data = serde_json::to_vec_pretty(value)
+        .map_err(|e| format!("failed to serialize protected JSON {}: {e}", path.display()))?;
+    save_json_with_integrity(path, &data)
+}
+
+pub fn remove_json_with_integrity(path: &Path) -> Result<(), String> {
+    for target in [
+        path.to_path_buf(),
+        signature_path(path),
+        backup_data_path(path),
+        backup_sig_path(path),
+    ] {
+        if !target.exists() {
+            continue;
+        }
+        fs::remove_file(&target)
+            .map_err(|e| format!("failed to remove {}: {e}", target.display()))?;
+    }
+    Ok(())
 }
 
 fn restore_from_backup(path: &Path, secret: &[u8]) -> Result<Option<Vec<u8>>, String> {
@@ -74,10 +104,6 @@ fn restore_from_backup(path: &Path, secret: &[u8]) -> Result<Option<Vec<u8>>, St
     };
     save_current_and_backup(path, secret, &backup)?;
     Ok(Some(backup))
-}
-
-fn seed_integrity_artifacts(path: &Path, secret: &[u8], data: &[u8]) -> Result<(), String> {
-    save_current_and_backup(path, secret, data)
 }
 
 fn save_current_and_backup(path: &Path, secret: &[u8], data: &[u8]) -> Result<(), String> {
@@ -285,16 +311,32 @@ mod tests {
     }
 
     #[test]
-    fn signed_load_survives_legacy_migration() {
+    fn unsigned_existing_store_is_rejected() {
         let base = unique_temp_dir();
         fs::create_dir_all(&base).unwrap();
         let path = base.join("vigil.json");
         let json = br#"{"poll_interval_secs":5,"alert_threshold":3,"log_all_connections":false,"autostart":false,"first_run_done":false,"trusted_processes":[],"common_ports":[],"malware_ports":[],"suspicious_path_fragments":[],"lolbins":[],"activity_history_cap":2048,"alerts_history_cap":1024,"geoip_city_db":"","geoip_asn_db":"","allowed_countries":[],"blocklist_paths":[],"fswatch_enabled":true,"fswatch_window_secs":600,"long_lived_secs":3600,"reverse_dns_enabled":false,"dga_entropy_threshold":3.2,"auto_response_enabled":false,"auto_response_dry_run":false,"auto_kill_connection":false,"auto_block_remote":false,"auto_block_process":false,"auto_isolate_machine":false,"auto_response_min_score":10,"auto_response_cooldown_secs":300,"allowlist_mode_enabled":false,"allowlist_mode_dry_run":false,"allowlist_processes":[],"response_rules_enabled":false,"response_rules_dry_run":true,"response_rules_path":"","scheduled_lockdown_enabled":false,"scheduled_lockdown_start_hour":23,"scheduled_lockdown_start_minute":0,"scheduled_lockdown_end_hour":6,"scheduled_lockdown_end_minute":0,"process_dump_on_alert":false,"process_dump_min_score":12,"process_dump_cooldown_secs":600,"process_dump_dir":"","pcap_on_alert":false,"pcap_min_score":12,"pcap_duration_secs":15,"pcap_cooldown_secs":300,"pcap_packet_size_bytes":0,"pcap_dir":"","honeypot_decoys_enabled":false,"honeypot_auto_isolate":false,"honeypot_poll_secs":10,"honeypot_decoy_names":[],"break_glass_enabled":true,"break_glass_timeout_mins":10,"break_glass_heartbeat_secs":30,"ui_scale":1.0}"#;
         fs::write(&path, json).unwrap();
-        let loaded = load_json_with_integrity(&path).unwrap().unwrap();
-        assert_eq!(loaded, json);
-        assert!(signature_path(&path).exists());
-        assert!(backup_data_path(&path).exists());
+        let err = load_json_with_integrity(&path).unwrap_err();
+        assert!(err.contains("missing required integrity signature"));
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn unsigned_existing_store_does_not_create_secret_on_failed_load() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil.json");
+        fs::write(&path, br#"{"version":1}"#).unwrap();
+
+        let first = load_json_with_integrity(&path).unwrap_err();
+        assert!(first.contains("missing required integrity signature"));
+        assert!(!secret_path(&path).exists());
+
+        let second = load_json_with_integrity(&path).unwrap_err();
+        assert!(second.contains("missing required integrity signature"));
+        assert!(!secret_path(&path).exists());
+
         let _ = fs::remove_dir_all(base);
     }
 

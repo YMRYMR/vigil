@@ -48,8 +48,29 @@ pub fn sync_watchdog(cfg: &Config) -> Result<(), String> {
 }
 
 pub fn recover_if_stale() -> i32 {
-    let Some(state) = load_state().ok().flatten() else {
-        return 0;
+    let state = match load_state() {
+        Ok(Some(state)) => state,
+        Ok(None) => {
+            if active_response::status().isolated {
+                audit::record(
+                    "break_glass_recovery",
+                    "error",
+                    json!({
+                        "reason": "missing protected break-glass state while machine is isolated"
+                    }),
+                );
+                return 1;
+            }
+            return 0;
+        }
+        Err(err) => {
+            audit::record(
+                "break_glass_recovery",
+                "error",
+                json!({ "error": err, "reason": "failed to load protected break-glass state" }),
+            );
+            return 1;
+        }
     };
     if !active_response::status().isolated {
         let _ = disarm();
@@ -113,7 +134,7 @@ fn arm(cfg: &Config) -> Result<(), String> {
     }
     if let Err(err) = touch_heartbeat() {
         let _ = platform::delete_recovery_task(TASK_NAME);
-        let _ = std::fs::remove_file(state_path());
+        let _ = crate::security::policy::remove_json_with_integrity(&state_path());
         return Err(err);
     }
     audit::record(
@@ -130,7 +151,7 @@ fn arm(cfg: &Config) -> Result<(), String> {
 
 pub fn disarm() -> Result<(), String> {
     let _ = platform::delete_recovery_task(TASK_NAME);
-    let _ = std::fs::remove_file(state_path());
+    let _ = crate::security::policy::remove_json_with_integrity(&state_path());
     let _ = std::fs::remove_file(heartbeat_path());
     Ok(())
 }
@@ -168,24 +189,70 @@ fn unix_now() -> u64 {
 
 fn load_state() -> Result<Option<RecoveryState>, String> {
     let path = state_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let text = std::fs::read_to_string(&path)
-        .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_json::from_str(&text)
-        .map(Some)
-        .map_err(|e| format!("failed to parse {}: {e}", path.display()))
+    load_state_from_path(&path)
 }
 fn save_state(state: &RecoveryState) -> Result<(), String> {
     let path = state_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    save_state_to_path(&path, state)
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<Option<RecoveryState>, String> {
+    if !path.exists() {
+        return Ok(None);
     }
-    let json = serde_json::to_string_pretty(state)
-        .map_err(|e| format!("failed to serialise break-glass state: {e}"))?;
-    std::fs::write(&path, json).map_err(|e| format!("failed to write {}: {e}", path.display()))
+    crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| format!("failed to load break-glass state {}: {e}", path.display()))?
+        .ok_or_else(|| {
+            format!(
+                "protected break-glass state {} could not be verified or restored",
+                path.display()
+            )
+        })
+        .map(Some)
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &RecoveryState) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
+        .map_err(|e| format!("failed to save break-glass state {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn protected_break_glass_state_load_fails_when_existing_state_cannot_be_restored() {
+        let base = unique_temp_dir();
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("vigil-break-glass.json");
+        let state = RecoveryState {
+            armed_at_unix: 1,
+            deadline_unix: 2,
+            heartbeat_max_age_secs: 30,
+            task_name: TASK_NAME.to_string(),
+        };
+        save_state_to_path(&path, &state).unwrap();
+        fs::write(&path, br#"{"tampered":true}"#).unwrap();
+        let _ = fs::remove_file(path.with_extension("json.sig"));
+        let _ = fs::remove_file(path.with_extension("json.bak"));
+        let _ = fs::remove_file(path.with_extension("json.bak.sig"));
+
+        let err = load_state_from_path(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-break-glass-test-{nanos}"))
+    }
 }
 
 #[cfg(windows)]

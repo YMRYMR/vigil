@@ -30,6 +30,8 @@ Vigil is intentionally conservative about action. Scores and advisory context ar
 2. Drag `Vigil.app` to Applications.
 3. Launch Vigil and approve any operating system prompts that are required for network visibility.
 
+Current macOS builds use a degraded fallback path because the native Endpoint Security backend is not integrated yet. When `dtrace` is available and permitted, Vigil uses DTrace-assisted polling to surface new connections faster; otherwise it falls back to polling-only. Detection remains functional, but coverage is still behind the Windows ETW and Linux eBPF paths, and privileged features currently require launching from an elevated shell.
+
 ### Linux
 
 1. Download the Linux AppImage from the latest GitHub Release.
@@ -150,6 +152,8 @@ forensic artifact manifests. Changed blocklists or response-rule files are
 recorded as provenance events, while unreadable or tampered Vigil-owned
 artifacts are logged as integrity failures and may be moved into the integrity
 quarantine under the data directory.
+
+At launch, Vigil also verifies protected policy state, operator-managed blocklists and rule files, and forensic artifact manifests. Blocklists and response-rule YAML files must have matching SHA-256 sidecars; Vigil combines that verification with a protected local provenance registry, so an expected local edit shows up as a warning while a missing sidecar, mismatch, or unreadable file is treated as a failure. Corrupted forensic artifact sets are moved under `quarantine/integrity/` in the Vigil data directory so they are no longer mixed with trusted evidence.
 
 ## Boot-time service mode
 

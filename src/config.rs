@@ -424,18 +424,13 @@ pub fn config_path() -> PathBuf {
 }
 
 impl Config {
-    pub fn load() -> Self {
+    pub fn load() -> Result<Self, String> {
         let path = config_path();
-        let Some(bytes) = crate::security::policy::load_json_with_integrity(&path)
-            .ok()
-            .flatten()
-        else {
-            return Self::default();
+        let Some(bytes) = crate::security::policy::load_json_with_integrity(&path)? else {
+            return Ok(Self::default());
         };
-        serde_json::from_slice::<Config>(&bytes).unwrap_or_else(|err| {
-            tracing::warn!("failed to parse config {}: {err}", path.display());
-            Self::default()
-        })
+        serde_json::from_slice::<Config>(&bytes)
+            .map_err(|err| format!("failed to parse config {}: {err}", path.display()))
     }
     pub fn save(&self) {
         let path = config_path();

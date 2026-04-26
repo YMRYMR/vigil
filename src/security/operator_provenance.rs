@@ -45,7 +45,7 @@ pub enum Observation {
 }
 
 pub fn observe_operator_file(kind: &str, path: &Path) -> Observation {
-    match observe_operator_file_inner(kind, path, &registry_path(), true) {
+    match observe_operator_file_checked(kind, path) {
         Ok(observation) => observation,
         Err(err) => {
             audit::record(
@@ -60,6 +60,18 @@ pub fn observe_operator_file(kind: &str, path: &Path) -> Observation {
             Observation::Unreadable
         }
     }
+}
+
+pub fn observe_operator_file_checked(kind: &str, path: &Path) -> Result<Observation, String> {
+    observe_operator_file_inner(kind, path, &registry_path(), true)
+}
+
+pub(crate) fn observe_operator_file_at(
+    kind: &str,
+    path: &Path,
+    registry_path: &Path,
+) -> Result<Observation, String> {
+    observe_operator_file_inner(kind, path, registry_path, false)
 }
 
 fn observe_operator_file_inner(
@@ -319,12 +331,12 @@ mod tests {
         let file = dir.join("rules.yaml");
         let registry = dir.join("registry.json");
         fs::write(&file, b"rules: []\n").unwrap();
-        fs::write(&registry, b"not-json").unwrap();
+        crate::security::policy::save_json_with_integrity(&registry, b"not-json").unwrap();
 
         let err = observe_operator_file_inner("response_rules", &file, &registry, false)
             .expect_err("corrupt registry must fail closed");
         assert!(err.contains("failed to parse operator provenance registry"));
-        assert_eq!(fs::read_to_string(&registry).unwrap(), "not-json");
+        assert_eq!(fs::read(&registry).unwrap(), b"not-json");
         let _ = fs::remove_dir_all(dir);
     }
 
