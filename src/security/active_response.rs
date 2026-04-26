@@ -532,7 +532,7 @@ pub fn reconcile() {
         state.isolation_expires_unix = None;
         if let Err(err) = save_state(&state) {
             note_state_load_error_once("reconcile_stale_isolation_state_save", &err);
-         }
+        }
         match crate::config::Config::load() {
             Ok(cfg) => {
                 let _ = crate::break_glass::sync_watchdog(&cfg);
@@ -551,4 +551,839 @@ pub fn reconcile() {
     let isolation_expired = isolation_active
         && state
             .isolation_expires_unix
-            .is_some_and(|expires_at| 
+            .is_some_and(|expires_at| now >= expires_at);
+    if isolation_expired {
+        if let Err(err) = restore_machine() {
+            audit::record(
+                "reconcile_isolation_timeout",
+                "error",
+                json!({
+                    "error": err,
+                    "expires_at_unix": state.isolation_expires_unix,
+                    "now_unix": now,
+                }),
+            );
+        } else if let Ok(restored_state) = load_state() {
+            state = restored_state;
+        }
+    }
+    let changed = reconcile_state(&mut state, now, |rule_name| {
+        platform::delete_rule(rule_name).is_ok()
+    });
+    if changed {
+        if let Err(err) = save_state(&state) {
+            note_state_load_error_once("reconcile_save", &err);
+        }
+    }
+}
+pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
+    ensure_modifiable()?;
+    let target = normalise_target(target)?;
+    let rule_name = rule_name_for_target(&target);
+    let expires_at_unix = preset
+        .ttl()
+        .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
+    let _ = platform::delete_rule(&rule_name);
+    platform::add_block_rule(&rule_name, &target)?;
+    let mut state = load_state()?;
+    state.blocked.retain(|rule| rule.target != target);
+    state.blocked.push(BlockedTarget {
+        target: target.clone(),
+        rule_name: rule_name.clone(),
+        expires_at_unix,
+    });
+    save_state(&state)?;
+    let message = match preset {
+        DurationPreset::OneHour => format!("Blocked {target} for 1 hour."),
+        DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
+        DurationPreset::Permanent => format!("Blocked {target} until removed."),
+    };
+    audit::record(
+        "block_remote",
+        "success",
+        json!({ "target": target, "duration": format!("{:?}", preset), "rule_name": rule_name }),
+    );
+    Ok(message)
+}
+pub fn unblock_remote(target: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let target = normalise_target(target)?;
+    let mut state = load_state()?;
+    let mut removed = 0usize;
+    let mut kept = Vec::with_capacity(state.blocked.len());
+    let mut delete_failed = false;
+    for rule in state.blocked.drain(..) {
+        if rule.target == target {
+            if platform::delete_rule(&rule.rule_name).is_ok() {
+                removed += 1;
+            } else {
+                delete_failed = true;
+                kept.push(rule);
+            }
+        } else {
+            kept.push(rule);
+        }
+    }
+    state.blocked = kept;
+    if delete_failed {
+        return Err(format!("Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."));
+    }
+    let message = if removed > 0 {
+        save_state(&state)?;
+        format!("Removed {removed} block rule(s) for {target}.")
+    } else {
+        format!("No active block rule found for {target}.")
+    };
+    audit::record(
+        "unblock_remote",
+        if removed > 0 { "success" } else { "noop" },
+        json!({ "target": target, "removed_rules": removed }),
+    );
+    Ok(message)
+}
+pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<String, String> {
+    ensure_modifiable()?;
+    let path = normalise_target(path)?;
+    let rule_suffix = rule_suffix_for_process(&path);
+    let outbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} Out {rule_suffix}");
+    let inbound_rule_name = format!("{PROCESS_BLOCK_RULE_PREFIX} In {rule_suffix}");
+    let expires_at_unix = preset
+        .ttl()
+        .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
+    let _ = platform::delete_rule(&outbound_rule_name);
+    let _ = platform::delete_rule(&inbound_rule_name);
+    platform::add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
+    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
+        let _ = platform::delete_rule(&outbound_rule_name);
+        return Err(err);
+    }
+    let mut state = load_state()?;
+    state
+        .blocked_processes
+        .retain(|rule| !process_block_matches(rule, &path));
+    state.blocked_processes.push(BlockedProcess {
+        pid,
+        path: path.clone(),
+        inbound_rule_name: inbound_rule_name.clone(),
+        outbound_rule_name: outbound_rule_name.clone(),
+        expires_at_unix,
+    });
+    save_state(&state)?;
+    let message = match preset {
+        DurationPreset::OneHour => format!("Blocked {path} for 1 hour."),
+        DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
+        DurationPreset::Permanent => format!("Blocked {path} until removed."),
+    };
+    audit::record(
+        "block_process",
+        "success",
+        json!({ "pid": pid, "path": path, "duration": format!("{:?}", preset), "inbound_rule_name": inbound_rule_name, "outbound_rule_name": outbound_rule_name }),
+    );
+    Ok(message)
+}
+pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
+    ensure_modifiable()?;
+    let path = normalise_target(path)?;
+    let mut state = load_state()?;
+    let mut removed = 0usize;
+    let mut kept = Vec::with_capacity(state.blocked_processes.len());
+    let mut delete_failed = false;
+    for rule in state.blocked_processes.drain(..) {
+        if process_block_matches(&rule, &path) {
+            if platform::delete_rule(&rule.inbound_rule_name).is_ok()
+                && platform::delete_rule(&rule.outbound_rule_name).is_ok()
+            {
+                removed += 1;
+            } else {
+                delete_failed = true;
+                kept.push(rule);
+            }
+        } else {
+            kept.push(rule);
+        }
+    }
+    state.blocked_processes = kept;
+    if delete_failed {
+        return Err(format!(
+            "Could not remove all firewall rules for {path}; they were kept in state so Vigil can retry."
+        ));
+    }
+    let message = if removed > 0 {
+        save_state(&state)?;
+        format!("Removed {removed} process block rule(s) for {path}.")
+    } else {
+        format!("No active process block found for {path}.")
+    };
+    audit::record(
+        "unblock_process",
+        if removed > 0 { "success" } else { "noop" },
+        json!({ "pid": pid, "path": path, "removed_rules": removed }),
+    );
+    Ok(message)
+}
+pub fn isolate_machine() -> Result<String, String> {
+    ensure_isolation_modifiable()?;
+    let mut state = load_state()?;
+    if state.isolated {
+        return Ok("Network isolation is already active.".into());
+    }
+
+    let timeout_secs = crate::config::Config::load()
+        .map(|cfg| cfg.break_glass_timeout_mins.max(1) * 60)
+        .unwrap_or(300);
+
+    let now = unix_now();
+    let firewall_snapshot = platform::snapshot_firewall()?;
+    let network_snapshot = platform::snapshot_active_adapters()?;
+    let mut warnings = Vec::new();
+
+    state.firewall_snapshot = Some(firewall_snapshot.clone());
+    state.network_snapshot = Some(network_snapshot.clone());
+    state.isolated = true;
+    state.isolation_started_unix = Some(now);
+    state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
+    save_state(&state)?;
+
+    let firewall_ok = match platform::isolation_works_via_firewall_only() {
+        Some(true) => {
+            platform::apply_firewall_isolation()?;
+            true
+        }
+        Some(false) => {
+            warnings.push(
+                "firewall-only isolation did not block outbound connectivity; using failsafe adapter cutoff"
+                    .to_string(),
+            );
+            false
+        }
+        None => {
+            platform::apply_firewall_isolation()?;
+            true
+        }
+    };
+
+    if !firewall_ok {
+        if let Err(err) = platform::disable_active_adapters(&network_snapshot) {
+            let _ = platform::restore_firewall(&firewall_snapshot);
+            state.firewall_snapshot = None;
+            state.network_snapshot = None;
+            state.isolated = false;
+            state.isolation_started_unix = None;
+            state.isolation_expires_unix = None;
+            let _ = save_state(&state);
+            return Err(err);
+        }
+    }
+
+    match crate::config::Config::load() {
+        Ok(cfg) => {
+            if let Err(err) = crate::break_glass::arm_watchdog(&cfg) {
+                warnings.push(format!("watchdog arm failed: {err}"));
+            }
+        }
+        Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
+    }
+
+    audit::record(
+        "isolate_machine",
+        if warnings.is_empty() { "success" } else { "partial" },
+        json!({
+            "warnings": warnings,
+            "timeout_secs": timeout_secs,
+            "mode": if firewall_ok { "firewall" } else { "firewall+adapter_cutoff" }
+        }),
+    );
+
+    if warnings.is_empty() {
+        if firewall_ok {
+            Ok(format!(
+                "Network isolation enabled (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
+                timeout_secs / 60,
+                if timeout_secs / 60 == 1 { "" } else { "s" }
+            ))
+        } else {
+            Ok(format!(
+                "Network isolation enabled via emergency adapter cutoff (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
+                timeout_secs / 60,
+                if timeout_secs / 60 == 1 { "" } else { "s" }
+            ))
+        }
+    } else if firewall_ok {
+        Ok(format!(
+            "Network isolation enabled with warnings: {} (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
+            warnings.join("; "),
+            timeout_secs / 60,
+            if timeout_secs / 60 == 1 { "" } else { "s" }
+        ))
+    } else {
+        Ok(format!(
+            "Network isolation enabled via emergency adapter cutoff with warnings: {} (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
+            warnings.join("; "),
+            timeout_secs / 60,
+            if timeout_secs / 60 == 1 { "" } else { "s" }
+        ))
+    }
+}
+pub fn restore_machine() -> Result<String, String> {
+    ensure_isolation_modifiable()?;
+    let (mut state, state_load_warning) = match load_state() {
+        Ok(state) => (state, None),
+        Err(err) => {
+            note_state_load_error_once("restore_machine", &err);
+            let state = State {
+                isolated: true,
+                ..State::default()
+            };
+            // Restore is the safety path. If the protected state is unreadable,
+            // still attempt legacy rule cleanup plus adapter re-enable instead
+            // of leaving the host isolated until manual intervention.
+            (state, Some(err))
+        }
+    };
+    let had_isolation_intent = state_load_warning.is_some()
+        || state.isolated
+        || state.firewall_snapshot.is_some()
+        || state.network_snapshot.is_some();
+    let firewall_snapshot = state.firewall_snapshot.clone();
+    let network_snapshot = state.network_snapshot.clone();
+    let mut warnings = Vec::new();
+    if let Some(err) = state_load_warning {
+        warnings.push(format!(
+            "protected isolation state could not be loaded; continuing with emergency restore path: {err}"
+        ));
+    }
+    let mut critical_failure = false;
+    let in_deleted = platform::delete_rule(ISOLATE_RULE_IN).is_ok();
+    let out_deleted = platform::delete_rule(ISOLATE_RULE_OUT).is_ok();
+    if !(in_deleted || out_deleted) {
+        if let Some(snapshot) = firewall_snapshot.as_ref() {
+            if let Err(err) = platform::restore_firewall(snapshot) {
+                warnings.push(format!("firewall restore failed: {err}"));
+                critical_failure = true;
+            }
+        }
+    }
+    if let Some(snapshot) = network_snapshot.as_ref() {
+        if let Err(err) = platform::enable_active_adapters(snapshot) {
+            warnings.push(format!("adapter restore failed: {err}; trying broad adapter re-enable"));
+            match platform::enable_all_network_adapters() {
+                Ok(enabled) if enabled > 0 => warnings.push(format!(
+                    "broad adapter re-enable restored {enabled} adapter(s)"
+                )),
+                Ok(_) => {
+                    warnings.push("broad adapter re-enable did not find any adapters to restore".into())
+                }
+                Err(fallback_err) => {
+                    warnings.push(format!("broad adapter re-enable failed: {fallback_err}"));
+                    critical_failure = true;
+                }
+            }
+        }
+    } else if state_load_warning.is_some() {
+        match platform::enable_all_network_adapters() {
+            Ok(enabled) if enabled > 0 => warnings.push(format!(
+                "broad adapter re-enable restored {enabled} adapter(s) after state-load failure"
+            )),
+            Ok(_) => warnings.push(
+                "broad adapter re-enable did not find any adapters after state-load failure"
+                    .into(),
+            ),
+            Err(err) => {
+                warnings.push(format!(
+                    "broad adapter re-enable failed after state-load failure: {err}"
+                ));
+                critical_failure = true;
+            }
+        }
+    }
+    match crate::config::Config::load() {
+        Ok(cfg) => {
+            if let Err(err) = crate::break_glass::disarm_watchdog(&cfg) {
+                warnings.push(format!("watchdog disarm failed: {err}"));
+            }
+        }
+        Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
+    }
+    let _ = platform::delete_rule(ISOLATE_RULE_IN);
+    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+    state.isolated = false;
+    state.firewall_snapshot = None;
+    state.network_snapshot = None;
+    state.isolation_started_unix = None;
+    state.isolation_expires_unix = None;
+    if let Err(err) = save_state(&state) {
+        warnings.push(format!("state save failed: {err}"));
+    }
+    audit::record(
+        "restore_machine",
+        if critical_failure {
+            "error"
+        } else if warnings.is_empty() {
+            "success"
+        } else {
+            "partial"
+        },
+        json!({ "warnings": warnings }),
+    );
+    if critical_failure {
+        return Err(if warnings.is_empty() {
+            "Failed to restore networking after isolation; manual intervention is required.".into()
+        } else {
+            format!(
+                "Failed to fully restore networking after isolation: {}",
+                warnings.join("; ")
+            )
+        });
+    }
+    if !had_isolation_intent {
+        return Ok("No network isolation state was present; no restore steps were needed.".into());
+    }
+    if warnings.is_empty() {
+        Ok("Network isolation disabled and prior connectivity controls restored.".into())
+    } else {
+        Ok(format!(
+            "Network isolation disabled with warnings: {}",
+            warnings.join("; ")
+        ))
+    }
+}
+fn ensure_modifiable() -> Result<(), String> {
+    if !platform::is_supported() {
+        return Err("Active response is only implemented on supported operating systems.".into());
+    }
+    if !platform::is_elevated() {
+        return Err("Administrator or root privileges are required for active response.".into());
+    }
+    Ok(())
+}
+fn ensure_isolation_modifiable() -> Result<(), String> {
+    if !platform::supports_isolation() {
+        return Err(
+            "Machine isolation is not available on this operating system or backend yet.".into(),
+        );
+    }
+    if !platform::is_elevated() {
+        return Err("Administrator or root privileges are required for network isolation.".into());
+    }
+    Ok(())
+}
+fn normalise_target(target: &str) -> Result<String, String> {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return Err("Target cannot be empty.".into());
+    }
+    Ok(trimmed.to_string())
+}
+fn normalise_domain(domain: &str) -> Result<String, String> {
+    let trimmed = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    if trimmed.is_empty() {
+        return Err("Domain cannot be empty.".into());
+    }
+    if trimmed.parse::<IpAddr>().is_ok() {
+        return Err("Domain blocking expects a hostname, not an IP address.".into());
+    }
+    if !trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
+    {
+        return Err("Domain contains unsupported characters.".into());
+    }
+    if !trimmed.contains('.') {
+        return Err("Domain must contain at least one dot.".into());
+    }
+    Ok(trimmed)
+}
+fn rule_name_for_target(target: &str) -> String {
+    format!("{BLOCK_RULE_PREFIX} {target}")
+}
+fn rule_suffix_for_process(path: &str) -> String {
+    path.chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect()
+}
+fn domain_marker(domain: &str) -> String {
+    format!("{DOMAIN_MARKER_PREFIX} {domain}")
+}
+fn reconcile_state<F>(state: &mut State, now: u64, mut delete_rule: F) -> bool
+where
+    F: FnMut(&str) -> bool,
+{
+    let mut changed = false;
+    let mut kept = Vec::with_capacity(state.blocked.len());
+    for rule in state.blocked.drain(..) {
+        let expired = rule.expires_at_unix.is_some_and(|deadline| deadline <= now);
+        if expired {
+            if delete_rule(&rule.rule_name) {
+                changed = true;
+                continue;
+            }
+        }
+        kept.push(rule);
+    }
+    state.blocked = kept;
+
+    let mut kept_processes = Vec::with_capacity(state.blocked_processes.len());
+    for rule in state.blocked_processes.drain(..) {
+        let expired = rule.expires_at_unix.is_some_and(|deadline| deadline <= now);
+        if expired {
+            let inbound_deleted = delete_rule(&rule.inbound_rule_name);
+            let outbound_deleted = delete_rule(&rule.outbound_rule_name);
+            if inbound_deleted && outbound_deleted {
+                changed = true;
+                continue;
+            }
+        }
+        kept_processes.push(rule);
+    }
+    state.blocked_processes = kept_processes;
+    changed
+}
+fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
+    rule.path.eq_ignore_ascii_case(path)
+}
+fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool {
+    entry.pid == pid && (path.is_empty() || entry.path.eq_ignore_ascii_case(path))
+}
+fn extract_remote_target(addr: &str) -> Option<String> {
+    addr.rsplit_once(':').and_then(|(host, _)| {
+        if host.starts_with('[') && host.ends_with(']') {
+            Some(host.trim_matches(&['[', ']'][..]).to_string())
+        } else if host.contains(':') {
+            Some(host.to_string())
+        } else {
+            host.parse::<IpAddr>().ok().map(|_| host.to_string())
+        }
+    })
+}
+fn extract_domain_target(conn: &ConnInfo) -> Option<String> {
+    conn.hostname
+        .as_deref()
+        .and_then(extract_domain_from_hostname)
+}
+fn extract_domain_from_hostname(hostname: &str) -> Option<String> {
+    let trimmed = hostname.trim().trim_end_matches('.');
+    if trimmed.is_empty() || trimmed.parse::<IpAddr>().is_ok() {
+        None
+    } else {
+        Some(trimmed.to_ascii_lowercase())
+    }
+}
+fn parse_socket_addr(addr: &str, label: &str) -> Result<SocketAddr, SocketKillError> {
+    addr.parse::<SocketAddr>().map_err(|_| match label {
+        "local" => SocketKillError::InvalidLocalAddr(addr.into()),
+        _ => SocketKillError::InvalidRemoteAddr(addr.into()),
+    })
+}
+fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
+    let status = conn.status.trim();
+    if status != "ESTABLISHED" {
+        return Err(SocketKillError::UnsupportedStatus(status.into()));
+    }
+    let local = parse_socket_addr(&conn.local_addr, "local")?;
+    let remote = parse_socket_addr(&conn.remote_addr, "remote")?;
+    if !matches!(local.ip(), IpAddr::V4(_)) || !matches!(remote.ip(), IpAddr::V4(_)) {
+        return Err(SocketKillError::UnsupportedAddressFamily);
+    }
+    Ok(SocketKillTarget { local, remote })
+}
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+fn outbound_probe_reachable() -> bool {
+    TcpStream::connect_timeout(
+        &SocketAddr::from(([1, 1, 1, 1], 443)),
+        Duration::from_secs(2),
+    )
+    .is_ok()
+}
+fn isolation_effective_now(state: &State, now: u64) -> bool {
+    if state
+        .isolation_expires_unix
+        .is_some_and(|deadline| deadline <= now)
+    {
+        return false;
+    }
+    if !state.isolated && state.firewall_snapshot.is_none() && state.network_snapshot.is_none() {
+        return false;
+    }
+    isolation_controls_active_best_effort(state, false)
+}
+fn isolation_controls_active_best_effort(state: &State, probe_reachable: bool) -> bool {
+    match platform::isolation_controls_active(state) {
+        Ok(active) => active,
+        Err(_) => state.firewall_snapshot.is_some() || state.network_snapshot.is_some(),
+    }
+    .then_some(())
+    .map(|_| {
+        if state.network_snapshot.is_some() && probe_reachable {
+            return false;
+        }
+        true
+    })
+    .unwrap_or(false)
+}
+
+static STATE_LOAD_WARNING_ONCE: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn note_state_load_error_once(context: &str, err: &str) {
+    let seen = STATE_LOAD_WARNING_ONCE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let key = format!("{context}:{err}");
+    let mut seen = seen.lock().unwrap();
+    if seen.insert(key) {
+        tracing::warn!(context, %err, "active-response state load failed");
+    }
+}
+
+static STATE_PATH_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+fn state_path() -> PathBuf {
+    let override_lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
+    if let Some(path) = override_lock.read().unwrap().clone() {
+        return path;
+    }
+    crate::config::data_dir().join(STATE_FILE)
+}
+fn load_state() -> Result<State, String> {
+    let path = state_path();
+    load_state_from_path(&path)
+}
+fn save_state(state: &State) -> Result<(), String> {
+    let data = serde_json::to_vec_pretty(state)
+        .map_err(|e| format!("serialize active response state: {e}"))?;
+    crate::security::policy::save_json_with_integrity(&state_path(), &data)
+}
+
+fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
+    let existed = path.exists();
+    match crate::security::policy::load_struct_with_integrity::<State>(path) {
+        Ok(Some(state)) => Ok(state),
+        Ok(None) => {
+            if existed {
+                Err(format!(
+                    "active-response state {} exists but could not be verified or restored",
+                    path.display()
+                ))
+            } else {
+                Ok(State::default())
+            }
+        }
+        Err(err) => Err(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use std::sync::RwLock;
+
+    struct StatePathGuard;
+    impl StatePathGuard {
+        fn set(path: PathBuf) -> Self {
+            let lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
+            *lock.write().unwrap() = Some(path);
+            Self
+        }
+    }
+    impl Drop for StatePathGuard {
+        fn drop(&mut self) {
+            if let Some(lock) = STATE_PATH_OVERRIDE.get() {
+                *lock.write().unwrap() = None;
+            }
+        }
+    }
+
+    fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget {
+        BlockedTarget {
+            target: target.to_string(),
+            rule_name: format!("rule-{target}"),
+            expires_at_unix,
+        }
+    }
+    fn blocked_process(path: &str, expires_at_unix: Option<u64>) -> BlockedProcess {
+        BlockedProcess {
+            pid: 1234,
+            path: path.to_string(),
+            inbound_rule_name: format!("in-{path}"),
+            outbound_rule_name: format!("out-{path}"),
+            expires_at_unix,
+        }
+    }
+    fn blocked_domain(domain: &str) -> BlockedDomain {
+        BlockedDomain {
+            domain: domain.to_string(),
+            marker: domain_marker(domain),
+        }
+    }
+    fn suspended_process(pid: u32, path: &str) -> SuspendedProcess {
+        SuspendedProcess {
+            pid,
+            path: path.to_string(),
+            proc_name: "app.exe".into(),
+            suspended_at_unix: 10,
+        }
+    }
+    fn conn(local: &str, remote: &str, status: &str) -> ConnInfo {
+        ConnInfo {
+            timestamp: "12:00:00".into(),
+            proc_name: "evil.exe".into(),
+            pid: 4242,
+            proc_path: "C:/Temp/evil.exe".into(),
+            proc_user: "user".into(),
+            parent_name: "cmd.exe".into(),
+            parent_pid: 123,
+            parent_user: "user".into(),
+            service_name: String::new(),
+            publisher: String::new(),
+            local_addr: local.into(),
+            remote_addr: remote.into(),
+            status: status.into(),
+            score: 9,
+            reasons: vec!["test".into()],
+            ancestor_chain: vec![("cmd.exe".into(), 123)],
+            pre_login: false,
+            hostname: Some("c2.bad.example".into()),
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            command_line: String::new(),
+            attack_tags: Vec::new(),
+            tls_sni: None,
+            tls_ja3: None,
+        }
+    }
+    #[test]
+    fn reconcile_keeps_expired_entries_when_deletion_fails() {
+        let mut state = State {
+            blocked: vec![blocked_target("10.0.0.1", Some(10))],
+            blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            blocked_domains: vec![blocked_domain("bad.example")],
+            suspended_processes: vec![],
+            autorun_snapshot: None,
+            firewall_snapshot: None,
+            network_snapshot: None,
+            isolated: false,
+            isolation_started_unix: None,
+            isolation_expires_unix: None,
+        };
+        let changed = reconcile_state(&mut state, 100, |_| false);
+        assert!(!changed);
+        assert_eq!(state.blocked.len(), 1);
+        assert_eq!(state.blocked_processes.len(), 1);
+        assert_eq!(state.blocked_domains.len(), 1);
+    }
+    #[test]
+    fn reconcile_removes_expired_entries_after_successful_deletion() {
+        let mut deleted = Vec::new();
+        let mut state = State {
+            blocked: vec![blocked_target("10.0.0.1", Some(10))],
+            blocked_processes: vec![blocked_process("C:/app.exe", Some(10))],
+            blocked_domains: vec![],
+            suspended_processes: vec![],
+            autorun_snapshot: None,
+            firewall_snapshot: None,
+            network_snapshot: None,
+            isolated: false,
+            isolation_started_unix: None,
+            isolation_expires_unix: None,
+        };
+        let changed = reconcile_state(&mut state, 100, |rule| {
+            deleted.push(rule.to_string());
+            true
+        });
+        assert!(changed);
+        assert!(state.blocked.is_empty());
+        assert!(state.blocked_processes.is_empty());
+        assert_eq!(
+            deleted,
+            vec![
+                "rule-10.0.0.1".to_string(),
+                "in-C:/app.exe".to_string(),
+                "out-C:/app.exe".to_string()
+            ]
+        );
+    }
+    #[test]
+    fn process_blocks_match_by_path_only() {
+        let rule = BlockedProcess {
+            pid: 1234,
+            path: "C:/app.exe".into(),
+            inbound_rule_name: "in".into(),
+            outbound_rule_name: "out".into(),
+            expires_at_unix: Some(200),
+        };
+        assert!(process_block_matches(&rule, "C:/app.exe"));
+        assert!(!process_block_matches(&rule, "C:/other.exe"));
+    }
+    #[test]
+    fn suspended_processes_match_on_pid_and_optional_path() {
+        let entry = suspended_process(1234, "C:/app.exe");
+        assert!(suspended_process_matches(&entry, 1234, "C:/app.exe"));
+        assert!(suspended_process_matches(&entry, 1234, ""));
+        assert!(!suspended_process_matches(&entry, 9999, "C:/app.exe"));
+    }
+    #[test]
+    fn socket_kill_target_accepts_established_ipv4_connections() {
+        let parsed =
+            socket_kill_target(&conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED")).unwrap();
+        assert_eq!(parsed.local.to_string(), "192.168.1.10:50000");
+        assert_eq!(parsed.remote.to_string(), "8.8.8.8:443");
+    }
+    #[test]
+    fn socket_kill_target_rejects_listen_rows() {
+        let err = socket_kill_target(&conn("0.0.0.0:80", "0.0.0.0:0", "LISTEN")).unwrap_err();
+        assert!(matches!(err, SocketKillError::UnsupportedStatus(_)));
+    }
+    #[test]
+    fn socket_kill_target_rejects_invalid_remote() {
+        let err = socket_kill_target(&conn(
+            "192.168.1.10:50000",
+            "not-an-endpoint",
+            "ESTABLISHED",
+        ))
+        .unwrap_err();
+        assert!(matches!(err, SocketKillError::InvalidRemoteAddr(_)));
+    }
+    #[test]
+    fn socket_kill_target_rejects_ipv6_for_now() {
+        let err = socket_kill_target(&conn(
+            "[::1]:50000",
+            "[2606:4700:4700::1111]:443",
+            "ESTABLISHED",
+        ))
+        .unwrap_err();
+        assert!(matches!(err, SocketKillError::UnsupportedAddressFamily));
+    }
+    #[test]
+    fn extract_remote_target_supports_ipv4_and_ipv6() {
+        assert_eq!(
+            extract_remote_target("8.8.8.8:443").as_deref(),
+            Some("8.8.8.8")
+        );
+        assert_eq!(
+            extract_remote_target("[2606:4700:4700::1111]:443").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
+        assert_eq!(
+            extract_remote_target("2606:4700:4700::1111:443").as_deref(),
+            Some("2606:4700:4700::1111")
+        );
+    }
+    #[test]
+    fn extract_domain_target_uses_hostname() {
+        let sample = conn("192.168.1.10:50000", "8.8.8.8:443", "ESTABLISHED");
+        assert_eq!(
+            extract_domain_target(&sample).as_deref(),
+            Some("c2.bad.example")
+        );
+        assert_eq!(extract_domain_from_hostname("8.8.8.8"), None);
+    }
+}
