@@ -8,6 +8,7 @@
 use crate::{audit, quarantine, types::ConnInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
@@ -22,6 +23,8 @@ const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 const ISOLATION_MAX_SECS: u64 = 60 * 60;
 const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
+const PROCESS_RULE_PREFIX_LEN: usize = 48;
+const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -710,48 +713,45 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     }
     let message = if removed > 0 {
         save_state(&state)?;
-        format!("Removed {removed} process block rule(s) for {path}.")
+        format!("Removed {removed} process block(s) for {path}.")
     } else {
         format!("No active process block found for {path}.")
     };
     audit::record(
         "unblock_process",
         if removed > 0 { "success" } else { "noop" },
-        json!({ "pid": pid, "path": path, "removed_rules": removed }),
+        json!({ "pid": pid, "path": path, "removed_entries": removed }),
     );
     Ok(message)
 }
+
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let mut state = load_state()?;
-    if state.isolated {
-        return Ok("Network isolation is already active.".into());
-    }
-
     let timeout_secs = crate::config::Config::load()
         .map(|cfg| cfg.break_glass_timeout_mins.max(1) * 60)
         .unwrap_or(300);
-
-    let now = unix_now();
+    let mut state = load_state()?;
     let firewall_snapshot = platform::snapshot_firewall()?;
     let network_snapshot = platform::snapshot_active_adapters()?;
-    let mut warnings = Vec::new();
-
+    let previous_state = state.clone();
     state.firewall_snapshot = Some(firewall_snapshot.clone());
     state.network_snapshot = Some(network_snapshot.clone());
     state.isolated = true;
+    let now = unix_now();
     state.isolation_started_unix = Some(now);
     state.isolation_expires_unix = Some(now.saturating_add(timeout_secs));
     save_state(&state)?;
 
-    let firewall_ok = match platform::isolation_works_via_firewall_only() {
+    let mut warnings = Vec::new();
+    let firewall_ok = match platform::outbound_block_supported() {
         Some(true) => {
             platform::apply_firewall_isolation()?;
             true
         }
         Some(false) => {
+            platform::apply_firewall_isolation_inbound_only()?;
             warnings.push(
-                "firewall-only isolation did not block outbound connectivity; using failsafe adapter cutoff"
+                "firewall backend cannot confirm outbound connectivity; using failsafe adapter cutoff"
                     .to_string(),
             );
             false
@@ -786,7 +786,11 @@ pub fn isolate_machine() -> Result<String, String> {
 
     audit::record(
         "isolate_machine",
-        if warnings.is_empty() { "success" } else { "partial" },
+        if warnings.is_empty() {
+            "success"
+        } else {
+            "partial"
+        },
         json!({
             "warnings": warnings,
             "timeout_secs": timeout_secs,
@@ -865,14 +869,15 @@ pub fn restore_machine() -> Result<String, String> {
     }
     if let Some(snapshot) = network_snapshot.as_ref() {
         if let Err(err) = platform::enable_active_adapters(snapshot) {
-            warnings.push(format!("adapter restore failed: {err}; trying broad adapter re-enable"));
+            warnings.push(format!(
+                "adapter restore failed: {err}; trying broad adapter re-enable"
+            ));
             match platform::enable_all_network_adapters() {
                 Ok(enabled) if enabled > 0 => warnings.push(format!(
                     "broad adapter re-enable restored {enabled} adapter(s)"
                 )),
-                Ok(_) => {
-                    warnings.push("broad adapter re-enable did not find any adapters to restore".into())
-                }
+                Ok(_) => warnings
+                    .push("broad adapter re-enable did not find any adapters to restore".into()),
                 Err(fallback_err) => {
                     warnings.push(format!("broad adapter re-enable failed: {fallback_err}"));
                     critical_failure = true;
@@ -885,8 +890,7 @@ pub fn restore_machine() -> Result<String, String> {
                 "broad adapter re-enable restored {enabled} adapter(s) after state-load failure"
             )),
             Ok(_) => warnings.push(
-                "broad adapter re-enable did not find any adapters after state-load failure"
-                    .into(),
+                "broad adapter re-enable did not find any adapters after state-load failure".into(),
             ),
             Err(err) => {
                 warnings.push(format!(
@@ -997,9 +1001,23 @@ fn rule_name_for_target(target: &str) -> String {
     format!("{BLOCK_RULE_PREFIX} {target}")
 }
 fn rule_suffix_for_process(path: &str) -> String {
-    path.chars()
+    let normalized_path = path.to_ascii_lowercase();
+    let readable_prefix: String = normalized_path
+        .chars()
         .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-        .collect()
+        .take(PROCESS_RULE_PREFIX_LEN)
+        .collect();
+    let readable_prefix = readable_prefix.trim_matches('_');
+    let readable_prefix = if readable_prefix.is_empty() {
+        "process"
+    } else {
+        readable_prefix
+    };
+    let fingerprint = hex_prefix(
+        &Sha256::digest(normalized_path.as_bytes()),
+        PROCESS_RULE_FINGERPRINT_LEN,
+    );
+    format!("{readable_prefix}_{fingerprint}")
 }
 fn domain_marker(domain: &str) -> String {
     format!("{DOMAIN_MARKER_PREFIX} {domain}")
@@ -1109,26 +1127,52 @@ fn isolation_effective_now(state: &State, now: u64) -> bool {
     if !state.isolated && state.firewall_snapshot.is_none() && state.network_snapshot.is_none() {
         return false;
     }
-    isolation_controls_active_best_effort(state, false)
+    let probe_reachable = state.network_snapshot.is_some() && outbound_probe_reachable();
+    isolation_controls_active_best_effort(state, probe_reachable)
 }
 fn isolation_controls_active_best_effort(state: &State, probe_reachable: bool) -> bool {
-    match platform::isolation_controls_active(state) {
+    let controls_active = match platform::isolation_controls_active(state) {
         Ok(active) => active,
         Err(_) => state.firewall_snapshot.is_some() || state.network_snapshot.is_some(),
+    };
+    isolation_controls_still_effective(state, controls_active, probe_reachable)
+}
+fn isolation_controls_still_effective(
+    state: &State,
+    controls_active: bool,
+    probe_reachable: bool,
+) -> bool {
+    if !controls_active {
+        return false;
     }
-    .then_some(())
-    .map(|_| {
-        if state.network_snapshot.is_some() && probe_reachable {
-            return false;
-        }
-        true
-    })
-    .unwrap_or(false)
+    if state.network_snapshot.is_some() && probe_reachable {
+        return false;
+    }
+    true
 }
 
-static STATE_LOAD_WARNING_ONCE: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn hex_prefix(bytes: &[u8], hex_len: usize) -> String {
+    let mut out = String::with_capacity(hex_len);
+    for byte in bytes.iter().take((hex_len + 1) / 2) {
+        let hi = byte >> 4;
+        let lo = byte & 0x0f;
+        out.push(char::from(b"0123456789abcdef"[hi as usize]));
+        if out.len() == hex_len {
+            break;
+        }
+        out.push(char::from(b"0123456789abcdef"[lo as usize]));
+        if out.len() == hex_len {
+            break;
+        }
+    }
+    out
+}
+
+static STATE_LOAD_WARNING_ONCE: OnceLock<Mutex<std::collections::HashSet<String>>> =
+    OnceLock::new();
 fn note_state_load_error_once(context: &str, err: &str) {
-    let seen = STATE_LOAD_WARNING_ONCE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let seen =
+        STATE_LOAD_WARNING_ONCE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
     let key = format!("{context}:{err}");
     let mut seen = seen.lock().unwrap();
     if seen.insert(key) {
@@ -1385,5 +1429,39 @@ mod tests {
             Some("c2.bad.example")
         );
         assert_eq!(extract_domain_from_hostname("8.8.8.8"), None);
+    }
+    #[test]
+    fn process_rule_suffix_keeps_readable_prefix_and_unique_fingerprint() {
+        let left = rule_suffix_for_process("/tmp/a-b");
+        let right = rule_suffix_for_process("/tmp/a_b");
+
+        assert!(left.starts_with("tmp_a_b_"));
+        assert!(right.starts_with("tmp_a_b_"));
+        assert_ne!(left, right);
+    }
+    #[test]
+    fn isolation_controls_guard_uses_live_probe_for_network_snapshots() {
+        let state = State {
+            blocked: vec![],
+            blocked_processes: vec![],
+            blocked_domains: vec![],
+            suspended_processes: vec![],
+            autorun_snapshot: None,
+            firewall_snapshot: None,
+            network_snapshot: Some(NetworkSnapshot {
+                adapters: vec![NetworkAdapterState {
+                    name: "Ethernet".into(),
+                    is_wireless: false,
+                    wifi_profile: None,
+                }],
+            }),
+            isolated: false,
+            isolation_started_unix: None,
+            isolation_expires_unix: None,
+        };
+
+        assert!(isolation_controls_still_effective(&state, true, false));
+        assert!(!isolation_controls_still_effective(&state, true, true));
+        assert!(!isolation_controls_still_effective(&state, false, false));
     }
 }
