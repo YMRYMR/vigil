@@ -93,31 +93,36 @@ jobs:
             gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/v$1" >/dev/null 2>&1
           }
 
+          tag_snapshot_is_releasable() {
+            VERSION="$1" PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" \
+              python3 -c 'import os, subprocess, tomllib; version = os.environ["VERSION"]; cargo_toml = subprocess.run(["git", "show", f"refs/tags/v{version}:Cargo.toml"], check=True, capture_output=True, text=True).stdout; cargo_lock = subprocess.run(["git", "show", f"refs/tags/v{version}:Cargo.lock"], check=True, capture_output=True, text=True).stdout; toml_version = tomllib.loads(cargo_toml)["package"]["version"]; lock_packages = tomllib.loads(cargo_lock)["package"]; vigil = next((pkg for pkg in lock_packages if pkg.get("name") == "vigil"), None); raise SystemExit(0 if vigil and toml_version == version and vigil.get("version") == version else 1)'
+          }
+
           candidate="$CURRENT_VERSION"
+          advanced_past_current=false
           needs_commit=false
           needs_tag_push=false
           recovered_existing_tag=false
 
-          if git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null; then
-            if ! release_exists "$candidate"; then
-              recovered_existing_tag=true
-            else
-              while true; do
-                candidate="$(bump_patch "$candidate")"
-                if ! git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null; then
-                  needs_commit=true
-                  needs_tag_push=true
-                  break
-                fi
-                if ! release_exists "$candidate"; then
-                  recovered_existing_tag=true
-                  break
-                fi
-              done
+          while true; do
+            if ! git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null; then
+              needs_tag_push=true
+              if [ "$advanced_past_current" = "true" ]; then
+                needs_commit=true
+              fi
+              break
             fi
-          else
-            needs_tag_push=true
-          fi
+
+            if ! release_exists "$candidate"; then
+              if tag_snapshot_is_releasable "$candidate"; then
+                recovered_existing_tag=true
+                break
+              fi
+            fi
+
+            candidate="$(bump_patch "$candidate")"
+            advanced_past_current=true
+          done
 
           echo "release_ready=true" >> "$GITHUB_OUTPUT"
           echo "next_version=$candidate" >> "$GITHUB_OUTPUT"

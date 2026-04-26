@@ -11,6 +11,7 @@ import argparse
 import pathlib
 import re
 import sys
+import tomllib
 
 
 SEMVER_RE = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
@@ -24,6 +25,25 @@ def bump_patch(version: str) -> str:
         )
     major, minor, patch = (int(part) for part in match.groups())
     return f"{major}.{minor}.{patch + 1}"
+
+
+def _preserved_line_ending(line: str) -> str:
+    if line.endswith("\r\n"):
+        return "\r\n"
+    if line.endswith("\n"):
+        return "\n"
+    return ""
+
+
+def _replace_version_line(line: str, next_version: str) -> tuple[str, str]:
+    newline = _preserved_line_ending(line)
+    content = line[: -len(newline)] if newline else line
+    match = re.match(r'(\s*version\s*=\s*")([^"]+)(".*)', content)
+    if not match:
+        raise ValueError("found package version line but could not parse it")
+    current_version = match.group(2)
+    updated = f"{match.group(1)}{next_version}{match.group(3)}{newline}"
+    return updated, current_version
 
 
 def current_version_from_cargo_toml(text: str) -> str:
@@ -48,6 +68,7 @@ def current_version_from_cargo_toml(text: str) -> str:
 
 
 def current_version_from_cargo_lock(text: str) -> str:
+    tomllib.loads(text)
     lines = text.splitlines(keepends=True)
     in_package = False
     package_name = None
@@ -71,7 +92,7 @@ def current_version_from_cargo_lock(text: str) -> str:
             continue
         if package_name != "vigil" or not stripped.startswith("version"):
             continue
-        match = re.match(r'(\s*version\s*=\s*")([^"]+)(".*)', line)
+        match = re.match(r'(\s*version\s*=\s*")([^"]+)(".*)', line.rstrip("\r\n"))
         if not match:
             raise ValueError("found vigil package version line in Cargo.lock but could not parse it")
         return match.group(2)
@@ -92,11 +113,10 @@ def update_cargo_toml(text: str, next_version: str) -> tuple[str, str]:
             continue
         if not stripped.startswith("version"):
             continue
-        match = re.match(r'(\s*version\s*=\s*")([^"]+)(".*)', line)
-        if not match:
-            raise ValueError("found package version line in Cargo.toml but could not parse it")
-        current_version = match.group(2)
-        lines[idx] = f"{match.group(1)}{next_version}{match.group(3)}"
+        try:
+            lines[idx], current_version = _replace_version_line(line, next_version)
+        except ValueError as exc:
+            raise ValueError("found package version line in Cargo.toml but could not parse it") from exc
         return "".join(lines), current_version
 
     raise ValueError("could not find [package] version in Cargo.toml")
@@ -126,11 +146,10 @@ def update_cargo_lock(text: str, next_version: str) -> tuple[str, str]:
             continue
         if package_name != "vigil" or not stripped.startswith("version"):
             continue
-        match = re.match(r'(\s*version\s*=\s*")([^"]+)(".*)', line)
-        if not match:
-            raise ValueError("found vigil package version line in Cargo.lock but could not parse it")
-        current_version = match.group(2)
-        lines[idx] = f"{match.group(1)}{next_version}{match.group(3)}"
+        try:
+            lines[idx], current_version = _replace_version_line(line, next_version)
+        except ValueError as exc:
+            raise ValueError("found vigil package version line in Cargo.lock but could not parse it") from exc
         return "".join(lines), current_version
 
     raise ValueError('could not find package "vigil" version in Cargo.lock')
