@@ -1,0 +1,184 @@
+name: Auto release after merge
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  actions: write
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: auto-release-master
+  cancel-in-progress: false
+
+jobs:
+  prepare-release:
+    name: Prepare release tag from merged master
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Refresh master and tags
+        run: git fetch origin master --tags
+
+      - name: Skip stale CI runs
+        id: freshness
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          current_master="$(git rev-parse origin/master)"
+          if [ "$HEAD_SHA" != "$current_master" ]; then
+            echo "release_ready=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=master advanced to $current_master" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release_ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve merged pull request
+        id: pr
+        if: steps.freshness.outputs.release_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
+          pr_number="$(
+            PRS_JSON="$prs_json" python3 - <<'PY'
+import json
+import os
+
+prs = json.loads(os.environ["PRS_JSON"])
+candidates = [
+    pr for pr in prs
+    if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"
+]
+if not candidates:
+    print("")
+else:
+    candidates.sort(key=lambda pr: pr["merged_at"], reverse=True)
+    print(candidates[0]["number"])
+PY
+          )"
+          if [ -z "$pr_number" ]; then
+            echo "release_ready=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=no merged pull request found for ${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release_ready=true" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+
+      - name: Read current app version
+        id: current
+        if: steps.pr.outputs.release_ready == 'true'
+        run: |
+          python3 scripts/prepare_release.py \
+            --cargo-toml Cargo.toml \
+            --cargo-lock Cargo.lock \
+            --print-current \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Choose release version
+        id: version
+        if: steps.pr.outputs.release_ready == 'true'
+        env:
+          CURRENT_VERSION: ${{ steps.current.outputs.current_version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${CURRENT_VERSION}" >/dev/null; then
+            next_version="$(
+              PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" \
+                python3 - <<'PY'
+from prepare_release import bump_patch
+import os
+
+print(bump_patch(os.environ["CURRENT_VERSION"]))
+PY
+            )"
+            echo "needs_commit=true" >> "$GITHUB_OUTPUT"
+          else
+            next_version="$CURRENT_VERSION"
+            echo "needs_commit=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "release_ready=true" >> "$GITHUB_OUTPUT"
+          echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Skip existing release tag
+        id: tag
+        if: steps.version.outputs.release_ready == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          if git rev-parse -q --verify "refs/tags/v${NEXT_VERSION}" >/dev/null; then
+            echo "release_ready=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=tag v${NEXT_VERSION} already exists" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "release_ready=true" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Update version files
+        if: steps.tag.outputs.release_ready == 'true' && steps.version.outputs.needs_commit == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          python3 scripts/prepare_release.py \
+            --cargo-toml Cargo.toml \
+            --cargo-lock Cargo.lock \
+            --next-version "${NEXT_VERSION}"
+
+      - name: Commit version bump
+        if: steps.tag.outputs.release_ready == 'true' && steps.version.outputs.needs_commit == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): cut v${NEXT_VERSION} after merge of #${PR_NUMBER} [skip ci]"
+
+      - name: Tag and push release ref
+        if: steps.tag.outputs.release_ready == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          git tag -a "v${NEXT_VERSION}" -m "Vigil v${NEXT_VERSION}"
+          if [ "${{ steps.version.outputs.needs_commit }}" = "true" ]; then
+            git push origin HEAD:master "refs/tags/v${NEXT_VERSION}"
+          else
+            git push origin "refs/tags/v${NEXT_VERSION}"
+          fi
+
+      - name: Dispatch release workflow
+        if: steps.tag.outputs.release_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+            -f ref="master" \
+            -f inputs[tag]="v${NEXT_VERSION}" \
+            -f inputs[version]="${NEXT_VERSION}" \
+            -f inputs[source_ref]="refs/tags/v${NEXT_VERSION}"
+
+      - name: Report skipped release
+        if: always() && steps.tag.outputs.release_ready != 'true'
+        run: |
+          echo "Auto-release skipped."
+          echo "Freshness: ${{ steps.freshness.outputs.skip_reason }}"
+          echo "PR resolution: ${{ steps.pr.outputs.skip_reason }}"
+          echo "Versioning: ${{ steps.version.outputs.skip_reason }}"
+          echo "Tag check: ${{ steps.tag.outputs.skip_reason }}"
