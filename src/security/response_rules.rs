@@ -132,15 +132,25 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
     let path_ref = Path::new(path);
-    #[cfg(not(test))]
-    let _observation =
-        crate::security::operator_provenance::observe_operator_file("response_rules", path_ref);
+    load_rules_with_post_verify_hook(path_ref, |path_ref| {
+        #[cfg(not(test))]
+        let _observation =
+            crate::security::operator_provenance::observe_operator_file("response_rules", path_ref);
+    })
+}
+
+fn load_rules_with_post_verify_hook<F>(path_ref: &Path, mut post_verify: F) -> Result<Vec<ResponseRule>, String>
+where
+    F: FnMut(&Path),
+{
     let (text, status) = integrity::read_verified_to_string(path_ref, "response rules")?;
+    post_verify(path_ref);
     match status {
         integrity::VerificationStatus::Verified { sidecar } => {
             info_verified_rules_once(path_ref, &sidecar)
         }
     }
+    let path = path_ref.display();
     let file: RuleFile = serde_yaml::from_str(&text)
         .map_err(|e| format!("failed to parse YAML rule file {path}: {e}"))?;
     Ok(file.rules)
@@ -393,6 +403,21 @@ mod tests {
 
         let err = load_rules(&path.to_string_lossy()).unwrap_err();
         assert!(err.contains("missing required SHA-256 sidecar"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn provenance_hook_runs_only_after_verified_rule_read() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rules.yaml");
+        fs::write(&path, "rules: []\n").unwrap();
+
+        let mut observed = false;
+        let err = load_rules_with_post_verify_hook(&path, |_| observed = true).unwrap_err();
+        assert!(err.contains("missing required SHA-256 sidecar"));
+        assert!(!observed);
+
         let _ = fs::remove_dir_all(dir);
     }
 
