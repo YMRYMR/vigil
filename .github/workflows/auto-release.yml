@@ -146,17 +146,32 @@ PY
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): cut v${NEXT_VERSION} after merge of #${PR_NUMBER} [skip ci]"
 
-      - name: Tag and push release
+      - name: Tag and push release ref
         if: steps.tag.outputs.release_ready == 'true'
         env:
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
         run: |
-          git tag "v${NEXT_VERSION}"
+          git tag -a "v${NEXT_VERSION}" -m "Vigil v${NEXT_VERSION}"
           if [ "${{ steps.version.outputs.needs_commit }}" = "true" ]; then
-            git push origin HEAD:master --follow-tags
+            git push origin HEAD:master "refs/tags/v${NEXT_VERSION}"
           else
             git push origin "refs/tags/v${NEXT_VERSION}"
           fi
+
+      - name: Dispatch release workflow
+        if: steps.tag.outputs.release_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+        run: |
+          gh api \
+            --method POST \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
+            -f ref="master" \
+            -f inputs[tag]="v${NEXT_VERSION}" \
+            -f inputs[version]="${NEXT_VERSION}" \
+            -f inputs[source_ref]="refs/tags/v${NEXT_VERSION}"
 
       - name: Report skipped release
         if: always() && steps.tag.outputs.release_ready != 'true'
