@@ -13,6 +13,7 @@
 )]
 
 mod artifact_provenance;
+mod advisory;
 mod audit;
 mod baseline;
 mod beacon;
@@ -113,6 +114,20 @@ fn main() {
         }
     }
 
+    if let Some(idx) = args.iter().position(|a| a == "--import-nvd-snapshot") {
+        let snapshot = args.get(idx + 1).unwrap_or_else(|| {
+            eprintln!("Missing snapshot path.\n\nUsage: vigil --import-nvd-snapshot SNAPSHOT.json");
+            std::process::exit(1);
+        });
+        match advisory::run_import_cli(Path::new(snapshot)) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     for a in &args[1..] {
@@ -127,7 +142,7 @@ fn main() {
                 elevated_launcher = true;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import an NVD CVE JSON snapshot into the protected advisory cache\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
@@ -214,6 +229,7 @@ fn main() {
                 c.fswatch_enabled,
                 c.reverse_dns_enabled
             );
+            advisory::log_cache_status();
 
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
