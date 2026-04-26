@@ -19,6 +19,20 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to publish, for example v1.3.6
+        required: true
+        type: string
+      version:
+        description: Normalized release version, for example 1.3.6
+        required: true
+        type: string
+      source_ref:
+        description: Git ref or SHA to check out for the release build
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -34,26 +48,46 @@ jobs:
     outputs:
       tag: ${{ steps.validate.outputs.tag }}
       version: ${{ steps.validate.outputs.version }}
+      checkout_ref: ${{ steps.validate.outputs.checkout_ref }}
     steps:
       - name: Validate release tag
         id: validate
         shell: bash
         env:
-          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            REF_NAME="$INPUT_TAG"
+            VERSION="$INPUT_VERSION"
+          else
+            REF_NAME="$PUSH_REF_NAME"
+            VERSION="${REF_NAME#v}"
+          fi
           if [[ ! "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "Invalid release tag: $REF_NAME" >&2
             echo "Expected vMAJOR.MINOR.PATCH with optional prerelease and/or build suffix." >&2
             exit 1
           fi
-          VERSION="${REF_NAME#v}"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
             echo "Invalid normalized version: $VERSION" >&2
             exit 1
           fi
+          if [ "$REF_NAME" != "v$VERSION" ]; then
+            echo "Input version $VERSION did not match tag $REF_NAME" >&2
+            exit 1
+          fi
+          CHECKOUT_REF="$INPUT_SOURCE_REF"
+          if [ -z "$CHECKOUT_REF" ]; then
+            CHECKOUT_REF="refs/tags/$REF_NAME"
+          fi
           echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
 
   # ── Windows — Inno Setup EXE ───────────────────────────────────────────────
   build-windows:
@@ -62,6 +96,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.validate-release-metadata.outputs.checkout_ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -109,6 +145,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.validate-release-metadata.outputs.checkout_ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -180,6 +218,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.validate-release-metadata.outputs.checkout_ref }}
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
@@ -264,6 +304,8 @@ jobs:
       artifact-metadata: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ needs.validate-release-metadata.outputs.checkout_ref }}
 
       - name: Collect all installers
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
