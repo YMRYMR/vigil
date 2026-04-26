@@ -6,10 +6,12 @@ import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from normalize_update_signing_key import (
+    ED25519_PRIVATE_KEY_LEN,
     PKCS8_ED25519_DER_PREFIX,
     normalize_signing_key,
     _private_key_marker,
     pem_from_pkcs8_der,
+    pkcs8_der_from_raw_private_key,
     pkcs8_der_from_seed,
 )
 
@@ -36,6 +38,23 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         secret = base64.b64encode(seed).decode("ascii")
         normalized = normalize_signing_key(secret)
         self.assertEqual(normalized, pem_from_pkcs8_der(pkcs8_der_from_seed(seed)))
+
+    def test_converts_hex_raw_private_key_to_pkcs8_pem(self) -> None:
+        raw_private_key = bytes(range(ED25519_PRIVATE_KEY_LEN))
+        normalized = normalize_signing_key(raw_private_key.hex())
+        self.assertEqual(
+            normalized,
+            pem_from_pkcs8_der(pkcs8_der_from_raw_private_key(raw_private_key)),
+        )
+
+    def test_converts_base64_raw_private_key_to_pkcs8_pem(self) -> None:
+        raw_private_key = bytes(range(ED25519_PRIVATE_KEY_LEN))
+        secret = base64.b64encode(raw_private_key).decode("ascii")
+        normalized = normalize_signing_key(secret)
+        self.assertEqual(
+            normalized,
+            pem_from_pkcs8_der(pkcs8_der_from_raw_private_key(raw_private_key)),
+        )
 
     def test_accepts_base64_pkcs8_der(self) -> None:
         der = PKCS8_ED25519_DER_PREFIX + bytes(range(32))
