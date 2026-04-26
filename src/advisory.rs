@@ -125,7 +125,11 @@ pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
     let cache = parse_nvd_snapshot(&bytes, Some(path))?;
     let summary = ImportSummary {
         records: cache.records.len(),
-        known_exploited: cache.records.iter().filter(|record| record.known_exploited).count(),
+        known_exploited: cache
+            .records
+            .iter()
+            .filter(|record| record.known_exploited)
+            .count(),
     };
     save_cache(&cache)?;
     Ok(summary)
@@ -324,7 +328,8 @@ fn english_description(cve: &Value) -> String {
             cve.get("descriptions")
                 .and_then(Value::as_array)
                 .and_then(|items| {
-                    items.iter()
+                    items
+                        .iter()
                         .find_map(|item| item.get("value").and_then(Value::as_str))
                 })
         })
@@ -471,7 +476,8 @@ fn parse_cpe_match(value: &Value) -> Option<AffectedProduct> {
 }
 
 fn string_field(value: &Value, key: &str) -> Option<String> {
-    value.get(key)
+    value
+        .get(key)
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -592,7 +598,10 @@ mod tests {
         let record = &cache.records[0];
         assert_eq!(record.primary_id, "CVE-2026-12345");
         assert!(record.known_exploited);
-        assert_eq!(record.summary, "Example issue in Vigil dependency handling.");
+        assert_eq!(
+            record.summary,
+            "Example issue in Vigil dependency handling."
+        );
         assert_eq!(record.severities.len(), 1);
         assert_eq!(record.severities[0].severity, "CRITICAL");
         assert_eq!(record.affected_products.len(), 1);
