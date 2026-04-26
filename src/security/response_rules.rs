@@ -139,7 +139,10 @@ fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
     })
 }
 
-fn load_rules_with_post_verify_hook<F>(path_ref: &Path, mut post_verify: F) -> Result<Vec<ResponseRule>, String>
+fn load_rules_with_post_verify_hook<F>(
+    path_ref: &Path,
+    mut post_verify: F,
+) -> Result<Vec<ResponseRule>, String>
 where
     F: FnMut(&Path),
 {
