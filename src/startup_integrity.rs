@@ -72,7 +72,8 @@ pub fn run() {
 }
 
 pub fn scan_operator_inputs(cfg: &config::Config) {
-    let mut report = initialize_operator_scan_report_at(&report_path());
+    let previous_report = load_report();
+    let mut report = initialize_operator_scan_report(&previous_report, &report_path());
     for path in &cfg.blocklist_paths {
         if path.trim().is_empty() {
             continue;
@@ -87,7 +88,8 @@ pub fn scan_operator_inputs(cfg: &config::Config) {
         );
     }
     record_summary("startup_operator_file_scan", &report);
-    if let Err(err) = save_report(&report) {
+    let combined_report = merge_reports(previous_report.ok().flatten(), report);
+    if let Err(err) = save_report(&combined_report) {
         tracing::error!(%err, "failed to save startup operator-file integrity report");
     }
 }
@@ -103,9 +105,12 @@ fn new_report() -> StartupIntegrityReport {
     }
 }
 
-fn initialize_operator_scan_report_at(path: &Path) -> StartupIntegrityReport {
+fn initialize_operator_scan_report(
+    previous_report: &Result<Option<StartupIntegrityReport>, String>,
+    path: &Path,
+) -> StartupIntegrityReport {
     let mut report = new_report();
-    if let Err(err) = load_report_at(path) {
+    if let Err(err) = previous_report {
         note_issue(
             &mut report,
             IssueSeverity::Failure,
@@ -118,6 +123,21 @@ fn initialize_operator_scan_report_at(path: &Path) -> StartupIntegrityReport {
         );
     }
     report
+}
+
+fn merge_reports(
+    previous: Option<StartupIntegrityReport>,
+    current: StartupIntegrityReport,
+) -> StartupIntegrityReport {
+    let Some(mut previous) = previous else {
+        return current;
+    };
+    previous.checked += current.checked;
+    previous.ok += current.ok;
+    previous.warnings += current.warnings;
+    previous.failures += current.failures;
+    previous.issues.extend(current.issues);
+    previous
 }
 
 fn operator_input_purpose(kind: &str) -> &'static str {
@@ -794,7 +814,7 @@ mod tests {
         };
         save_report_at(&path, &existing).unwrap();
 
-        let report = initialize_operator_scan_report_at(&path);
+        let report = initialize_operator_scan_report(&load_report_at(&path), &path);
         assert!(report.created_unix > 0);
         assert_eq!(report.checked, 0);
         assert_eq!(report.ok, 0);
@@ -803,6 +823,48 @@ mod tests {
         assert!(report.issues.is_empty());
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn merge_reports_preserves_prior_startup_findings() {
+        let previous = StartupIntegrityReport {
+            created_unix: 123,
+            checked: 4,
+            ok: 2,
+            warnings: 1,
+            failures: 1,
+            issues: vec![IntegrityIssue {
+                severity: IssueSeverity::Failure,
+                scope: "artifact_manifest".into(),
+                message: "quarantined".into(),
+                path: Some("/tmp/sample.manifest.json".into()),
+                quarantine_dir: Some("/tmp/quarantine".into()),
+            }],
+        };
+        let current = StartupIntegrityReport {
+            created_unix: 456,
+            checked: 2,
+            ok: 1,
+            warnings: 1,
+            failures: 0,
+            issues: vec![IntegrityIssue {
+                severity: IssueSeverity::Warning,
+                scope: "response_rules".into(),
+                message: "changed".into(),
+                path: Some("/tmp/rules.yaml".into()),
+                quarantine_dir: None,
+            }],
+        };
+
+        let merged = merge_reports(Some(previous), current);
+        assert_eq!(merged.created_unix, 123);
+        assert_eq!(merged.checked, 6);
+        assert_eq!(merged.ok, 3);
+        assert_eq!(merged.warnings, 2);
+        assert_eq!(merged.failures, 1);
+        assert_eq!(merged.issues.len(), 2);
+        assert_eq!(merged.issues[0].scope, "artifact_manifest");
+        assert_eq!(merged.issues[1].scope, "response_rules");
     }
 
     #[test]
