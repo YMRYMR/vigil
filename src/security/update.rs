@@ -12,7 +12,7 @@ use std::fs;
 use std::path::Path;
 
 const UPDATE_PUBLIC_KEY_HEX: &str =
-    "dcc3aa5dba3937e1f2a0b8d37c1d14764b660c9518c555ca95148216ec847626";
+    "20e838c609b7c01cf642dfbb48a1f40e57e1f9aba78c030ce818b3dfabce3be0";
 const UPDATE_PUBLIC_KEY_LEN: usize = 32;
 const UPDATE_SIGNATURE_LEN: usize = 64;
 const UPDATE_SCHEMA_VERSION: u32 = 1;
