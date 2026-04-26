@@ -8,7 +8,7 @@ on:
 permissions:
   actions: write
   contents: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: auto-release-master
@@ -52,10 +52,16 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
-          pr_number="$(PRS_JSON="$prs_json" python3 -c 'import json, os; prs = json.loads(os.environ["PRS_JSON"]); candidates = [pr for pr in prs if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"]; candidates.sort(key=lambda pr: pr["merged_at"], reverse=True); print(candidates[0]["number"] if candidates else "")')"
+          pr_number="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].number // empty')"
+          pr_head_ref="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].head.ref // empty')"
           if [ -z "$pr_number" ]; then
             echo "release_ready=false" >> "$GITHUB_OUTPUT"
             echo "skip_reason=no merged pull request found for ${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$pr_head_ref" == release/* ]]; then
+            echo "release_ready=false" >> "$GITHUB_OUTPUT"
+            echo "skip_reason=release bookkeeping branch ${pr_head_ref}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           echo "release_ready=true" >> "$GITHUB_OUTPUT"
@@ -75,29 +81,70 @@ jobs:
         id: version
         if: steps.pr.outputs.release_ready == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           CURRENT_VERSION: ${{ steps.current.outputs.current_version }}
         run: |
-          if git rev-parse -q --verify "refs/tags/v${CURRENT_VERSION}" >/dev/null; then
-            next_version="$(PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from prepare_release import bump_patch; import os; print(bump_patch(os.environ["CURRENT_VERSION"]))')"
-            echo "needs_commit=true" >> "$GITHUB_OUTPUT"
-          else
-            next_version="$CURRENT_VERSION"
-            echo "needs_commit=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "release_ready=true" >> "$GITHUB_OUTPUT"
-          echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
-          echo "tag=v${next_version}" >> "$GITHUB_OUTPUT"
+          bump_patch() {
+            VERSION="$1" PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" \
+              python3 -c 'from prepare_release import bump_patch; import os; print(bump_patch(os.environ["VERSION"]))'
+          }
 
-      - name: Skip existing release tag
+          release_exists() {
+            gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/v$1" >/dev/null 2>&1
+          }
+
+          candidate="$CURRENT_VERSION"
+          needs_commit=false
+          needs_tag_push=false
+          recovered_existing_tag=false
+
+          if git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null; then
+            if ! release_exists "$candidate"; then
+              recovered_existing_tag=true
+            else
+              while true; do
+                candidate="$(bump_patch "$candidate")"
+                if ! git rev-parse -q --verify "refs/tags/v${candidate}" >/dev/null; then
+                  needs_commit=true
+                  needs_tag_push=true
+                  break
+                fi
+                if ! release_exists "$candidate"; then
+                  recovered_existing_tag=true
+                  break
+                fi
+              done
+            fi
+          else
+            needs_tag_push=true
+          fi
+
+          echo "release_ready=true" >> "$GITHUB_OUTPUT"
+          echo "next_version=$candidate" >> "$GITHUB_OUTPUT"
+          echo "tag=v${candidate}" >> "$GITHUB_OUTPUT"
+          echo "needs_commit=$needs_commit" >> "$GITHUB_OUTPUT"
+          echo "needs_tag_push=$needs_tag_push" >> "$GITHUB_OUTPUT"
+          echo "recovered_existing_tag=$recovered_existing_tag" >> "$GITHUB_OUTPUT"
+
+      - name: Verify chosen release tag
         id: tag
         if: steps.version.outputs.release_ready == 'true'
         env:
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          NEEDS_TAG_PUSH: ${{ steps.version.outputs.needs_tag_push }}
         run: |
-          if git rev-parse -q --verify "refs/tags/v${NEXT_VERSION}" >/dev/null; then
-            echo "release_ready=false" >> "$GITHUB_OUTPUT"
-            echo "skip_reason=tag v${NEXT_VERSION} already exists" >> "$GITHUB_OUTPUT"
-            exit 0
+          if [ "$NEEDS_TAG_PUSH" = "true" ]; then
+            if git rev-parse -q --verify "refs/tags/v${NEXT_VERSION}" >/dev/null; then
+              echo "release_ready=false" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=tag v${NEXT_VERSION} already exists" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            if ! git rev-parse -q --verify "refs/tags/v${NEXT_VERSION}" >/dev/null; then
+              echo "release_ready=false" >> "$GITHUB_OUTPUT"
+              echo "skip_reason=tag v${NEXT_VERSION} is missing" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           fi
           echo "release_ready=true" >> "$GITHUB_OUTPUT"
           echo "tag=v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
@@ -123,23 +170,65 @@ jobs:
           git add Cargo.toml Cargo.lock
           git commit -m "chore(release): cut v${NEXT_VERSION} after merge of #${PR_NUMBER} [skip ci]"
 
-      - name: Tag and push release ref
+      - name: Prepare release source ref
+        id: source
         if: steps.tag.outputs.release_ready == 'true'
         env:
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
         run: |
-          git tag -a "v${NEXT_VERSION}" -m "Vigil v${NEXT_VERSION}"
           if [ "${{ steps.version.outputs.needs_commit }}" = "true" ]; then
-            git push origin HEAD:master "refs/tags/v${NEXT_VERSION}"
+            echo "release_branch=release/v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "source_ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           else
-            git push origin "refs/tags/v${NEXT_VERSION}"
+            echo "source_ref=refs/tags/v${NEXT_VERSION}" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Tag and push release ref
+        if: steps.tag.outputs.release_ready == 'true'
+        env:
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          NEEDS_COMMIT: ${{ steps.version.outputs.needs_commit }}
+          NEEDS_TAG_PUSH: ${{ steps.version.outputs.needs_tag_push }}
+          RELEASE_BRANCH: ${{ steps.source.outputs.release_branch }}
+        run: |
+          if [ "$NEEDS_TAG_PUSH" = "true" ]; then
+            git tag -a "v${NEXT_VERSION}" -m "Vigil v${NEXT_VERSION}"
+            if [ "$NEEDS_COMMIT" = "true" ]; then
+              git push origin "HEAD:refs/heads/${RELEASE_BRANCH}" "refs/tags/v${NEXT_VERSION}"
+            else
+              git push origin "refs/tags/v${NEXT_VERSION}"
+            fi
+          else
+            echo "Reusing existing tag v${NEXT_VERSION}."
+            if [ "$NEEDS_COMMIT" = "true" ]; then
+              git push origin "HEAD:refs/heads/${RELEASE_BRANCH}"
+            fi
+          fi
+
+      - name: Open version bump pull request
+        if: steps.tag.outputs.release_ready == 'true' && steps.version.outputs.needs_commit == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          RELEASE_BRANCH: ${{ steps.source.outputs.release_branch }}
+        run: |
+          existing_pr="$(gh pr list --base master --head "$RELEASE_BRANCH" --state open --json number --jq '.[0].number')"
+          if [ -n "$existing_pr" ]; then
+            echo "Version bump PR already open: #$existing_pr"
+            exit 0
+          fi
+          gh pr create \
+            --base master \
+            --head "$RELEASE_BRANCH" \
+            --title "chore(release): record v${NEXT_VERSION} version bump" \
+            --body "Keeps \`Cargo.toml\` and \`Cargo.lock\` aligned with the already-cut \`v${NEXT_VERSION}\` release commit."
 
       - name: Dispatch release workflow
         if: steps.tag.outputs.release_ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
+          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
         run: |
           gh api \
             --method POST \
@@ -148,7 +237,7 @@ jobs:
             -f ref="master" \
             -f inputs[tag]="v${NEXT_VERSION}" \
             -f inputs[version]="${NEXT_VERSION}" \
-            -f inputs[source_ref]="refs/tags/v${NEXT_VERSION}"
+            -f inputs[source_ref]="${SOURCE_REF}"
 
       - name: Report skipped release
         if: always() && steps.tag.outputs.release_ready != 'true'
