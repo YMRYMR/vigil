@@ -532,7 +532,7 @@ pub fn reconcile() {
         state.isolation_expires_unix = None;
         if let Err(err) = save_state(&state) {
             note_state_load_error_once("reconcile_stale_isolation_state_save", &err);
-        }
+         }
         match crate::config::Config::load() {
             Ok(cfg) => {
                 let _ = crate::break_glass::sync_watchdog(&cfg);
@@ -551,67 +551,4 @@ pub fn reconcile() {
     let isolation_expired = isolation_active
         && state
             .isolation_expires_unix
-            .is_some_and(|expires_at| now >= expires_at);
-    if isolation_expired {
-        if let Err(err) = restore_machine() {
-            audit::record(
-                "reconcile_isolation_timeout",
-                "error",
-                json!({
-                    "error": err,
-                    "expires_at_unix": state.isolation_expires_unix,
-                    "now_unix": now,
-                }),
-            );
-        } else if let Ok(restored_state) = load_state() {
-            state = restored_state;
-        }
-    }
-    let changed = reconcile_state(&mut state, now, |rule_name| {
-        platform::delete_rule(rule_name).is_ok()
-    });
-    if changed {
-        if let Err(err) = save_state(&state) {
-            note_state_load_error_once("reconcile_save", &err);
-        }
-    }
-}
-pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
-    ensure_modifiable()?;
-    let target = normalise_target(target)?;
-    let rule_name = rule_name_for_target(&target);
-    let expires_at_unix = preset
-        .ttl()
-        .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
-    let _ = platform::delete_rule(&rule_name);
-    platform::add_block_rule(&rule_name, &target)?;
-    let mut state = load_state()?;
-    state.blocked.retain(|rule| rule.target != target);
-    state.blocked.push(BlockedTarget {
-        target: target.clone(),
-        rule_name: rule_name.clone(),
-        expires_at_unix,
-    });
-    save_state(&state)?;
-    let message = match preset {
-        DurationPreset::OneHour => format!("Blocked {target} for 1 hour."),
-        DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
-        DurationPreset::Permanent => format!("Blocked {target} until removed."),
-    };
-    audit::record(
-        "block_remote",
-        "success",
-        json!({ "target": target, "duration": format!("{:?}", preset), "rule_name": rule_name }),
-    );
-    Ok(message)
-}
-pub fn unblock_remote(target: &str) -> Result<String, String> {
-    ensure_modifiable()?;
-    let target = normalise_target(target)?;
-    let mut state = load_state()?;
-    let mut removed = 0usize;
-    let mut kept = Vec::with_capacity(state.blocked.len());
-    let mut delete_failed = false;
-    for rule in state.blocked.drain(..) {
-        if rule.target == target {
-            if platform::delete_rule(&
+            .is_some_and(|expires_at| 
