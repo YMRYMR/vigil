@@ -52,23 +52,7 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
-          pr_number="$(
-          PRS_JSON="$prs_json" python3 - <<'PY'
-          import json
-          import os
-
-          prs = json.loads(os.environ["PRS_JSON"])
-          candidates = [
-              pr for pr in prs
-              if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"
-          ]
-          if not candidates:
-              print("")
-          else:
-              candidates.sort(key=lambda pr: pr["merged_at"], reverse=True)
-              print(candidates[0]["number"])
-          PY
-          )"
+          pr_number="$(PRS_JSON="$prs_json" python3 -c 'import json, os; prs = json.loads(os.environ["PRS_JSON"]); candidates = [pr for pr in prs if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"]; candidates.sort(key=lambda pr: pr["merged_at"], reverse=True); print(candidates[0]["number"] if candidates else "")')"
           if [ -z "$pr_number" ]; then
             echo "release_ready=false" >> "$GITHUB_OUTPUT"
             echo "skip_reason=no merged pull request found for ${HEAD_SHA}" >> "$GITHUB_OUTPUT"
@@ -94,15 +78,7 @@ jobs:
           CURRENT_VERSION: ${{ steps.current.outputs.current_version }}
         run: |
           if git rev-parse -q --verify "refs/tags/v${CURRENT_VERSION}" >/dev/null; then
-            next_version="$(
-              PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" \
-                python3 - <<'PY'
-from prepare_release import bump_patch
-import os
-
-print(bump_patch(os.environ["CURRENT_VERSION"]))
-PY
-            )"
+            next_version="$(PYTHONPATH="scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -c 'from prepare_release import bump_patch; import os; print(bump_patch(os.environ["CURRENT_VERSION"]))')"
             echo "needs_commit=true" >> "$GITHUB_OUTPUT"
           else
             next_version="$CURRENT_VERSION"
