@@ -22,22 +22,8 @@ pub fn apply() -> (Vec<String>, Vec<String>) {
         use crate::audit;
         use serde_json::json;
 
-        let mut state = match load_state() {
-            Ok(state) => state,
-            Err(err) => {
-                audit::record(
-                    "quarantine_extended_apply",
-                    "error",
-                    json!({ "error": err }),
-                );
-                return (
-                    Vec::new(),
-                    vec![format!("quarantine state load failed: {err}")],
-                );
-            }
-        };
+        let (mut state, mut warnings) = state_for_apply(load_state());
         let mut applied = Vec::new();
-        let mut warnings = Vec::new();
         match platform::disable_usb_storage() {
             Ok(changed) => {
                 if changed {
@@ -149,6 +135,16 @@ fn save_state(state: &State) -> Result<(), String> {
     let path = state_path();
     save_state_to_path(&path, state)
         .map_err(|e| format!("failed to save quarantine state {}: {e}", path.display()))
+}
+
+fn state_for_apply(load_result: Result<State, String>) -> (State, Vec<String>) {
+    match load_result {
+        Ok(state) => (state, Vec::new()),
+        Err(err) => (
+            State::default(),
+            vec![format!("quarantine state load failed: {err}")],
+        ),
+    }
 }
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
@@ -293,6 +289,17 @@ mod tests {
         assert!(err.contains("could not be verified or restored"));
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn apply_continues_with_empty_state_when_prior_state_load_fails() {
+        let (state, warnings) = state_for_apply(Err("tampered state".into()));
+        assert!(!state.usb_disabled);
+        assert!(state.paused_tasks.is_empty());
+        assert_eq!(
+            warnings,
+            vec!["quarantine state load failed: tampered state"]
+        );
     }
 
     fn unique_temp_dir() -> PathBuf {
