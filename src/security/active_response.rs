@@ -1171,8 +1171,7 @@ fn hex_prefix(bytes: &[u8], hex_len: usize) -> String {
 static STATE_LOAD_WARNING_ONCE: OnceLock<Mutex<std::collections::HashSet<String>>> =
     OnceLock::new();
 fn note_state_load_error_once(context: &str, err: &str) {
-    let seen =
-        STATE_LOAD_WARNING_ONCE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
+    let seen = STATE_LOAD_WARNING_ONCE.get_or_init(|| Mutex::new(std::collections::HashSet::new()));
     let key = format!("{context}:{err}");
     let mut seen = seen.lock().unwrap();
     if seen.insert(key) {
