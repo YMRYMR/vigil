@@ -62,10 +62,7 @@ struct ArtifactManifestScan {
 }
 
 pub fn run() {
-    let mut report = StartupIntegrityReport {
-        created_unix: unix_now(),
-        ..Default::default()
-    };
+    let mut report = new_report();
     scan_policy_sidecars(&mut report);
     scan_artifact_manifests(&mut report);
     record_summary("startup_integrity_scan", &report);
@@ -75,10 +72,7 @@ pub fn run() {
 }
 
 pub fn scan_operator_inputs(cfg: &config::Config) {
-    let mut report = load_report().unwrap_or_else(|| StartupIntegrityReport {
-        created_unix: unix_now(),
-        ..Default::default()
-    });
+    let mut report = initialize_operator_scan_report_at(&report_path());
     for path in &cfg.blocklist_paths {
         if path.trim().is_empty() {
             continue;
@@ -98,8 +92,32 @@ pub fn scan_operator_inputs(cfg: &config::Config) {
     }
 }
 
-pub fn load_report() -> Option<StartupIntegrityReport> {
-    load_report_at(&report_path()).ok().flatten()
+pub fn load_report() -> Result<Option<StartupIntegrityReport>, String> {
+    load_report_at(&report_path())
+}
+
+fn new_report() -> StartupIntegrityReport {
+    StartupIntegrityReport {
+        created_unix: unix_now(),
+        ..Default::default()
+    }
+}
+
+fn initialize_operator_scan_report_at(path: &Path) -> StartupIntegrityReport {
+    let mut report = new_report();
+    if let Err(err) = load_report_at(path) {
+        note_issue(
+            &mut report,
+            IssueSeverity::Failure,
+            "startup_report",
+            path,
+            format!(
+                "existing startup integrity report {} could not be loaded: {err}",
+                path.display()
+            ),
+        );
+    }
+    report
 }
 
 fn operator_input_purpose(kind: &str) -> &'static str {
@@ -569,7 +587,14 @@ fn report_path() -> PathBuf {
 }
 
 fn load_report_at(path: &Path) -> Result<Option<StartupIntegrityReport>, String> {
+    let existed = path.exists();
     let Some(bytes) = crate::security::policy::load_json_with_integrity(path)? else {
+        if existed {
+            return Err(format!(
+                "startup integrity report {} exists but could not be verified or restored",
+                path.display()
+            ));
+        }
         return Ok(None);
     };
     serde_json::from_slice(&bytes).map(Some).map_err(|e| {
@@ -745,6 +770,62 @@ mod tests {
             loaded.issues[1].quarantine_dir.as_deref(),
             Some("/tmp/quarantine")
         );
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn operator_scan_starts_clean_even_when_previous_report_loaded() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("startup-report.json");
+        let existing = StartupIntegrityReport {
+            created_unix: 123,
+            checked: 4,
+            ok: 2,
+            warnings: 1,
+            failures: 1,
+            issues: vec![IntegrityIssue {
+                severity: IssueSeverity::Failure,
+                scope: "policy".into(),
+                message: "old issue".into(),
+                path: Some("/tmp/vigil.json".into()),
+                quarantine_dir: None,
+            }],
+        };
+        save_report_at(&path, &existing).unwrap();
+
+        let report = initialize_operator_scan_report_at(&path);
+        assert!(report.created_unix > 0);
+        assert_eq!(report.checked, 0);
+        assert_eq!(report.ok, 0);
+        assert_eq!(report.warnings, 0);
+        assert_eq!(report.failures, 0);
+        assert!(report.issues.is_empty());
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn load_report_at_fails_when_existing_report_cannot_be_restored() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("startup-report.json");
+        let report = StartupIntegrityReport {
+            created_unix: 123,
+            checked: 1,
+            ok: 1,
+            warnings: 0,
+            failures: 0,
+            issues: Vec::new(),
+        };
+        save_report_at(&path, &report).unwrap();
+        fs::remove_file(path.with_extension("json.sig")).unwrap();
+        fs::remove_file(path.with_extension("json.bak")).unwrap();
+        fs::remove_file(path.with_extension("json.bak.sig")).unwrap();
+
+        let err = load_report_at(&path).unwrap_err();
+        assert!(err.contains("could not be verified or restored"));
+
         let _ = fs::remove_dir_all(dir);
     }
 
