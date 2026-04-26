@@ -30,7 +30,7 @@ on:
         required: true
         type: string
       source_ref:
-        description: Git ref or SHA to check out for the release build
+        description: Full git ref or 40-character commit SHA to check out for the release build; leave empty to build from the release tag
         required: false
         type: string
 
@@ -84,6 +84,16 @@ jobs:
           CHECKOUT_REF="$INPUT_SOURCE_REF"
           if [ -z "$CHECKOUT_REF" ]; then
             CHECKOUT_REF="refs/tags/$REF_NAME"
+          elif [ "$CHECKOUT_REF" = "$REF_NAME" ]; then
+            CHECKOUT_REF="refs/tags/$REF_NAME"
+          elif [[ "$CHECKOUT_REF" =~ ^refs/(heads|tags)/[^[:space:]]+$ ]]; then
+            :
+          elif [[ "$CHECKOUT_REF" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            :
+          else
+            echo "Invalid source_ref: $CHECKOUT_REF" >&2
+            echo "Expected a full refs/heads/... or refs/tags/... value, the exact release tag, or a 40-character commit SHA." >&2
+            exit 1
           fi
           echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
@@ -500,10 +510,10 @@ jobs:
               raise SystemExit("Derived update public key was unexpectedly short")
           actual_public_key = spki_der[-32:].hex()
           if actual_public_key != expected_public_key:
-              raise SystemExit(
-                  "Configured VIGIL_UPDATE_SIGNING_KEY does not match the "
-                  "embedded update trust anchor in src/security/update.rs"
-              )
+            raise SystemExit(
+                "Configured VIGIL_UPDATE_SIGNING_KEY does not match the "
+                "embedded update trust anchor in src/security/update.rs"
+            )
           PY
 
           export VERSION TAG
