@@ -222,11 +222,13 @@ jobs:
             echo "Version bump PR already open: #$existing_pr"
             exit 0
           fi
-          gh pr create \
+          if ! gh pr create \
             --base master \
             --head "$RELEASE_BRANCH" \
             --title "chore(release): record v${NEXT_VERSION} version bump" \
-            --body "Keeps \`Cargo.toml\` and \`Cargo.lock\` aligned with the already-cut \`v${NEXT_VERSION}\` release commit."
+            --body "Keeps \`Cargo.toml\` and \`Cargo.lock\` aligned with the already-cut \`v${NEXT_VERSION}\` release commit."; then
+            echo "::warning::Could not open release bookkeeping PR for ${RELEASE_BRANCH}. The release branch was pushed successfully, but GitHub Actions is not allowed to create pull requests in this repository."
+          fi
 
       - name: Dispatch release workflow
         if: steps.tag.outputs.release_ready == 'true'
