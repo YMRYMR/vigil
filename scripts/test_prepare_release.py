@@ -34,6 +34,7 @@ cargo-dist-version = "0.22.1"
         self.assertIn('version = "1.3.6"\n', updated)
         self.assertIn('cargo-dist-version = "0.22.1"\n', updated)
         self.assertEqual(current_version_from_cargo_toml(text), "1.3.5")
+        self.assertIn('version = "1.3.6"\n\n[workspace.metadata.dist]\n', updated)
 
     def test_update_cargo_lock_updates_root_package_only(self) -> None:
         text = """version = 4
@@ -49,8 +50,16 @@ version = "1.3.5"
         updated, current = update_cargo_lock(text, "1.3.6")
         self.assertEqual(current, "1.3.5")
         self.assertIn('name = "serde"\nversion = "1.0.0"\n', updated)
-        self.assertIn('name = "vigil"\nversion = "1.3.6"', updated)
+        self.assertIn('name = "vigil"\nversion = "1.3.6"\n', updated)
         self.assertEqual(current_version_from_cargo_lock(text), "1.3.5")
+
+    def test_update_cargo_lock_preserves_windows_line_endings(self) -> None:
+        text = (
+            'version = 4\r\n\r\n[[package]]\r\nname = "vigil"\r\nversion = "1.3.5"\r\n'
+        )
+        updated, current = update_cargo_lock(text, "1.3.6")
+        self.assertEqual(current, "1.3.5")
+        self.assertIn('name = "vigil"\r\nversion = "1.3.6"\r\n', updated)
 
 
 if __name__ == "__main__":
