@@ -11,7 +11,6 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -25,6 +24,9 @@ const ISOLATION_MAX_SECS: u64 = 60 * 60;
 const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 const PROCESS_RULE_PREFIX_LEN: usize = 48;
 const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
+
+#[path = "active_response_platform.rs"]
+mod platform;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Status {
@@ -517,7 +519,7 @@ pub fn reconcile() {
             "failed to load protected active-response state",
         );
         return;
-    }
+    };
     let now = unix_now();
     let isolation_active =
         state.isolated || state.firewall_snapshot.is_some() || state.network_snapshot.is_some();
@@ -748,13 +750,21 @@ pub fn isolate_machine() -> Result<String, String> {
     let firewall_ok = match platform::outbound_block_supported() {
         Some(true) => {
             if let Err(err) = platform::apply_firewall_isolation() {
-                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+                return Err(with_isolation_rollback(
+                    err,
+                    &previous_state,
+                    &firewall_snapshot,
+                ));
             }
             true
         }
         Some(false) => {
             if let Err(err) = platform::apply_firewall_isolation_inbound_only() {
-                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+                return Err(with_isolation_rollback(
+                    err,
+                    &previous_state,
+                    &firewall_snapshot,
+                ));
             }
             warnings.push(
                 "firewall backend cannot confirm outbound connectivity; using failsafe adapter cutoff"
@@ -764,7 +774,11 @@ pub fn isolate_machine() -> Result<String, String> {
         }
         None => {
             if let Err(err) = platform::apply_firewall_isolation() {
-                return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+                return Err(with_isolation_rollback(
+                    err,
+                    &previous_state,
+                    &firewall_snapshot,
+                ));
             }
             true
         }
@@ -772,13 +786,17 @@ pub fn isolate_machine() -> Result<String, String> {
 
     if !firewall_ok {
         if let Err(err) = platform::disable_active_adapters(&network_snapshot) {
-            return Err(with_isolation_rollback(err, &previous_state, &firewall_snapshot));
+            return Err(with_isolation_rollback(
+                err,
+                &previous_state,
+                &firewall_snapshot,
+            ));
         }
     }
 
     match crate::config::Config::load() {
         Ok(cfg) => {
-            if let Err(err) = crate::break_glass::arm_watchdog(&cfg) {
+            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
                 warnings.push(format!("watchdog arm failed: {err}"));
             }
         }
@@ -852,7 +870,7 @@ pub fn restore_machine() -> Result<String, String> {
     let firewall_snapshot = state.firewall_snapshot.clone();
     let network_snapshot = state.network_snapshot.clone();
     let mut warnings = Vec::new();
-    if let Some(err) = state_load_warning {
+    if let Some(ref err) = state_load_warning {
         warnings.push(format!(
             "protected isolation state could not be loaded; continuing with emergency restore path: {err}"
         ));
@@ -903,7 +921,7 @@ pub fn restore_machine() -> Result<String, String> {
     }
     match crate::config::Config::load() {
         Ok(cfg) => {
-            if let Err(err) = crate::break_glass::disarm_watchdog(&cfg) {
+            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
                 warnings.push(format!("watchdog disarm failed: {err}"));
             }
         }
@@ -952,6 +970,85 @@ pub fn restore_machine() -> Result<String, String> {
         ))
     }
 }
+
+pub fn is_blocked(target: &str) -> bool {
+    let Ok(target) = normalise_target(target) else {
+        return false;
+    };
+    load_state_for_query("is_blocked")
+        .map(|state| state.blocked.iter().any(|rule| rule.target == target))
+        .unwrap_or(false)
+}
+
+pub fn is_domain_blocked(domain: &str) -> bool {
+    let Ok(domain) = normalise_domain(domain) else {
+        return false;
+    };
+    load_state_for_query("is_domain_blocked")
+        .map(|state| {
+            state
+                .blocked_domains
+                .iter()
+                .any(|entry| entry.domain == domain)
+        })
+        .unwrap_or(false)
+}
+
+pub fn remote_block_remaining(target: &str) -> Option<Duration> {
+    let target = normalise_target(target).ok()?;
+    let now = unix_now();
+    load_state_for_query("remote_block_remaining")
+        .and_then(|state| {
+            state
+                .blocked
+                .iter()
+                .find(|rule| rule.target == target)
+                .and_then(|rule| rule.expires_at_unix)
+        })
+        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+        .map(Duration::from_secs)
+}
+
+pub fn is_process_blocked(_pid: u32, path: &str) -> bool {
+    let Ok(path) = normalise_target(path) else {
+        return false;
+    };
+    load_state_for_query("is_process_blocked")
+        .map(|state| {
+            state
+                .blocked_processes
+                .iter()
+                .any(|rule| process_block_matches(rule, &path))
+        })
+        .unwrap_or(false)
+}
+
+pub fn process_block_remaining(_pid: u32, path: &str) -> Option<Duration> {
+    let path = normalise_target(path).ok()?;
+    let now = unix_now();
+    load_state_for_query("process_block_remaining")
+        .and_then(|state| {
+            state
+                .blocked_processes
+                .iter()
+                .find(|rule| process_block_matches(rule, &path))
+                .and_then(|rule| rule.expires_at_unix)
+        })
+        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+        .map(Duration::from_secs)
+}
+
+pub fn is_process_suspended(pid: u32, path: &str) -> bool {
+    load_state_for_query("is_process_suspended")
+        .map(|state| {
+            state
+                .suspended_processes
+                .iter()
+                .any(|entry| suspended_process_matches(entry, pid, path))
+        })
+        .unwrap_or(false)
+}
+
 fn ensure_modifiable() -> Result<(), String> {
     if !platform::is_supported() {
         return Err("Active response is only implemented on supported operating systems.".into());
@@ -1031,11 +1128,9 @@ where
     let mut kept = Vec::with_capacity(state.blocked.len());
     for rule in state.blocked.drain(..) {
         let expired = rule.expires_at_unix.is_some_and(|deadline| deadline <= now);
-        if expired {
-            if delete_rule(&rule.rule_name) {
-                changed = true;
-                continue;
-            }
+        if expired && delete_rule(&rule.rule_name) {
+            changed = true;
+            continue;
         }
         kept.push(rule);
     }
@@ -1063,7 +1158,7 @@ fn process_block_matches(rule: &BlockedProcess, path: &str) -> bool {
 fn suspended_process_matches(entry: &SuspendedProcess, pid: u32, path: &str) -> bool {
     entry.pid == pid && (path.is_empty() || entry.path.eq_ignore_ascii_case(path))
 }
-fn extract_remote_target(addr: &str) -> Option<String> {
+pub fn extract_remote_target(addr: &str) -> Option<String> {
     addr.rsplit_once(':').and_then(|(host, _)| {
         if host.starts_with('[') && host.ends_with(']') {
             Some(host.trim_matches(&['[', ']'][..]).to_string())
@@ -1074,7 +1169,7 @@ fn extract_remote_target(addr: &str) -> Option<String> {
         }
     })
 }
-fn extract_domain_target(conn: &ConnInfo) -> Option<String> {
+pub fn extract_domain_target(conn: &ConnInfo) -> Option<String> {
     conn.hostname
         .as_deref()
         .and_then(extract_domain_from_hostname)
@@ -1092,6 +1187,10 @@ fn parse_socket_addr(addr: &str, label: &str) -> Result<SocketAddr, SocketKillEr
         "local" => SocketKillError::InvalidLocalAddr(addr.into()),
         _ => SocketKillError::InvalidRemoteAddr(addr.into()),
     })
+}
+#[allow(dead_code)]
+fn socket_addr_from_text(text: &str) -> Result<SocketAddr, std::net::AddrParseError> {
+    text.trim().parse::<SocketAddr>()
 }
 fn socket_kill_target(conn: &ConnInfo) -> Result<SocketKillTarget, SocketKillError> {
     let status = conn.status.trim();
@@ -1169,6 +1268,19 @@ fn outbound_probe_reachable() -> bool {
     )
     .is_ok()
 }
+#[allow(dead_code)]
+fn wait_for_outbound_probe(timeout: Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        if outbound_probe_reachable() {
+            return true;
+        }
+        if start.elapsed() >= timeout {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(650));
+    }
+}
 fn isolation_effective_now(state: &State, now: u64) -> bool {
     if state
         .isolation_expires_unix
@@ -1205,7 +1317,7 @@ fn isolation_controls_still_effective(
 
 fn hex_prefix(bytes: &[u8], hex_len: usize) -> String {
     let mut out = String::with_capacity(hex_len);
-    for byte in bytes.iter().take((hex_len + 1) / 2) {
+    for byte in bytes.iter().take(hex_len.div_ceil(2)) {
         let hi = byte >> 4;
         let lo = byte & 0x0f;
         out.push(char::from(b"0123456789abcdef"[hi as usize]));
@@ -1243,6 +1355,15 @@ fn load_state() -> Result<State, String> {
     let path = state_path();
     load_state_from_path(&path)
 }
+fn load_state_for_query(context: &str) -> Option<State> {
+    match load_state() {
+        Ok(state) => Some(state),
+        Err(err) => {
+            note_state_load_error_once(context, &err);
+            None
+        }
+    }
+}
 fn save_state(state: &State) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(state)
         .map_err(|e| format!("serialize active response state: {e}"))?;
@@ -1270,8 +1391,6 @@ fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::path::Path;
     use std::sync::RwLock;
 
     struct StatePathGuard;
