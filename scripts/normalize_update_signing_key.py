@@ -6,6 +6,7 @@ The GitHub Actions secret may be stored in a few human-friendly forms:
 - multiline PKCS#8 PEM
 - PEM with literal ``\n`` escapes
 - raw 32-byte Ed25519 seed encoded as hex or base64
+- raw 64-byte Ed25519 private key encoded as hex or base64 (seed + public key)
 - PKCS#8 DER encoded as hex or base64
 
 This helper converts those supported formats into a PEM file that OpenSSL can
@@ -24,6 +25,7 @@ import sys
 
 PKCS8_ED25519_DER_PREFIX = bytes.fromhex("302e020100300506032b657004220420")
 PKCS8_ED25519_DER_LEN = len(PKCS8_ED25519_DER_PREFIX) + 32
+ED25519_PRIVATE_KEY_LEN = 64
 
 
 def _private_key_marker(kind: str) -> str:
@@ -51,6 +53,18 @@ def pkcs8_der_from_seed(seed: bytes) -> bytes:
             f"expected a 32-byte Ed25519 seed, got {len(seed)} bytes instead"
         )
     return PKCS8_ED25519_DER_PREFIX + seed
+
+
+def pkcs8_der_from_raw_private_key(private_key: bytes) -> bytes:
+    if len(private_key) != ED25519_PRIVATE_KEY_LEN:
+        raise ValueError(
+            "expected a 64-byte Ed25519 private key, "
+            f"got {len(private_key)} bytes instead"
+        )
+    # Common raw encodings store the 32-byte seed followed by the public key.
+    # The release workflow separately verifies that the derived public key still
+    # matches Vigil's embedded update trust anchor.
+    return pkcs8_der_from_seed(private_key[:32])
 
 
 def _looks_like_pem(text: str) -> bool:
@@ -108,6 +122,8 @@ def normalize_signing_key(secret: str) -> str:
     if raw_bytes is not None:
         if len(raw_bytes) == 32:
             return pem_from_pkcs8_der(pkcs8_der_from_seed(raw_bytes))
+        if len(raw_bytes) == ED25519_PRIVATE_KEY_LEN:
+            return pem_from_pkcs8_der(pkcs8_der_from_raw_private_key(raw_bytes))
         if (
             len(raw_bytes) == PKCS8_ED25519_DER_LEN
             and raw_bytes.startswith(PKCS8_ED25519_DER_PREFIX)
@@ -124,6 +140,8 @@ def normalize_signing_key(secret: str) -> str:
             return _normalize_pem(decoded_text)
         if len(decoded) == 32:
             return pem_from_pkcs8_der(pkcs8_der_from_seed(decoded))
+        if len(decoded) == ED25519_PRIVATE_KEY_LEN:
+            return pem_from_pkcs8_der(pkcs8_der_from_raw_private_key(decoded))
         if (
             len(decoded) == PKCS8_ED25519_DER_LEN
             and decoded.startswith(PKCS8_ED25519_DER_PREFIX)
@@ -132,7 +150,8 @@ def normalize_signing_key(secret: str) -> str:
 
     raise ValueError(
         "unsupported update-signing secret format; use PKCS#8 PEM, escaped PEM, "
-        "hex/base64 PKCS#8 DER, or a raw 32-byte Ed25519 seed"
+        "hex/base64 PKCS#8 DER, a raw 32-byte Ed25519 seed, "
+        "or a raw 64-byte Ed25519 private key"
     )
 
 
