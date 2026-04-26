@@ -53,21 +53,21 @@ jobs:
         run: |
           prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
           pr_number="$(
-            PRS_JSON="$prs_json" python3 - <<'PY'
-import json
-import os
+          PRS_JSON="$prs_json" python3 - <<'PY'
+          import json
+          import os
 
-prs = json.loads(os.environ["PRS_JSON"])
-candidates = [
-    pr for pr in prs
-    if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"
-]
-if not candidates:
-    print("")
-else:
-    candidates.sort(key=lambda pr: pr["merged_at"], reverse=True)
-    print(candidates[0]["number"])
-PY
+          prs = json.loads(os.environ["PRS_JSON"])
+          candidates = [
+              pr for pr in prs
+              if pr.get("merged_at") and pr.get("base", {}).get("ref") == "master"
+          ]
+          if not candidates:
+              print("")
+          else:
+              candidates.sort(key=lambda pr: pr["merged_at"], reverse=True)
+              print(candidates[0]["number"])
+          PY
           )"
           if [ -z "$pr_number" ]; then
             echo "release_ready=false" >> "$GITHUB_OUTPUT"
