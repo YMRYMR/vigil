@@ -6,10 +6,7 @@ Please report suspected security vulnerabilities privately through GitHub Securi
 
 https://github.com/YMRYMR/vigil/security/advisories/new
 
-If GitHub Security Advisories are unavailable, email:
-
-- **Security contact:** angeruroth@gmail.com
-- **Subject prefix:** `[Vigil Security]`
+Use GitHub Security Advisories for private vulnerability reporting. If that workflow is unavailable, do not open a public issue; use a private maintainer contact path instead.
 
 Please include:
 
