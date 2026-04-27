@@ -2,6 +2,7 @@ use crate::advisory::{AdvisoryCache, SourceHealth};
 use std::path::PathBuf;
 
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
+const CACHE_SCHEMA_VERSION: u32 = 1;
 
 pub fn run_cli() -> Result<(), String> {
     let path = cache_path();
@@ -10,28 +11,25 @@ pub fn run_cli() -> Result<(), String> {
         return Ok(());
     }
 
-    let loaded: Option<AdvisoryCache> =
-        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
-            format!(
-                "failed to load protected advisory cache {}: {e}",
-                path.display()
-            )
-        })?;
+    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
+        .map_err(|e| format!("failed to load protected advisory cache {}: {e}", path.display()))?;
     let Some(cache) = loaded else {
-        println!(
-            "Advisory cache: unavailable (protected cache could not be verified or restored)."
-        );
+        println!("Advisory cache: unavailable (protected cache could not be verified or restored).");
         return Ok(());
     };
+    if cache.schema_version != CACHE_SCHEMA_VERSION {
+        return Err(format!(
+            "protected advisory cache {} used unsupported schema version {}",
+            path.display(),
+            cache.schema_version
+        ));
+    }
 
     let now = unix_now();
     let stale_sources = cache
         .sources
         .iter()
-        .filter(|source| {
-            is_source_stale(source.expires_unix, now)
-                || matches!(source.status, SourceHealth::Stale)
-        })
+        .filter(|source| is_source_stale(source.expires_unix, now) || matches!(source.status, SourceHealth::Stale))
         .count();
 
     println!(
