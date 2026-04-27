@@ -23,8 +23,6 @@ import os
 import pathlib
 import sys
 
-from cryptography.hazmat.primitives import serialization
-
 
 PKCS8_ED25519_DER_PREFIX = bytes.fromhex("302e020100300506032b657004220420")
 PKCS8_ED25519_DER_LEN = len(PKCS8_ED25519_DER_PREFIX) + 32
@@ -77,6 +75,8 @@ def _looks_like_pem(text: str) -> bool:
 def _normalize_pem(text: str) -> str:
     normalized = text.replace("\r\n", "\n").strip()
     if f"BEGIN OPENSSH {'PRIVATE' + ' KEY'}" in normalized:
+        from cryptography.hazmat.primitives import serialization
+
         key = serialization.load_ssh_private_key(
             normalized.encode("utf-8"), password=None
         )
