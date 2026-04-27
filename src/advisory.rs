@@ -134,7 +134,7 @@ pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
         .iter()
         .filter(|record| record.known_exploited)
         .count();
-    let cache = merge_cache(load_cache()?, imported_cache);
+    let cache = merge_cache(load_cache_for_import()?, imported_cache);
     let summary = ImportSummary {
         imported_records,
         known_exploited,
@@ -201,6 +201,17 @@ fn load_cache() -> Result<Option<AdvisoryCache>, String> {
         ));
     }
     Ok(Some(cache))
+}
+
+fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
+    match load_cache() {
+        Ok(cache) => Ok(cache),
+        Err(err) if err.contains("unsupported schema version") => {
+            tracing::warn!(%err, "ignoring incompatible advisory cache during import");
+            Ok(None)
+        }
+        Err(err) => Err(err),
+    }
 }
 
 fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
