@@ -13,6 +13,7 @@
 )]
 
 mod advisory;
+mod advisory_status;
 mod artifact_provenance;
 mod audit;
 mod baseline;
@@ -92,6 +93,16 @@ fn acquire_single_instance(wait_for_release: bool) -> Result<SingleInstance, Str
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
+    if args.iter().any(|a| a == "--advisory-cache-status") {
+        match advisory_status::run_cli() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(idx) = args.iter().position(|a| a == "--verify-update-manifest") {
         let manifest = args.get(idx + 1).unwrap_or_else(|| {
             eprintln!(
@@ -142,7 +153,7 @@ fn main() {
                 elevated_launcher = true;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import an NVD CVE JSON snapshot into the protected advisory cache\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import an NVD CVE JSON snapshot into the protected advisory cache\n  --advisory-cache-status   show advisory cache status and source health\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
