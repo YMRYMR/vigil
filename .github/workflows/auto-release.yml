@@ -50,10 +50,57 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_PULL_REQUESTS_JSON: ${{ toJson(github.event.workflow_run.pull_requests) }}
         run: |
-          prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
-          pr_number="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].number // empty')"
-          pr_head_ref="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].head.ref // empty')"
+          set -euo pipefail
+
+          is_json() {
+            printf '%s' "$1" | jq -e . >/dev/null 2>&1
+          }
+
+          merged_master_pr() {
+            jq -c '[.[] | select(.merged_at != null and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0] // empty'
+          }
+
+          candidate_numbers="$(printf '%s' "${WORKFLOW_PULL_REQUESTS_JSON:-[]}" | jq -r '.[].number? // empty' 2>/dev/null || true)"
+          selected_pr=''
+
+          for pr_number in $candidate_numbers; do
+            pr_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" 2>/dev/null || true)"
+            if [ -z "$pr_json" ] || ! is_json "$pr_json"; then
+              continue
+            fi
+            if printf '%s' "$pr_json" | jq -e '.merged_at != null and .base.ref == "master"' >/dev/null 2>&1; then
+              selected_pr="$pr_json"
+              break
+            fi
+          done
+
+          if [ -z "$selected_pr" ]; then
+            prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" 2>/dev/null || true)"
+            if [ -n "$prs_json" ] && is_json "$prs_json"; then
+              selected_pr="$(printf '%s' "$prs_json" | merged_master_pr)"
+            fi
+          fi
+
+          if [ -z "$selected_pr" ]; then
+            merge_pr_number="$(git show -s --format=%B "$HEAD_SHA" | python3 -c 'import re, sys
+text = sys.stdin.read().splitlines()
+first = text[0] if text else ""
+match = re.match(r"Merge pull request #([0-9]+)", first)
+if match is None:
+    match = re.search(r"\(#([0-9]+)\)$", first)
+print(match.group(1) if match else "")')"
+            if [ -n "$merge_pr_number" ]; then
+              pr_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/pulls/${merge_pr_number}" 2>/dev/null || true)"
+              if [ -n "$pr_json" ] && is_json "$pr_json" && printf '%s' "$pr_json" | jq -e '.merged_at != null and .base.ref == "master"' >/dev/null 2>&1; then
+                selected_pr="$pr_json"
+              fi
+            fi
+          fi
+
+          pr_number="$(printf '%s' "$selected_pr" | jq -r '.number // empty' 2>/dev/null || true)"
+          pr_head_ref="$(printf '%s' "$selected_pr" | jq -r '.head.ref // empty' 2>/dev/null || true)"
           if [ -z "$pr_number" ]; then
             echo "release_ready=false" >> "$GITHUB_OUTPUT"
             echo "skip_reason=no merged pull request found for ${HEAD_SHA}" >> "$GITHUB_OUTPUT"
@@ -98,6 +145,21 @@ jobs:
               python3 -c 'import os, subprocess, tomllib; version = os.environ["VERSION"]; cargo_toml = subprocess.run(["git", "show", f"refs/tags/v{version}:Cargo.toml"], check=True, capture_output=True, text=True).stdout; cargo_lock = subprocess.run(["git", "show", f"refs/tags/v{version}:Cargo.lock"], check=True, capture_output=True, text=True).stdout; toml_version = tomllib.loads(cargo_toml)["package"]["version"]; lock_packages = tomllib.loads(cargo_lock)["package"]; vigil = next((pkg for pkg in lock_packages if pkg.get("name") == "vigil"), None); raise SystemExit(0 if vigil and toml_version == version and vigil.get("version") == version else 1)'
           }
 
+          tag_snapshot_matches_current_update_key() {
+            VERSION="$1" python3 -c 'import os, pathlib, re, subprocess
+version = os.environ["VERSION"]
+pattern = re.compile(r"UPDATE_PUBLIC_KEY_HEX:\s*&str\s*=\s*\"([0-9a-fA-F]+)\"")
+current_text = pathlib.Path("src/security/update.rs").read_text(encoding="utf-8")
+current_match = pattern.search(current_text)
+if current_match is None:
+    raise SystemExit(1)
+tag_text = subprocess.run(["git", "show", f"refs/tags/v{version}:src/security/update.rs"], check=True, capture_output=True, text=True).stdout
+tag_match = pattern.search(tag_text)
+if tag_match is None:
+    raise SystemExit(1)
+raise SystemExit(0 if current_match.group(1).lower() == tag_match.group(1).lower() else 1)'
+          }
+
           candidate="$CURRENT_VERSION"
           advanced_past_current=false
           needs_commit=false
@@ -114,7 +176,7 @@ jobs:
             fi
 
             if ! release_exists "$candidate"; then
-              if tag_snapshot_is_releasable "$candidate"; then
+              if tag_snapshot_is_releasable "$candidate" && tag_snapshot_matches_current_update_key "$candidate"; then
                 recovered_existing_tag=true
                 break
               fi
