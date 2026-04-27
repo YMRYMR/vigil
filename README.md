@@ -44,6 +44,10 @@ high-noise event into a destructive action.
 - [Manifest signature](https://github.com/YMRYMR/vigil/releases/latest/download/Vigil-latest-update-manifest.json.sig)
 - GHCR Linux package image: `ghcr.io/YMRYMR/vigil`
 
+The latest-release links above are refreshed by the release pipeline after a
+merged `master` change finishes CI and the tag-driven publishing workflow
+completes.
+
 The GHCR image tracks the latest released Linux AppImage as a container package
 so it is easy to mirror, automate, or consume in CI environments:
 
