@@ -11,8 +11,8 @@ pub fn run_cli() -> Result<(), String> {
         return Ok(());
     }
 
-    let loaded: Option<AdvisoryCache> =
-        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
+    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
+        .map_err(|e| {
             format!(
                 "failed to load protected advisory cache {}: {e}",
                 path.display()
