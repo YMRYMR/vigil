@@ -3,6 +3,9 @@ import pathlib
 import sys
 import unittest
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from normalize_update_signing_key import (
@@ -62,13 +65,33 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         normalized = normalize_signing_key(secret)
         self.assertEqual(normalized, pem_from_pkcs8_der(der))
 
-    def test_rejects_unsupported_open_ssh_key(self) -> None:
-        with self.assertRaisesRegex(ValueError, "OpenSSH private keys"):
-            normalize_signing_key(
-                f"-----BEGIN OPENSSH {'PRIVATE' + ' KEY'}-----\n"
-                f"abc\n"
-                f"-----END OPENSSH {'PRIVATE' + ' KEY'}-----\n"
-            )
+    def test_converts_openssh_private_key_to_pkcs8_pem(self) -> None:
+        private_key = Ed25519PrivateKey.generate()
+        openssh = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        pkcs8 = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        self.assertEqual(normalize_signing_key(openssh), pkcs8)
+
+    def test_converts_base64_openssh_private_key_to_pkcs8_pem(self) -> None:
+        private_key = Ed25519PrivateKey.generate()
+        openssh = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        pkcs8 = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        self.assertEqual(normalize_signing_key(base64.b64encode(openssh).decode("ascii")), pkcs8)
 
     def test_rejects_unknown_format(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported update-signing secret"):
