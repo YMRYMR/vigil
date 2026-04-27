@@ -99,8 +99,10 @@ pub struct VulnerabilityProvenance {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportSummary {
-    pub records: usize,
+    pub imported_records: usize,
     pub known_exploited: usize,
+    pub total_records: usize,
+    pub total_sources: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,8 +115,11 @@ pub struct CacheSummary {
 pub fn run_import_cli(path: &Path) -> Result<(), String> {
     let summary = import_nvd_snapshot(path)?;
     println!(
-        "Imported {} NVD CVE records into the protected advisory cache ({} marked known exploited).",
-        summary.records, summary.known_exploited
+        "Merged {} NVD CVE records into the protected advisory cache ({} marked known exploited in this snapshot). Cache now holds {} records across {} sources.",
+        summary.imported_records,
+        summary.known_exploited,
+        summary.total_records,
+        summary.total_sources
     );
     Ok(())
 }
@@ -122,14 +127,19 @@ pub fn run_import_cli(path: &Path) -> Result<(), String> {
 pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
     let bytes =
         std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let cache = parse_nvd_snapshot(&bytes, Some(path))?;
+    let imported_cache = parse_nvd_snapshot(&bytes, Some(path))?;
+    let imported_records = imported_cache.records.len();
+    let known_exploited = imported_cache
+        .records
+        .iter()
+        .filter(|record| record.known_exploited)
+        .count();
+    let cache = merge_cache(load_cache()?, imported_cache);
     let summary = ImportSummary {
-        records: cache.records.len(),
-        known_exploited: cache
-            .records
-            .iter()
-            .filter(|record| record.known_exploited)
-            .count(),
+        imported_records,
+        known_exploited,
+        total_records: cache.records.len(),
+        total_sources: cache.sources.len(),
     };
     save_cache(&cache)?;
     Ok(summary)
@@ -251,6 +261,84 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
         }],
         records,
     })
+}
+
+fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> AdvisoryCache {
+    let Some(mut merged) = existing else {
+        return imported;
+    };
+
+    merged.schema_version = CACHE_SCHEMA_VERSION;
+    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
+
+    for source in imported.sources {
+        merge_source(&mut merged.sources, source);
+    }
+    for record in imported.records {
+        merge_record(&mut merged.records, record);
+    }
+
+    merged
+}
+
+fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
+    if let Some(existing) = sources
+        .iter_mut()
+        .find(|source| same_source_identity(source, &incoming))
+    {
+        *existing = incoming;
+    } else {
+        sources.push(incoming);
+    }
+}
+
+fn merge_record(records: &mut Vec<VulnerabilityRecord>, incoming: VulnerabilityRecord) {
+    if let Some(existing) = records
+        .iter_mut()
+        .find(|record| same_record_identity(record, &incoming))
+    {
+        if should_replace_record(existing, &incoming) {
+            *existing = incoming;
+        }
+    } else {
+        records.push(incoming);
+    }
+}
+
+fn same_source_identity(left: &AdvisorySourceCache, right: &AdvisorySourceCache) -> bool {
+    left.source_kind == right.source_kind && left.source_key == right.source_key
+}
+
+fn same_record_identity(left: &VulnerabilityRecord, right: &VulnerabilityRecord) -> bool {
+    left.primary_id == right.primary_id
+        && left.provenance.source_kind == right.provenance.source_kind
+        && left.provenance.source_key == right.provenance.source_key
+}
+
+fn should_replace_record(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
+    match compare_optional_timestamp(
+        incoming.last_modified.as_deref(),
+        existing.last_modified.as_deref(),
+    ) {
+        Some(std::cmp::Ordering::Greater) => true,
+        Some(std::cmp::Ordering::Less) => false,
+        Some(std::cmp::Ordering::Equal) | None => {
+            incoming.provenance.imported_unix >= existing.provenance.imported_unix
+        }
+    }
+}
+
+fn compare_optional_timestamp(
+    left: Option<&str>,
+    right: Option<&str>,
+) -> Option<std::cmp::Ordering> {
+    match (
+        left.map(str::trim).filter(|value| !value.is_empty()),
+        right.map(str::trim).filter(|value| !value.is_empty()),
+    ) {
+        (Some(left), Some(right)) => Some(left.cmp(right)),
+        _ => None,
+    }
 }
 
 fn parse_nvd_record(
@@ -644,6 +732,176 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.records.len(), 1);
         assert_eq!(loaded.records[0].primary_id, "CVE-2026-9999");
+    }
+
+    #[test]
+    fn merge_cache_keeps_other_sources_and_updates_matching_nvd_records() {
+        let existing = AdvisoryCache {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_unix: 100,
+            sources: vec![
+                AdvisorySourceCache {
+                    source_key: "nvd-cve".into(),
+                    source_kind: "nvd".into(),
+                    source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                    imported_from: Some("/tmp/old-nvd.json".into()),
+                    fetched_unix: 100,
+                    expires_unix: 200,
+                    snapshot_sha256: "old".into(),
+                    total_results: 1,
+                    status: SourceHealth::Fresh,
+                },
+                AdvisorySourceCache {
+                    source_key: "euvd".into(),
+                    source_kind: "euvd".into(),
+                    source_url: "https://euvd.enisa.europa.eu".into(),
+                    imported_from: None,
+                    fetched_unix: 90,
+                    expires_unix: 190,
+                    snapshot_sha256: "euvd".into(),
+                    total_results: 1,
+                    status: SourceHealth::Fresh,
+                },
+            ],
+            records: vec![
+                VulnerabilityRecord {
+                    primary_id: "CVE-2026-12345".into(),
+                    summary: "Older NVD record".into(),
+                    last_modified: Some("2026-04-25T10:00:00.000".into()),
+                    provenance: VulnerabilityProvenance {
+                        source_kind: "nvd".into(),
+                        source_key: "nvd-cve".into(),
+                        source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                        imported_unix: 100,
+                    },
+                    ..VulnerabilityRecord::default()
+                },
+                VulnerabilityRecord {
+                    primary_id: "EUVD-2026-0001".into(),
+                    summary: "Existing EUVD record".into(),
+                    provenance: VulnerabilityProvenance {
+                        source_kind: "euvd".into(),
+                        source_key: "euvd".into(),
+                        source_url: "https://euvd.enisa.europa.eu".into(),
+                        imported_unix: 90,
+                    },
+                    ..VulnerabilityRecord::default()
+                },
+            ],
+        };
+        let imported = AdvisoryCache {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_unix: 110,
+            sources: vec![AdvisorySourceCache {
+                source_key: "nvd-cve".into(),
+                source_kind: "nvd".into(),
+                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                imported_from: Some("/tmp/new-nvd.json".into()),
+                fetched_unix: 110,
+                expires_unix: 210,
+                snapshot_sha256: "new".into(),
+                total_results: 2,
+                status: SourceHealth::Fresh,
+            }],
+            records: vec![
+                VulnerabilityRecord {
+                    primary_id: "CVE-2026-12345".into(),
+                    summary: "Updated NVD record".into(),
+                    last_modified: Some("2026-04-26T10:00:00.000".into()),
+                    provenance: VulnerabilityProvenance {
+                        source_kind: "nvd".into(),
+                        source_key: "nvd-cve".into(),
+                        source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                        imported_unix: 110,
+                    },
+                    ..VulnerabilityRecord::default()
+                },
+                VulnerabilityRecord {
+                    primary_id: "CVE-2026-7777".into(),
+                    summary: "New NVD record".into(),
+                    last_modified: Some("2026-04-26T11:00:00.000".into()),
+                    provenance: VulnerabilityProvenance {
+                        source_kind: "nvd".into(),
+                        source_key: "nvd-cve".into(),
+                        source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                        imported_unix: 110,
+                    },
+                    ..VulnerabilityRecord::default()
+                },
+            ],
+        };
+
+        let merged = merge_cache(Some(existing), imported);
+
+        assert_eq!(merged.sources.len(), 2);
+        let nvd_source = merged
+            .sources
+            .iter()
+            .find(|source| source.source_key == "nvd-cve")
+            .unwrap();
+        assert_eq!(nvd_source.snapshot_sha256, "new");
+        assert_eq!(nvd_source.total_results, 2);
+        assert_eq!(merged.records.len(), 3);
+        assert_eq!(
+            merged
+                .records
+                .iter()
+                .find(|record| {
+                    record.primary_id == "CVE-2026-12345"
+                        && record.provenance.source_key == "nvd-cve"
+                })
+                .unwrap()
+                .summary,
+            "Updated NVD record"
+        );
+        assert!(merged.records.iter().any(|record| record.primary_id == "EUVD-2026-0001"));
+        assert!(merged.records.iter().any(|record| record.primary_id == "CVE-2026-7777"));
+    }
+
+    #[test]
+    fn merge_cache_keeps_newer_existing_record_when_import_is_older() {
+        let existing_record = VulnerabilityRecord {
+            primary_id: "CVE-2026-12345".into(),
+            summary: "Newer local NVD record".into(),
+            last_modified: Some("2026-04-27T10:00:00.000".into()),
+            provenance: VulnerabilityProvenance {
+                source_kind: "nvd".into(),
+                source_key: "nvd-cve".into(),
+                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                imported_unix: 120,
+            },
+            ..VulnerabilityRecord::default()
+        };
+        let imported_record = VulnerabilityRecord {
+            primary_id: "CVE-2026-12345".into(),
+            summary: "Older imported NVD record".into(),
+            last_modified: Some("2026-04-26T10:00:00.000".into()),
+            provenance: VulnerabilityProvenance {
+                source_kind: "nvd".into(),
+                source_key: "nvd-cve".into(),
+                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                imported_unix: 110,
+            },
+            ..VulnerabilityRecord::default()
+        };
+
+        let merged = merge_cache(
+            Some(AdvisoryCache {
+                schema_version: CACHE_SCHEMA_VERSION,
+                generated_unix: 120,
+                sources: vec![],
+                records: vec![existing_record],
+            }),
+            AdvisoryCache {
+                schema_version: CACHE_SCHEMA_VERSION,
+                generated_unix: 110,
+                sources: vec![],
+                records: vec![imported_record],
+            },
+        );
+
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "Newer local NVD record");
     }
 
     fn temp_dir() -> PathBuf {
