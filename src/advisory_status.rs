@@ -11,15 +11,17 @@ pub fn run_cli() -> Result<(), String> {
         return Ok(());
     }
 
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| {
+    let loaded: Option<AdvisoryCache> =
+        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
             format!(
                 "failed to load protected advisory cache {}: {e}",
                 path.display()
             )
         })?;
     let Some(cache) = loaded else {
-        println!("Advisory cache: unavailable (protected cache could not be verified or restored).");
+        println!(
+            "Advisory cache: unavailable (protected cache could not be verified or restored)."
+        );
         return Ok(());
     };
     if cache.schema_version != CACHE_SCHEMA_VERSION {
