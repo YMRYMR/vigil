@@ -78,6 +78,7 @@ Repository controls:
 - release signing and publishing only run on trusted tag pushes in `release.yml`
 - release jobs require repository secrets only in the release workflow, not PR validation workflows
 - workflows must not use `pull_request_target` for untrusted code checkout or build execution
+- credentialed Snyk SBOM scans run only on trusted `schedule`, `workflow_dispatch`, and same-repository pull requests; forked or otherwise untrusted PRs stay on the skip path
 
 ### OSPS-BR-07.01 — avoid storing secrets in version control
 
