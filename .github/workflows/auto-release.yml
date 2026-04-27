@@ -50,10 +50,51 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_PULL_REQUESTS_JSON: ${{ toJson(github.event.workflow_run.pull_requests) }}
         run: |
-          prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls")"
-          pr_number="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].number // empty')"
-          pr_head_ref="$(printf '%s' "$prs_json" | jq -r '[.[] | select(.merged_at and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0].head.ref // empty')"
+          set -euo pipefail
+
+          is_json() {
+            printf '%s' "$1" | jq -e . >/dev/null 2>&1
+          }
+
+          merged_master_pr() {
+            jq -c '[.[] | select(.merged_at != null and .base.ref == "master")] | sort_by(.merged_at) | reverse | .[0] // empty'
+          }
+
+          candidate_numbers="$(printf '%s' "${WORKFLOW_PULL_REQUESTS_JSON:-[]}" | jq -r '.[].number? // empty' 2>/dev/null || true)"
+          selected_pr=''
+
+          for pr_number in $candidate_numbers; do
+            pr_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" 2>/dev/null || true)"
+            if [ -z "$pr_json" ] || ! is_json "$pr_json"; then
+              continue
+            fi
+            if printf '%s' "$pr_json" | jq -e '.merged_at != null and .base.ref == "master"' >/dev/null 2>&1; then
+              selected_pr="$pr_json"
+              break
+            fi
+          done
+
+          if [ -z "$selected_pr" ]; then
+            prs_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/commits/${HEAD_SHA}/pulls" 2>/dev/null || true)"
+            if [ -n "$prs_json" ] && is_json "$prs_json"; then
+              selected_pr="$(printf '%s' "$prs_json" | merged_master_pr)"
+            fi
+          fi
+
+          if [ -z "$selected_pr" ]; then
+            merge_pr_number="$(git show -s --format=%B "$HEAD_SHA" | sed -n 's/^Merge pull request #\([0-9][0-9]*\).*/\1/p' | head -n1)"
+            if [ -n "$merge_pr_number" ]; then
+              pr_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/pulls/${merge_pr_number}" 2>/dev/null || true)"
+              if [ -n "$pr_json" ] && is_json "$pr_json" && printf '%s' "$pr_json" | jq -e '.merged_at != null and .base.ref == "master"' >/dev/null 2>&1; then
+                selected_pr="$pr_json"
+              fi
+            fi
+          fi
+
+          pr_number="$(printf '%s' "$selected_pr" | jq -r '.number // empty' 2>/dev/null || true)"
+          pr_head_ref="$(printf '%s' "$selected_pr" | jq -r '.head.ref // empty' 2>/dev/null || true)"
           if [ -z "$pr_number" ]; then
             echo "release_ready=false" >> "$GITHUB_OUTPUT"
             echo "skip_reason=no merged pull request found for ${HEAD_SHA}" >> "$GITHUB_OUTPUT"
