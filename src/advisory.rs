@@ -854,8 +854,14 @@ mod tests {
                 .summary,
             "Updated NVD record"
         );
-        assert!(merged.records.iter().any(|record| record.primary_id == "EUVD-2026-0001"));
-        assert!(merged.records.iter().any(|record| record.primary_id == "CVE-2026-7777"));
+        assert!(merged
+            .records
+            .iter()
+            .any(|record| record.primary_id == "EUVD-2026-0001"));
+        assert!(merged
+            .records
+            .iter()
+            .any(|record| record.primary_id == "CVE-2026-7777"));
     }
 
     #[test]
