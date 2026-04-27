@@ -6,14 +6,21 @@ const CACHE_FILE: &str = "vigil-advisory-cache.json";
 pub fn run_cli() -> Result<(), String> {
     let path = cache_path();
     if !path.exists() {
-        println!("Advisory cache: empty (no protected cache found).{}");
+        println!("Advisory cache: empty (no protected cache found).");
         return Ok(());
     }
 
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| format!("failed to load protected advisory cache {}: {e}", path.display()))?;
+    let loaded: Option<AdvisoryCache> =
+        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
+            format!(
+                "failed to load protected advisory cache {}: {e}",
+                path.display()
+            )
+        })?;
     let Some(cache) = loaded else {
-        println!("Advisory cache: unavailable (protected cache could not be verified or restored).{}");
+        println!(
+            "Advisory cache: unavailable (protected cache could not be verified or restored)."
+        );
         return Ok(());
     };
 
@@ -21,7 +28,10 @@ pub fn run_cli() -> Result<(), String> {
     let stale_sources = cache
         .sources
         .iter()
-        .filter(|source| is_source_stale(source.expires_unix, now) || matches!(source.status, SourceHealth::Stale))
+        .filter(|source| {
+            is_source_stale(source.expires_unix, now)
+                || matches!(source.status, SourceHealth::Stale)
+        })
         .count();
 
     println!(
