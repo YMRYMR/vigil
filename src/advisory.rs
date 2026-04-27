@@ -332,13 +332,25 @@ fn compare_optional_timestamp(
     left: Option<&str>,
     right: Option<&str>,
 ) -> Option<std::cmp::Ordering> {
-    match (
-        left.map(str::trim).filter(|value| !value.is_empty()),
-        right.map(str::trim).filter(|value| !value.is_empty()),
-    ) {
-        (Some(left), Some(right)) => Some(left.cmp(right)),
-        _ => None,
+    let left = parse_timestamp(left?)?;
+    let right = parse_timestamp(right?)?;
+    Some(left.cmp(&right))
+}
+
+fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+
+    chrono::DateTime::parse_from_rfc3339(trimmed)
+        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(|timestamp| timestamp.and_utc())
+        })
 }
 
 fn parse_nvd_record(
@@ -908,6 +920,24 @@ mod tests {
 
         assert_eq!(merged.records.len(), 1);
         assert_eq!(merged.records[0].summary, "Newer local NVD record");
+    }
+
+    #[test]
+    fn compare_optional_timestamp_handles_offset_and_naive_formats() {
+        assert_eq!(
+            compare_optional_timestamp(
+                Some("2026-04-27T10:00:00+01:00"),
+                Some("2026-04-27T09:30:00Z")
+            ),
+            Some(std::cmp::Ordering::Greater)
+        );
+        assert_eq!(
+            compare_optional_timestamp(
+                Some("2026-04-27T10:00:00.000"),
+                Some("2026-04-27T09:59:59.999")
+            ),
+            Some(std::cmp::Ordering::Greater)
+        );
     }
 
     fn temp_dir() -> PathBuf {
