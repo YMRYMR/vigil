@@ -84,13 +84,7 @@ jobs:
           fi
 
           if [ -z "$selected_pr" ]; then
-            merge_pr_number="$(git show -s --format=%B "$HEAD_SHA" | python3 -c 'import re, sys
-text = sys.stdin.read().splitlines()
-first = text[0] if text else ""
-match = re.match(r"Merge pull request #([0-9]+)", first)
-if match is None:
-    match = re.search(r"\(#([0-9]+)\)$", first)
-print(match.group(1) if match else "")')"
+            merge_pr_number="$(git show -s --format=%B "$HEAD_SHA" | python3 -c 'import re, sys; text = sys.stdin.read().splitlines(); first = text[0] if text else ""; match = re.match(r"Merge pull request #([0-9]+)", first); match = match or re.search(r"\(#([0-9]+)\)$", first); print(match.group(1) if match else "")')"
             if [ -n "$merge_pr_number" ]; then
               pr_json="$(gh api -H "Accept: application/vnd.github+json" "/repos/${GITHUB_REPOSITORY}/pulls/${merge_pr_number}" 2>/dev/null || true)"
               if [ -n "$pr_json" ] && is_json "$pr_json" && printf '%s' "$pr_json" | jq -e '.merged_at != null and .base.ref == "master"' >/dev/null 2>&1; then
@@ -146,18 +140,7 @@ print(match.group(1) if match else "")')"
           }
 
           tag_snapshot_matches_current_update_key() {
-            VERSION="$1" python3 -c 'import os, pathlib, re, subprocess
-version = os.environ["VERSION"]
-pattern = re.compile(r"UPDATE_PUBLIC_KEY_HEX:\s*&str\s*=\s*\"([0-9a-fA-F]+)\"")
-current_text = pathlib.Path("src/security/update.rs").read_text(encoding="utf-8")
-current_match = pattern.search(current_text)
-if current_match is None:
-    raise SystemExit(1)
-tag_text = subprocess.run(["git", "show", f"refs/tags/v{version}:src/security/update.rs"], check=True, capture_output=True, text=True).stdout
-tag_match = pattern.search(tag_text)
-if tag_match is None:
-    raise SystemExit(1)
-raise SystemExit(0 if current_match.group(1).lower() == tag_match.group(1).lower() else 1)'
+            VERSION="$1" python3 -c 'import os, pathlib, re, subprocess; version = os.environ["VERSION"]; pattern = re.compile(r"UPDATE_PUBLIC_KEY_HEX:\s*&str\s*=\s*\"([0-9a-fA-F]+)\""); current_text = pathlib.Path("src/security/update.rs").read_text(encoding="utf-8"); current_match = pattern.search(current_text); tag_text = subprocess.run(["git", "show", f"refs/tags/v{version}:src/security/update.rs"], check=True, capture_output=True, text=True).stdout; tag_match = pattern.search(tag_text); raise SystemExit(0 if current_match and tag_match and current_match.group(1).lower() == tag_match.group(1).lower() else 1)'
           }
 
           candidate="$CURRENT_VERSION"
