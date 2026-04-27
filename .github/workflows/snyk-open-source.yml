@@ -39,12 +39,61 @@ jobs:
       - name: Set up Snyk CLI
         uses: snyk/actions/setup@9adf32b1121593767fc3c057af55b55db032dc04
 
-      - name: Run Snyk Open Source SBOM test
-        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+      - name: Preflight Snyk authentication
+        id: snyk-auth
+        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          fail_trusted_run() {
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "$1" >&2
+            exit 1
+          }
+
+          skip_advisory_run() {
+            echo "::warning::$1"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          if [ -z "${SNYK_TOKEN:-}" ]; then
+            if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+              fail_trusted_run "SNYK_TOKEN is not configured for this repository. Trusted Snyk scans must fail closed until credentials are restored."
+            fi
+            skip_advisory_run "Skipping advisory Snyk SBOM test because SNYK_TOKEN is not configured for this repository."
+          fi
+
+          if snyk whoami >/dev/null 2>&1; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            fail_trusted_run "SNYK_TOKEN is invalid or no longer has access. Trusted Snyk scans must fail closed until credentials are refreshed."
+          fi
+
+          skip_advisory_run "Skipping advisory Snyk SBOM test because SNYK_TOKEN is invalid or no longer has access. Refresh the repository secret before re-running this workflow."
+
+      - name: Run enforced Snyk Open Source SBOM test
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.snyk-auth.outputs.ready == 'true' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk sbom test --file=vigil.cdx.json --severity-threshold=high
+        run: snyk sbom test --file=bom.json --severity-threshold=high
 
-      - name: Skip Snyk Open Source SBOM test on automatic runs
-        if: ${{ github.event_name != 'schedule' && github.event_name != 'workflow_dispatch' }}
-        run: echo "Skipping token-based Snyk scan on automatic PR/push runs; use schedule or workflow_dispatch when credentials are available."
+      - name: Run advisory Snyk Open Source SBOM test on trusted PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.snyk-auth.outputs.ready == 'true' }}
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk sbom test --file=bom.json --severity-threshold=high
+
+      - name: Report skipped advisory Snyk scan
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.snyk-auth.outputs.ready != 'true' }}
+        run: echo "Trusted PR Snyk scan skipped because repository credentials are unavailable or invalid."
+
+      - name: Skip Snyk Open Source SBOM test on untrusted or automatic runs
+        if: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) }}
+        run: echo "Skipping token-based Snyk scan on automatic pushes and untrusted PRs; trusted same-repo PRs can exercise the credentialed scan path directly."
