@@ -297,6 +297,9 @@ fn main() {
 
     let native_options = eframe::NativeOptions {
         viewport,
+        // Vigil only enables eframe's glow feature; make the runtime choice
+        // explicit so native builds don't drift onto the wgpu backend.
+        renderer: eframe::Renderer::Glow,
         persist_window: true,
         ..Default::default()
     };

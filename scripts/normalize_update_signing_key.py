@@ -5,6 +5,7 @@ The GitHub Actions secret may be stored in a few human-friendly forms:
 
 - multiline PKCS#8 PEM
 - PEM with literal ``\n`` escapes
+- OpenSSH private key PEM
 - raw 32-byte Ed25519 seed encoded as hex or base64
 - raw 64-byte Ed25519 private key encoded as hex or base64 (seed + public key)
 - PKCS#8 DER encoded as hex or base64
@@ -74,10 +75,21 @@ def _looks_like_pem(text: str) -> bool:
 def _normalize_pem(text: str) -> str:
     normalized = text.replace("\r\n", "\n").strip()
     if f"BEGIN OPENSSH {'PRIVATE' + ' KEY'}" in normalized:
-        raise ValueError(
-            "OpenSSH private keys are not supported here; use PKCS#8 PEM, "
-            "hex/base64 PKCS#8 DER, or a raw 32-byte Ed25519 seed"
+        try:
+            from cryptography.hazmat.primitives import serialization
+        except ModuleNotFoundError as exc:
+            raise ValueError(
+                "OpenSSH private key PEM requires the cryptography package; "
+                "use PKCS#8 PEM or install cryptography before normalization"
+            ) from exc
+        key = serialization.load_ssh_private_key(
+            normalized.encode("utf-8"), password=None
         )
+        return key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
     if not _looks_like_pem(normalized):
         raise ValueError("secret did not contain a supported PEM private key")
     return f"{normalized}\n"
@@ -150,7 +162,7 @@ def normalize_signing_key(secret: str) -> str:
 
     raise ValueError(
         "unsupported update-signing secret format; use PKCS#8 PEM, escaped PEM, "
-        "hex/base64 PKCS#8 DER, a raw 32-byte Ed25519 seed, "
+        "OpenSSH private key PEM, hex/base64 PKCS#8 DER, a raw 32-byte Ed25519 seed, "
         "or a raw 64-byte Ed25519 private key"
     )
 

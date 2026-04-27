@@ -1,7 +1,16 @@
 import base64
+import builtins
 import pathlib
 import sys
 import unittest
+from unittest import mock
+
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ModuleNotFoundError:
+    serialization = None
+    Ed25519PrivateKey = None
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -27,6 +36,19 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         pem = pem_from_pkcs8_der(pkcs8_der_from_seed(seed))
         escaped = pem.strip().replace("\n", "\\n")
         self.assertEqual(normalize_signing_key(escaped), pem)
+
+    def test_pkcs8_pem_does_not_require_cryptography_import(self) -> None:
+        seed = bytes(range(32))
+        pem = pem_from_pkcs8_der(pkcs8_der_from_seed(seed))
+        original_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name.startswith("cryptography"):
+                raise ModuleNotFoundError(name)
+            return original_import(name, globals, locals, fromlist, level)
+
+        with mock.patch("builtins.__import__", side_effect=guarded_import):
+            self.assertEqual(normalize_signing_key(pem), pem)
 
     def test_converts_hex_seed_to_pkcs8_pem(self) -> None:
         seed = bytes(range(32))
@@ -62,13 +84,41 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         normalized = normalize_signing_key(secret)
         self.assertEqual(normalized, pem_from_pkcs8_der(der))
 
-    def test_rejects_unsupported_open_ssh_key(self) -> None:
-        with self.assertRaisesRegex(ValueError, "OpenSSH private keys"):
-            normalize_signing_key(
-                f"-----BEGIN OPENSSH {'PRIVATE' + ' KEY'}-----\n"
-                f"abc\n"
-                f"-----END OPENSSH {'PRIVATE' + ' KEY'}-----\n"
-            )
+    @unittest.skipUnless(
+        serialization is not None and Ed25519PrivateKey is not None,
+        "cryptography is required for OpenSSH key coverage",
+    )
+    def test_converts_openssh_private_key_to_pkcs8_pem(self) -> None:
+        private_key = Ed25519PrivateKey.generate()
+        openssh = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        pkcs8 = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        self.assertEqual(normalize_signing_key(openssh), pkcs8)
+
+    @unittest.skipUnless(
+        serialization is not None and Ed25519PrivateKey is not None,
+        "cryptography is required for OpenSSH key coverage",
+    )
+    def test_converts_base64_openssh_private_key_to_pkcs8_pem(self) -> None:
+        private_key = Ed25519PrivateKey.generate()
+        openssh = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        pkcs8 = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("utf-8")
+        self.assertEqual(normalize_signing_key(base64.b64encode(openssh).decode("ascii")), pkcs8)
 
     def test_rejects_unknown_format(self) -> None:
         with self.assertRaisesRegex(ValueError, "unsupported update-signing secret"):

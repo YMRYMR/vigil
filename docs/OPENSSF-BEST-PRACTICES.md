@@ -78,6 +78,7 @@ Repository controls:
 - release signing and publishing only run on trusted tag pushes in `release.yml`
 - release jobs require repository secrets only in the release workflow, not PR validation workflows
 - workflows must not use `pull_request_target` for untrusted code checkout or build execution
+- credentialed Snyk SBOM scans enforce on trusted `schedule` and `workflow_dispatch` runs; same-repository pull requests exercise the credentialed path in advisory mode; forked or otherwise untrusted PRs stay on the skip path
 
 ### OSPS-BR-07.01 — avoid storing secrets in version control
 
@@ -86,7 +87,7 @@ Repository controls:
 - `.gitignore` excludes local env files, private keys, signing keys, generated installers, and build artifacts
 - CI includes a secret-pattern scan for common plaintext credential formats
 - release signing keys live in GitHub Actions secrets, never in the repository
-- `VIGIL_UPDATE_SIGNING_KEY` is normalized in `release.yml` and must still resolve to the same Ed25519 trust anchor embedded in `src/security/update.rs`; supported secret encodings include PKCS#8 PEM, PEM with `\n` escapes, hex/base64 PKCS#8 DER, raw 32-byte Ed25519 seed material, and raw 64-byte Ed25519 private keys that store the seed plus public key
+- `VIGIL_UPDATE_SIGNING_KEY` is normalized in `release.yml` and must still resolve to the same Ed25519 trust anchor embedded in `src/security/update.rs`; supported secret encodings include PKCS#8 PEM, PEM with `\n` escapes, OpenSSH private key PEM, hex/base64 PKCS#8 DER, raw 32-byte Ed25519 seed material, and raw 64-byte Ed25519 private keys that store the seed plus public key
 
 ## Documentation and repository inventory
 
