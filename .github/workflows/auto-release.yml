@@ -84,11 +84,12 @@ jobs:
           fi
 
           if [ -z "$selected_pr" ]; then
-            merge_pr_number="$(git show -s --format=%B "$HEAD_SHA" | python3 - <<'PY'
+            merge_message="$(git show -s --format=%B "$HEAD_SHA")"
+            merge_pr_number="$(MERGE_MESSAGE="$merge_message" python3 - <<'PY'
           import re
-          import sys
+          import os
 
-          text = sys.stdin.read().splitlines()
+          text = os.environ.get("MERGE_MESSAGE", "").splitlines()
           first = text[0] if text else ""
           match = re.match(r"Merge pull request #([0-9]+)", first)
           if match is None:
