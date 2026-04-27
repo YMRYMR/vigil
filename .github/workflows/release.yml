@@ -416,8 +416,13 @@ jobs:
           def normalize_pem(text: str) -> str:
               normalized = text.replace("\r\n", "\n").strip()
               if f"BEGIN OPENSSH {'PRIVATE' + ' KEY'}" in normalized:
-                  from cryptography.hazmat.primitives import serialization
-
+                  try:
+                      from cryptography.hazmat.primitives import serialization
+                  except ModuleNotFoundError as exc:
+                      raise ValueError(
+                          "OpenSSH private key PEM requires the cryptography package; "
+                          "use PKCS#8 PEM or install cryptography before normalization"
+                      ) from exc
                   key = serialization.load_ssh_private_key(
                       normalized.encode("utf-8"), password=None
                   )
