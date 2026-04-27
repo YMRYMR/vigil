@@ -86,7 +86,7 @@ Repository controls:
 - `.gitignore` excludes local env files, private keys, signing keys, generated installers, and build artifacts
 - CI includes a secret-pattern scan for common plaintext credential formats
 - release signing keys live in GitHub Actions secrets, never in the repository
-- `VIGIL_UPDATE_SIGNING_KEY` is normalized in `release.yml` and must still resolve to the same Ed25519 trust anchor embedded in `src/security/update.rs`; supported secret encodings include PKCS#8 PEM, PEM with `\n` escapes, hex/base64 PKCS#8 DER, raw 32-byte Ed25519 seed material, and raw 64-byte Ed25519 private keys that store the seed plus public key
+- `VIGIL_UPDATE_SIGNING_KEY` is normalized in `release.yml` and must still resolve to the same Ed25519 trust anchor embedded in `src/security/update.rs`; supported secret encodings include PKCS#8 PEM, PEM with `\n` escapes, OpenSSH private key PEM, hex/base64 PKCS#8 DER, raw 32-byte Ed25519 seed material, and raw 64-byte Ed25519 private keys that store the seed plus public key
 
 ## Documentation and repository inventory
 
