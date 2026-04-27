@@ -5,8 +5,12 @@ import sys
 import unittest
 from unittest import mock
 
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ModuleNotFoundError:
+    serialization = None
+    Ed25519PrivateKey = None
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -80,6 +84,10 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         normalized = normalize_signing_key(secret)
         self.assertEqual(normalized, pem_from_pkcs8_der(der))
 
+    @unittest.skipUnless(
+        serialization is not None and Ed25519PrivateKey is not None,
+        "cryptography is required for OpenSSH key coverage",
+    )
     def test_converts_openssh_private_key_to_pkcs8_pem(self) -> None:
         private_key = Ed25519PrivateKey.generate()
         openssh = private_key.private_bytes(
@@ -94,6 +102,10 @@ class NormalizeUpdateSigningKeyTests(unittest.TestCase):
         ).decode("utf-8")
         self.assertEqual(normalize_signing_key(openssh), pkcs8)
 
+    @unittest.skipUnless(
+        serialization is not None and Ed25519PrivateKey is not None,
+        "cryptography is required for OpenSSH key coverage",
+    )
     def test_converts_base64_openssh_private_key_to_pkcs8_pem(self) -> None:
         private_key = Ed25519PrivateKey.generate()
         openssh = private_key.private_bytes(
