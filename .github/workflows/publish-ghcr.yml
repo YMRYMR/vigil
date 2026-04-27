@@ -1,10 +1,14 @@
 name: Publish GHCR package image
 
 on:
-  workflow_run:
-    workflows: ["Release"]
-    types: [completed]
+  release:
+    types: [published]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to mirror into GHCR. Leave empty to use the latest published release.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -12,7 +16,6 @@ permissions:
 jobs:
   publish:
     name: Publish Vigil package image
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -26,7 +29,18 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=$(gh release view latest -R "${{ github.repository }}" --json tagName -q .tagName)
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "release" ]; then
+            tag="${{ github.event.release.tag_name }}"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag=$(gh release view latest -R "${{ github.repository }}" --json tagName -q .tagName)
+          fi
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Download release AppImage
@@ -36,8 +50,14 @@ jobs:
           mkdir -p ghcr-context
           gh release download "${{ steps.release.outputs.tag }}" \
             -R "${{ github.repository }}" \
-            --pattern 'Vigil-latest-linux-x86_64.AppImage' \
+            --pattern 'Vigil-*-x86_64.AppImage' \
             --dir ghcr-context
+          appimage_path="$(find ghcr-context -maxdepth 1 -type f -name 'Vigil-*-x86_64.AppImage' ! -name 'Vigil-latest-*' | head -n 1)"
+          if [ -z "$appimage_path" ]; then
+            echo "Could not find a versioned Linux AppImage asset in release ${{ steps.release.outputs.tag }}" >&2
+            exit 1
+          fi
+          mv "$appimage_path" ghcr-context/Vigil-latest-linux-x86_64.AppImage
           chmod +x ghcr-context/Vigil-latest-linux-x86_64.AppImage
           ls -lh ghcr-context/
 
