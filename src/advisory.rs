@@ -929,7 +929,7 @@ mod tests {
                 Some("2026-04-27T10:00:00+01:00"),
                 Some("2026-04-27T09:30:00Z")
             ),
-            Some(std::cmp::Ordering::Greater)
+            Some(std::cmp::Ordering::Less)
         );
         assert_eq!(
             compare_optional_timestamp(
