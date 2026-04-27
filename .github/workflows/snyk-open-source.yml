@@ -64,7 +64,7 @@ jobs:
         if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.snyk-auth.outputs.ready == 'true' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk sbom test --file=vigil.cdx.json --severity-threshold=high
+        run: snyk sbom test --file=bom.json --severity-threshold=high
 
       - name: Report skipped credentialed Snyk scan
         if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.snyk-auth.outputs.ready != 'true' }}
