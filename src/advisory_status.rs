@@ -12,7 +12,12 @@ pub fn run_cli() -> Result<(), String> {
     }
 
     let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| format!("failed to load protected advisory cache {}: {e}", path.display()))?;
+        .map_err(|e| {
+            format!(
+                "failed to load protected advisory cache {}: {e}",
+                path.display()
+            )
+        })?;
     let Some(cache) = loaded else {
         println!("Advisory cache: unavailable (protected cache could not be verified or restored).");
         return Ok(());
@@ -29,7 +34,10 @@ pub fn run_cli() -> Result<(), String> {
     let stale_sources = cache
         .sources
         .iter()
-        .filter(|source| is_source_stale(source.expires_unix, now) || matches!(source.status, SourceHealth::Stale))
+        .filter(|source| {
+            is_source_stale(source.expires_unix, now)
+                || matches!(source.status, SourceHealth::Stale)
+        })
         .count();
 
     println!(
