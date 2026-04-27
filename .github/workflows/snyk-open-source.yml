@@ -60,8 +60,15 @@ jobs:
           echo "::warning::Skipping Snyk SBOM test because SNYK_TOKEN is invalid or no longer has access. Refresh the repository secret before re-running this workflow."
           echo "ready=false" >> "$GITHUB_OUTPUT"
 
-      - name: Run Snyk Open Source SBOM test
-        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)) && steps.snyk-auth.outputs.ready == 'true' }}
+      - name: Run enforced Snyk Open Source SBOM test
+        if: ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && steps.snyk-auth.outputs.ready == 'true' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk sbom test --file=bom.json --severity-threshold=high
+
+      - name: Run advisory Snyk Open Source SBOM test on trusted PRs
+        if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && steps.snyk-auth.outputs.ready == 'true' }}
+        continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: snyk sbom test --file=bom.json --severity-threshold=high
