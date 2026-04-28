@@ -283,6 +283,7 @@ fn main() {
 
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
+            advisory::refresh_nvd_in_background_if_due();
 
             {
                 let mut w = cfg_bootstrap.write().unwrap();
@@ -302,8 +303,6 @@ fn main() {
             if c.autostart && !autostart::enable() {
                 tracing::warn!("could not refresh autostart");
             }
-
-            advisory::refresh_nvd_in_background_if_due();
         })
         .expect("failed to spawn bootstrap thread");
 
