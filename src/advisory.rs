@@ -118,7 +118,11 @@ pub struct CacheSummary {
 }
 
 pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
-    let summary = import_nvd_snapshots(paths)?;
+    let summary = if paths.len() == 1 {
+        import_nvd_snapshot(&paths[0])?
+    } else {
+        import_nvd_snapshots(paths)?
+    };
     println!(
         "Merged {} NVD CVE records from {} snapshot file(s) into the protected advisory cache ({} marked known exploited in this import set). Cache now holds {} records across {} sources.",
         summary.imported_records,
