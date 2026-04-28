@@ -255,8 +255,8 @@ fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
         });
     }
 
-    let mut imported = imported
-        .ok_or_else(|| "expected at least one NVD snapshot path".to_string())?;
+    let mut imported =
+        imported.ok_or_else(|| "expected at least one NVD snapshot path".to_string())?;
     finalize_import_batch_metadata(&mut imported, &page_hashes);
     Ok(imported)
 }
@@ -370,7 +370,8 @@ fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, incoming: Advisory
         .iter_mut()
         .find(|source| same_source_identity(source, &incoming))
     {
-        existing.source_url = choose_preferred_source_url(&existing.source_url, &incoming.source_url);
+        existing.source_url =
+            choose_preferred_source_url(&existing.source_url, &incoming.source_url);
         if existing.imported_from.is_none() {
             existing.imported_from = incoming.imported_from.clone();
         }
