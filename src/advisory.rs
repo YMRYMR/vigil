@@ -15,6 +15,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -757,20 +758,17 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
     };
 
     let imported_unix = fetched_unix;
-    let records = value
+    let vulnerabilities = value
         .get("vulnerabilities")
         .and_then(Value::as_array)
-        .map(|vulnerabilities| {
-            vulnerabilities
-                .iter()
-                .filter_map(|item| {
-                    item.get("cve").and_then(|cve| {
-                        parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
-                    })
-                })
-                .collect::<Vec<_>>()
+        .ok_or_else(|| "NVD snapshot missing vulnerabilities array".to_string())?;
+    let records = vulnerabilities
+        .iter()
+        .filter_map(|item| {
+            item.get("cve")
+                .and_then(|cve| parse_nvd_record(cve, source.source_url.as_str(), imported_unix))
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
@@ -787,6 +785,10 @@ fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> Advi
         sources: vec![],
         records: vec![],
     });
+    let mut record_index = HashMap::with_capacity(merged.records.len());
+    for (idx, record) in merged.records.iter().enumerate() {
+        record_index.insert(record_key(record), idx);
+    }
 
     for source in incoming.sources {
         if !source.imported_from_batch.is_empty() {
@@ -797,7 +799,7 @@ fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> Advi
     }
 
     for record in incoming.records {
-        merge_record(&mut merged.records, record);
+        merge_record_indexed(&mut merged.records, &mut record_index, record);
     }
     merged.generated_unix = unix_now();
     merged.schema_version = CACHE_SCHEMA_VERSION;
@@ -835,12 +837,29 @@ fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySo
     merge_source(sources, source);
 }
 
-fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRecord) {
-    if let Some(existing) = records.iter_mut().find(|existing| {
-        existing.primary_id == record.primary_id
-            && existing.provenance.source_kind == record.provenance.source_kind
-            && existing.provenance.source_key == record.provenance.source_key
-    }) {
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RecordKey {
+    primary_id: String,
+    source_kind: String,
+    source_key: String,
+}
+
+fn record_key(record: &VulnerabilityRecord) -> RecordKey {
+    RecordKey {
+        primary_id: record.primary_id.clone(),
+        source_kind: record.provenance.source_kind.clone(),
+        source_key: record.provenance.source_key.clone(),
+    }
+}
+
+fn merge_record_indexed(
+    records: &mut Vec<VulnerabilityRecord>,
+    index: &mut HashMap<RecordKey, usize>,
+    record: VulnerabilityRecord,
+) {
+    let key = record_key(&record);
+    if let Some(&existing_idx) = index.get(&key) {
+        let existing = &mut records[existing_idx];
         let keep_existing = match compare_optional_timestamp(
             existing.last_modified.as_deref(),
             record.last_modified.as_deref(),
@@ -851,11 +870,11 @@ fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRec
                 existing.provenance.imported_unix >= record.provenance.imported_unix
             }
         };
-        if keep_existing {
-            return;
+        if !keep_existing {
+            *existing = record;
         }
-        *existing = record;
     } else {
+        index.insert(key, records.len());
         records.push(record);
     }
 }
