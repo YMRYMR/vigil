@@ -307,6 +307,7 @@ fn main() {
     let egui_ctx: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
     let egui_ctx_tray = egui_ctx.clone();
     let egui_ctx_ui = egui_ctx.clone();
+    let tray_log_dir = log_dir.clone();
 
     std::thread::Builder::new()
         .name("vigil-tray".into())
@@ -314,7 +315,7 @@ fn main() {
             tray::run(
                 tray_rx,
                 show_window_tray,
-                log_dir,
+                tray_log_dir,
                 pending_nav_tray,
                 egui_ctx_tray,
             )
