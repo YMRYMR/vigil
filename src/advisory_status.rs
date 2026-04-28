@@ -72,6 +72,14 @@ pub fn run_cli() -> Result<(), String> {
         if !source.source_url.trim().is_empty() {
             println!("  source_url={}", source.source_url);
         }
+        if source.last_attempt_unix > 0 {
+            println!("  last_attempt={}", source.last_attempt_unix);
+        }
+        if let Some(last_error) = source.last_error.as_deref() {
+            if !last_error.trim().is_empty() {
+                println!("  last_error={last_error}");
+            }
+        }
     }
 
     Ok(())
@@ -121,6 +129,8 @@ mod tests {
             snapshot_sha256: String::new(),
             total_results: 1,
             status: SourceHealth::Fresh,
+            last_attempt_unix: 0,
+            last_error: None,
         };
 
         assert_eq!(source_state(&source, 30), "stale");
@@ -139,6 +149,8 @@ mod tests {
             snapshot_sha256: String::new(),
             total_results: 1,
             status: SourceHealth::Error,
+            last_attempt_unix: 0,
+            last_error: None,
         };
 
         assert_eq!(source_state(&source, 30), "error");
