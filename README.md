@@ -79,6 +79,14 @@ embedded Ed25519 public key in the app. You can verify it offline with:
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
 
+Vigil's offline advisory importer also accepts one or more local NVD CVE JSON
+files in a single run, which is useful when the export is split into pages or
+incremental batches:
+
+```bash
+vigil --import-nvd-snapshot nvdcve-page-1.json nvdcve-page-2.json
+```
+
 ---
 
 ## What Vigil Does

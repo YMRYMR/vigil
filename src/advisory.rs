@@ -6,7 +6,8 @@
 //!
 //! - a normalized vulnerability record model
 //! - protected local cache storage for imported NVD CVE snapshots
-//! - a CLI import path for offline or operator-driven snapshot ingestion
+//! - a CLI import path for offline or operator-driven snapshot ingestion,
+//!   including batched page or incremental-file imports
 //! - startup status logging so the cache state is visible to operators
 
 use serde::{Deserialize, Serialize};
@@ -33,6 +34,8 @@ pub struct AdvisorySourceCache {
     pub source_kind: String,
     pub source_url: String,
     pub imported_from: Option<String>,
+    #[serde(default)]
+    pub imported_from_batch: Vec<String>,
     pub fetched_unix: u64,
     pub expires_unix: u64,
     pub snapshot_sha256: String,
@@ -100,6 +103,7 @@ pub struct VulnerabilityProvenance {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportSummary {
+    pub imported_files: usize,
     pub imported_records: usize,
     pub known_exploited: usize,
     pub total_records: usize,
@@ -113,11 +117,16 @@ pub struct CacheSummary {
     pub stale_sources: usize,
 }
 
-pub fn run_import_cli(path: &Path) -> Result<(), String> {
-    let summary = import_nvd_snapshot(path)?;
+pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
+    let summary = if paths.len() == 1 {
+        import_nvd_snapshot(&paths[0])?
+    } else {
+        import_nvd_snapshots(paths)?
+    };
     println!(
-        "Merged {} NVD CVE records into the protected advisory cache ({} marked known exploited in this snapshot). Cache now holds {} records across {} sources.",
+        "Merged {} NVD CVE records from {} snapshot file(s) into the protected advisory cache ({} marked known exploited in this import set). Cache now holds {} records across {} sources.",
         summary.imported_records,
+        summary.imported_files,
         summary.known_exploited,
         summary.total_records,
         summary.total_sources
@@ -126,9 +135,15 @@ pub fn run_import_cli(path: &Path) -> Result<(), String> {
 }
 
 pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    let imported_cache = parse_nvd_snapshot(&bytes, Some(path))?;
+    import_nvd_snapshots(&[path.to_path_buf()])
+}
+
+pub fn import_nvd_snapshots(paths: &[PathBuf]) -> Result<ImportSummary, String> {
+    if paths.is_empty() {
+        return Err("expected at least one NVD snapshot path".into());
+    }
+
+    let imported_cache = load_nvd_snapshot_batch(paths)?;
     let imported_records = imported_cache.records.len();
     let known_exploited = imported_cache
         .records
@@ -137,6 +152,7 @@ pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
         .count();
     let cache = merge_cache(load_cache_for_import()?, imported_cache);
     let summary = ImportSummary {
+        imported_files: paths.len(),
         imported_records,
         known_exploited,
         total_records: cache.records.len(),
@@ -229,6 +245,26 @@ fn cache_path() -> PathBuf {
     crate::config::data_dir().join(CACHE_FILE)
 }
 
+fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
+    let mut imported = None;
+    let mut page_hashes = Vec::with_capacity(paths.len());
+    for path in paths {
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
+        page_hashes.push(sha256_hex(&bytes));
+        let cache = parse_nvd_snapshot(&bytes, Some(path))?;
+        imported = Some(match imported {
+            Some(existing) => merge_import_batch_cache(existing, cache),
+            None => cache,
+        });
+    }
+
+    let mut imported =
+        imported.ok_or_else(|| "expected at least one NVD snapshot path".to_string())?;
+    finalize_import_batch_metadata(&mut imported, &page_hashes);
+    Ok(imported)
+}
+
 fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<AdvisoryCache, String> {
     let value: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("failed to parse NVD JSON: {e}"))?;
@@ -265,6 +301,9 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
             source_kind: "nvd".into(),
             source_url: source_url.clone(),
             imported_from: imported_from.map(|path| path.display().to_string()),
+            imported_from_batch: imported_from
+                .map(|path| vec![path.display().to_string()])
+                .unwrap_or_default(),
             fetched_unix: now,
             expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
             snapshot_sha256: sha256_hex(bytes),
@@ -299,12 +338,54 @@ fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> Advi
     merged
 }
 
+fn merge_import_batch_cache(mut merged: AdvisoryCache, imported: AdvisoryCache) -> AdvisoryCache {
+    merged.schema_version = CACHE_SCHEMA_VERSION;
+    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
+    let mut record_index = merged
+        .records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| (record_identity_key(record), index))
+        .collect::<HashMap<_, _>>();
+
+    for source in imported.sources {
+        merge_batch_source(&mut merged.sources, source);
+    }
+    for record in imported.records {
+        merge_record(&mut merged.records, &mut record_index, record);
+    }
+
+    merged
+}
+
 fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
     if let Some(existing) = sources
         .iter_mut()
         .find(|source| same_source_identity(source, &incoming))
     {
         *existing = incoming;
+    } else {
+        sources.push(incoming);
+    }
+}
+
+fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
+    if let Some(existing) = sources
+        .iter_mut()
+        .find(|source| same_source_identity(source, &incoming))
+    {
+        existing.source_url =
+            choose_preferred_source_url(&existing.source_url, &incoming.source_url);
+        if existing.imported_from.is_none() {
+            existing.imported_from = incoming.imported_from.clone();
+        }
+        for path in incoming.imported_from_batch {
+            push_unique(&mut existing.imported_from_batch, path);
+        }
+        existing.fetched_unix = existing.fetched_unix.max(incoming.fetched_unix);
+        existing.expires_unix = existing.expires_unix.max(incoming.expires_unix);
+        existing.total_results = existing.total_results.max(incoming.total_results);
+        existing.status = combine_source_health(existing.status.clone(), incoming.status);
     } else {
         sources.push(incoming);
     }
@@ -328,6 +409,45 @@ fn merge_record(
 
 fn same_source_identity(left: &AdvisorySourceCache, right: &AdvisorySourceCache) -> bool {
     left.source_kind == right.source_kind && left.source_key == right.source_key
+}
+
+fn choose_preferred_source_url(existing: &str, incoming: &str) -> String {
+    if !incoming.trim().is_empty() {
+        incoming.to_string()
+    } else {
+        existing.to_string()
+    }
+}
+
+fn combine_source_health(left: SourceHealth, right: SourceHealth) -> SourceHealth {
+    if matches!(left, SourceHealth::Error) || matches!(right, SourceHealth::Error) {
+        SourceHealth::Error
+    } else if matches!(left, SourceHealth::Stale) || matches!(right, SourceHealth::Stale) {
+        SourceHealth::Stale
+    } else {
+        SourceHealth::Fresh
+    }
+}
+
+fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
+    let batch_sha256 = if page_hashes.len() > 1 {
+        Some(sha256_hex(page_hashes.join("\n").as_bytes()))
+    } else {
+        None
+    };
+
+    for source in &mut cache.sources {
+        source.imported_from_batch.sort();
+        source.imported_from_batch.dedup();
+        if source.imported_from_batch.len() > 1 {
+            source.imported_from = None;
+            if let Some(batch_sha256) = &batch_sha256 {
+                source.snapshot_sha256 = batch_sha256.clone();
+            }
+        } else if source.imported_from_batch.len() == 1 {
+            source.imported_from = source.imported_from_batch.first().cloned();
+        }
+    }
 }
 
 type RecordIdentityKey = (String, String, String);
@@ -750,6 +870,7 @@ mod tests {
                 source_kind: "nvd".into(),
                 source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
                 imported_from: Some("/tmp/nvd.json".into()),
+                imported_from_batch: vec!["/tmp/nvd.json".into()],
                 fetched_unix: 42,
                 expires_unix: 84,
                 snapshot_sha256: "abc".into(),
@@ -782,6 +903,7 @@ mod tests {
                     source_kind: "nvd".into(),
                     source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
                     imported_from: Some("/tmp/old-nvd.json".into()),
+                    imported_from_batch: vec!["/tmp/old-nvd.json".into()],
                     fetched_unix: 100,
                     expires_unix: 200,
                     snapshot_sha256: "old".into(),
@@ -793,6 +915,7 @@ mod tests {
                     source_kind: "euvd".into(),
                     source_url: "https://euvd.enisa.europa.eu".into(),
                     imported_from: None,
+                    imported_from_batch: vec![],
                     fetched_unix: 90,
                     expires_unix: 190,
                     snapshot_sha256: "euvd".into(),
@@ -834,6 +957,7 @@ mod tests {
                 source_kind: "nvd".into(),
                 source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
                 imported_from: Some("/tmp/new-nvd.json".into()),
+                imported_from_batch: vec!["/tmp/new-nvd.json".into()],
                 fetched_unix: 110,
                 expires_unix: 210,
                 snapshot_sha256: "new".into(),
@@ -963,6 +1087,66 @@ mod tests {
             ),
             Some(std::cmp::Ordering::Greater)
         );
+    }
+
+    #[test]
+    fn import_batch_combines_paged_snapshots_into_one_source() {
+        let first = json!({
+            "resultsPerPage": 1,
+            "startIndex": 0,
+            "totalResults": 2,
+            "timestamp": "2026-04-26T00:00:00.000",
+            "vulnerabilities": [{
+                "cve": {
+                    "id": "CVE-2026-1000",
+                    "published": "2026-04-25T10:00:00.000",
+                    "lastModified": "2026-04-25T10:00:00.000",
+                    "descriptions": [{"lang": "en", "value": "First page"}]
+                }
+            }]
+        });
+        let second = json!({
+            "resultsPerPage": 1,
+            "startIndex": 1,
+            "totalResults": 2,
+            "timestamp": "2026-04-26T00:01:00.000",
+            "vulnerabilities": [{
+                "cve": {
+                    "id": "CVE-2026-2000",
+                    "published": "2026-04-25T11:00:00.000",
+                    "lastModified": "2026-04-25T11:00:00.000",
+                    "descriptions": [{"lang": "en", "value": "Second page"}]
+                }
+            }]
+        });
+
+        let dir = temp_dir();
+        let first_path = dir.join("nvd-page-1.json");
+        let second_path = dir.join("nvd-page-2.json");
+        fs::write(&first_path, serde_json::to_vec(&first).unwrap()).unwrap();
+        fs::write(&second_path, serde_json::to_vec(&second).unwrap()).unwrap();
+
+        let batch = load_nvd_snapshot_batch(&[first_path.clone(), second_path.clone()]).unwrap();
+
+        assert_eq!(batch.records.len(), 2);
+        assert_eq!(batch.sources.len(), 1);
+        assert_eq!(batch.sources[0].total_results, 2);
+        assert_eq!(batch.sources[0].imported_from, None);
+        assert_eq!(
+            batch.sources[0].imported_from_batch,
+            vec![
+                first_path.display().to_string(),
+                second_path.display().to_string()
+            ]
+        );
+        assert!(batch
+            .records
+            .iter()
+            .any(|record| record.primary_id == "CVE-2026-1000"));
+        assert!(batch
+            .records
+            .iter()
+            .any(|record| record.primary_id == "CVE-2026-2000"));
     }
 
     fn temp_dir() -> PathBuf {
