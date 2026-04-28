@@ -87,6 +87,19 @@ incremental batches:
 vigil --import-nvd-snapshot nvdcve-page-1.json nvdcve-page-2.json
 ```
 
+Vigil can also pull the live NVD CVE API directly into the same protected
+cache. The sync path uses incremental `lastModStartDate` / `lastModEndDate`
+windows after the first fetch, respects the NVD's 2-hour automated polling
+guidance, and keeps the last trusted cache if refresh fails:
+
+```bash
+vigil --sync-nvd
+```
+
+Use `--sync-nvd --force` only when you need to override the normal 2-hour
+minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if your deployment
+needs higher NVD API headroom.
+
 ---
 
 ## What Vigil Does
