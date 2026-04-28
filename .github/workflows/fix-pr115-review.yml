@@ -16,6 +16,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           ref: codex/phase16-live-nvd-sync-20260428100031
+          fetch-depth: 20
           token: ${{ secrets.GITHUB_TOKEN }}
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
         with:
@@ -25,35 +26,172 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          path = Path('src/advisory.rs')
-          text = path.read_text()
-          old = '.map(|item| parse_nvd_record(item, source.source_url.as_str(), imported_unix))'
-          new = '''.map(|item| {
-                    let cve = item.get("cve").unwrap_or(item);
-                    parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
-                })'''
-          if old not in text:
-              raise SystemExit('expected parse_nvd_record wrapper call was not found')
-          text = text.replace(old, new, 1)
-          replacements = [
-              ('matches!(lower_tag.as_str(), "mitigation" | "vendor advisory")', 'matches!(lower_tag.as_str(), "mitigation" | "vendor advisory" | "patch")'),
-              ('matches!(tag.to_ascii_lowercase().as_str(), "mitigation" | "vendor advisory")', 'matches!(tag.to_ascii_lowercase().as_str(), "mitigation" | "vendor advisory" | "patch")'),
-              ('lower_tag == "mitigation" || lower_tag == "vendor advisory"', 'lower_tag == "mitigation" || lower_tag == "vendor advisory" || lower_tag == "patch"'),
-              ('tag == "mitigation" || tag == "vendor advisory"', 'tag == "mitigation" || tag == "vendor advisory" || tag == "patch"'),
-          ]
-          changed_patch = False
-          for old_tag, new_tag in replacements:
-              if old_tag in text:
-                  text = text.replace(old_tag, new_tag)
-                  changed_patch = True
-          if not changed_patch:
-              needle = 'tag.contains("mitigation") || tag.contains("vendor advisory")'
-              if needle in text:
-                  text = text.replace(needle, 'tag.contains("mitigation") || tag.contains("vendor advisory") || tag.contains("patch")')
-                  changed_patch = True
-          if not changed_patch:
-              raise SystemExit('expected mitigation tag predicate was not found')
-          path.write_text(text)
+          import subprocess
+
+          main_path = Path('src/main.rs')
+          main_text = main_path.read_text()
+          old_main = '        match advisory::run_sync_cli(force) {\n            Ok(()) => std::process::exit(0),'
+          new_main = '        match advisory::run_sync_cli(force) {\n            Ok(_) => std::process::exit(0),'
+          if old_main not in main_text:
+              raise SystemExit('expected --sync-nvd match arm was not found in src/main.rs')
+          main_path.write_text(main_text.replace(old_main, new_main, 1))
+
+          subprocess.run(['git', 'checkout', 'ca12934', '--', 'src/advisory.rs'], check=True)
+          advisory_path = Path('src/advisory.rs')
+          text = advisory_path.read_text()
+
+          old_records = '''    let records = value
+        .get("vulnerabilities")
+        .and_then(Value::as_array)
+        .map(|vulnerabilities| {
+            vulnerabilities
+                .iter()
+                .map(|item| parse_nvd_record(item, source.source_url.as_str(), imported_unix))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .transpose()?
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();'''
+          new_records = '''    let records = value
+        .get("vulnerabilities")
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|item| {
+            let cve = item.get("cve").unwrap_or(item);
+            parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
+        })
+        .collect::<Vec<_>>();'''
+          if old_records not in text:
+              raise SystemExit('expected parse_nvd_snapshot record block was not found in src/advisory.rs')
+          text = text.replace(old_records, new_records, 1)
+
+          old_patch = '''            if tags.iter().filter_map(Value::as_str).any(|tag| {
+                tag.eq_ignore_ascii_case("mitigation")
+                    || tag.eq_ignore_ascii_case("vendor advisory")
+            }) {'''
+          new_patch = '''            if tags.iter().filter_map(Value::as_str).any(|tag| {
+                tag.eq_ignore_ascii_case("mitigation")
+                    || tag.eq_ignore_ascii_case("vendor advisory")
+                    || tag.eq_ignore_ascii_case("patch")
+            }) {'''
+          if old_patch not in text:
+              raise SystemExit('expected mitigation tag predicate was not found in src/advisory.rs')
+          text = text.replace(old_patch, new_patch, 1)
+
+          old_test_name = '    fn english_description_prefers_english_locale_and_falls_back() {'
+          if old_test_name in text:
+              text = text.replace(old_test_name, '    fn extract_summary_prefers_english_locale_and_falls_back() {', 1)
+          text = text.replace('assert_eq!(english_description(&english_locale), "English summary");', 'assert_eq!(extract_summary(&english_locale), "English summary");')
+          text = text.replace('assert_eq!(english_description(&fallback), "Resume");', 'assert_eq!(extract_summary(&fallback), "Resume");')
+
+          compare_marker = '''    #[test]
+    fn compare_optional_timestamp_handles_offset_and_naive_formats() {'''
+          extra_compare = '''    #[test]
+    fn merge_cache_uses_import_time_when_last_modified_is_equal() {
+        let existing_record = VulnerabilityRecord {
+            primary_id: "CVE-2026-12345".into(),
+            summary: "Earlier import".into(),
+            last_modified: Some("2026-04-26T10:00:00.000".into()),
+            provenance: VulnerabilityProvenance {
+                source_kind: "nvd".into(),
+                source_key: "nvd-cve".into(),
+                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                imported_unix: 100,
+            },
+            ..VulnerabilityRecord::default()
+        };
+        let imported_record = VulnerabilityRecord {
+            primary_id: "CVE-2026-12345".into(),
+            summary: "Later import".into(),
+            last_modified: Some("2026-04-26T10:00:00.000".into()),
+            provenance: VulnerabilityProvenance {
+                source_kind: "nvd".into(),
+                source_key: "nvd-cve".into(),
+                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
+                imported_unix: 110,
+            },
+            ..VulnerabilityRecord::default()
+        };
+
+        let merged = merge_cache(
+            Some(AdvisoryCache {
+                schema_version: CACHE_SCHEMA_VERSION,
+                generated_unix: 100,
+                sources: vec![],
+                records: vec![existing_record],
+            }),
+            AdvisoryCache {
+                schema_version: CACHE_SCHEMA_VERSION,
+                generated_unix: 110,
+                sources: vec![],
+                records: vec![imported_record],
+            },
+        );
+
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "Later import");
+    }
+
+'''
+          if extra_compare.strip() not in text:
+              if compare_marker not in text:
+                  raise SystemExit('expected compare_optional_timestamp test marker was not found')
+              text = text.replace(compare_marker, extra_compare + compare_marker, 1)
+
+          nvd_sync_marker = '''    #[test]
+    fn nvd_sync_windows_split_long_offline_gaps() {'''
+          extra_nvd_tests = '''    #[test]
+    fn parse_nvd_snapshot_uses_inner_cve_wrapper_object() {
+        let snapshot = json!({
+            "resultsPerPage": 1,
+            "startIndex": 0,
+            "totalResults": 1,
+            "timestamp": "2026-04-26T00:00:00.000",
+            "vulnerabilities": [{
+                "cve": {
+                    "id": "CVE-2026-4444",
+                    "published": "2026-04-25T10:00:00.000",
+                    "lastModified": "2026-04-26T10:00:00.000",
+                    "descriptions": [{"lang": "en", "value": "Wrapped CVE"}]
+                }
+            }]
+        });
+
+        let cache = parse_nvd_snapshot(
+            serde_json::to_string(&snapshot).unwrap().as_bytes(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(cache.records.len(), 1);
+        assert_eq!(cache.records[0].primary_id, "CVE-2026-4444");
+    }
+
+    #[test]
+    fn patch_tagged_references_are_treated_as_mitigations() {
+        let cve = json!({
+            "references": [{
+                "url": "https://example.com/patch",
+                "tags": ["Patch"]
+            }]
+        });
+
+        assert_eq!(
+            parse_mitigations(&cve),
+            vec!["https://example.com/patch".to_string()]
+        );
+    }
+
+'''
+          if extra_nvd_tests.strip() not in text:
+              if nvd_sync_marker not in text:
+                  raise SystemExit('expected nvd_sync_windows test marker was not found')
+              text = text.replace(nvd_sync_marker, extra_nvd_tests + nvd_sync_marker, 1)
+
+          advisory_path.write_text(text)
           PY
       - name: Apply rustfmt
         run: cargo fmt
@@ -63,10 +201,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/advisory.rs .github/workflows/fix-pr115-review.yml
+          git add src/main.rs src/advisory.rs .github/workflows/fix-pr115-review.yml
           if git diff --cached --quiet; then
             echo "No review changes needed"
             exit 0
           fi
-          git commit -m "fix(advisory): parse NVD CVE wrappers and patch mitigations"
+          git commit -m "fix(advisory): repair NVD sync follow-up regressions"
           git push origin HEAD:codex/phase16-live-nvd-sync-20260428100031
