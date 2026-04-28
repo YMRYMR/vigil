@@ -51,7 +51,7 @@ pub use security::{
 use config::Config;
 use monitor::Monitor;
 use single_instance::SingleInstance;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -126,11 +126,19 @@ fn main() {
     }
 
     if let Some(idx) = args.iter().position(|a| a == "--import-nvd-snapshot") {
-        let snapshot = args.get(idx + 1).unwrap_or_else(|| {
-            eprintln!("Missing snapshot path.\n\nUsage: vigil --import-nvd-snapshot SNAPSHOT.json");
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-nvd-snapshot SNAPSHOT.json [MORE.json ...]"
+            );
             std::process::exit(1);
-        });
-        match advisory::run_import_cli(Path::new(snapshot)) {
+        }
+        match advisory::run_import_cli(&snapshots) {
             Ok(()) => std::process::exit(0),
             Err(err) => {
                 eprintln!("{err}");
@@ -153,7 +161,7 @@ fn main() {
                 elevated_launcher = true;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import or merge an NVD CVE JSON snapshot into the protected advisory cache\n  --advisory-cache-status   show advisory cache status and source health\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json [MORE.json ...]\n                           import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --advisory-cache-status   show advisory cache status and source health\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
