@@ -178,19 +178,6 @@ fn main() {
         }
     }
 
-    if args
-        .iter()
-        .any(|arg| arg == ui::uninstall::RUN_INSTALLER_UNINSTALL_FLAG)
-    {
-        match ui::uninstall::run_installer_uninstall_cli(&args) {
-            Ok(()) => std::process::exit(0),
-            Err(err) => {
-                eprintln!("{err}");
-                std::process::exit(1);
-            }
-        }
-    }
-
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     for a in &args[1..] {
@@ -260,29 +247,13 @@ fn main() {
         .expect("failed to build tokio runtime");
     let _guard = rt.enter();
 
-    let mut loaded_cfg = match Config::load() {
+    let loaded_cfg = match Config::load() {
         Ok(cfg) => cfg,
         Err(err) => {
             eprintln!("{err}");
             std::process::exit(1);
         }
     };
-    if loaded_cfg.prefer_admin_mode
-        && !autostart::is_elevated()
-        && !elevated_relaunch
-        && !elevated_launcher
-    {
-        match autostart::relaunch_as_admin() {
-            Ok(()) => std::process::exit(0),
-            Err(err) => {
-                eprintln!("Could not relaunch Vigil in Admin Mode automatically: {err}");
-            }
-        }
-    }
-    if autostart::is_elevated() && !loaded_cfg.prefer_admin_mode {
-        loaded_cfg.prefer_admin_mode = true;
-        loaded_cfg.save();
-    }
     startup_integrity::run();
     startup_integrity::scan_operator_inputs(&loaded_cfg);
     let cfg = Arc::new(RwLock::new(loaded_cfg));
