@@ -67,6 +67,22 @@ fn load_app_icon() -> Option<egui::IconData> {
         .ok()
 }
 
+fn report_startup_failure(message: &str) {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+        let title = windows::core::HSTRING::from("Vigil startup failed");
+        let body = windows::core::HSTRING::from(message);
+        unsafe {
+            let _ = MessageBoxW(None, &body, &title, MB_OK | MB_ICONERROR);
+        }
+    }
+
+    #[cfg(not(windows))]
+    eprintln!("{message}");
+}
+
 fn acquire_single_instance(wait_for_release: bool) -> Result<SingleInstance, String> {
     if !wait_for_release {
         return SingleInstance::new(SINGLE_INSTANCE_ID)
@@ -316,15 +332,12 @@ fn main() {
 
     let native_options = eframe::NativeOptions {
         viewport,
-        // Vigil only enables eframe's glow feature; make the runtime choice
-        // explicit so native builds don't drift onto the wgpu backend.
-        renderer: eframe::Renderer::Glow,
         persist_window: true,
         ..Default::default()
     };
 
     let cfg_ui = cfg.clone();
-    eframe::run_native(
+    if let Err(err) = eframe::run_native(
         "Vigil",
         native_options,
         Box::new(move |cc| {
@@ -339,6 +352,13 @@ fn main() {
                 egui_ctx_ui,
             )))
         }),
-    )
-    .expect("eframe failed");
+    ) {
+        let startup_message = format!(
+            "Vigil could not open its desktop window.\n\nError: {err}\n\nLogs: {}",
+            log_dir.display()
+        );
+        tracing::error!(%err, "eframe failed to start");
+        report_startup_failure(&startup_message);
+        std::process::exit(1);
+    }
 }
