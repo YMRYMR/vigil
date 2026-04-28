@@ -233,7 +233,8 @@ impl NvdFetcher for HttpNvdFetcher {
                 });
             }
 
-            if (status.as_u16() == 429 || status.as_u16() == 503) && attempt + 1 < MAX_RETRY_ATTEMPTS
+            if (status.as_u16() == 429 || status.as_u16() == 503)
+                && attempt + 1 < MAX_RETRY_ATTEMPTS
             {
                 let retry_after = response
                     .headers()
@@ -528,7 +529,9 @@ fn sync_nvd_with_fetcher(
         });
         page_count += 1;
 
-        if page_records == 0 || start_index.saturating_add(request.results_per_page) >= total_results {
+        if page_records == 0
+            || start_index.saturating_add(request.results_per_page) >= total_results
+        {
             break;
         }
         start_index = start_index.saturating_add(request.results_per_page);
@@ -552,7 +555,9 @@ fn nvd_refresh_due() -> bool {
         Ok(Some(cache)) => cache
             .sources
             .iter()
-            .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
+            .find(|source| {
+                source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
+            })
             .is_none_or(|source| {
                 source.expires_unix <= now
                     || matches!(source.status, SourceHealth::Error | SourceHealth::Stale)
@@ -566,10 +571,9 @@ fn nvd_refresh_due() -> bool {
 }
 
 fn nvd_rate_limit_remaining(existing: Option<&AdvisoryCache>, now: u64) -> Option<u64> {
-    let source = existing?
-        .sources
-        .iter()
-        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)?;
+    let source = existing?.sources.iter().find(|source| {
+        source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
+    })?;
     let last_request_unix = source.last_attempt_unix.max(source.fetched_unix);
     let next_allowed = last_request_unix.saturating_add(NVD_MIN_SYNC_INTERVAL_SECS);
     if next_allowed > now {
@@ -1590,9 +1594,7 @@ mod tests {
             }]
         })]);
 
-        let now = parse_timestamp("2026-04-28T00:00:00Z")
-            .unwrap()
-            .timestamp() as u64;
+        let now = parse_timestamp("2026-04-28T00:00:00Z").unwrap().timestamp() as u64;
         let (cache, requested_pages, imported_records) =
             sync_nvd_with_fetcher(Some(existing), &fetcher, now).unwrap();
 
@@ -1619,10 +1621,7 @@ mod tests {
         assert_eq!(source.last_attempt_unix, now);
         assert_eq!(source.status, SourceHealth::Fresh);
         assert!(source.last_error.is_none());
-        assert_eq!(
-            cache.records[0].summary,
-            "Updated from sync"
-        );
+        assert_eq!(cache.records[0].summary, "Updated from sync");
     }
 
     #[test]
@@ -1647,10 +1646,7 @@ mod tests {
             records: vec![],
         };
 
-        assert_eq!(
-            nvd_rate_limit_remaining(Some(&cache), 7_200),
-            Some(120)
-        );
+        assert_eq!(nvd_rate_limit_remaining(Some(&cache), 7_200), Some(120));
         assert_eq!(nvd_rate_limit_remaining(Some(&cache), 7_320), None);
     }
 
