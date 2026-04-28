@@ -126,7 +126,7 @@ fn main() {
             .take_while(|arg| !arg.starts_with("--") || *arg == "--force")
             .any(|arg| arg == "--force");
         match advisory::run_sync_cli(force) {
-            Ok(()) => std::process::exit(0),
+            Ok(_) => std::process::exit(0),
             Err(err) => {
                 eprintln!("{err}");
                 std::process::exit(1);

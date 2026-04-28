@@ -763,14 +763,14 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
         .map(|vulnerabilities| {
             vulnerabilities
                 .iter()
-                .map(|item| parse_nvd_record(item, source.source_url.as_str(), imported_unix))
-                .collect::<Result<Vec<_>, _>>()
+                .filter_map(|item| {
+                    item.get("cve").and_then(|cve| {
+                        parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
+                    })
+                })
+                .collect::<Vec<_>>()
         })
-        .transpose()?
-        .unwrap_or_default()
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+        .unwrap_or_default();
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
@@ -808,6 +808,10 @@ fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> Advi
     merged
 }
 
+fn merge_import_batch_cache(existing: AdvisoryCache, incoming: AdvisoryCache) -> AdvisoryCache {
+    merge_cache(Some(existing), incoming)
+}
+
 fn merge_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCache) {
     if let Some(existing) = sources.iter_mut().find(|existing| {
         existing.source_key == source.source_key && existing.source_kind == source.source_kind
@@ -831,18 +835,27 @@ fn merge_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCa
     }
 }
 
+fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCache) {
+    merge_source(sources, source);
+}
+
 fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRecord) {
     if let Some(existing) = records.iter_mut().find(|existing| {
         existing.primary_id == record.primary_id
             && existing.provenance.source_kind == record.provenance.source_kind
             && existing.provenance.source_key == record.provenance.source_key
     }) {
-        if compare_optional_timestamp(
+        let keep_existing = match compare_optional_timestamp(
             existing.last_modified.as_deref(),
             record.last_modified.as_deref(),
-        )
-        .is_some_and(|ordering| ordering.is_gt())
-        {
+        ) {
+            Some(std::cmp::Ordering::Greater) => true,
+            Some(std::cmp::Ordering::Less) => false,
+            Some(std::cmp::Ordering::Equal) | None => {
+                existing.provenance.imported_unix >= record.provenance.imported_unix
+            }
+        };
+        if keep_existing {
             return;
         }
         *existing = record;
@@ -982,6 +995,7 @@ fn parse_mitigations(cve: &Value) -> Vec<String> {
             if tags.iter().filter_map(Value::as_str).any(|tag| {
                 tag.eq_ignore_ascii_case("mitigation")
                     || tag.eq_ignore_ascii_case("vendor advisory")
+                    || tag.eq_ignore_ascii_case("patch")
             }) {
                 push_unique(&mut mitigations, url.to_string());
             }
@@ -1097,6 +1111,22 @@ fn parse_affected_products(cve: &Value) -> Vec<AffectedProduct> {
     };
     collect_cpe_matches(configurations, &mut products);
     dedupe_products(products)
+}
+
+fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
+    if page_hashes.len() <= 1 {
+        return;
+    }
+
+    let combined_hash = sha256_hex(&page_hashes.join(":"));
+    for source in &mut cache.sources {
+        if !source.imported_from_batch.is_empty() {
+            source.snapshot_sha256 = combined_hash.clone();
+            if source.imported_from_batch.len() > 1 {
+                source.imported_from = None;
+            }
+        }
+    }
 }
 
 fn collect_cpe_matches(value: &Value, out: &mut Vec<AffectedProduct>) {
@@ -1578,14 +1608,14 @@ mod tests {
     }
 
     #[test]
-    fn english_description_prefers_english_locale_and_falls_back() {
+    fn extract_summary_prefers_english_locale_and_falls_back() {
         let english_locale = json!({
             "descriptions": [
                 {"lang": "fr", "value": "Resume"},
                 {"lang": "en-US", "value": "English summary"}
             ]
         });
-        assert_eq!(english_description(&english_locale), "English summary");
+        assert_eq!(extract_summary(&english_locale), "English summary");
 
         let fallback = json!({
             "descriptions": [
@@ -1593,7 +1623,7 @@ mod tests {
                 {"lang": "de", "value": "Zusammenfassung"}
             ]
         });
-        assert_eq!(english_description(&fallback), "Resume");
+        assert_eq!(extract_summary(&fallback), "Resume");
     }
 
     #[test]
