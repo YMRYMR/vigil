@@ -280,7 +280,6 @@ fn main() {
                 c.reverse_dns_enabled
             );
             advisory::log_cache_status();
-            advisory::refresh_nvd_in_background_if_due();
 
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
@@ -303,6 +302,8 @@ fn main() {
             if c.autostart && !autostart::enable() {
                 tracing::warn!("could not refresh autostart");
             }
+
+            advisory::refresh_nvd_in_background_if_due();
         })
         .expect("failed to spawn bootstrap thread");
 
