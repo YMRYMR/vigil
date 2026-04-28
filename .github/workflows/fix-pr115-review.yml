@@ -1,0 +1,72 @@
+name: Temporary PR 115 review fixer
+
+on:
+  push:
+    branches:
+      - codex/phase16-live-nvd-sync-20260428100031
+
+permissions:
+  contents: write
+
+jobs:
+  fix-review:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codex/phase16-live-nvd-sync-20260428100031
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Apply review fixes
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          path = Path('src/advisory.rs')
+          text = path.read_text()
+          old = '.map(|item| parse_nvd_record(item, source.source_url.as_str(), imported_unix))'
+          new = '''.map(|item| {
+                    let cve = item.get("cve").unwrap_or(item);
+                    parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
+                })'''
+          if old not in text:
+              raise SystemExit('expected parse_nvd_record wrapper call was not found')
+          text = text.replace(old, new, 1)
+          replacements = [
+              ('matches!(lower_tag.as_str(), "mitigation" | "vendor advisory")', 'matches!(lower_tag.as_str(), "mitigation" | "vendor advisory" | "patch")'),
+              ('matches!(tag.to_ascii_lowercase().as_str(), "mitigation" | "vendor advisory")', 'matches!(tag.to_ascii_lowercase().as_str(), "mitigation" | "vendor advisory" | "patch")'),
+              ('lower_tag == "mitigation" || lower_tag == "vendor advisory"', 'lower_tag == "mitigation" || lower_tag == "vendor advisory" || lower_tag == "patch"'),
+              ('tag == "mitigation" || tag == "vendor advisory"', 'tag == "mitigation" || tag == "vendor advisory" || tag == "patch"'),
+          ]
+          changed_patch = False
+          for old_tag, new_tag in replacements:
+              if old_tag in text:
+                  text = text.replace(old_tag, new_tag)
+                  changed_patch = True
+          if not changed_patch:
+              needle = 'tag.contains("mitigation") || tag.contains("vendor advisory")'
+              if needle in text:
+                  text = text.replace(needle, 'tag.contains("mitigation") || tag.contains("vendor advisory") || tag.contains("patch")')
+                  changed_patch = True
+          if not changed_patch:
+              raise SystemExit('expected mitigation tag predicate was not found')
+          path.write_text(text)
+          PY
+      - name: Apply rustfmt
+        run: cargo fmt
+      - name: Remove temporary workflow
+        run: rm -f .github/workflows/fix-pr115-review.yml
+      - name: Commit review fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/advisory.rs .github/workflows/fix-pr115-review.yml
+          if git diff --cached --quiet; then
+            echo "No review changes needed"
+            exit 0
+          fi
+          git commit -m "fix(advisory): parse NVD CVE wrappers and patch mitigations"
+          git push origin HEAD:codex/phase16-live-nvd-sync-20260428100031
