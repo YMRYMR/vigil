@@ -17,7 +17,8 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
@@ -164,6 +165,7 @@ struct HttpNvdFetcher {
     client: reqwest::blocking::Client,
     base_url: String,
     api_key: Option<String>,
+    last_request_started: Mutex<Option<Instant>>,
 }
 
 impl HttpNvdFetcher {
@@ -181,6 +183,7 @@ impl HttpNvdFetcher {
             api_key: std::env::var("VIGIL_NVD_API_KEY")
                 .ok()
                 .filter(|value| !value.trim().is_empty()),
+            last_request_started: Mutex::new(None),
         })
     }
 
@@ -191,14 +194,25 @@ impl HttpNvdFetcher {
             Duration::from_secs(NVD_REQUEST_DELAY_NO_KEY_SECS)
         }
     }
+
+    fn wait_for_request_slot(&self) {
+        let delay = self.request_delay();
+        let now = Instant::now();
+        let mut last_request_started = self.last_request_started.lock().unwrap();
+        let remaining = next_request_delay(*last_request_started, now, delay);
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
+        }
+        *last_request_started = Some(Instant::now());
+    }
 }
 
 impl NvdFetcher for HttpNvdFetcher {
     fn fetch_page(&self, request: &NvdSyncRequest) -> Result<Vec<u8>, String> {
         let mut attempt = 0usize;
         loop {
-            if request.start_index > 0 && attempt == 0 {
-                std::thread::sleep(self.request_delay());
+            if attempt == 0 {
+                self.wait_for_request_slot();
             }
             let mut http = self.client.get(&self.base_url).query(&[
                 ("resultsPerPage", request.results_per_page.to_string()),
@@ -263,6 +277,17 @@ impl NvdFetcher for HttpNvdFetcher {
     }
 }
 
+fn next_request_delay(
+    last_request_started: Option<Instant>,
+    now: Instant,
+    delay: Duration,
+) -> Duration {
+    let Some(last_request_started) = last_request_started else {
+        return Duration::ZERO;
+    };
+    delay.saturating_sub(now.saturating_duration_since(last_request_started))
+}
+
 pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
     let summary = if paths.len() == 1 {
         import_nvd_snapshot(&paths[0])?
@@ -280,7 +305,7 @@ pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn run_sync_cli(force: bool) -> Result<(), String> {
+pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
     match sync_nvd(force)? {
         SyncOutcome::Updated(summary) => {
             println!(
@@ -709,9 +734,11 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
     let vulnerabilities = value
         .get("vulnerabilities")
         .and_then(Value::as_array)
-        .ok_or_else(|| "NVD snapshot did not contain a vulnerabilities array".to_string())?;
-
-    let now = unix_now();
+        .ok_or_else(|| "NVD JSON did not contain a vulnerabilities array".to_string())?;
+    let total_results = value
+        .get("totalResults")
+        .and_then(Value::as_u64)
+        .unwrap_or(vulnerabilities.len() as u64) as usize;
     let source_url = value
         .get("source")
         .and_then(Value::as_str)
@@ -719,17 +746,15 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
         .to_string();
 
     let mut records = Vec::with_capacity(vulnerabilities.len());
+    let now = unix_now();
     for item in vulnerabilities {
-        if let Some(record) = parse_nvd_record(item, now, &source_url)? {
+        let Some(cve) = item.get("cve") else {
+            continue;
+        };
+        if let Some(record) = parse_nvd_record(cve, &source_url, now) {
             records.push(record);
         }
     }
-
-    let total_results = value
-        .get("totalResults")
-        .and_then(Value::as_u64)
-        .map(|value| value as usize)
-        .unwrap_or(records.len());
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
@@ -754,251 +779,141 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
     })
 }
 
-fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> AdvisoryCache {
-    let Some(mut merged) = existing else {
-        return imported;
-    };
+fn merge_import_batch_cache(existing: AdvisoryCache, imported: AdvisoryCache) -> AdvisoryCache {
+    merge_cache(Some(existing), imported)
+}
 
-    merged.schema_version = CACHE_SCHEMA_VERSION;
-    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
-    let mut record_index = merged
-        .records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| (record_identity_key(record), index))
-        .collect::<HashMap<_, _>>();
+fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
+    if cache.sources.len() != 1 {
+        return;
+    }
+    let source = &mut cache.sources[0];
+    if source.imported_from_batch.len() > 1 {
+        source.imported_from = None;
+    }
+    if !page_hashes.is_empty() {
+        source.snapshot_sha256 = sha256_hex(page_hashes.join("").as_bytes());
+    }
+}
+
+fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> AdvisoryCache {
+    let mut merged = existing.unwrap_or_else(|| AdvisoryCache {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_unix: imported.generated_unix,
+        sources: vec![],
+        records: vec![],
+    });
 
     for source in imported.sources {
         merge_source(&mut merged.sources, source);
     }
     for record in imported.records {
-        merge_record(&mut merged.records, &mut record_index, record);
+        merge_record(&mut merged.records, record);
     }
-
-    merged
-}
-
-fn merge_import_batch_cache(mut merged: AdvisoryCache, imported: AdvisoryCache) -> AdvisoryCache {
+    merged.generated_unix = unix_now();
     merged.schema_version = CACHE_SCHEMA_VERSION;
-    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
-    let mut record_index = merged
-        .records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| (record_identity_key(record), index))
-        .collect::<HashMap<_, _>>();
-
-    for source in imported.sources {
-        merge_batch_source(&mut merged.sources, source);
-    }
-    for record in imported.records {
-        merge_record(&mut merged.records, &mut record_index, record);
-    }
-
     merged
 }
 
-fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
+fn merge_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCache) {
     if let Some(existing) = sources
         .iter_mut()
-        .find(|source| same_source_identity(source, &incoming))
+        .find(|existing| existing.source_key == source.source_key && existing.source_kind == source.source_kind)
     {
-        *existing = incoming;
-    } else {
-        sources.push(incoming);
-    }
-}
-
-fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|source| same_source_identity(source, &incoming))
-    {
-        existing.source_url =
-            choose_preferred_source_url(&existing.source_url, &incoming.source_url);
-        if existing.imported_from.is_none() {
-            existing.imported_from = incoming.imported_from.clone();
-        }
-        for path in incoming.imported_from_batch {
-            push_unique(&mut existing.imported_from_batch, path);
-        }
-        existing.fetched_unix = existing.fetched_unix.max(incoming.fetched_unix);
-        existing.expires_unix = existing.expires_unix.max(incoming.expires_unix);
-        existing.total_results = existing.total_results.max(incoming.total_results);
-        existing.status = combine_source_health(existing.status.clone(), incoming.status);
-    } else {
-        sources.push(incoming);
-    }
-}
-
-fn merge_record(
-    records: &mut Vec<VulnerabilityRecord>,
-    record_index: &mut HashMap<RecordIdentityKey, usize>,
-    incoming: VulnerabilityRecord,
-) {
-    let key = record_identity_key(&incoming);
-    if let Some(&existing_index) = record_index.get(&key) {
-        if should_replace_record(&records[existing_index], &incoming) {
-            records[existing_index] = incoming;
-        }
-    } else {
-        records.push(incoming);
-        record_index.insert(key, records.len() - 1);
-    }
-}
-
-fn same_source_identity(left: &AdvisorySourceCache, right: &AdvisorySourceCache) -> bool {
-    left.source_kind == right.source_kind && left.source_key == right.source_key
-}
-
-fn choose_preferred_source_url(existing: &str, incoming: &str) -> String {
-    if !incoming.trim().is_empty() {
-        incoming.to_string()
-    } else {
-        existing.to_string()
-    }
-}
-
-fn combine_source_health(left: SourceHealth, right: SourceHealth) -> SourceHealth {
-    if matches!(left, SourceHealth::Error) || matches!(right, SourceHealth::Error) {
-        SourceHealth::Error
-    } else if matches!(left, SourceHealth::Stale) || matches!(right, SourceHealth::Stale) {
-        SourceHealth::Stale
-    } else {
-        SourceHealth::Fresh
-    }
-}
-
-fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
-    let batch_sha256 = if page_hashes.len() > 1 {
-        Some(sha256_hex(page_hashes.join("\n").as_bytes()))
-    } else {
-        None
-    };
-
-    for source in &mut cache.sources {
-        source.imported_from_batch.sort();
-        source.imported_from_batch.dedup();
-        if source.imported_from_batch.len() > 1 {
-            source.imported_from = None;
-            if let Some(batch_sha256) = &batch_sha256 {
-                source.snapshot_sha256 = batch_sha256.clone();
+        let mut imported_from_batch = existing.imported_from_batch.clone();
+        for path in &source.imported_from_batch {
+            if !imported_from_batch.iter().any(|existing_path| existing_path == path) {
+                imported_from_batch.push(path.clone());
             }
-        } else if source.imported_from_batch.len() == 1 {
-            source.imported_from = source.imported_from_batch.first().cloned();
         }
+        *existing = source;
+        existing.imported_from_batch = imported_from_batch;
+        if existing.imported_from_batch.len() > 1 {
+            existing.imported_from = None;
+        }
+    } else {
+        sources.push(source);
     }
 }
 
-type RecordIdentityKey = (String, String, String);
-
-fn record_identity_key(record: &VulnerabilityRecord) -> RecordIdentityKey {
-    (
-        record.primary_id.clone(),
-        record.provenance.source_kind.clone(),
-        record.provenance.source_key.clone(),
-    )
-}
-
-fn should_replace_record(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
-    match compare_optional_timestamp(
-        incoming.last_modified.as_deref(),
-        existing.last_modified.as_deref(),
-    ) {
-        Some(std::cmp::Ordering::Greater) => true,
-        Some(std::cmp::Ordering::Less) => false,
-        Some(std::cmp::Ordering::Equal) | None => {
-            incoming.provenance.imported_unix >= existing.provenance.imported_unix
+fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRecord) {
+    if let Some(existing) = records.iter_mut().find(|existing| {
+        existing.primary_id == record.primary_id
+            && existing.provenance.source_kind == record.provenance.source_kind
+            && existing.provenance.source_key == record.provenance.source_key
+    }) {
+        if compare_optional_timestamp(existing.last_modified.as_deref(), record.last_modified.as_deref())
+            .is_some_and(|ordering| ordering.is_gt())
+        {
+            return;
         }
+        *existing = record;
+    } else {
+        records.push(record);
     }
 }
 
-fn compare_optional_timestamp(
-    left: Option<&str>,
-    right: Option<&str>,
-) -> Option<std::cmp::Ordering> {
-    let left = parse_timestamp(left?)?;
-    let right = parse_timestamp(right?)?;
+fn compare_optional_timestamp(left: Option<&str>, right: Option<&str>) -> Option<std::cmp::Ordering> {
+    let left = left.and_then(parse_timestamp)?;
+    let right = right.and_then(parse_timestamp)?;
     Some(left.cmp(&right))
 }
 
 fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    chrono::DateTime::parse_from_rfc3339(trimmed)
-        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|ts| ts.with_timezone(&chrono::Utc))
         .ok()
         .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
-                .map(|timestamp| timestamp.and_utc())
+                .map(|ts| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ts, chrono::Utc))
         })
 }
 
-fn parse_nvd_record(
-    item: &Value,
-    imported_unix: u64,
-    source_url: &str,
-) -> Result<Option<VulnerabilityRecord>, String> {
-    let Some(cve) = item.get("cve") else {
-        return Ok(None);
-    };
-    let Some(primary_id) = cve.get("id").and_then(Value::as_str) else {
-        return Ok(None);
-    };
+fn parse_nvd_record(cve: &Value, source_url: &str, imported_unix: u64) -> Option<VulnerabilityRecord> {
+    let id = cve.get("id").and_then(Value::as_str)?.trim();
+    if id.is_empty() {
+        return None;
+    }
 
-    let references = cve
-        .get("references")
-        .and_then(Value::as_array)
-        .map(|refs| refs.iter().filter_map(parse_reference).collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    let mut mitigations = Vec::new();
-    for reference in &references {
-        let lower_tags = reference
-            .tags
-            .iter()
-            .map(|tag| tag.to_ascii_lowercase())
-            .collect::<Vec<_>>();
-        if lower_tags.iter().any(|tag| {
-            tag.contains("mitigation") || tag.contains("vendor advisory") || tag.contains("patch")
-        }) {
-            push_unique(&mut mitigations, reference.url.clone());
+    let mut aliases = vec![id.to_string()];
+    if let Some(cve_tags) = cve.get("cveTags").and_then(Value::as_array) {
+        for tag in cve_tags {
+            if let Some(source_identifier) = tag.get("sourceIdentifier").and_then(Value::as_str) {
+                let source_identifier = source_identifier.trim();
+                if !source_identifier.is_empty() {
+                    push_unique(&mut aliases, source_identifier.to_string());
+                }
+            }
         }
     }
 
-    Ok(Some(VulnerabilityRecord {
-        primary_id: primary_id.to_string(),
-        aliases: Vec::new(),
+    Some(VulnerabilityRecord {
+        primary_id: id.to_string(),
+        aliases,
         summary: english_description(cve),
-        published: cve
-            .get("published")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        last_modified: cve
-            .get("lastModified")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+        published: string_field(cve, "published"),
+        last_modified: string_field(cve, "lastModified"),
         known_exploited: parse_known_exploited(cve),
         severities: parse_severities(cve),
         affected_products: parse_affected_products(cve),
-        references,
-        mitigations,
+        references: parse_references(cve),
+        mitigations: parse_mitigations(cve),
         provenance: VulnerabilityProvenance {
-            source_kind: "nvd".into(),
-            source_key: "nvd-cve".into(),
+            source_kind: NVD_SOURCE_KIND.into(),
+            source_key: NVD_SOURCE_KEY.into(),
             source_url: source_url.to_string(),
             imported_unix,
         },
-    }))
+    })
 }
 
 fn english_description(cve: &Value) -> String {
-    cve.get("descriptions")
-        .and_then(Value::as_array)
+    let Some(descriptions) = cve.get("descriptions") else {
+        return String::new();
+    };
+    descriptions
+        .as_array()
         .and_then(|items| {
             items.iter().find_map(|item| {
                 let lang = item.get("lang").and_then(Value::as_str)?;
@@ -1014,26 +929,53 @@ fn english_description(cve: &Value) -> String {
             })
         })
         .or_else(|| {
-            cve.get("descriptions")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items
-                        .iter()
-                        .find_map(|item| item.get("value").and_then(Value::as_str))
+            descriptions.as_array().and_then(|items| {
+                items.iter().find_map(|item| {
+                    item.get("value")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
                 })
+            })
         })
         .unwrap_or_default()
-        .trim()
         .to_string()
 }
 
-fn parse_reference(value: &Value) -> Option<VulnerabilityReference> {
-    let url = value.get("url").and_then(Value::as_str)?.trim();
-    if url.is_empty() {
-        return None;
+fn parse_mitigations(cve: &Value) -> Vec<String> {
+    let mut mitigations = Vec::new();
+    if let Some(references) = cve.get("references").and_then(Value::as_array) {
+        for reference in references {
+            let Some(url) = reference.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(tags) = reference.get("tags").and_then(Value::as_array) else {
+                continue;
+            };
+            if tags.iter().filter_map(Value::as_str).any(|tag| {
+                tag.eq_ignore_ascii_case("mitigation") || tag.eq_ignore_ascii_case("vendor advisory")
+            }) {
+                push_unique(&mut mitigations, url.to_string());
+            }
+        }
     }
+    mitigations
+}
+
+fn parse_references(cve: &Value) -> Vec<VulnerabilityReference> {
+    cve.get("references")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items.iter()
+                .filter_map(|item| parse_reference(item))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn parse_reference(value: &Value) -> Option<VulnerabilityReference> {
     Some(VulnerabilityReference {
-        url: url.to_string(),
+        url: value.get("url").and_then(Value::as_str)?.to_string(),
         source: value
             .get("source")
             .and_then(Value::as_str)
@@ -1670,6 +1612,22 @@ mod tests {
         assert_eq!(source.last_attempt_unix, 42);
         assert_eq!(source.last_error.as_deref(), Some("boom"));
         assert_eq!(source.status, SourceHealth::Stale);
+    }
+
+    #[test]
+    fn next_request_delay_only_throttles_close_successive_requests() {
+        let now = Instant::now();
+        let delay = Duration::from_secs(6);
+
+        assert_eq!(next_request_delay(None, now, delay), Duration::ZERO);
+        assert_eq!(
+            next_request_delay(now.checked_sub(Duration::from_secs(8)), now, delay),
+            Duration::ZERO
+        );
+        assert_eq!(
+            next_request_delay(now.checked_sub(Duration::from_secs(2)), now, delay),
+            Duration::from_secs(4)
+        );
     }
 
     fn temp_dir() -> PathBuf {
