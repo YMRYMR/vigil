@@ -63,6 +63,12 @@ pub fn run_cli() -> Result<(), String> {
         if let Some(imported_from) = &source.imported_from {
             println!("  imported_from={imported_from}");
         }
+        if source.imported_from_batch.len() > 1 {
+            println!(
+                "  imported_from_batch={}",
+                source.imported_from_batch.join(", ")
+            );
+        }
         if !source.source_url.trim().is_empty() {
             println!("  source_url={}", source.source_url);
         }
@@ -109,6 +115,7 @@ mod tests {
             source_kind: "nvd".into(),
             source_url: String::new(),
             imported_from: None,
+            imported_from_batch: vec![],
             fetched_unix: 10,
             expires_unix: 20,
             snapshot_sha256: String::new(),
@@ -126,6 +133,7 @@ mod tests {
             source_kind: "nvd".into(),
             source_url: String::new(),
             imported_from: None,
+            imported_from_batch: vec![],
             fetched_unix: 10,
             expires_unix: 100,
             snapshot_sha256: String::new(),
