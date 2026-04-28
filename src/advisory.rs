@@ -798,7 +798,7 @@ fn merge_import_batch_cache(mut merged: AdvisoryCache, imported: AdvisoryCache) 
     merged
 }
 
-fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) -> AdvisoryCache {
+fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
     if let Some(existing) = sources
         .iter_mut()
         .find(|source| same_source_identity(source, &incoming))
