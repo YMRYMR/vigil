@@ -946,9 +946,7 @@ fn extract_summary(cve: &Value) -> String {
         .iter()
         .find_map(|description| {
             let lang = description.get("lang").and_then(Value::as_str)?;
-            if !lang.eq_ignore_ascii_case("en")
-                && !lang.to_ascii_lowercase().starts_with("en-")
-            {
+            if !lang.eq_ignore_ascii_case("en") && !lang.to_ascii_lowercase().starts_with("en-") {
                 return None;
             }
             let value = description.get("value").and_then(Value::as_str)?.trim();
