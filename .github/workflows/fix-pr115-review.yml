@@ -26,214 +26,31 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
-          import subprocess
 
-          main_path = Path('src/main.rs')
-          main_text = main_path.read_text()
-          old_main = '        match advisory::run_sync_cli(force) {\n            Ok(()) => std::process::exit(0),'
-          new_main = '        match advisory::run_sync_cli(force) {\n            Ok(_) => std::process::exit(0),'
-          if old_main not in main_text:
-              raise SystemExit('expected --sync-nvd match arm was not found in src/main.rs')
-          main_path.write_text(main_text.replace(old_main, new_main, 1))
-
-          subprocess.run(['git', 'checkout', 'ca12934', '--', 'src/advisory.rs'], check=True)
           advisory_path = Path('src/advisory.rs')
           text = advisory_path.read_text()
 
-          old_records = '''    let records = value
-          .get("vulnerabilities")
-          .and_then(Value::as_array)
-          .map(|vulnerabilities| {
-              vulnerabilities
-                  .iter()
-                  .map(|item| parse_nvd_record(item, source.source_url.as_str(), imported_unix))
-                  .collect::<Result<Vec<_>, _>>()
-          })
-          .transpose()?
-          .unwrap_or_default()
-          .into_iter()
-          .flatten()
-          .collect::<Vec<_>>();'''
-          new_records = '''    let records = value
-          .get("vulnerabilities")
-          .and_then(Value::as_array)
-          .unwrap_or_default()
-          .into_iter()
-          .filter_map(|item| {
-              let cve = item.get("cve").unwrap_or(item);
-              parse_nvd_record(cve, source.source_url.as_str(), imported_unix)
-          })
-          .collect::<Vec<_>>();'''
-          if old_records not in text:
-              raise SystemExit('expected parse_nvd_snapshot record block was not found in src/advisory.rs')
-          text = text.replace(old_records, new_records, 1)
+          old_import = 'use std::collections::HashMap;\n'
+          if old_import in text:
+              text = text.replace(old_import, '', 1)
 
-          old_merge_record = '''fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRecord) {
-      if let Some(existing) = records.iter_mut().find(|existing| {
-          existing.primary_id == record.primary_id
-              && existing.provenance.source_kind == record.provenance.source_kind
-              && existing.provenance.source_key == record.provenance.source_key
-      }) {
-          if compare_optional_timestamp(existing.last_modified.as_deref(), record.last_modified.as_deref())
-              .is_some_and(|ordering| ordering.is_gt())
-          {
-              return;
-          }
-          *existing = record;
-      } else {
-          records.push(record);
-      }
-  }'''
-          new_merge_record = '''fn merge_record(records: &mut Vec<VulnerabilityRecord>, record: VulnerabilityRecord) {
-      if let Some(existing) = records.iter_mut().find(|existing| {
-          existing.primary_id == record.primary_id
-              && existing.provenance.source_kind == record.provenance.source_kind
-              && existing.provenance.source_key == record.provenance.source_key
-      }) {
-          let should_replace = match compare_optional_timestamp(
-              record.last_modified.as_deref(),
-              existing.last_modified.as_deref(),
-          ) {
-              Some(std::cmp::Ordering::Greater) => true,
-              Some(std::cmp::Ordering::Less) => false,
-              Some(std::cmp::Ordering::Equal) | None => {
-                  record.provenance.imported_unix >= existing.provenance.imported_unix
-              }
-          };
-          if !should_replace {
-              return;
-          }
-          *existing = record;
-      } else {
-          records.push(record);
-      }
-  }'''
-          if old_merge_record not in text:
-              raise SystemExit('expected merge_record block was not found in src/advisory.rs')
-          text = text.replace(old_merge_record, new_merge_record, 1)
+          old_match = 'pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {\\n    match sync_nvd(force)? {'
+          new_match = 'pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {\\n    let outcome = sync_nvd(force)?;\\n    match outcome {'
+          if old_match not in text:
+              raise SystemExit('expected run_sync_cli match was not found in src/advisory.rs')
+          text = text.replace(old_match, new_match, 1)
 
-          old_patch = '''            if tags.iter().filter_map(Value::as_str).any(|tag| {
-                  tag.eq_ignore_ascii_case("mitigation")
-                      || tag.eq_ignore_ascii_case("vendor advisory")
-              }) {'''
-          new_patch = '''            if tags.iter().filter_map(Value::as_str).any(|tag| {
-                  tag.eq_ignore_ascii_case("mitigation")
-                      || tag.eq_ignore_ascii_case("vendor advisory")
-                      || tag.eq_ignore_ascii_case("patch")
-              }) {'''
-          if old_patch not in text:
-              raise SystemExit('expected mitigation tag predicate was not found in src/advisory.rs')
-          text = text.replace(old_patch, new_patch, 1)
+          old_return = '    Ok(())\\n}\\n\\npub fn import_nvd_snapshot'
+          new_return = '    Ok(outcome)\\n}\\n\\npub fn import_nvd_snapshot'
+          if old_return not in text:
+              raise SystemExit('expected run_sync_cli return was not found in src/advisory.rs')
+          text = text.replace(old_return, new_return, 1)
 
-          old_test_name = '    fn english_description_prefers_english_locale_and_falls_back() {'
-          if old_test_name in text:
-              text = text.replace(old_test_name, '    fn extract_summary_prefers_english_locale_and_falls_back() {', 1)
-          text = text.replace('assert_eq!(english_description(&english_locale), "English summary");', 'assert_eq!(extract_summary(&english_locale), "English summary");')
-          text = text.replace('assert_eq!(english_description(&fallback), "Resume");', 'assert_eq!(extract_summary(&fallback), "Resume");')
-
-          compare_marker = '''    #[test]
-      fn compare_optional_timestamp_handles_offset_and_naive_formats() {'''
-          extra_compare = '''    #[test]
-      fn merge_cache_uses_import_time_when_last_modified_is_equal_or_invalid() {
-          let existing_record = VulnerabilityRecord {
-              primary_id: "CVE-2026-12345".into(),
-              summary: "Earlier import".into(),
-              last_modified: Some("invalid".into()),
-              provenance: VulnerabilityProvenance {
-                  source_kind: "nvd".into(),
-                  source_key: "nvd-cve".into(),
-                  source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
-                  imported_unix: 100,
-              },
-              ..VulnerabilityRecord::default()
-          };
-          let imported_record = VulnerabilityRecord {
-              primary_id: "CVE-2026-12345".into(),
-              summary: "Later import".into(),
-              last_modified: Some("invalid".into()),
-              provenance: VulnerabilityProvenance {
-                  source_kind: "nvd".into(),
-                  source_key: "nvd-cve".into(),
-                  source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
-                  imported_unix: 110,
-              },
-              ..VulnerabilityRecord::default()
-          };
-
-          let merged = merge_cache(
-              Some(AdvisoryCache {
-                  schema_version: CACHE_SCHEMA_VERSION,
-                  generated_unix: 100,
-                  sources: vec![],
-                  records: vec![existing_record],
-              }),
-              AdvisoryCache {
-                  schema_version: CACHE_SCHEMA_VERSION,
-                  generated_unix: 110,
-                  sources: vec![],
-                  records: vec![imported_record],
-              },
-          );
-
-          assert_eq!(merged.records.len(), 1);
-          assert_eq!(merged.records[0].summary, "Later import");
-      }
-
-'''
-          if extra_compare.strip() not in text:
-              if compare_marker not in text:
-                  raise SystemExit('expected compare_optional_timestamp test marker was not found')
-              text = text.replace(compare_marker, extra_compare + compare_marker, 1)
-
-          nvd_sync_marker = '''    #[test]
-      fn nvd_sync_windows_split_long_offline_gaps() {'''
-          extra_nvd_tests = '''    #[test]
-      fn parse_nvd_snapshot_uses_inner_cve_wrapper_object() {
-          let snapshot = json!({
-              "resultsPerPage": 1,
-              "startIndex": 0,
-              "totalResults": 1,
-              "timestamp": "2026-04-26T00:00:00.000",
-              "vulnerabilities": [{
-                  "cve": {
-                      "id": "CVE-2026-4444",
-                      "published": "2026-04-25T10:00:00.000",
-                      "lastModified": "2026-04-26T10:00:00.000",
-                      "descriptions": [{"lang": "en", "value": "Wrapped CVE"}]
-                  }
-              }]
-          });
-
-          let cache = parse_nvd_snapshot(
-              serde_json::to_string(&snapshot).unwrap().as_bytes(),
-              None,
-          )
-          .unwrap();
-
-          assert_eq!(cache.records.len(), 1);
-          assert_eq!(cache.records[0].primary_id, "CVE-2026-4444");
-      }
-
-      #[test]
-      fn patch_tagged_references_are_treated_as_mitigations() {
-          let cve = json!({
-              "references": [{
-                  "url": "https://example.com/patch",
-                  "tags": ["Patch"]
-              }]
-          });
-
-          assert_eq!(
-              parse_mitigations(&cve),
-              vec!["https://example.com/patch".to_string()]
-          );
-      }
-
-'''
-          if extra_nvd_tests.strip() not in text:
-              if nvd_sync_marker not in text:
-                  raise SystemExit('expected nvd_sync_windows test marker was not found')
-              text = text.replace(nvd_sync_marker, extra_nvd_tests + nvd_sync_marker, 1)
+          old_hash = '    let combined_hash = sha256_hex(&page_hashes.join(":"));'
+          new_hash = '    let combined_hash = sha256_hex(page_hashes.join(":").as_bytes());'
+          if old_hash not in text:
+              raise SystemExit('expected finalize_import_batch_metadata hash line was not found in src/advisory.rs')
+          text = text.replace(old_hash, new_hash, 1)
 
           advisory_path.write_text(text)
           PY
@@ -245,10 +62,10 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add src/main.rs src/advisory.rs .github/workflows/fix-pr115-review.yml
+          git add src/advisory.rs .github/workflows/fix-pr115-review.yml
           if git diff --cached --quiet; then
             echo "No review changes needed"
             exit 0
           fi
-          git commit -m "fix(advisory): repair NVD sync follow-up regressions"
+          git commit -m "fix(advisory): clear remaining clippy blockers"
           git push origin HEAD:codex/phase16-live-nvd-sync-20260428100031
