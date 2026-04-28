@@ -15,7 +15,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -306,7 +305,8 @@ pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
 }
 
 pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
-    match sync_nvd(force)? {
+    let outcome = sync_nvd(force)?;
+    match &outcome {
         SyncOutcome::Updated(summary) => {
             println!(
                 "Fetched {} NVD page(s) and merged {} CVE record(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
@@ -323,7 +323,7 @@ pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
             );
         }
     }
-    Ok(())
+    Ok(outcome)
 }
 
 pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
@@ -1118,7 +1118,7 @@ fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[Stri
         return;
     }
 
-    let combined_hash = sha256_hex(&page_hashes.join(":"));
+    let combined_hash = sha256_hex(page_hashes.join(":").as_bytes());
     for source in &mut cache.sources {
         if !source.imported_from_batch.is_empty() {
             source.snapshot_sha256 = combined_hash.clone();
