@@ -1,0 +1,38 @@
+name: Temporary PR 115 fmt fixer
+
+on:
+  push:
+    branches:
+      - codex/phase16-live-nvd-sync-20260428100031
+
+permissions:
+  contents: write
+
+jobs:
+  fix-fmt:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: codex/phase16-live-nvd-sync-20260428100031
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+        with:
+          toolchain: stable
+          components: rustfmt
+      - name: Apply rustfmt
+        run: cargo fmt
+      - name: Remove temporary workflow
+        run: rm -f .github/workflows/fix-pr115-fmt.yml
+      - name: Commit formatted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/advisory.rs .github/workflows/fix-pr115-fmt.yml
+          if git diff --cached --quiet; then
+            echo "No formatting changes needed"
+            exit 0
+          fi
+          git commit -m "style: apply rustfmt to advisory sync"
+          git push origin HEAD:codex/phase16-live-nvd-sync-20260428100031
