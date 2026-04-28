@@ -26,6 +26,10 @@ AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
 
 ; Install to Program Files by default; allow per-user install without elevation.
+; Default to current-user mode so standard Windows accounts can install without
+; tripping an upfront admin-only check. The install-mode dialog still lets
+; admins switch to an all-users install.
+PrivilegesRequired=lowest
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 PrivilegesRequiredOverridesAllowed=dialog

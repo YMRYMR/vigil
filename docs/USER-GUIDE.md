@@ -20,7 +20,8 @@ Vigil is intentionally conservative about action. Scores and advisory context ar
 ### Windows
 
 1. Download the Windows installer from the latest GitHub Release.
-2. Run the installer.
+2. Run the installer. By default it installs for the current user; if you
+   choose an all-users install during setup, it installs to `Program Files`.
 3. Launch Vigil from the Start Menu or the installed shortcut.
 4. Use **Run as Admin** in the header when you need ETW visibility or active response actions.
 

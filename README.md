@@ -190,8 +190,9 @@ Vigil also runs two passive persistence watchers that raise synthetic alerts
 ### Windows — one-click installer
 
 1. Download `Vigil-Setup-<version>-x86_64.exe` from the [latest release].
-2. Run the installer — it places Vigil in `Program Files`, creates a Start
-   Menu shortcut, and registers it for autostart.
+2. Run the installer — by default it installs for the current user, creates a
+   Start Menu shortcut, and registers it for autostart. If you choose an
+   all-users install during setup, Vigil is installed in `Program Files`.
 
 > **Note:** ETW-based real-time monitoring requires Administrator rights.
 > Without elevation, Vigil falls back to polling every few seconds — all
