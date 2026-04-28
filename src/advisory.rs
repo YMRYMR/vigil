@@ -12,6 +12,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
@@ -281,12 +282,18 @@ fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> Advi
 
     merged.schema_version = CACHE_SCHEMA_VERSION;
     merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
+    let mut record_index = merged
+        .records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| (record_identity_key(record), index))
+        .collect::<HashMap<_, _>>();
 
     for source in imported.sources {
         merge_source(&mut merged.sources, source);
     }
     for record in imported.records {
-        merge_record(&mut merged.records, record);
+        merge_record(&mut merged.records, &mut record_index, record);
     }
 
     merged
@@ -303,16 +310,19 @@ fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySource
     }
 }
 
-fn merge_record(records: &mut Vec<VulnerabilityRecord>, incoming: VulnerabilityRecord) {
-    if let Some(existing) = records
-        .iter_mut()
-        .find(|record| same_record_identity(record, &incoming))
-    {
-        if should_replace_record(existing, &incoming) {
-            *existing = incoming;
+fn merge_record(
+    records: &mut Vec<VulnerabilityRecord>,
+    record_index: &mut HashMap<RecordIdentityKey, usize>,
+    incoming: VulnerabilityRecord,
+) {
+    let key = record_identity_key(&incoming);
+    if let Some(&existing_index) = record_index.get(&key) {
+        if should_replace_record(&records[existing_index], &incoming) {
+            records[existing_index] = incoming;
         }
     } else {
         records.push(incoming);
+        record_index.insert(key, records.len() - 1);
     }
 }
 
@@ -320,10 +330,14 @@ fn same_source_identity(left: &AdvisorySourceCache, right: &AdvisorySourceCache)
     left.source_kind == right.source_kind && left.source_key == right.source_key
 }
 
-fn same_record_identity(left: &VulnerabilityRecord, right: &VulnerabilityRecord) -> bool {
-    left.primary_id == right.primary_id
-        && left.provenance.source_kind == right.provenance.source_kind
-        && left.provenance.source_key == right.provenance.source_key
+type RecordIdentityKey = (String, String, String);
+
+fn record_identity_key(record: &VulnerabilityRecord) -> RecordIdentityKey {
+    (
+        record.primary_id.clone(),
+        record.provenance.source_kind.clone(),
+        record.provenance.source_key.clone(),
+    )
 }
 
 fn should_replace_record(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
