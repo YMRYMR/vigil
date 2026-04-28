@@ -780,10 +780,6 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
     })
 }
 
-fn empty_source_health() -> SourceHealth {
-    SourceHealth::Fresh
-}
-
 fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> AdvisoryCache {
     let mut merged = existing.unwrap_or_else(|| AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
@@ -1007,12 +1003,7 @@ fn parse_mitigations(cve: &Value) -> Vec<String> {
 fn parse_references(cve: &Value) -> Vec<VulnerabilityReference> {
     cve.get("references")
         .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| parse_reference(item))
-                .collect::<Vec<_>>()
-        })
+        .map(|items| items.iter().filter_map(parse_reference).collect::<Vec<_>>())
         .unwrap_or_default()
 }
 
