@@ -153,7 +153,7 @@ fn main() {
                 elevated_launcher = true;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import an NVD CVE JSON snapshot into the protected advisory cache\n  --advisory-cache-status   show advisory cache status and source health\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json\n                           import or merge an NVD CVE JSON snapshot into the protected advisory cache\n  --advisory-cache-status   show advisory cache status and source health\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
