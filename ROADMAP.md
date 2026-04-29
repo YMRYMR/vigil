@@ -271,17 +271,17 @@ Make sure no file used by Vigil can be silently tampered with without detection,
 
 ---
 
-## Phase 16 — Public Vulnerability Intelligence & Advisory Feeds (OPEN backlog)
+## Phase 16 — Public Vulnerability Intelligence & Advisory Feeds 🚧 FOUNDATIONS IN PLACE
 
 Use free public vulnerability and advisory sources to help Vigil keep the local machine secure, while keeping every decision explainable, conservative, and useful offline from the last trusted cache.
 
 ### Source ingestion and normalization
-- [ ] **NVD ingestion** — scheduled pull + local cache for NVD CVE, CPE, CPE-match, and change-history data with source attribution, rate-limit-aware sync, and local incremental updates
+- [x] **Normalized vulnerability record model** — shared schema for CVE/advisory/source/affected product/version/severity/exploitation/references/mitigation/provenance so multiple sources can coexist cleanly
+- [x] **Signed local source cache** — fetched records and source snapshots are stored as tamper-evident local state with expiry, rollback-safe refresh, and operator-visible source health/status
+- [ ] **NVD CVE ingestion foundations** — protected local cache for NVD CVE snapshots now supports offline import, live API sync, source attribution, rate-limit-aware refresh, and incremental `lastMod*` updates; remaining work for this slice is NVD CPE, CPE-match, and change-history ingestion
 - [ ] **EUVD ingestion** — ingest EUVD records and preserve EU-specific aliases, references, mitigation guidance, exploitation indicators, and coordinator metadata
 - [ ] **JVN ingestion** — ingest MyJVN / JVN iPedia records and preserve vendor, product, advisory, and remediation metadata where it complements NVD coverage
 - [ ] **Public advisory ingestion for NCSC and BSI** — ingest public RSS, advisory, and malware-analysis content only; do not depend on closed, partner-only, or registration-gated feeds
-- [ ] **Normalized vulnerability record model** — shared schema for CVE/advisory/source/affected product/version/severity/exploitation/references/mitigation/provenance so multiple sources can coexist cleanly
-- [ ] **Signed local source cache** — store fetched records and source snapshots as tamper-evident local state with expiry, rollback-safe refresh, and operator-visible source health/status
 
 ### Endpoint relevance and matching
 - [ ] **Local software inventory and version discovery** — broaden process, file, package, service, and installed-software collection so Vigil can reason about what is actually present on the machine, not just what is currently connecting
@@ -443,8 +443,8 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 3.x | 12 | Detection depth | ✅ Done |
 | 4.x | 13 | Optimization & efficiency | ✅ Feature complete |
 | 5.x | 14 | Hardening & self-defence | ✅ Done |
-| 5.x | 15 | File integrity & anti-tamper (OPEN) | 🚧 In progress |
-| 6.x | 16 | Public vulnerability intelligence & advisory feeds (OPEN) | 🔲 Backlog |
+| 5.x | 15 | File integrity & anti-tamper | ✅ Done |
+| 6.x | 16 | Public vulnerability intelligence & advisory feeds | 🚧 Foundations in place |
 | 7.x | 17 | Protocol expansion (OPEN) | 🔲 Backlog |
 | 8.x | 18 | Cross-platform detection parity (OPEN) | 🔲 Backlog |
 | PRO 1.x | 19 | Cloud fleet console & integrations | 🔲 Backlog |
