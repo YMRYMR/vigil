@@ -130,72 +130,28 @@ pub struct Config {
     pub ui_scale: f32,
 }
 
-fn default_true() -> bool {
-    true
-}
-fn default_activity_history_cap() -> usize {
-    2048
-}
-fn default_alerts_history_cap() -> usize {
-    1024
-}
-fn default_fswatch_window() -> u64 {
-    600
-}
-fn default_long_lived_threshold() -> u64 {
-    3600
-}
-fn default_dga_threshold() -> f32 {
-    3.2
-}
-fn default_auto_response_min_score() -> u8 {
-    10
-}
-fn default_auto_response_cooldown_secs() -> u64 {
-    300
-}
-fn default_scheduled_lockdown_start_hour() -> u8 {
-    23
-}
-fn default_scheduled_lockdown_start_minute() -> u8 {
-    0
-}
-fn default_scheduled_lockdown_end_hour() -> u8 {
-    6
-}
-fn default_scheduled_lockdown_end_minute() -> u8 {
-    0
-}
-fn default_process_dump_min_score() -> u8 {
-    12
-}
-fn default_process_dump_cooldown_secs() -> u64 {
-    600
-}
-fn default_pcap_min_score() -> u8 {
-    12
-}
-fn default_pcap_duration_secs() -> u64 {
-    15
-}
-fn default_pcap_cooldown_secs() -> u64 {
-    300
-}
-fn default_pcap_packet_size_bytes() -> u32 {
-    0
-}
-fn default_honeypot_poll_secs() -> u64 {
-    10
-}
-fn default_break_glass_timeout_mins() -> u64 {
-    10
-}
-fn default_break_glass_heartbeat_secs() -> u64 {
-    30
-}
-fn default_ui_scale() -> f32 {
-    1.0
-}
+fn default_true() -> bool { true }
+fn default_activity_history_cap() -> usize { 1024 }
+fn default_alerts_history_cap() -> usize { 512 }
+fn default_fswatch_window() -> u64 { 600 }
+fn default_long_lived_threshold() -> u64 { 3600 }
+fn default_dga_threshold() -> f32 { 3.2 }
+fn default_auto_response_min_score() -> u8 { 10 }
+fn default_auto_response_cooldown_secs() -> u64 { 300 }
+fn default_scheduled_lockdown_start_hour() -> u8 { 23 }
+fn default_scheduled_lockdown_start_minute() -> u8 { 0 }
+fn default_scheduled_lockdown_end_hour() -> u8 { 6 }
+fn default_scheduled_lockdown_end_minute() -> u8 { 0 }
+fn default_process_dump_min_score() -> u8 { 12 }
+fn default_process_dump_cooldown_secs() -> u64 { 600 }
+fn default_pcap_min_score() -> u8 { 12 }
+fn default_pcap_duration_secs() -> u64 { 15 }
+fn default_pcap_cooldown_secs() -> u64 { 300 }
+fn default_pcap_packet_size_bytes() -> u32 { 0 }
+fn default_honeypot_poll_secs() -> u64 { 10 }
+fn default_break_glass_timeout_mins() -> u64 { 10 }
+fn default_break_glass_heartbeat_secs() -> u64 { 30 }
+fn default_ui_scale() -> f32 { 1.0 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -206,129 +162,14 @@ impl Default for Config {
             autostart: false,
             first_run_done: false,
             trusted_processes: vec![
-                "svchost",
-                "lsass",
-                "services",
-                "system",
-                "smss",
-                "csrss",
-                "wininit",
-                "winlogon",
-                "explorer",
-                "runtimebroker",
-                "searchhost",
-                "startmenuexperiencehost",
-                "shellhost",
-                "sihost",
-                "ctfmon",
-                "textinputhost",
-                "shellexperiencehost",
-                "widgetservice",
-                "widgetboard",
-                "crossdeviceservice",
-                "crossdeviceresume",
-                "phoneexperiencehost",
-                "castsrv",
-                "chrome",
-                "msedge",
-                "firefox",
-                "opera",
-                "brave",
-                "vivaldi",
-                "msedgewebview2",
-                "cefsharp.browsersubprocess",
-                "onedrive",
-                "systemsettings",
-                "microsoftstartfeedprovider",
-                "avgsvc",
-                "avgui",
-                "avgbidsagent",
-                "avgdriverupdsvc",
-                "avgtuneupssvc",
-                "vpnsvc",
-                "tuneupssvc",
-                "avgwscreporter",
-                "avgantitrack",
-                "antitrackSvc",
-                "securevpn",
-                "su_worker",
-                "avgtoolssvc",
-                "wa_3rd_party_host_64",
-                "avlaunch",
-                "claude",
-                "node",
-                "python",
-                "python3",
-                "spotify",
-                "steam",
-                "epicgameslauncher",
-                "ealauncher",
-                "eadesktop",
-                "eabackgroundservice",
-                "whatsapp",
-                "whatsapp.root",
-                "zoom",
-                "slack",
-                "discord",
-                "telegram",
-                "ollama",
-                "ollama_llama_server",
-                "nvdisplay.containerlocalsystem",
-                "nvbroadcast.containerlocalsystem",
-                "rtkaudiouniversalservice",
-                "intelgraphicssoftwareservice",
-                "waasmedicsvc",
-                "wsaifabricsvc",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-            common_ports: vec![
-                80, 443, 8080, 8443, 53, 853, 22, 21, 25, 587, 465, 993, 995, 110, 143, 5222, 5228,
-                3478, 3479, 7500, 27275,
-            ],
-            malware_ports: vec![
-                4444, 1337, 31337, 6666, 6667, 6668, 6669, 9999, 1234, 54321, 12345, 23, 5900,
-                5901, 4899, 8888,
-            ],
-            suspicious_path_fragments: [
-                r"\Temp\",
-                r"\AppData\Local\Temp\",
-                r"\AppData\Roaming\",
-                r"\Downloads\",
-                r"\Public\",
-                "/tmp/",
-                "/var/tmp/",
-            ]
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect(),
-            lolbins: vec![
-                "cmd",
-                "powershell",
-                "pwsh",
-                "wscript",
-                "cscript",
-                "mshta",
-                "regsvr32",
-                "rundll32",
-                "certutil",
-                "bitsadmin",
-                "wmic",
-                "msiexec",
-                "installutil",
-                "regasm",
-                "regsvcs",
-                "forfiles",
-                "msbuild",
-                "odbcconf",
-                "desktopimgdownldr",
-                "control",
-                "ieexec",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+                "svchost","lsass","services","system","smss","csrss","wininit","winlogon","explorer","runtimebroker","searchhost","startmenuexperiencehost","shellhost","sihost","ctfmon","textinputhost","shellexperiencehost","widgetservice","widgetboard","crossdeviceservice","crossdeviceresume","phoneexperiencehost","castsrv","chrome","msedge","firefox","opera","brave","vivaldi","msedgewebview2","cefsharp.browsersubprocess","onedrive","systemsettings","microsoftstartfeedprovider","avgsvc","avgui","avgbidsagent","avgdriverupdsvc","avgtuneupssvc","vpnsvc","tuneupssvc","avgwscreporter","avgantitrack","antitrackSvc","securevpn","su_worker","avgtoolssvc","wa_3rd_party_host_64","avlaunch","claude","node","python","python3","spotify","steam","epicgameslauncher","ealauncher","eadesktop","eabackgroundservice","whatsapp","whatsapp.root","zoom","slack","discord","telegram","ollama","ollama_llama_server","nvdisplay.containerlocalsystem","nvbroadcast.containerlocalsystem","rtkaudiouniversalservice","intelgraphicssoftwareservice","waasmedicsvc","wsaifabricsvc",
+            ].iter().map(|s| s.to_string()).collect(),
+            common_ports: vec![80,443,8080,8443,53,853,22,21,25,587,465,993,995,110,143,5222,5228,3478,3479,7500,27275],
+            malware_ports: vec![4444,1337,31337,6666,6667,6668,6669,9999,1234,54321,12345,23,5900,5901,4899,8888],
+            suspicious_path_fragments: [r"\Temp\", r"\AppData\Local\Temp\", r"\AppData\Roaming\", r"\Downloads\", r"\Public\", "/tmp/", "/var/tmp/"]
+                .into_iter().map(|s| s.to_string()).collect(),
+            lolbins: vec!["cmd","powershell","pwsh","wscript","cscript","mshta","regsvr32","rundll32","certutil","bitsadmin","wmic","msiexec","installutil","regasm","regsvcs","forfiles","msbuild","odbcconf","desktopimgdownldr","control","ieexec"]
+                .iter().map(|s| s.to_string()).collect(),
             activity_history_cap: default_activity_history_cap(),
             alerts_history_cap: default_alerts_history_cap(),
             geoip_city_db: String::new(),
@@ -372,11 +213,7 @@ impl Default for Config {
             honeypot_decoys_enabled: false,
             honeypot_auto_isolate: false,
             honeypot_poll_secs: 10,
-            honeypot_decoy_names: vec![
-                "Quarterly Payroll 2026.xlsx".into(),
-                "Passwords-Do-Not-Open.txt".into(),
-                "AWS-Root-Keys.txt".into(),
-            ],
+            honeypot_decoy_names: vec!["Quarterly Payroll 2026.xlsx".into(),"Passwords-Do-Not-Open.txt".into(),"AWS-Root-Keys.txt".into()],
             break_glass_enabled: true,
             break_glass_timeout_mins: 10,
             break_glass_heartbeat_secs: 30,
@@ -388,48 +225,29 @@ impl Default for Config {
 pub fn data_dir() -> PathBuf {
     #[cfg(target_os = "windows")]
     {
-        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
-            return PathBuf::from(dir).join("Vigil");
-        }
-        if let Some(dir) = std::env::var_os("APPDATA") {
-            return PathBuf::from(dir).join("Vigil");
-        }
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") { return PathBuf::from(dir).join("Vigil"); }
+        if let Some(dir) = std::env::var_os("APPDATA") { return PathBuf::from(dir).join("Vigil"); }
     }
     #[cfg(target_os = "macos")]
     {
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join("Library")
-                .join("Application Support")
-                .join("Vigil");
+            return PathBuf::from(home).join("Library").join("Application Support").join("Vigil");
         }
     }
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
-            return PathBuf::from(xdg).join("vigil");
-        }
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home).join(".config").join("vigil");
-        }
+        if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") { return PathBuf::from(xdg).join("vigil"); }
+        if let Some(home) = std::env::var_os("HOME") { return PathBuf::from(home).join(".config").join("vigil"); }
     }
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("vigil-data")))
-        .unwrap_or_else(|| PathBuf::from("vigil-data"))
+    std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.join("vigil-data"))).unwrap_or_else(|| PathBuf::from("vigil-data"))
 }
 
-pub fn config_path() -> PathBuf {
-    data_dir().join("vigil.json")
-}
+pub fn config_path() -> PathBuf { data_dir().join("vigil.json") }
 
 impl Config {
     pub fn load() -> Self {
         let path = config_path();
-        let Some(bytes) = crate::security::policy::load_json_with_integrity(&path)
-            .ok()
-            .flatten()
-        else {
+        let Some(bytes) = crate::security::policy::load_json_with_integrity(&path).ok().flatten() else {
             return Self::default();
         };
         serde_json::from_slice::<Config>(&bytes).unwrap_or_else(|err| {
@@ -441,9 +259,7 @@ impl Config {
         let path = config_path();
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
-                if let Err(e) =
-                    crate::security::policy::save_json_with_integrity(&path, json.as_bytes())
-                {
+                if let Err(e) = crate::security::policy::save_json_with_integrity(&path, json.as_bytes()) {
                     tracing::warn!("failed to save config: {e}");
                 }
             }
@@ -451,48 +267,27 @@ impl Config {
         }
     }
     #[allow(dead_code)]
-    pub fn get_trusted(&self) -> &[String] {
-        &self.trusted_processes
-    }
+    pub fn get_trusted(&self) -> &[String] { &self.trusted_processes }
     pub fn add_trusted(&mut self, name: &str) -> bool {
         let key = normalise_name(name);
-        if key.is_empty() {
-            return false;
-        }
-        if self
-            .trusted_processes
-            .iter()
-            .any(|t| t.eq_ignore_ascii_case(&key))
-        {
-            return false;
-        }
+        if key.is_empty() { return false; }
+        if self.trusted_processes.iter().any(|t| t.eq_ignore_ascii_case(&key)) { return false; }
         self.trusted_processes.push(key);
         true
     }
-
-    pub fn sanitised_ui_scale(&self) -> f32 {
-        self.ui_scale.clamp(0.8, 1.8)
-    }
-    pub fn sanitised_activity_history_cap(&self) -> usize {
-        self.activity_history_cap.clamp(256, 16_384)
-    }
-    pub fn sanitised_alerts_history_cap(&self) -> usize {
-        self.alerts_history_cap.clamp(128, 8_192)
-    }
+    pub fn sanitised_ui_scale(&self) -> f32 { self.ui_scale.clamp(0.8, 1.8) }
+    pub fn sanitised_activity_history_cap(&self) -> usize { self.activity_history_cap.clamp(128, 8_192) }
+    pub fn sanitised_alerts_history_cap(&self) -> usize { self.alerts_history_cap.clamp(64, 4_096) }
     #[allow(dead_code)]
     pub fn remove_trusted(&mut self, name: &str) -> bool {
         let before = self.trusted_processes.len();
-        self.trusted_processes
-            .retain(|t| !t.eq_ignore_ascii_case(name));
+        self.trusted_processes.retain(|t| !t.eq_ignore_ascii_case(name));
         self.trusted_processes.len() < before
     }
 }
 
 pub fn normalise_name(name: &str) -> String {
-    name.trim()
-        .to_lowercase()
-        .trim_end_matches(".exe")
-        .to_string()
+    name.trim().to_lowercase().trim_end_matches(".exe").to_string()
 }
 
 #[cfg(test)]
@@ -514,13 +309,7 @@ mod tests {
         let mut cfg = Config::default();
         cfg.add_trusted("testapp");
         assert!(!cfg.add_trusted("testapp"));
-        assert_eq!(
-            cfg.trusted_processes
-                .iter()
-                .filter(|t| *t == "testapp")
-                .count(),
-            1
-        );
+        assert_eq!(cfg.trusted_processes.iter().filter(|t| *t == "testapp").count(), 1);
     }
     #[test]
     fn remove_trusted_works() {
@@ -550,12 +339,8 @@ mod tests {
     }
     #[test]
     fn history_caps_are_sanitised() {
-        let cfg = Config {
-            activity_history_cap: 1,
-            alerts_history_cap: usize::MAX,
-            ..Config::default()
-        };
-        assert_eq!(cfg.sanitised_activity_history_cap(), 256);
-        assert_eq!(cfg.sanitised_alerts_history_cap(), 8_192);
+        let cfg = Config { activity_history_cap: 1, alerts_history_cap: usize::MAX, ..Config::default() };
+        assert_eq!(cfg.sanitised_activity_history_cap(), 128);
+        assert_eq!(cfg.sanitised_alerts_history_cap(), 4_096);
     }
 }
