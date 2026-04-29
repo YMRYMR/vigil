@@ -616,7 +616,7 @@ jobs:
           pr_body=""
           pr_url=""
           resolved_pr_number="${PR_NUMBER}"
-          fallback_subject="$(git show -s --format=%s "${{ needs.validate-release-metadata.outputs.checkout_ref }}")"
+          fallback_subject="$(git show -s --format=%s "${{ needs.validate-release-metadata.outputs.checkout_ref }}^{commit}")"
 
           if [ -z "${resolved_pr_number}" ]; then
             resolved_pr_number="$(printf '%s' "$fallback_subject" | sed -nE 's/.*#([0-9]+).*/\1/p' | head -n1)"
