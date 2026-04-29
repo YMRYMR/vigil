@@ -6,7 +6,6 @@ on:
     types: [completed]
 
 permissions:
-  actions: write
   contents: write
   pull-requests: write
 
@@ -312,22 +311,6 @@ jobs:
             --body "Keeps \`Cargo.toml\` and \`Cargo.lock\` aligned with the already-cut \`v${NEXT_VERSION}\` release commit."; then
             echo "::warning::Could not open release bookkeeping PR for ${RELEASE_BRANCH}. The release branch was pushed successfully, but GitHub Actions is not allowed to create pull requests in this repository."
           fi
-
-      - name: Dispatch release workflow
-        if: steps.tag.outputs.release_ready == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          NEXT_VERSION: ${{ steps.version.outputs.next_version }}
-          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
-        run: |
-          gh api \
-            --method POST \
-            -H "Accept: application/vnd.github+json" \
-            "/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches" \
-            -f ref="master" \
-            -f inputs[tag]="v${NEXT_VERSION}" \
-            -f inputs[version]="${NEXT_VERSION}" \
-            -f inputs[source_ref]="${SOURCE_REF}"
 
       - name: Report skipped release
         if: always() && steps.tag.outputs.release_ready != 'true'
