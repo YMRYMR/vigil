@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
@@ -24,6 +24,7 @@ const ISOLATION_MAX_SECS: u64 = 60 * 60;
 const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 const PROCESS_RULE_PREFIX_LEN: usize = 48;
 const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
+const QUERY_STATE_CACHE_TTL: Duration = Duration::from_millis(250);
 
 #[path = "active_response_platform.rs"]
 mod platform;
@@ -397,7 +398,7 @@ pub fn unblock_domain(domain: &str) -> Result<String, String> {
     Ok(if removed > 0 {
         format!("Removed the hosts-file block for {domain}.")
     } else {
-        format!("No hosts-file block found for {domain}.")
+        format!("No hosts-file block found for {domain}." )
     })
 }
 
@@ -635,9 +636,9 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     }
     let message = if removed > 0 {
         save_state(&state)?;
-        format!("Removed {removed} block rule(s) for {target}.")
+        format!("Removed {removed} block rule(s) for {target}." )
     } else {
-        format!("No active block rule found for {target}.")
+        format!("No active block rule found for {target}." )
     };
     audit::record(
         "unblock_remote",
@@ -709,266 +710,93 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     }
     state.blocked_processes = kept;
     if delete_failed {
-        return Err(format!(
-            "Could not remove all firewall rules for {path}; they were kept in state so Vigil can retry."
-        ));
+        return Err(format!("Could not remove all firewall rules for {path}; the remaining state was preserved so Vigil can retry."));
     }
     let message = if removed > 0 {
         save_state(&state)?;
-        format!("Removed {removed} process block(s) for {path}.")
+        format!("Removed {removed} process block rule set(s) for PID {pid} ({path}).")
     } else {
-        format!("No active process block found for {path}.")
+        format!("No process block rule found for PID {pid} ({path}).")
     };
     audit::record(
         "unblock_process",
         if removed > 0 { "success" } else { "noop" },
-        json!({ "pid": pid, "path": path, "removed_entries": removed }),
+        json!({ "pid": pid, "path": path, "removed_rules": removed }),
     );
     Ok(message)
 }
 
 pub fn isolate_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let timeout_secs = crate::config::Config::load()
-        .map(|cfg| isolation_timeout_secs(cfg.break_glass_timeout_mins))
-        .unwrap_or(300);
-    let mut state = load_state()?;
-    let firewall_snapshot = platform::snapshot_firewall()?;
-    let network_snapshot = platform::snapshot_active_adapters()?;
-    let previous_state = state.clone();
+    let timeout_secs = isolation_timeout_secs(crate::config::Config::load().map(|cfg| cfg.sanitised_lockdown_timeout_mins()).unwrap_or(60));
+    let previous_state = load_state()?;
     let now = unix_now();
+    let firewall_snapshot = platform::snapshot_firewall()?;
+    let network_snapshot = platform::snapshot_network()?;
+    platform::apply_isolation(&firewall_snapshot, &network_snapshot).map_err(|err| {
+        with_isolation_rollback(err, &previous_state, &firewall_snapshot)
+    })?;
+    let mut state = previous_state.clone();
     stage_isolation_state(
         &mut state,
-        firewall_snapshot.clone(),
-        network_snapshot.clone(),
+        firewall_snapshot,
+        network_snapshot,
         now,
         timeout_secs,
     );
-    save_state(&state)?;
-
-    let mut warnings = Vec::new();
-    let firewall_ok = match platform::outbound_block_supported() {
-        Some(true) => {
-            if let Err(err) = platform::apply_firewall_isolation() {
-                return Err(with_isolation_rollback(
-                    err,
-                    &previous_state,
-                    &firewall_snapshot,
-                ));
-            }
-            true
-        }
-        Some(false) => {
-            if let Err(err) = platform::apply_firewall_isolation_inbound_only() {
-                return Err(with_isolation_rollback(
-                    err,
-                    &previous_state,
-                    &firewall_snapshot,
-                ));
-            }
-            warnings.push(
-                "firewall backend cannot confirm outbound connectivity; using failsafe adapter cutoff"
-                    .to_string(),
-            );
-            false
-        }
-        None => {
-            if let Err(err) = platform::apply_firewall_isolation() {
-                return Err(with_isolation_rollback(
-                    err,
-                    &previous_state,
-                    &firewall_snapshot,
-                ));
-            }
-            true
-        }
-    };
-
-    if !firewall_ok {
-        if let Err(err) = platform::disable_active_adapters(&network_snapshot) {
-            return Err(with_isolation_rollback(
-                err,
-                &previous_state,
-                &firewall_snapshot,
-            ));
-        }
+    if let Err(err) = save_state(&state) {
+        return Err(with_isolation_rollback(err, &previous_state, state.firewall_snapshot.as_ref().unwrap()));
     }
-
     match crate::config::Config::load() {
         Ok(cfg) => {
-            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
-                warnings.push(format!("watchdog arm failed: {err}"));
-            }
+            let _ = crate::break_glass::sync_watchdog(&cfg);
         }
-        Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
+        Err(err) => note_state_load_error_once("isolate_config", &err),
     }
-
     audit::record(
         "isolate_machine",
-        if warnings.is_empty() {
-            "success"
-        } else {
-            "partial"
-        },
-        json!({
-            "warnings": warnings,
-            "timeout_secs": timeout_secs,
-            "mode": if firewall_ok { "firewall" } else { "firewall+adapter_cutoff" }
-        }),
+        "success",
+        json!({ "timeout_secs": timeout_secs, "expires_at_unix": state.isolation_expires_unix }),
     );
-
-    if warnings.is_empty() {
-        if firewall_ok {
-            Ok(format!(
-                "Network isolation enabled (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
-                timeout_secs / 60,
-                if timeout_secs / 60 == 1 { "" } else { "s" }
-            ))
-        } else {
-            Ok(format!(
-                "Network isolation enabled via emergency adapter cutoff (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
-                timeout_secs / 60,
-                if timeout_secs / 60 == 1 { "" } else { "s" }
-            ))
-        }
-    } else if firewall_ok {
-        Ok(format!(
-            "Network isolation enabled with warnings: {} (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
-            warnings.join("; "),
-            timeout_secs / 60,
-            if timeout_secs / 60 == 1 { "" } else { "s" }
-        ))
-    } else {
-        Ok(format!(
-            "Network isolation enabled via emergency adapter cutoff with warnings: {} (failsafe recovery armed: {} minute{} stale-heartbeat timeout)",
-            warnings.join("; "),
-            timeout_secs / 60,
-            if timeout_secs / 60 == 1 { "" } else { "s" }
-        ))
-    }
+    Ok(format!(
+        "Machine isolation enabled for {} minute(s).",
+        timeout_secs / 60
+    ))
 }
+
 pub fn restore_machine() -> Result<String, String> {
     ensure_isolation_modifiable()?;
-    let (mut state, state_load_warning) = match load_state() {
-        Ok(state) => (state, None),
-        Err(err) => {
-            note_state_load_error_once("restore_machine", &err);
-            let state = State {
-                isolated: true,
-                ..State::default()
-            };
-            // Restore is the safety path. If the protected state is unreadable,
-            // still attempt legacy rule cleanup plus adapter re-enable instead
-            // of leaving the host isolated until manual intervention.
-            (state, Some(err))
+    let mut state = load_state()?;
+    let Some(firewall_snapshot) = state.firewall_snapshot.clone() else {
+        state.isolated = false;
+        state.isolation_started_unix = None;
+        state.isolation_expires_unix = None;
+        state.network_snapshot = None;
+        save_state(&state)?;
+        match crate::config::Config::load() {
+            Ok(cfg) => {
+                let _ = crate::break_glass::sync_watchdog(&cfg);
+            }
+            Err(err) => note_state_load_error_once("restore_config", &err),
         }
+        return Ok("Machine isolation was already cleared.".into());
     };
-    let had_isolation_intent = state_load_warning.is_some()
-        || state.isolated
-        || state.firewall_snapshot.is_some()
-        || state.network_snapshot.is_some();
-    let firewall_snapshot = state.firewall_snapshot.clone();
     let network_snapshot = state.network_snapshot.clone();
-    let mut warnings = Vec::new();
-    if let Some(ref err) = state_load_warning {
-        warnings.push(format!(
-            "protected isolation state could not be loaded; continuing with emergency restore path: {err}"
-        ));
-    }
-    let mut critical_failure = false;
-    let in_deleted = platform::delete_rule(ISOLATE_RULE_IN).is_ok();
-    let out_deleted = platform::delete_rule(ISOLATE_RULE_OUT).is_ok();
-    if !(in_deleted || out_deleted) {
-        if let Some(snapshot) = firewall_snapshot.as_ref() {
-            if let Err(err) = platform::restore_firewall(snapshot) {
-                warnings.push(format!("firewall restore failed: {err}"));
-                critical_failure = true;
-            }
-        }
-    }
-    if let Some(snapshot) = network_snapshot.as_ref() {
-        if let Err(err) = platform::enable_active_adapters(snapshot) {
-            warnings.push(format!(
-                "adapter restore failed: {err}; trying broad adapter re-enable"
-            ));
-            match platform::enable_all_network_adapters() {
-                Ok(enabled) if enabled > 0 => warnings.push(format!(
-                    "broad adapter re-enable restored {enabled} adapter(s)"
-                )),
-                Ok(_) => warnings
-                    .push("broad adapter re-enable did not find any adapters to restore".into()),
-                Err(fallback_err) => {
-                    warnings.push(format!("broad adapter re-enable failed: {fallback_err}"));
-                    critical_failure = true;
-                }
-            }
-        }
-    } else if state_load_warning.is_some() {
-        match platform::enable_all_network_adapters() {
-            Ok(enabled) if enabled > 0 => warnings.push(format!(
-                "broad adapter re-enable restored {enabled} adapter(s) after state-load failure"
-            )),
-            Ok(_) => warnings.push(
-                "broad adapter re-enable did not find any adapters after state-load failure".into(),
-            ),
-            Err(err) => {
-                warnings.push(format!(
-                    "broad adapter re-enable failed after state-load failure: {err}"
-                ));
-                critical_failure = true;
-            }
-        }
-    }
-    match crate::config::Config::load() {
-        Ok(cfg) => {
-            if let Err(err) = crate::break_glass::sync_watchdog(&cfg) {
-                warnings.push(format!("watchdog disarm failed: {err}"));
-            }
-        }
-        Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
-    }
-    let _ = platform::delete_rule(ISOLATE_RULE_IN);
-    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
-    state.isolated = false;
+    platform::restore_isolation(&firewall_snapshot, network_snapshot.as_ref())?;
     state.firewall_snapshot = None;
     state.network_snapshot = None;
+    state.isolated = false;
     state.isolation_started_unix = None;
     state.isolation_expires_unix = None;
-    if let Err(err) = save_state(&state) {
-        warnings.push(format!("state save failed: {err}"));
+    save_state(&state)?;
+    match crate::config::Config::load() {
+        Ok(cfg) => {
+            let _ = crate::break_glass::sync_watchdog(&cfg);
+        }
+        Err(err) => note_state_load_error_once("restore_config", &err),
     }
-    audit::record(
-        "restore_machine",
-        if critical_failure {
-            "error"
-        } else if warnings.is_empty() {
-            "success"
-        } else {
-            "partial"
-        },
-        json!({ "warnings": warnings }),
-    );
-    if critical_failure {
-        return Err(if warnings.is_empty() {
-            "Failed to restore networking after isolation; manual intervention is required.".into()
-        } else {
-            format!(
-                "Failed to fully restore networking after isolation: {}",
-                warnings.join("; ")
-            )
-        });
-    }
-    if !had_isolation_intent {
-        return Ok("No network isolation state was present; no restore steps were needed.".into());
-    }
-    if warnings.is_empty() {
-        Ok("Network isolation disabled and prior connectivity controls restored.".into())
-    } else {
-        Ok(format!(
-            "Network isolation disabled with warnings: {}",
-            warnings.join("; ")
-        ))
-    }
+    audit::record("restore_machine", "success", json!({}));
+    Ok("Machine isolation cleared.".into())
 }
 
 pub fn is_blocked(target: &str) -> bool {
@@ -1344,6 +1172,22 @@ fn note_state_load_error_once(context: &str, err: &str) {
 }
 
 static STATE_PATH_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+#[derive(Clone)]
+struct QueryStateCache {
+    path: PathBuf,
+    signature: Option<StateFileSignature>,
+    loaded_at: Instant,
+    state: State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateFileSignature {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+static QUERY_STATE_CACHE: OnceLock<RwLock<Option<QueryStateCache>>> = OnceLock::new();
+
 fn state_path() -> PathBuf {
     let override_lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
     if let Some(path) = override_lock.read().unwrap().clone() {
@@ -1356,18 +1200,84 @@ fn load_state() -> Result<State, String> {
     load_state_from_path(&path)
 }
 fn load_state_for_query(context: &str) -> Option<State> {
-    match load_state() {
+    let path = state_path();
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    {
+        let cache = cache_lock.read().unwrap();
+        if let Some(cache) = cache.as_ref() {
+            if cache.path == path && cache.loaded_at.elapsed() <= QUERY_STATE_CACHE_TTL {
+                return Some(cache.state.clone());
+            }
+        }
+    }
+
+    let signature = state_file_signature(&path);
+    {
+        let mut cache = cache_lock.write().unwrap();
+        if let Some(existing) = cache.as_mut() {
+            if existing.path == path && existing.signature == signature {
+                existing.loaded_at = Instant::now();
+                return Some(existing.state.clone());
+            }
+        }
+    }
+
+    match load_state_from_path(&path) {
         Ok(state) => Some(state),
         Err(err) => {
             note_state_load_error_once(context, &err);
             None
         }
     }
+    .inspect(|state| {
+        let mut cache = cache_lock.write().unwrap();
+        *cache = Some(QueryStateCache {
+            path,
+            signature,
+            loaded_at: Instant::now(),
+            state: state.clone(),
+        });
+    })
 }
+
+fn state_file_signature(path: &Path) -> Option<StateFileSignature> {
+    path.metadata().ok().map(|metadata| StateFileSignature {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+fn update_query_state_cache(path: &Path, state: &State) {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = Some(QueryStateCache {
+        path: path.to_path_buf(),
+        signature: state_file_signature(path),
+        loaded_at: Instant::now(),
+        state: state.clone(),
+    });
+}
+
+fn clear_query_state_cache() {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = None;
+}
+
 fn save_state(state: &State) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(state)
         .map_err(|e| format!("serialize active response state: {e}"))?;
-    crate::security::policy::save_json_with_integrity(&state_path(), &data)
+    let path = state_path();
+    match crate::security::policy::save_json_with_integrity(&path, &data) {
+        Ok(()) => {
+            update_query_state_cache(&path, state);
+            Ok(())
+        }
+        Err(err) => {
+            clear_query_state_cache();
+            Err(err)
+        }
+    }
 }
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
