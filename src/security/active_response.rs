@@ -210,6 +210,7 @@ pub fn status() -> Status {
         blocked_domains: state.blocked_domains.len(),
         suspended_processes: state.suspended_processes.len(),
         frozen_autoruns: state.autorun_snapshot.is_some(),
+        // Reflect effective containment state, not just persisted intent.
         isolated: isolation_effective_now(&state, now),
     }
 }
@@ -292,7 +293,10 @@ pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
     }
     let target = socket_kill_target(conn)?;
     platform::kill_tcp_connection(&target)?;
-    let message = format!("Killed TCP connection {} -> {}.", target.local, target.remote);
+    let message = format!(
+        "Killed TCP connection {} -> {}.",
+        target.local, target.remote
+    );
     audit::record(
         "kill_connection",
         "success",
@@ -628,9 +632,7 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     }
     state.blocked = kept;
     if delete_failed {
-        return Err(format!(
-            "Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."
-        ));
+        return Err(format!("Could not remove the firewall rule for {target}; it was kept in state so Vigil can retry."));
     }
     let message = if removed > 0 {
         save_state(&state)?;
