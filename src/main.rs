@@ -84,7 +84,10 @@ fn report_startup_failure(message: &str) {
     eprintln!("{message}");
 }
 
-fn acquire_single_instance(instance_id: &str, wait_for_release: bool) -> Result<SingleInstance, String> {
+fn acquire_single_instance(
+    instance_id: &str,
+    wait_for_release: bool,
+) -> Result<SingleInstance, String> {
     if !wait_for_release {
         return SingleInstance::new(instance_id)
             .map_err(|err| format!("Could not acquire Vigil instance lock: {err}"));
