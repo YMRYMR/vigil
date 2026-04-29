@@ -67,6 +67,7 @@ fn with_builder<F: FnOnce(auto_launch::AutoLaunch) -> bool>(f: F) -> bool {
 
 #[cfg(windows)]
 mod platform {
+    use crate::service;
     use super::with_builder;
     use std::ffi::{OsStr, OsString};
     use std::os::windows::ffi::OsStrExt;
@@ -82,15 +83,24 @@ mod platform {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
     const TASK_NAME: &str = "Vigil";
+    const BOOT_TASK_NAME: &str = "VigilBootMonitor";
 
     pub fn enable() -> bool {
         if is_elevated() {
             let created = create_high_privilege_task();
+            let boot_created = create_boot_monitor_task();
             let _ = disable_login_item();
-            created
+            if created && boot_created {
+                true
+            } else {
+                let _ = delete_high_privilege_task();
+                let _ = delete_boot_monitor_task();
+                false
+            }
         } else {
             let enabled = enable_login_item();
             let _ = delete_high_privilege_task();
+            let _ = delete_boot_monitor_task();
             enabled
         }
     }
@@ -98,11 +108,12 @@ mod platform {
     pub fn disable() -> bool {
         let login = disable_login_item();
         let task = delete_high_privilege_task();
-        login || task
+        let boot_task = delete_boot_monitor_task();
+        login || task || boot_task
     }
 
     pub fn is_enabled() -> bool {
-        login_item_enabled() || high_privilege_task_exists()
+        login_item_enabled() || high_privilege_task_exists() || boot_monitor_task_exists()
     }
 
     pub fn is_elevated() -> bool {
@@ -126,276 +137,3 @@ mod platform {
             ok && elevation.TokenIsElevated != 0
         }
     }
-
-    pub fn relaunch_as_admin() -> Result<(), String> {
-        let exe = std::env::current_exe().map_err(|e| format!("failed to locate Vigil: {e}"))?;
-        let mut args = std::env::args_os().skip(1).collect::<Vec<_>>();
-        if !args
-            .iter()
-            .any(|arg| arg == OsStr::new(super::ELEVATED_RELAUNCH_FLAG))
-        {
-            args.push(OsString::from(super::ELEVATED_RELAUNCH_FLAG));
-        }
-        let args = join_args(&args);
-
-        let exe_w = to_wide(exe.as_os_str());
-        let args_w = to_wide(OsStr::new(&args));
-        let verb = windows::core::w!("runas");
-
-        unsafe {
-            let result = ShellExecuteW(
-                None,
-                verb,
-                PCWSTR(exe_w.as_ptr()),
-                if args_w.is_empty() {
-                    PCWSTR::null()
-                } else {
-                    PCWSTR(args_w.as_ptr())
-                },
-                PCWSTR::null(),
-                SW_SHOWNORMAL,
-            );
-            if result.0 as isize > 32 {
-                Ok(())
-            } else {
-                Err("Windows declined the elevation request.".into())
-            }
-        }
-    }
-
-    pub fn launch_elevated_child() -> Result<(), String> {
-        Err("Elevation is not supported on this platform.".into())
-    }
-
-    fn to_wide(text: &OsStr) -> Vec<u16> {
-        text.encode_wide().chain(Some(0)).collect()
-    }
-
-    fn join_args(args: &[std::ffi::OsString]) -> String {
-        args.iter()
-            .map(|arg| {
-                let s = arg.to_string_lossy();
-                if s.contains(' ') || s.contains('\t') || s.contains('"') {
-                    format!("\"{}\"", s.replace('"', "\\\""))
-                } else {
-                    s.into_owned()
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
-    fn enable_login_item() -> bool {
-        with_builder(|al| al.enable().is_ok())
-    }
-
-    fn disable_login_item() -> bool {
-        with_builder(|al| al.disable().is_ok())
-    }
-
-    fn login_item_enabled() -> bool {
-        with_builder(|al| al.is_enabled().unwrap_or(false))
-    }
-
-    fn current_exe() -> Option<PathBuf> {
-        std::env::current_exe().ok()
-    }
-
-    fn quoted_exe() -> Option<String> {
-        current_exe().map(|p| format!("\"{}\"", p.display()))
-    }
-
-    fn schtasks_exe() -> PathBuf {
-        PathBuf::from(r"C:\Windows\System32\schtasks.exe")
-    }
-
-    fn create_high_privilege_task() -> bool {
-        let Some(tr) = quoted_exe() else {
-            return false;
-        };
-        Command::new(schtasks_exe())
-            .args([
-                "/Create", "/TN", TASK_NAME, "/TR", &tr, "/SC", "ONLOGON", "/RL", "HIGHEST", "/F",
-            ])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    fn delete_high_privilege_task() -> bool {
-        Command::new(schtasks_exe())
-            .args(["/Delete", "/TN", TASK_NAME, "/F"])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    fn high_privilege_task_exists() -> bool {
-        Command::new(schtasks_exe())
-            .args(["/Query", "/TN", TASK_NAME])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
-#[cfg(not(windows))]
-mod platform {
-    use super::with_builder;
-    use std::ffi::OsString;
-    use std::path::PathBuf;
-    use std::process::Command;
-
-    pub fn enable() -> bool {
-        with_builder(|al| al.enable().is_ok())
-    }
-
-    pub fn disable() -> bool {
-        with_builder(|al| al.disable().is_ok())
-    }
-
-    pub fn is_enabled() -> bool {
-        with_builder(|al| al.is_enabled().unwrap_or(false))
-    }
-
-    pub fn is_elevated() -> bool {
-        if unsafe { libc::geteuid() == 0 } {
-            return true;
-        }
-        check_capability(12) // CAP_NET_ADMIN
-    }
-
-    pub fn relaunch_as_admin() -> Result<(), String> {
-        #[cfg(target_os = "linux")]
-        {
-            relaunch_with_pkexec()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err("Elevation is not supported on this platform.".into())
-        }
-    }
-
-    pub fn launch_elevated_child() -> Result<(), String> {
-        #[cfg(target_os = "linux")]
-        {
-            launch_elevated_child_impl()
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err("Elevation is not supported on this platform.".into())
-        }
-    }
-
-    /// Check whether a specific Linux capability (by bit index) is present in
-    /// the effective capability set of the current process.
-    #[cfg(target_os = "linux")]
-    fn check_capability(bit: u8) -> bool {
-        let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
-            return false;
-        };
-        for line in data.lines() {
-            let Some(rest) = line.strip_prefix("CapEff:\t") else {
-                continue;
-            };
-            let Ok(val) = u64::from_str_radix(rest.trim(), 16) else {
-                return false;
-            };
-            return val & (1u64 << bit) != 0;
-        }
-        false
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn check_capability(_bit: u8) -> bool {
-        false
-    }
-
-    /// Relaunch Vigil under root privileges via pkexec.
-    #[cfg(target_os = "linux")]
-    fn relaunch_with_pkexec() -> Result<(), String> {
-        let target = elevation_target_path()?;
-        let mut cmd = Command::new("pkexec");
-        cmd.arg("env");
-
-        // Preserve desktop-session variables so the relaunched GUI can attach
-        // to the current display/session instead of failing EGL/GL init.
-        for key in [
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-            "XAUTHORITY",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-            "XDG_CURRENT_DESKTOP",
-            "XDG_SESSION_TYPE",
-        ] {
-            if let Some(value) = std::env::var_os(key) {
-                let mut kv = OsString::from(key);
-                kv.push("=");
-                kv.push(value);
-                cmd.arg(kv);
-            }
-        }
-
-        cmd.arg(&target);
-        let mut launcher_present = false;
-        for arg in std::env::args_os().skip(1) {
-            if arg == std::ffi::OsStr::new(super::ELEVATED_LAUNCHER_FLAG) {
-                launcher_present = true;
-            }
-            if arg != std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG) {
-                cmd.arg(arg);
-            }
-        }
-        if !launcher_present {
-            cmd.arg(super::ELEVATED_LAUNCHER_FLAG);
-        }
-
-        let status = cmd.status().map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                "pkexec is not available on this system. Install polkit and pkexec, then retry."
-                    .to_string()
-            } else {
-                format!("failed to launch pkexec: {e}")
-            }
-        })?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err("the elevation request was denied or the launcher failed".into())
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn launch_elevated_child_impl() -> Result<(), String> {
-        let target = elevation_target_path()?;
-        let mut args = Vec::new();
-        for arg in std::env::args_os().skip(1) {
-            if arg != std::ffi::OsStr::new(super::ELEVATED_LAUNCHER_FLAG) {
-                args.push(arg);
-            }
-        }
-        if !args
-            .iter()
-            .any(|arg| arg == std::ffi::OsStr::new(super::ELEVATED_RELAUNCH_FLAG))
-        {
-            args.push(OsString::from(super::ELEVATED_RELAUNCH_FLAG));
-        }
-        Command::new(target)
-            .args(args)
-            .spawn()
-            .map(|_| ())
-            .map_err(|e| format!("failed to launch elevated Vigil: {e}"))
-    }
-
-    #[cfg(target_os = "linux")]
-    fn elevation_target_path() -> Result<PathBuf, String> {
-        let current =
-            std::env::current_exe().map_err(|e| format!("failed to locate Vigil binary: {e}"))?;
-        if current.exists() {
-            Ok(current)
-        } else {
-            Err("could not locate Vigil binary".into())
-        }
-    }
-}
