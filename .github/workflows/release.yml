@@ -33,6 +33,10 @@ on:
         description: Full git ref or 40-character commit SHA to check out for the release build; leave empty to build from the release tag
         required: false
         type: string
+      pr_number:
+        description: Pull request number associated with this release; leave empty when publishing manually
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -49,6 +53,7 @@ jobs:
       tag: ${{ steps.validate.outputs.tag }}
       version: ${{ steps.validate.outputs.version }}
       checkout_ref: ${{ steps.validate.outputs.checkout_ref }}
+      pr_number: ${{ steps.validate.outputs.pr_number }}
     steps:
       - name: Validate release tag
         id: validate
@@ -59,6 +64,7 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_SOURCE_REF: ${{ inputs.source_ref }}
+          INPUT_PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -95,9 +101,16 @@ jobs:
             echo "Expected a full refs/heads/... or refs/tags/... value, the exact release tag, or a 40-character commit SHA." >&2
             exit 1
           fi
+          PR_NUMBER="$INPUT_PR_NUMBER"
+          if [ -n "$PR_NUMBER" ] && [[ ! "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Invalid pr_number: $PR_NUMBER" >&2
+            echo "Expected a numeric pull request number." >&2
+            exit 1
+          fi
           echo "tag=$REF_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "checkout_ref=$CHECKOUT_REF" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
 
   # ── Windows — Inno Setup EXE ───────────────────────────────────────────────
   build-windows:
@@ -591,6 +604,42 @@ jobs:
         shell: bash
         run: echo "hashes=$(sha256sum dist/* | base64 -w0)" >> "$GITHUB_OUTPUT"
 
+      - name: Generate release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.validate-release-metadata.outputs.pr_number }}
+          RELEASE_TAG: ${{ needs.validate-release-metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+
+          pr_title=""
+          pr_body=""
+          pr_url=""
+          resolved_pr_number="${PR_NUMBER}"
+          fallback_subject="$(git show -s --format=%s "${{ needs.validate-release-metadata.outputs.checkout_ref }}")"
+
+          if [ -z "${resolved_pr_number}" ]; then
+            resolved_pr_number="$(printf '%s' "$fallback_subject" | sed -nE 's/.*#([0-9]+).*/\1/p' | head -n1)"
+          fi
+
+          if [ -n "${resolved_pr_number}" ]; then
+            pr_json="$(curl -fsSL \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${resolved_pr_number}")"
+            pr_title="$(printf '%s' "$pr_json" | jq -r '.title // ""')"
+            pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
+            pr_url="$(printf '%s' "$pr_json" | jq -r '.html_url // ""')"
+          fi
+
+          python3 scripts/generate_release_notes.py \
+            --tag "${RELEASE_TAG}" \
+            --pr-title "$pr_title" \
+            --pr-body "$pr_body" \
+            --pr-url "$pr_url" \
+            --fallback-subject "$fallback_subject" \
+            --output dist/release-notes.md
+
       - name: List release assets
         run: ls -lh dist/
 
@@ -599,7 +648,7 @@ jobs:
         with:
           tag_name: ${{ needs.validate-release-metadata.outputs.tag }}
           name: Vigil ${{ needs.validate-release-metadata.outputs.tag }}
-          generate_release_notes: true
+          body_path: dist/release-notes.md
           files: dist/*
 
       - name: Generate artifact attestations
