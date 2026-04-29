@@ -623,13 +623,16 @@ jobs:
           fi
 
           if [ -n "${resolved_pr_number}" ]; then
-            pr_json="$(curl -fsSL \
+            if pr_json="$(curl -fsSL \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${resolved_pr_number}")"
-            pr_title="$(printf '%s' "$pr_json" | jq -r '.title // ""')"
-            pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
-            pr_url="$(printf '%s' "$pr_json" | jq -r '.html_url // ""')"
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${resolved_pr_number}")"; then
+              pr_title="$(printf '%s' "$pr_json" | jq -r '.title // ""')"
+              pr_body="$(printf '%s' "$pr_json" | jq -r '.body // ""')"
+              pr_url="$(printf '%s' "$pr_json" | jq -r '.html_url // ""')"
+            else
+              echo "Unable to fetch PR metadata for #${resolved_pr_number}; falling back to the release subject." >&2
+            fi
           fi
 
           python3 scripts/generate_release_notes.py \
