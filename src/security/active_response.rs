@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
@@ -24,6 +24,7 @@ const ISOLATION_MAX_SECS: u64 = 60 * 60;
 const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 const PROCESS_RULE_PREFIX_LEN: usize = 48;
 const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
+const QUERY_STATE_CACHE_TTL: Duration = Duration::from_millis(250);
 
 #[path = "active_response_platform.rs"]
 mod platform;
@@ -857,9 +858,6 @@ pub fn restore_machine() -> Result<String, String> {
                 isolated: true,
                 ..State::default()
             };
-            // Restore is the safety path. If the protected state is unreadable,
-            // still attempt legacy rule cleanup plus adapter re-enable instead
-            // of leaving the host isolated until manual intervention.
             (state, Some(err))
         }
     };
@@ -1344,6 +1342,22 @@ fn note_state_load_error_once(context: &str, err: &str) {
 }
 
 static STATE_PATH_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+#[derive(Clone)]
+struct QueryStateCache {
+    path: PathBuf,
+    signature: Option<StateFileSignature>,
+    loaded_at: Instant,
+    state: State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateFileSignature {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+static QUERY_STATE_CACHE: OnceLock<RwLock<Option<QueryStateCache>>> = OnceLock::new();
+
 fn state_path() -> PathBuf {
     let override_lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
     if let Some(path) = override_lock.read().unwrap().clone() {
@@ -1356,18 +1370,84 @@ fn load_state() -> Result<State, String> {
     load_state_from_path(&path)
 }
 fn load_state_for_query(context: &str) -> Option<State> {
-    match load_state() {
+    let path = state_path();
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    {
+        let cache = cache_lock.read().unwrap();
+        if let Some(cache) = cache.as_ref() {
+            if cache.path == path && cache.loaded_at.elapsed() <= QUERY_STATE_CACHE_TTL {
+                return Some(cache.state.clone());
+            }
+        }
+    }
+
+    let signature = state_file_signature(&path);
+    {
+        let mut cache = cache_lock.write().unwrap();
+        if let Some(existing) = cache.as_mut() {
+            if existing.path == path && existing.signature == signature {
+                existing.loaded_at = Instant::now();
+                return Some(existing.state.clone());
+            }
+        }
+    }
+
+    match load_state_from_path(&path) {
         Ok(state) => Some(state),
         Err(err) => {
             note_state_load_error_once(context, &err);
             None
         }
     }
+    .inspect(|state| {
+        let mut cache = cache_lock.write().unwrap();
+        *cache = Some(QueryStateCache {
+            path,
+            signature,
+            loaded_at: Instant::now(),
+            state: state.clone(),
+        });
+    })
 }
+
+fn state_file_signature(path: &Path) -> Option<StateFileSignature> {
+    path.metadata().ok().map(|metadata| StateFileSignature {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+fn update_query_state_cache(path: &Path, state: &State) {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = Some(QueryStateCache {
+        path: path.to_path_buf(),
+        signature: state_file_signature(path),
+        loaded_at: Instant::now(),
+        state: state.clone(),
+    });
+}
+
+fn clear_query_state_cache() {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = None;
+}
+
 fn save_state(state: &State) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(state)
         .map_err(|e| format!("serialize active response state: {e}"))?;
-    crate::security::policy::save_json_with_integrity(&state_path(), &data)
+    let path = state_path();
+    match crate::security::policy::save_json_with_integrity(&path, &data) {
+        Ok(()) => {
+            update_query_state_cache(&path, state);
+            Ok(())
+        }
+        Err(err) => {
+            clear_query_state_cache();
+            Err(err)
+        }
+    }
 }
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
