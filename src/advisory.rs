@@ -6,6 +6,8 @@
 //!
 //! - a normalized vulnerability record model
 //! - protected local cache storage for imported NVD CVE snapshots
+//! - preserved CPE match metadata such as `matchCriteriaId` and `cpeName`
+//!   so future CPE-match joins keep the original NVD identifiers intact
 //! - a CLI import path for offline or operator-driven snapshot ingestion,
 //!   including batched page or incremental-file imports
 //! - live NVD CVE sync with conservative rate limiting and incremental
@@ -97,6 +99,8 @@ pub struct VulnerabilitySeverity {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AffectedProduct {
     pub criteria: String,
+    pub match_criteria_id: Option<String>,
+    pub cpe_name: Option<String>,
     pub vulnerable: bool,
     pub version_start_including: Option<String>,
     pub version_start_excluding: Option<String>,
@@ -1169,6 +1173,8 @@ fn parse_cpe_match(value: &Value) -> Option<AffectedProduct> {
     }
     Some(AffectedProduct {
         criteria: criteria.to_string(),
+        match_criteria_id: string_field(value, "matchCriteriaId"),
+        cpe_name: string_field(value, "cpeName"),
         vulnerable: value
             .get("vulnerable")
             .and_then(Value::as_bool)
@@ -1279,6 +1285,8 @@ mod tests {
                             "cpeMatch": [{
                                 "vulnerable": true,
                                 "criteria": "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*",
+                                "matchCriteriaId": "36FBCF0F-8CEE-474C-8A04-5075AF53FAF4",
+                                "cpeName": "cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*",
                                 "versionStartIncluding": "1.0.0",
                                 "versionEndExcluding": "1.2.0"
                             }]
@@ -1313,6 +1321,14 @@ mod tests {
         assert_eq!(
             record.affected_products[0].criteria,
             "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*"
+        );
+        assert_eq!(
+            record.affected_products[0].match_criteria_id.as_deref(),
+            Some("36FBCF0F-8CEE-474C-8A04-5075AF53FAF4")
+        );
+        assert_eq!(
+            record.affected_products[0].cpe_name.as_deref(),
+            Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*")
         );
         assert_eq!(record.references.len(), 1);
         assert_eq!(record.mitigations, vec!["https://example.com/advisory"]);
