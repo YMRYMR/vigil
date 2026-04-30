@@ -24,6 +24,9 @@
 /// to stdout; `Err(msg)` is printed to stderr and the process exits 1.
 pub type CmdResult = Result<String, String>;
 
+/// Internal headless entrypoint used by OS services / daemons.
+pub const SERVICE_MODE_FLAG: &str = "--service-mode";
+
 pub fn install() -> CmdResult {
     let exe =
         std::env::current_exe().map_err(|e| format!("could not resolve current exe path: {e}"))?;
@@ -46,8 +49,8 @@ mod platform {
     const SVC_NAME: &str = "Vigil";
 
     pub fn install(exe: &Path) -> CmdResult {
-        // sc create Vigil binPath= "\"C:\path\to\vigil.exe\"" start= auto
-        let bin_path = format!("\"{}\"", exe.display());
+        // sc create Vigil binPath= "\"C:\path\to\vigil.exe\" --service-mode" start= auto
+        let bin_path = format!("\"{}\" {}", exe.display(), SERVICE_MODE_FLAG);
         let status = Command::new(command_paths::resolve("sc")?)
             .args([
                 "create",
@@ -158,7 +161,7 @@ mod platform {
 <plist version="1.0">
 <dict>
     <key>Label</key>             <string>{LABEL}</string>
-    <key>ProgramArguments</key>  <array><string>{exe}</string></array>
+    <key>ProgramArguments</key>  <array><string>{exe}</string><string>{service_flag}</string></array>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <true/>
     <key>StandardOutPath</key>   <string>/var/log/vigil.log</string>
@@ -167,6 +170,7 @@ mod platform {
 </plist>
 "#,
             exe = exe,
+            service_flag = SERVICE_MODE_FLAG,
         );
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
@@ -259,7 +263,7 @@ mod platform {
              \n\
              [Service]\n\
              Type=simple\n\
-             ExecStart={exe}\n\
+             ExecStart={exe} {service_flag}\n\
              Restart=on-failure\n\
              RestartSec=5\n\
              StandardOutput=journal\n\
@@ -268,6 +272,7 @@ mod platform {
              [Install]\n\
              WantedBy=multi-user.target\n",
             exe = exe,
+            service_flag = SERVICE_MODE_FLAG,
         );
         let path = unit_path();
         std::fs::write(&path, unit.as_bytes())
