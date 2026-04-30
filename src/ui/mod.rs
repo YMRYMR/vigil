@@ -252,7 +252,7 @@ pub struct ProcessSelection {
     pub service_name: String,
     pub publisher: String,
     pub score: u8,
-    pub reasons: Vec<String>,
+    pub reason_summary: inspector::ReasonSummary,
     pub attack_tags: Vec<String>,
     pub baseline_deviation: bool,
     pub script_host_suspicious: bool,

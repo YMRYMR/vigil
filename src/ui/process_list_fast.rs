@@ -6,7 +6,7 @@
 //! process and endpoint rows instead of rebuilding them every frame.
 
 use crate::types::ConnInfo;
-use crate::ui::{process_list, theme, ProcessSelection, TableState};
+use crate::ui::{inspector::summarize_reasons, process_list, theme, ProcessSelection, TableState};
 use egui::RichText;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Mutex, OnceLock};
@@ -708,7 +708,7 @@ fn selection_from_group(
         service_name: group.service_name.clone(),
         publisher: group.publisher.clone(),
         score: group.score,
-        reasons: group.reasons.clone(),
+        reason_summary: summarize_reasons(&group.reasons),
         attack_tags: group.attack_tags.clone(),
         baseline_deviation: group.baseline_deviation,
         script_host_suspicious: group.script_host_suspicious,
