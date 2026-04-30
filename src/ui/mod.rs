@@ -578,8 +578,18 @@ impl VigilApp {
     }
     fn trim_history_buffers(&mut self) {
         let (activity_cap, alerts_cap) = self.history_caps();
+        let mut trimmed = false;
+        if self.activity.len() > activity_cap {
+            trimmed = true;
+        }
         truncate_deque(&mut self.activity, activity_cap);
+        if self.alerts.len() > alerts_cap {
+            trimmed = true;
+        }
         truncate_deque(&mut self.alerts, alerts_cap);
+        if trimmed {
+            self.data_version = self.data_version.wrapping_add(1);
+        }
     }
 
     fn sync_tray_state(&mut self) {
