@@ -88,18 +88,35 @@ mod platform {
 
     pub fn uninstall() -> CmdResult {
         let mut removed_any = false;
+        let task_path = task_path();
 
-        if task_path().exists() {
-            let status = Command::new(command_paths::resolve("schtasks")?)
+        let task_query = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Query", "/TN", TASK_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+        if task_query.status.success() {
+            let _ = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/End", "/TN", TASK_NAME])
+                .status();
+            let delete = Command::new(command_paths::resolve("schtasks")?)
                 .args(["/Delete", "/TN", TASK_NAME, "/F"])
-                .status()
+                .output()
                 .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
-            if !status.success() {
-                return Err(
-                    "`schtasks /Delete` failed.  Re-run from an elevated Command Prompt.".into(),
-                );
+            if !delete.status.success() {
+                return Err(format!(
+                    "`schtasks /Delete` failed unexpectedly: {}",
+                    command_output_summary(&delete)
+                ));
             }
             removed_any = true;
+        } else if task_path
+            .try_exists()
+            .map_err(|e| format!("could not inspect {}: {e}", task_path.display()))?
+        {
+            return Err(format!(
+                "`schtasks /Query /TN {TASK_NAME}` failed unexpectedly: {}",
+                command_output_summary(&task_query)
+            ));
         }
 
         let query = Command::new(command_paths::resolve("sc")?)
@@ -137,7 +154,13 @@ mod platform {
     }
 
     fn task_path() -> PathBuf {
-        PathBuf::from(r"C:\Windows\System32\Tasks\VigilBootMonitor")
+        let mut path = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        path.push("System32");
+        path.push("Tasks");
+        path.push(TASK_NAME);
+        path
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
@@ -259,7 +282,7 @@ mod platform {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
-            .replace('\"', "&quot;")
+            .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
 }
@@ -358,7 +381,7 @@ mod platform {
     }
 
     fn systemd_quote(text: &str) -> String {
-        format!("\"{}\"", text.replace('\"', "\\\""))
+        format!("\"{}\"", text.replace('"', "\\\""))
     }
 }
 
