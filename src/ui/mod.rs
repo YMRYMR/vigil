@@ -869,23 +869,19 @@ impl VigilApp {
             }
             inspector::Action::SuspendProcess => {
                 if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::SuspendProcess {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                            proc_name: info.proc_name.clone(),
-                        });
-                    }
+                    self.response_confirm = Some(PendingResponse::SuspendProcess {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                        proc_name: info.proc_name.clone(),
+                    });
                 }
             }
             inspector::Action::ResumeProcess => {
                 if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::ResumeProcess {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                        });
-                    }
+                    self.response_confirm = Some(PendingResponse::ResumeProcess {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                    });
                 }
             }
             inspector::Action::FreezeAutoruns => {
@@ -896,23 +892,19 @@ impl VigilApp {
             }
             inspector::Action::QuarantineProfile => {
                 if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::QuarantineProfile {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                            proc_name: info.proc_name.clone(),
-                        });
-                    }
+                    self.response_confirm = Some(PendingResponse::QuarantineProfile {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                        proc_name: info.proc_name.clone(),
+                    });
                 }
             }
             inspector::Action::ClearQuarantineProfile => {
                 if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::ClearQuarantineProfile {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                        });
-                    }
+                    self.response_confirm = Some(PendingResponse::ClearQuarantineProfile {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                    });
                 }
             }
             inspector::Action::IsolateMachine => {
@@ -1136,6 +1128,47 @@ impl VigilApp {
                 ui.add_space(12.0);
 
                 let btn_label = if self.paused { "Resume" } else { "Pause" };
+                let network_label = if self.response_status.isolated {
+                    "Restore Net"
+                } else {
+                    "Isolate Net"
+                };
+                let network_tone = if self.response_status.isolated {
+                    theme::ACCENT
+                } else {
+                    theme::DANGER
+                };
+                let network_btn = egui::Button::new(
+                    egui::RichText::new(network_label)
+                        .color(network_tone)
+                        .size(11.0),
+                )
+                .fill(if self.response_status.isolated {
+                    theme::ACCENT_BG
+                } else {
+                    theme::DANGER_BG
+                })
+                .stroke(egui::Stroke::new(1.0, network_tone))
+                .corner_radius(4.0);
+                let network_resp = ui
+                    .add_enabled(!network_busy, network_btn)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let network_resp = if network_busy {
+                    network_resp.on_hover_text("A network action is already in progress.")
+                } else if self.response_status.isolated {
+                    network_resp.on_hover_text("Restore saved firewall and adapter state from before isolation.")
+                } else {
+                    network_resp.on_hover_text("Immediately isolate the machine network.")
+                };
+                if network_resp.clicked() {
+                    if self.response_status.isolated {
+                        let _ = self.start_network_operation(NetworkOperationKind::Restore);
+                    } else {
+                        let _ = self.start_network_operation(NetworkOperationKind::Isolate);
+                    }
+                }
+                ui.add_space(8.0);
+
                 let btn = egui::Button::new(
                     egui::RichText::new(btn_label)
                         .color(theme::TEXT2)
