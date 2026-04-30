@@ -47,6 +47,7 @@ mod platform {
     use std::process::{Command, Output};
 
     const TASK_NAME: &str = "VigilBootMonitor";
+    const LEGACY_SERVICE_NAME: &str = "Vigil";
 
     pub fn install(exe: &Path) -> CmdResult {
         let task_command = format!(r#""{}" {}"#, exe.display(), SERVICE_MODE_FLAG);
@@ -86,34 +87,62 @@ mod platform {
     }
 
     pub fn uninstall() -> CmdResult {
+        let mut removed_any = false;
+
         let query = Command::new(command_paths::resolve("schtasks")?)
             .args(["/Query", "/TN", TASK_NAME])
             .output()
             .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
-        if !query.status.success() {
-            if task_does_not_exist(&query) {
-                return Ok(format!(
-                    "Windows boot-time monitor task `{TASK_NAME}` was not installed."
-                ));
+        if query.status.success() {
+            let status = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/Delete", "/TN", TASK_NAME, "/F"])
+                .status()
+                .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+            if !status.success() {
+                return Err(
+                    "`schtasks /Delete` failed.  Re-run from an elevated Command Prompt.".into(),
+                );
             }
+            removed_any = true;
+        } else if !task_does_not_exist(&query) {
             return Err(format!(
                 "`schtasks /Query {TASK_NAME}` failed unexpectedly: {}",
                 command_output_summary(&query)
             ));
         }
 
-        let status = Command::new(command_paths::resolve("schtasks")?)
-            .args(["/Delete", "/TN", TASK_NAME, "/F"])
-            .status()
-            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
-        if !status.success() {
-            return Err(
-                "`schtasks /Delete` failed.  Re-run from an elevated Command Prompt.".into(),
-            );
+        let query = Command::new(command_paths::resolve("sc")?)
+            .args(["query", LEGACY_SERVICE_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+        if query.status.success() {
+            let _ = Command::new(command_paths::resolve("sc")?)
+                .args(["stop", LEGACY_SERVICE_NAME])
+                .status();
+            let status = Command::new(command_paths::resolve("sc")?)
+                .args(["delete", LEGACY_SERVICE_NAME])
+                .status()
+                .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+            if !status.success() {
+                return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
+            }
+            removed_any = true;
+        } else if !service_does_not_exist(&query) {
+            return Err(format!(
+                "`sc query {LEGACY_SERVICE_NAME}` failed unexpectedly: {}",
+                command_output_summary(&query)
+            ));
         }
-        Ok(format!(
-            "Removed Windows boot-time monitor task `{TASK_NAME}`."
-        ))
+
+        if removed_any {
+            Ok(format!(
+                "Removed Windows boot-time monitor task `{TASK_NAME}` and any legacy Windows service `{LEGACY_SERVICE_NAME}`."
+            ))
+        } else {
+            Ok(format!(
+                "Windows boot-time monitor task `{TASK_NAME}` was not installed."
+            ))
+        }
     }
 
     fn task_does_not_exist(output: &Output) -> bool {
@@ -122,6 +151,13 @@ mod platform {
             || text.contains("cannot find the file specified")
             || text.contains("does not exist")
             || text.contains("the system cannot find the file specified")
+    }
+
+    fn service_does_not_exist(output: &Output) -> bool {
+        let text = command_output_text(output).to_ascii_lowercase();
+        text.contains("1060")
+            || text.contains("does not exist")
+            || text.contains("does not exist as an installed service")
     }
 
     fn command_output_summary(output: &Output) -> String {
