@@ -43,7 +43,7 @@ pub fn uninstall() -> CmdResult {
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
 
     const TASK_NAME: &str = "VigilBootMonitor";
@@ -89,11 +89,7 @@ mod platform {
     pub fn uninstall() -> CmdResult {
         let mut removed_any = false;
 
-        let query = Command::new(command_paths::resolve("schtasks")?)
-            .args(["/Query", "/TN", TASK_NAME])
-            .output()
-            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
-        if query.status.success() {
+        if task_path().exists() {
             let status = Command::new(command_paths::resolve("schtasks")?)
                 .args(["/Delete", "/TN", TASK_NAME, "/F"])
                 .status()
@@ -104,11 +100,6 @@ mod platform {
                 );
             }
             removed_any = true;
-        } else if !task_does_not_exist(&query) {
-            return Err(format!(
-                "`schtasks /Query {TASK_NAME}` failed unexpectedly: {}",
-                command_output_summary(&query)
-            ));
         }
 
         let query = Command::new(command_paths::resolve("sc")?)
@@ -145,12 +136,8 @@ mod platform {
         }
     }
 
-    fn task_does_not_exist(output: &Output) -> bool {
-        let text = command_output_text(output).to_ascii_lowercase();
-        text.contains("1060")
-            || text.contains("cannot find the file specified")
-            || text.contains("does not exist")
-            || text.contains("the system cannot find the file specified")
+    fn task_path() -> PathBuf {
+        PathBuf::from(r"C:\Windows\System32\Tasks\VigilBootMonitor")
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
