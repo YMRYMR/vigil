@@ -1200,6 +1200,8 @@ fn dedupe_products(products: Vec<AffectedProduct>) -> Vec<AffectedProduct> {
     for product in products {
         if deduped.iter().any(|existing: &AffectedProduct| {
             existing.criteria == product.criteria
+                && existing.match_criteria_id == product.match_criteria_id
+                && existing.cpe_name == product.cpe_name
                 && existing.vulnerable == product.vulnerable
                 && existing.version_start_including == product.version_start_including
                 && existing.version_start_excluding == product.version_start_excluding
@@ -1332,6 +1334,37 @@ mod tests {
         );
         assert_eq!(record.references.len(), 1);
         assert_eq!(record.mitigations, vec!["https://example.com/advisory"]);
+    }
+
+    #[test]
+    fn dedupe_products_keeps_distinct_cpe_metadata_rows() {
+        let primary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-one".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+        let secondary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-two".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.1.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+
+        let deduped = dedupe_products(vec![primary.clone(), secondary.clone()]);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].criteria, primary.criteria);
+        assert_eq!(deduped[0].match_criteria_id, primary.match_criteria_id);
+        assert_eq!(deduped[1].criteria, secondary.criteria);
+        assert_eq!(deduped[1].match_criteria_id, secondary.match_criteria_id);
     }
 
     #[test]
