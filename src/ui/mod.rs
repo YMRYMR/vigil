@@ -777,11 +777,16 @@ impl VigilApp {
             }
             inspector::Action::RequestAdmin => {
                 if !crate::autostart::is_elevated() {
-                    if let Err(err) = crate::autostart::relaunch_as_admin() {
-                        self.push_notification(
-                            NotificationKind::Error,
-                            format!("Could not relaunch Vigil with Admin Mode: {err}"),
-                        );
+                    match crate::autostart::relaunch_as_admin() {
+                        Ok(()) => {
+                            std::process::exit(0);
+                        }
+                        Err(err) => {
+                            self.push_notification(
+                                NotificationKind::Error,
+                                format!("Could not relaunch Vigil with Admin Mode: {err}"),
+                            );
+                        }
                     }
                 }
             }
@@ -790,15 +795,25 @@ impl VigilApp {
             }
             inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::BlockRemote {
-                        target: info.remote_addr.clone(),
-                        preset,
-                    });
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm =
+                                Some(PendingResponse::BlockRemote { target, preset });
+                        }
+                    }
                 }
             }
             inspector::Action::UnblockRemote => {
                 if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::UnblockRemote(info.remote_addr));
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm = Some(PendingResponse::UnblockRemote(target));
+                        }
+                    }
                 }
             }
             inspector::Action::BlockDomain => {
@@ -907,6 +922,9 @@ impl VigilApp {
                 self.response_confirm = Some(PendingResponse::RestoreNetwork);
             }
             inspector::Action::KillConfirmed => {
+                if let Some(info) = selected_info {
+                    self.kill_selected_process(&info);
+                }
                 self.kill_confirm = false;
             }
             inspector::Action::KillCancelled => {
@@ -974,18 +992,7 @@ impl VigilApp {
                         .on_hover_text("Terminate this process immediately.")
                         .clicked()
                     {
-                        kill_process(info.pid);
-                        remove_pid(&mut self.activity, info.pid);
-                        remove_pid(&mut self.alerts, info.pid);
-                        self.selected_activity = None;
-                        self.selected_alert = None;
-                        self.cached_activity_process_count =
-                            process_list::count_distinct_processes(&self.activity);
-                        self.cached_alerts_process_count =
-                            process_list::count_distinct_processes(&self.alerts);
-                        self.activity_cache = None;
-                        self.alerts_cache = None;
-                        self.data_version = self.data_version.wrapping_add(1);
+                        self.kill_selected_process(&info);
                         self.kill_confirm = false;
                     }
                     if ui
@@ -1005,6 +1012,23 @@ impl VigilApp {
                     }
                 });
             });
+    }
+
+    fn kill_selected_process(&mut self, info: &ProcessSelection) {
+        kill_process(info.pid);
+        remove_pid(&mut self.activity, info.pid);
+        remove_pid(&mut self.alerts, info.pid);
+        self.selected_activity = None;
+        self.selected_alert = None;
+        self.cached_activity_process_count = process_list::count_distinct_processes(&self.activity);
+        self.cached_alerts_process_count = process_list::count_distinct_processes(&self.alerts);
+        self.activity_cache = None;
+        self.alerts_cache = None;
+        self.data_version = self.data_version.wrapping_add(1);
+        if self.alerts.is_empty() {
+            self.unseen_alerts = 0;
+            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
+        }
     }
 
     fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
