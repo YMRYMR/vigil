@@ -92,9 +92,6 @@ mod imp {
         }
     }
     #[allow(dead_code)]
-    #[allow(dead_code)]
-    #[allow(dead_code)]
-    #[allow(dead_code)]
     pub fn process_exists(pid: u32) -> bool {
         unsafe {
             match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
@@ -601,9 +598,6 @@ mod imp {
             Err(format!("failed to add firewall rule for {target}"))
         }
     }
-    #[allow(dead_code)]
-    #[allow(dead_code)]
-    #[allow(dead_code)]
     #[allow(dead_code)]
     pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
         let status = hidden_command("netsh")?

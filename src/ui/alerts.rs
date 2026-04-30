@@ -2,7 +2,7 @@
 
 use crate::types::ConnInfo;
 use crate::ui::process_list::CachedGroupView;
-use crate::ui::{process_list, ProcessSelection, TableState};
+use crate::ui::{process_list_fast, ProcessSelection, TableState};
 use std::collections::VecDeque;
 
 pub fn show(
@@ -13,12 +13,12 @@ pub fn show(
     data_version: u64,
     cache: &mut Option<CachedGroupView>,
 ) -> bool {
-    process_list::show(
+    process_list_fast::show(
         ui,
         rows,
         selected,
         state,
-        process_list::Kind::Alerts,
+        process_list_fast::Kind::Alerts,
         data_version,
         cache,
     )

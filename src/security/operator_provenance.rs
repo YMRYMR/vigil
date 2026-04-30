@@ -66,6 +66,7 @@ pub fn observe_operator_file_checked(kind: &str, path: &Path) -> Result<Observat
     observe_operator_file_inner(kind, path, &registry_path(), true)
 }
 
+#[allow(dead_code)]
 pub(crate) fn observe_operator_file_at(
     kind: &str,
     path: &Path,
