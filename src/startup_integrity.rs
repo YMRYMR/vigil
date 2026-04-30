@@ -69,6 +69,7 @@ pub fn scan_operator_inputs(cfg: &config::Config) {
     record_summary("startup_operator_file_scan", &summary);
 }
 
+#[cfg(test)]
 pub fn load_latest_report(action: &str) -> Option<IntegrityReport> {
     let path = report_path(action);
     let bytes = crate::security::policy::load_json_with_integrity(&path)
