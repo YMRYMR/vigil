@@ -1471,23 +1471,6 @@ fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::RwLock;
-
-    struct StatePathGuard;
-    impl StatePathGuard {
-        fn set(path: PathBuf) -> Self {
-            let lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
-            *lock.write().unwrap() = Some(path);
-            Self
-        }
-    }
-    impl Drop for StatePathGuard {
-        fn drop(&mut self) {
-            if let Some(lock) = STATE_PATH_OVERRIDE.get() {
-                *lock.write().unwrap() = None;
-            }
-        }
-    }
 
     fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget {
         BlockedTarget {

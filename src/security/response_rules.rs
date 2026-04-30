@@ -132,10 +132,12 @@ pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Op
 
 fn load_rules(path: &str) -> Result<Vec<ResponseRule>, String> {
     let path_ref = Path::new(path);
-    load_rules_with_post_verify_hook(path_ref, |path_ref| {
+    load_rules_with_post_verify_hook(path_ref, |_path_ref| {
         #[cfg(not(test))]
-        let _observation =
-            crate::security::operator_provenance::observe_operator_file("response_rules", path_ref);
+        let _observation = crate::security::operator_provenance::observe_operator_file(
+            "response_rules",
+            _path_ref,
+        );
     })
 }
 
