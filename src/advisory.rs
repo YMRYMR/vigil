@@ -6,6 +6,8 @@
 //!
 //! - a normalized vulnerability record model
 //! - protected local cache storage for imported NVD CVE snapshots
+//! - preserved CPE match metadata such as `matchCriteriaId` and `cpeName`
+//!   so future CPE-match joins keep the original NVD identifiers intact
 //! - a CLI import path for offline or operator-driven snapshot ingestion,
 //!   including batched page or incremental-file imports
 //! - live NVD CVE sync with conservative rate limiting and incremental
@@ -97,6 +99,8 @@ pub struct VulnerabilitySeverity {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AffectedProduct {
     pub criteria: String,
+    pub match_criteria_id: Option<String>,
+    pub cpe_name: Option<String>,
     pub vulnerable: bool,
     pub version_start_including: Option<String>,
     pub version_start_excluding: Option<String>,
@@ -1169,6 +1173,8 @@ fn parse_cpe_match(value: &Value) -> Option<AffectedProduct> {
     }
     Some(AffectedProduct {
         criteria: criteria.to_string(),
+        match_criteria_id: string_field(value, "matchCriteriaId"),
+        cpe_name: string_field(value, "cpeName"),
         vulnerable: value
             .get("vulnerable")
             .and_then(Value::as_bool)
@@ -1194,6 +1200,8 @@ fn dedupe_products(products: Vec<AffectedProduct>) -> Vec<AffectedProduct> {
     for product in products {
         if deduped.iter().any(|existing: &AffectedProduct| {
             existing.criteria == product.criteria
+                && existing.match_criteria_id == product.match_criteria_id
+                && existing.cpe_name == product.cpe_name
                 && existing.vulnerable == product.vulnerable
                 && existing.version_start_including == product.version_start_including
                 && existing.version_start_excluding == product.version_start_excluding
@@ -1279,6 +1287,8 @@ mod tests {
                             "cpeMatch": [{
                                 "vulnerable": true,
                                 "criteria": "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*",
+                                "matchCriteriaId": "36FBCF0F-8CEE-474C-8A04-5075AF53FAF4",
+                                "cpeName": "cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*",
                                 "versionStartIncluding": "1.0.0",
                                 "versionEndExcluding": "1.2.0"
                             }]
@@ -1314,8 +1324,47 @@ mod tests {
             record.affected_products[0].criteria,
             "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*"
         );
+        assert_eq!(
+            record.affected_products[0].match_criteria_id.as_deref(),
+            Some("36FBCF0F-8CEE-474C-8A04-5075AF53FAF4")
+        );
+        assert_eq!(
+            record.affected_products[0].cpe_name.as_deref(),
+            Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*")
+        );
         assert_eq!(record.references.len(), 1);
         assert_eq!(record.mitigations, vec!["https://example.com/advisory"]);
+    }
+
+    #[test]
+    fn dedupe_products_keeps_distinct_cpe_metadata_rows() {
+        let primary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-one".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+        let secondary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-two".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.1.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+
+        let deduped = dedupe_products(vec![primary.clone(), secondary.clone()]);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].criteria, primary.criteria);
+        assert_eq!(deduped[0].match_criteria_id, primary.match_criteria_id);
+        assert_eq!(deduped[1].criteria, secondary.criteria);
+        assert_eq!(deduped[1].match_criteria_id, secondary.match_criteria_id);
     }
 
     #[test]
