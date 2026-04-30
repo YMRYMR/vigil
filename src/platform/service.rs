@@ -43,7 +43,7 @@ pub fn uninstall() -> CmdResult {
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::{Command, Output};
 
     const TASK_NAME: &str = "VigilBootMonitor";
@@ -89,21 +89,30 @@ mod platform {
     pub fn uninstall() -> CmdResult {
         let mut removed_any = false;
 
-        let task_path = task_path();
-        if task_path.exists() {
+        let task_query = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Query", "/TN", TASK_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+        if task_query.status.success() {
             let _ = Command::new(command_paths::resolve("schtasks")?)
                 .args(["/End", "/TN", TASK_NAME])
                 .status();
-            let status = Command::new(command_paths::resolve("schtasks")?)
+            let delete = Command::new(command_paths::resolve("schtasks")?)
                 .args(["/Delete", "/TN", TASK_NAME, "/F"])
-                .status()
+                .output()
                 .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
-            if !status.success() {
-                return Err(
-                    "`schtasks /Delete` failed.  Re-run from an elevated Command Prompt.".into(),
-                );
+            if !delete.status.success() {
+                return Err(format!(
+                    "`schtasks /Delete` failed unexpectedly: {}",
+                    command_output_summary(&delete)
+                ));
             }
             removed_any = true;
+        } else if !task_does_not_exist(&task_query) {
+            return Err(format!(
+                "`schtasks /Query /TN {TASK_NAME}` failed unexpectedly: {}",
+                command_output_summary(&task_query)
+            ));
         }
 
         let query = Command::new(command_paths::resolve("sc")?)
@@ -140,14 +149,11 @@ mod platform {
         }
     }
 
-    fn task_path() -> PathBuf {
-        let mut root = std::env::var_os("SystemRoot")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-        root.push("System32");
-        root.push("Tasks");
-        root.push(TASK_NAME);
-        root
+    fn task_does_not_exist(output: &Output) -> bool {
+        let text = command_output_text(output).to_ascii_lowercase();
+        text.contains("the system cannot find the file specified")
+            || text.contains("the specified task name")
+            || text.contains("does not exist in the system")
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
