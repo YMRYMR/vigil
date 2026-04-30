@@ -65,7 +65,7 @@ struct OwnedProcessGroup {
     distinct_ports: usize,
     distinct_remotes: usize,
     statuses: Vec<String>,
-    reasons: Vec<String>,
+    reason_summary: crate::ui::inspector::ReasonSummary,
     attack_tags: Vec<String>,
     baseline_deviation: bool,
     script_host_suspicious: bool,
@@ -528,6 +528,7 @@ fn build_view(
                     group.distinct_remotes.len()
                 ));
             }
+            let reason_summary = summarize_reasons(&reasons);
             out_groups.push(OwnedProcessGroup {
                 pid: group.pid,
                 proc_name: group.proc_name,
@@ -552,7 +553,7 @@ fn build_view(
                 distinct_ports: group.distinct_ports.len(),
                 distinct_remotes: group.distinct_remotes.len(),
                 statuses: group.statuses,
-                reasons,
+                reason_summary,
                 attack_tags,
                 baseline_deviation: group.baseline_deviation,
                 script_host_suspicious: group.script_host_suspicious,
@@ -708,7 +709,7 @@ fn selection_from_group(
         service_name: group.service_name.clone(),
         publisher: group.publisher.clone(),
         score: group.score,
-        reason_summary: summarize_reasons(&group.reasons),
+        reason_summary: group.reason_summary.clone(),
         attack_tags: group.attack_tags.clone(),
         baseline_deviation: group.baseline_deviation,
         script_host_suspicious: group.script_host_suspicious,

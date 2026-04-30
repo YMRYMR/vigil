@@ -72,40 +72,29 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
     let trust_enabled = known_location;
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
-    let suspend_enabled = active_response::can_suspend_process(sel.pid) && !ghost;
-    let response_enabled = active_response::can_modify_firewall();
-    let isolation_enabled = active_response::can_isolate_network();
-    let domain_enabled = active_response::can_block_domain();
-    let response_status = active_response::status();
-    let remote_target = sel
-        .selected_connection
-        .as_ref()
-        .and_then(|conn| active_response::extract_remote_target(&conn.remote_addr));
-    let remote_blocked = remote_target
-        .as_deref()
-        .is_some_and(active_response::is_blocked);
-    let remote_remaining = remote_target
-        .as_deref()
-        .and_then(active_response::remote_block_remaining);
-    let domain_target = sel
-        .selected_connection
-        .as_ref()
-        .and_then(active_response::extract_domain_target);
-    let domain_blocked = domain_target
-        .as_deref()
-        .is_some_and(active_response::is_domain_blocked);
-    let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
-    let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
-    let process_suspended = active_response::is_process_suspended(sel.pid, &sel.proc_path);
-    let connection_kill_enabled = sel
-        .selected_connection
-        .as_ref()
-        .is_some_and(active_response::can_kill_connection);
+    let inspector_state = active_response::inspector_snapshot(
+        sel.pid,
+        &sel.proc_path,
+        sel.selected_connection.as_ref(),
+    );
+    let suspend_enabled = inspector_state.suspend_enabled && !ghost;
+    let response_enabled = inspector_state.firewall_modifiable;
+    let isolation_enabled = inspector_state.network_isolation_modifiable;
+    let domain_enabled = inspector_state.domain_modifiable;
+    let response_status = inspector_state.status;
+    let remote_target = inspector_state.remote_target;
+    let remote_blocked = inspector_state.remote_blocked;
+    let remote_remaining = inspector_state.remote_remaining;
+    let domain_target = inspector_state.domain_target;
+    let domain_blocked = inspector_state.domain_blocked;
+    let process_blocked = inspector_state.process_blocked;
+    let process_remaining = inspector_state.process_remaining;
+    let process_suspended = inspector_state.process_suspended;
+    let connection_kill_enabled = inspector_state.connection_kill_enabled;
     let isolated = response_status.isolated;
-    let quarantine_ready =
-        active_response::can_apply_quarantine_profile(sel.pid, &sel.proc_path) && !ghost;
+    let quarantine_ready = inspector_state.quarantine_ready && !ghost;
     let quarantine_active = isolated || process_blocked || process_suspended;
-    let autoruns_frozen = active_response::has_frozen_autoruns();
+    let autoruns_frozen = response_status.frozen_autoruns;
 
     egui::ScrollArea::vertical().id_salt("help_scroll").show(ui, |ui| {
         ui.add_space(8.0);

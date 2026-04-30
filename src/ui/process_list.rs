@@ -47,6 +47,7 @@ struct ProcessGroup<'a> {
     distinct_remotes: usize,
     statuses: Vec<String>,
     reasons: Vec<String>,
+    reason_summary: crate::ui::inspector::ReasonSummary,
     attack_tags: Vec<String>,
     baseline_deviation: bool,
     script_host_suspicious: bool,
@@ -597,6 +598,7 @@ fn grouped_rows<'a>(
                 distinct_remotes: 0,
                 statuses: Vec::new(),
                 reasons: Vec::new(),
+                reason_summary: Default::default(),
                 attack_tags: Vec::new(),
                 baseline_deviation: false,
                 script_host_suspicious: false,
@@ -654,6 +656,7 @@ fn grouped_rows<'a>(
             group.distinct_remotes = remotes.len();
             group.statuses = statuses;
             group.reasons = dedup_reasons(reasons);
+            group.reason_summary = summarize_reasons(&group.reasons);
             group.attack_tags = dedup_reasons(attack_tags);
             group.endpoint_rows = endpoint_map
                 .into_values()
@@ -815,7 +818,7 @@ fn selection_from_group(
         service_name: group.service_name.to_string(),
         publisher: group.publisher.to_string(),
         score: group.score,
-        reason_summary: summarize_reasons(&group.reasons),
+        reason_summary: group.reason_summary.clone(),
         attack_tags: group.attack_tags.clone(),
         baseline_deviation: group.baseline_deviation,
         script_host_suspicious: group.script_host_suspicious,
