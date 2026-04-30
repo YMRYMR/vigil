@@ -58,6 +58,7 @@ use std::time::{Duration, Instant};
 
 const SINGLE_INSTANCE_UI_ID: &str = "com.ymrymr.vigil.single_instance.gui";
 const SINGLE_INSTANCE_SERVICE_ID: &str = "com.ymrymr.vigil.single_instance.service";
+
 fn load_app_icon() -> Option<egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil_icon.png"))
         .or_else(|_| eframe::icon_data::from_png_bytes(include_bytes!("../assets/vigil.png")))
