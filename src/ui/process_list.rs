@@ -569,11 +569,11 @@ fn grouped_rows<'a>(
     filter: &str,
     kind: Kind,
 ) -> Vec<ProcessGroup<'a>> {
-    let f = filter.to_lowercase();
+    let lower = filter.to_ascii_lowercase();
     let mut groups: HashMap<u32, ProcessGroup<'a>> = HashMap::new();
     let mut order: Vec<u32> = Vec::new();
 
-    for info in rows.iter().filter(|r| matches_filter(r, &f, kind)) {
+    for info in rows.iter().filter(|info| matches_filter(info, &lower, kind)) {
         let entry = groups.entry(info.pid).or_insert_with(|| {
             order.push(info.pid);
             ProcessGroup {
@@ -656,7 +656,6 @@ fn grouped_rows<'a>(
             group.distinct_remotes = remotes.len();
             group.statuses = statuses;
             group.reasons = dedup_reasons(reasons);
-            group.reason_summary = summarize_reasons(&group.reasons);
             group.attack_tags = dedup_reasons(attack_tags);
             group.endpoint_rows = endpoint_map
                 .into_values()
@@ -686,6 +685,7 @@ fn grouped_rows<'a>(
                     group.distinct_remotes
                 ));
             }
+            group.reason_summary = summarize_reasons(&group.reasons);
             group.score = group.score.saturating_add(fanout_bonus(
                 group.conn_count,
                 group.distinct_ports,
