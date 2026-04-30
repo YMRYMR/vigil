@@ -3,6 +3,7 @@
 //! One process becomes one card. Each card shows summary metadata up top and
 //! then groups repeated sockets by remote endpoint so the UI stays useful even
 //! when a process opens many connections to the same destination.
+#![allow(dead_code)]
 
 use crate::types::ConnInfo;
 use crate::ui::{theme, ProcessSelection, TableState};

@@ -24,6 +24,7 @@ use crate::types::{ConnEvent, ConnInfo};
 use chrono::{Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
@@ -427,6 +428,23 @@ fn load_vigil_logo(ctx: &egui::Context) -> Option<egui::TextureHandle> {
     Some(ctx.load_texture("vigil-logo", color_image, egui::TextureOptions::default()))
 }
 
+fn admin_chip(ui: &mut egui::Ui) {
+    ui.label(
+        egui::RichText::new(" Admin Mode ")
+            .color(theme::ACCENT)
+            .background_color(theme::ACCENT_BG)
+            .size(10.5)
+            .strong(),
+    );
+}
+
+fn admin_btn(text: &str) -> egui::Button<'_> {
+    egui::Button::new(egui::RichText::new(text).color(theme::ACCENT).size(11.0))
+        .fill(theme::ACCENT_BG)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT))
+        .corner_radius(4.0)
+}
+
 impl VigilApp {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -563,6 +581,104 @@ impl VigilApp {
         truncate_deque(&mut self.activity, activity_cap);
         truncate_deque(&mut self.alerts, alerts_cap);
     }
+
+    fn sync_tray_state(&mut self) {
+        let isolated = self.response_status.isolated;
+        if isolated != self.tray_lockdown_sent
+            && self
+                .tray_tx
+                .try_send(TrayCmd::SetLockdown(isolated))
+                .is_ok()
+        {
+            self.tray_lockdown_sent = isolated;
+        }
+    }
+
+    fn refresh_active_response_state(&mut self) {
+        if let Some(rx) = self.reconcile_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(status) => {
+                    self.response_status = status;
+                    self.reconcile_rx = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.reconcile_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if self.last_response_reconcile.elapsed().as_secs() >= 1 {
+            if self.reconcile_rx.is_none() {
+                let (tx, rx) = mpsc::channel();
+                match std::thread::Builder::new()
+                    .name("vigil-active-response-reconcile".into())
+                    .spawn(move || {
+                        active_response::reconcile();
+                        let _ = tx.send(active_response::status());
+                    }) {
+                    Ok(_) => {
+                        self.reconcile_rx = Some(rx);
+                    }
+                    Err(err) => {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            format!("Could not start reconcile worker: {err}"),
+                        );
+                    }
+                }
+            }
+            self.last_response_reconcile = std::time::Instant::now();
+        }
+        if self.last_schedule_check.elapsed().as_secs() >= 30 {
+            self.apply_scheduled_lockdown();
+            self.last_schedule_check = std::time::Instant::now();
+        }
+    }
+
+    fn apply_scheduled_lockdown(&mut self) {
+        if self.network_operation.is_some() {
+            return;
+        }
+        let cfg = self.cfg.read().unwrap().clone();
+        if !cfg.scheduled_lockdown_enabled {
+            self.scheduled_lockdown_active = false;
+            return;
+        }
+        if !active_response::can_isolate_network() {
+            return;
+        }
+        let now = Local::now();
+        let minute_of_day = now.hour() * 60 + now.minute();
+        let start = u32::from(cfg.scheduled_lockdown_start_hour.min(23)) * 60
+            + u32::from(cfg.scheduled_lockdown_start_minute.min(59));
+        let end = u32::from(cfg.scheduled_lockdown_end_hour.min(23)) * 60
+            + u32::from(cfg.scheduled_lockdown_end_minute.min(59));
+        let should_lock = if start == end {
+            false
+        } else if start < end {
+            minute_of_day >= start && minute_of_day < end
+        } else {
+            minute_of_day >= start || minute_of_day < end
+        };
+        if should_lock && !self.scheduled_lockdown_active {
+            if self.start_network_operation(NetworkOperationKind::Isolate) {
+                self.scheduled_target = Some(true);
+                self.push_notification(
+                    NotificationKind::Info,
+                    "Scheduled lockdown started: isolating network…",
+                );
+            }
+        } else if !should_lock
+            && self.scheduled_lockdown_active
+            && self.start_network_operation(NetworkOperationKind::Restore)
+        {
+            self.scheduled_target = Some(false);
+            self.push_notification(
+                NotificationKind::Info,
+                "Scheduled lockdown window ended: restoring network…",
+            );
+        }
+    }
     fn drain_events(&mut self, max_events: usize) -> bool {
         let mut handled = false;
         let deadline = std::time::Instant::now() + UI_EVENT_TIME_BUDGET;
@@ -643,69 +759,82 @@ impl VigilApp {
                     }
                 }
             }
-            inspector::Action::TrustPath => {
+            inspector::Action::OpenLocation => {
                 if let Some(info) = selected_info {
                     if !has_known_location(&info) {
                         return;
                     }
-                    if !crate::autostart::is_elevated() {
+                    let open_target = Path::new(&info.proc_path)
+                        .parent()
+                        .unwrap_or_else(|| Path::new(&info.proc_path));
+                    if let Err(err) = open::that(open_target) {
                         self.push_notification(
                             NotificationKind::Error,
-                            "Admin Mode is required to trust a path.",
+                            format!("Could not open location {}: {err}", open_target.display()),
                         );
-                        return;
-                    }
-                    let mut cfg = self.cfg.write().unwrap();
-                    if cfg.add_trusted_path(&info.proc_path) {
-                        cfg.save();
-                        self.settings = settings::SettingsDraft::from_config(&cfg);
                     }
                 }
             }
-            inspector::Action::KillProcess => {
+            inspector::Action::RequestAdmin => {
+                if !crate::autostart::is_elevated() {
+                    if let Err(err) = crate::autostart::relaunch_as_admin() {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            format!("Could not relaunch Vigil with Admin Mode: {err}"),
+                        );
+                    }
+                }
+            }
+            inspector::Action::Kill => {
                 self.kill_confirm = true;
             }
-            inspector::Action::IgnoreRemote => {
+            inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
                     self.response_confirm = Some(PendingResponse::BlockRemote {
                         target: info.remote_addr.clone(),
-                        preset: active_response::DurationPreset::Persistent,
+                        preset,
                     });
                 }
             }
-            inspector::Action::UnignoreRemote => {
+            inspector::Action::UnblockRemote => {
                 if let Some(info) = selected_info {
                     self.response_confirm = Some(PendingResponse::UnblockRemote(info.remote_addr));
                 }
             }
-            inspector::Action::IgnoreDomain => {
+            inspector::Action::BlockDomain => {
                 if let Some(info) = selected_info {
-                    let domain = info.selected_connection.as_ref().and_then(|c| c.hostname.clone());
+                    let domain = info
+                        .selected_connection
+                        .as_ref()
+                        .and_then(|c| c.hostname.clone());
                     if let Some(domain) = domain {
                         self.response_confirm = Some(PendingResponse::BlockDomain { domain });
                     }
                 }
             }
-            inspector::Action::UnignoreDomain => {
+            inspector::Action::UnblockDomain => {
                 if let Some(info) = selected_info {
-                    let domain = info.selected_connection.as_ref().and_then(|c| c.hostname.clone());
+                    let domain = info
+                        .selected_connection
+                        .as_ref()
+                        .and_then(|c| c.hostname.clone());
                     if let Some(domain) = domain {
                         self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
                     }
                 }
             }
-            inspector::Action::IgnoreProcess => {
+            inspector::Action::BlockProcess(preset) => {
                 if let Some(info) = selected_info {
                     if has_known_location(&info) {
                         self.response_confirm = Some(PendingResponse::BlockProcess {
                             pid: info.pid,
                             path: info.proc_path.clone(),
-                            preset: active_response::DurationPreset::Persistent,
+                            preset,
                         });
                     }
                 }
             }
-            inspector::Action::UnignoreProcess => {
+            inspector::Action::UnblockProcess => {
                 if let Some(info) = selected_info {
                     if has_known_location(&info) {
                         self.response_confirm = Some(PendingResponse::UnblockProcess {
@@ -718,7 +847,8 @@ impl VigilApp {
             inspector::Action::KillConnection => {
                 if let Some(info) = selected_info {
                     if let Some(conn) = info.selected_connection {
-                        self.response_confirm = Some(PendingResponse::KillConnection(Box::new(conn)));
+                        self.response_confirm =
+                            Some(PendingResponse::KillConnection(Box::new(conn)));
                     }
                 }
             }
@@ -770,7 +900,18 @@ impl VigilApp {
                     }
                 }
             }
-            inspector::Action::None => {}
+            inspector::Action::IsolateMachine => {
+                self.response_confirm = Some(PendingResponse::IsolateMachine);
+            }
+            inspector::Action::RestoreNetwork => {
+                self.response_confirm = Some(PendingResponse::RestoreNetwork);
+            }
+            inspector::Action::KillConfirmed => {
+                self.kill_confirm = false;
+            }
+            inspector::Action::KillCancelled => {
+                self.kill_confirm = false;
+            }
         }
     }
 
@@ -823,9 +964,7 @@ impl VigilApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new("Kill")
-                                    .color(theme::DANGER)
-                                    .size(11.0),
+                                egui::RichText::new("Kill").color(theme::DANGER).size(11.0),
                             )
                             .fill(theme::DANGER_BG)
                             .stroke(egui::Stroke::new(1.0, theme::DANGER))
@@ -866,6 +1005,139 @@ impl VigilApp {
                     }
                 });
             });
+    }
+
+    fn show_header(&mut self, ui: &mut egui::Ui) -> Option<inspector::Action> {
+        let mut action = None;
+        let network_busy = self.network_operation.is_some();
+
+        ui.horizontal_centered(|ui| {
+            ui.add_space(8.0);
+            if let Some(logo) = &self.vigil_logo {
+                let (logo_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(24.0, 24.0), egui::Sense::hover());
+                let logo_rect = logo_rect.translate(egui::vec2(0.0, -4.0));
+                ui.painter().image(
+                    logo.id(),
+                    logo_rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+                ui.add_space(6.0);
+            }
+            ui.label(egui::RichText::new("Vigil").color(theme::TEXT).size(15.5).strong());
+            ui.add_space(8.0);
+
+            let admin = crate::autostart::is_elevated();
+            let (label, color, filled) = if self.paused {
+                ("Paused", theme::TEXT2, false)
+            } else {
+                ("Monitoring", theme::ACCENT, true)
+            };
+
+            ui.horizontal_wrapped(|ui| {
+                let (dot_rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                if filled {
+                    ui.painter().circle_filled(dot_rect.center(), 4.0, color);
+                } else {
+                    ui.painter()
+                        .circle_stroke(dot_rect.center(), 4.0, egui::Stroke::new(1.4, color));
+                }
+
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(label).color(color).size(11.5));
+                ui.add_space(6.0);
+
+                if admin {
+                    admin_chip(ui);
+                } else {
+                    let btn_label = "Run as Admin";
+                    let hover = "Relaunch Vigil with elevated privileges so restricted monitoring and response features are available.";
+                    let relaunch = ui
+                        .add(admin_btn(btn_label))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(hover);
+                    if relaunch.clicked() {
+                        action = Some(inspector::Action::RequestAdmin);
+                    }
+                }
+
+                if self.settings.scheduled_lockdown_enabled {
+                    let schedule_label = if self.scheduled_lockdown_active {
+                        format!(
+                            " Scheduled {:02}:{:02}-{:02}:{:02} ",
+                            self.settings.scheduled_lockdown_start_hour,
+                            self.settings.scheduled_lockdown_start_minute,
+                            self.settings.scheduled_lockdown_end_hour,
+                            self.settings.scheduled_lockdown_end_minute
+                        )
+                    } else {
+                        format!(
+                            " Schedule {:02}:{:02}-{:02}:{:02} ",
+                            self.settings.scheduled_lockdown_start_hour,
+                            self.settings.scheduled_lockdown_start_minute,
+                            self.settings.scheduled_lockdown_end_hour,
+                            self.settings.scheduled_lockdown_end_minute
+                        )
+                    };
+                    ui.label(
+                        egui::RichText::new(schedule_label)
+                            .color(if self.scheduled_lockdown_active {
+                                theme::DANGER
+                            } else {
+                                theme::TEXT2
+                            })
+                            .background_color(if self.scheduled_lockdown_active {
+                                theme::DANGER_BG
+                            } else {
+                                theme::SURFACE2
+                            })
+                            .size(10.0)
+                            .strong(),
+                    );
+                }
+
+                if self.response_status.frozen_autoruns {
+                    ui.label(
+                        egui::RichText::new(" Autoruns frozen ")
+                            .color(theme::WARN)
+                            .background_color(theme::WARN_BG)
+                            .size(10.0)
+                            .strong(),
+                    );
+                }
+            });
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(12.0);
+
+                let btn_label = if self.paused { "Resume" } else { "Pause" };
+                let btn = egui::Button::new(
+                    egui::RichText::new(btn_label)
+                        .color(theme::TEXT2)
+                        .size(11.0),
+                )
+                .fill(theme::SURFACE2)
+                .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                .corner_radius(4.0);
+                let resp = ui
+                    .add_enabled(!network_busy, btn)
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let resp = if network_busy {
+                    resp.on_hover_text("A network action is already in progress.")
+                } else if self.paused {
+                    resp.on_hover_text("Resume live monitoring and detection updates.")
+                } else {
+                    resp.on_hover_text("Pause live monitoring and detection updates.")
+                };
+                if resp.clicked() {
+                    self.paused = !self.paused;
+                    self.paused_flag.store(self.paused, Ordering::Relaxed);
+                }
+            });
+        });
+
+        action
     }
 
     fn show_response_confirm_window(&mut self, ctx: &egui::Context) {
@@ -916,9 +1188,7 @@ impl VigilApp {
             ),
             PendingResponse::QuarantineProfile { proc_name, .. } => (
                 "Confirm Quarantine Profile",
-                format!(
-                    "Apply a quarantine profile to {proc_name} and tighten related controls?"
-                ),
+                format!("Apply a quarantine profile to {proc_name} and tighten related controls?"),
                 "Apply",
             ),
             PendingResponse::ClearQuarantineProfile { pid, .. } => (
@@ -974,7 +1244,7 @@ impl VigilApp {
                     .stroke(egui::Stroke::new(1.0, theme::BORDER))
                     .corner_radius(12.0),
             )
-            .show(&ctx, |ui| {
+            .show(ctx, |ui| {
                 ui.set_min_width(360.0);
                 ui.label(egui::RichText::new(body).color(theme::TEXT2).size(11.5));
                 ui.add_space(12.0);
@@ -982,7 +1252,7 @@ impl VigilApp {
                     let confirm = ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new(confirm_label.as_str())
+                                egui::RichText::new(confirm_label)
                                     .color(theme::DANGER)
                                     .size(11.0),
                             )
@@ -1409,6 +1679,224 @@ impl VigilApp {
             ui.painter().add(egui::Shape::line(points, stroke_fg));
         }
         response
+    }
+}
+
+impl eframe::App for VigilApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        self.handle_font_zoom_shortcut(&ctx);
+        self.sync_ui_scale(&ctx);
+        self.refresh_active_response_state();
+        self.poll_network_operation();
+        self.sync_tray_state();
+        self.trim_history_buffers();
+        if self.show_window.swap(false, Ordering::Relaxed) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        if let Some(nav) = self.pending_nav.lock().unwrap().take() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            self.active_tab = Tab::Alerts;
+            self.kill_confirm = false;
+            self.unseen_alerts = 0;
+            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
+            self.selected_alert = process_list::selection_for_pid(
+                &self.alerts,
+                nav.pid,
+                self.alerts.iter().find(|a| {
+                    a.timestamp == nav.timestamp
+                        && a.proc_name == nav.proc_name
+                        && a.remote_addr == nav.remote_addr
+                }),
+                process_list::Kind::Alerts,
+            );
+        }
+        if ctx.input(|i| i.viewport().close_requested()) && !self.exit_requested {
+            #[cfg(target_os = "linux")]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+            #[cfg(not(target_os = "linux"))]
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
+        let handled_events = self.drain_events(UI_EVENT_BUDGET);
+        if handled_events {
+            ctx.request_repaint();
+        }
+        if self.active_tab == Tab::Alerts && self.unseen_alerts > 0 {
+            self.unseen_alerts = 0;
+            let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
+        }
+        let header_action = egui::Panel::top("header")
+            .exact_size(48.0)
+            .frame(egui::Frame::NONE.fill(theme::SURFACE))
+            .show_inside(ui, |ui| self.show_header(ui));
+        if let Some(action) = header_action.inner {
+            self.handle_inspector_action(action, &ctx);
+        }
+        let new_tab = egui::Panel::top("tabs")
+            .exact_size(36.0)
+            .frame(egui::Frame::NONE.fill(theme::SURFACE))
+            .show_inside(ui, |ui| {
+                tab_bar::tab_bar(
+                    ui,
+                    self.active_tab,
+                    self.cached_activity_process_count,
+                    self.cached_alerts_process_count,
+                )
+            })
+            .inner;
+        if new_tab != self.active_tab {
+            self.active_tab = new_tab;
+            self.kill_confirm = false;
+        }
+        let mut inspector_action: Option<inspector::Action> = None;
+        if matches!(self.active_tab, Tab::Activity | Tab::Alerts) {
+            let selected_info: Option<&ProcessSelection> = match self.active_tab {
+                Tab::Activity => self.selected_activity.as_ref(),
+                Tab::Alerts => self.selected_alert.as_ref(),
+                _ => None,
+            };
+            let kill_confirm = self.kill_confirm;
+            inspector_action = egui::Panel::right("inspector")
+                .exact_size(320.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::SURFACE)
+                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                        .inner_margin(egui::Margin::symmetric(12, 0)),
+                )
+                .show_inside(ui, |ui| inspector::show(ui, selected_info, kill_confirm))
+                .inner;
+        }
+        if let Some(action) = inspector_action {
+            self.handle_inspector_action(action, &ctx);
+        }
+        self.show_response_confirm_window(&ctx);
+        self.show_kill_confirm_window(&ctx);
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG)
+                    .inner_margin(egui::Margin::same(12)),
+            )
+            .show_inside(ui, |ui| match self.active_tab {
+                Tab::Activity => {
+                    if activity::show(
+                        ui,
+                        &self.activity,
+                        &mut self.selected_activity,
+                        &mut self.activity_table,
+                        self.data_version,
+                        &mut self.activity_cache,
+                    ) {
+                        self.activity.clear();
+                        self.selected_activity = None;
+                    }
+                }
+                Tab::Alerts => {
+                    if alerts::show(
+                        ui,
+                        &self.alerts,
+                        &mut self.selected_alert,
+                        &mut self.alerts_table,
+                        self.data_version,
+                        &mut self.alerts_cache,
+                    ) {
+                        self.alerts.clear();
+                        self.selected_alert = None;
+                        self.unseen_alerts = 0;
+                        let _ = self.tray_tx.try_send(TrayCmd::ResetOk);
+                    }
+                }
+                Tab::Settings => {
+                    let elevated = crate::autostart::is_elevated();
+                    let changed = settings::show(ui, &mut self.settings, elevated);
+                    if self.settings.grant_capabilities_requested {
+                        self.settings.grant_capabilities_requested = false;
+                        match crate::autostart::relaunch_as_admin() {
+                            Ok(()) => {
+                                std::process::exit(0);
+                            }
+                            Err(err) => {
+                                self.push_notification(
+                                    NotificationKind::Error,
+                                    format!("Could not elevate: {err}"),
+                                );
+                            }
+                        }
+                    }
+                    if self.settings.uninstall_requested {
+                        self.settings.uninstall_requested = false;
+                        self.execute_uninstall_from_settings();
+                    }
+                    if changed {
+                        let locked_policy_changes;
+                        {
+                            let mut cfg = self.cfg.write().unwrap();
+                            locked_policy_changes =
+                                !elevated && self.settings.policy_edits_pending(&cfg);
+                            self.settings.apply_to(&mut cfg, elevated);
+                            if cfg.autostart {
+                                if crate::autostart::enable() {
+                                    cfg.autostart = true;
+                                }
+                            } else {
+                                crate::autostart::disable();
+                            }
+                            cfg.save();
+                            self.settings = settings::SettingsDraft::from_config(&cfg);
+                        }
+                        if locked_policy_changes {
+                            self.settings.status_msg = Some((
+                                "Admin Mode is required to save policy changes; only non-sensitive preferences were persisted.".into(),
+                                std::time::Instant::now(),
+                            ));
+                            self.push_notification(
+                                NotificationKind::Warning,
+                                "Policy edits require Admin Mode. Only non-sensitive preferences were saved.",
+                            );
+                        }
+                        self.sync_ui_scale(&ctx);
+                        if self.settings.status_msg.is_none() {
+                            self.settings.status_msg =
+                                Some(("Settings auto-saved.".into(), std::time::Instant::now()));
+                        }
+                    }
+                }
+                Tab::Help => help::show(ui),
+            });
+        self.show_notifications_overlay(&ctx);
+        self.show_network_operation_overlay(&ctx);
+        ctx.request_repaint_after(
+            if self.network_operation.is_some() || !self.notifications.is_empty() {
+                UI_BUSY_REPAINT
+            } else {
+                UI_IDLE_REPAINT
+            },
+        );
+    }
+
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        [
+            0x14 as f32 / 255.0,
+            0x15 as f32 / 255.0,
+            0x1A as f32 / 255.0,
+            1.0,
+        ]
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        let state = UiState {
+            active_tab: self.active_tab,
+            activity_table: self.activity_table.clone(),
+            alerts_table: self.alerts_table.clone(),
+        };
+        eframe::set_value(storage, "ui", &state);
     }
 }
 

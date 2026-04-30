@@ -190,6 +190,14 @@ impl DurationPreset {
             Self::Permanent => None,
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OneHour => "1h",
+            Self::OneDay => "24h",
+            Self::Permanent => "Permanent",
+        }
+    }
 }
 
 pub fn status() -> Status {
