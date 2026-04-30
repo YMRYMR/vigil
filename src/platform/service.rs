@@ -7,7 +7,7 @@
 //!
 //! | OS      | Mechanism                     | Location                                      |
 //! | ------- | ----------------------------- | --------------------------------------------- |
-//! | Windows | Service Control Manager (SCM) | `sc create Vigil …`                           |
+//! | Windows | Task Scheduler                | `schtasks /Create ...`                        |
 //! | macOS   | launchd system daemon         | `/Library/LaunchDaemons/com.vigil.monitor.plist` |
 //! | Linux   | systemd system unit           | `/etc/systemd/system/vigil.service`           |
 //!
@@ -37,75 +37,107 @@ pub fn uninstall() -> CmdResult {
     platform::uninstall()
 }
 
-// ── Windows ───────────────────────────────────────────────────────────────────
+// ── Windows ─────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
 
-    const SVC_NAME: &str = "Vigil";
+    const TASK_NAME: &str = "VigilBootMonitor";
+    const LEGACY_SERVICE_NAME: &str = "Vigil";
 
     pub fn install(exe: &Path) -> CmdResult {
-        // sc create Vigil binPath= "\"C:\path\to\vigil.exe\" --service-mode" start= auto
-        let bin_path = format!("\"{}\" {}", exe.display(), SERVICE_MODE_FLAG);
-        let status = Command::new(command_paths::resolve("sc")?)
+        let task_command = format!(r#""{}" {}"#, exe.display(), SERVICE_MODE_FLAG);
+        let status = Command::new(command_paths::resolve("schtasks")?)
             .args([
-                "create",
-                SVC_NAME,
-                "binPath=",
-                &bin_path,
-                "start=",
-                "auto",
-                "DisplayName=",
-                "Vigil Network Monitor",
+                "/Create",
+                "/TN",
+                TASK_NAME,
+                "/TR",
+                &task_command,
+                "/SC",
+                "ONSTART",
+                "/RU",
+                "SYSTEM",
+                "/RL",
+                "HIGHEST",
+                "/F",
             ])
             .status()
-            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
         if !status.success() {
-            return Err("`sc create` failed.  Open an *elevated* Command Prompt \
+            return Err(
+                "`schtasks /Create` failed.  Open an *elevated* Command Prompt \
                  (Run as Administrator) and re-run `vigil --install-service`."
-                .into());
+                    .into(),
+            );
         }
 
-        let _ = Command::new(command_paths::resolve("sc")?)
-            .args(["start", SVC_NAME])
+        let _ = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Run", "/TN", TASK_NAME])
             .status();
         Ok(format!(
-            "Installed Windows service `{SVC_NAME}` and started it.  \
-             It will auto-start at boot from now on.\n\
+            "Installed Windows boot-time monitor task `{TASK_NAME}` and started it.  \
+             It will auto-start before login from now on.\n\
              To remove:  vigil --uninstall-service"
         ))
     }
 
     pub fn uninstall() -> CmdResult {
+        let mut removed_any = false;
+
+        if task_path().exists() {
+            let status = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/Delete", "/TN", TASK_NAME, "/F"])
+                .status()
+                .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+            if !status.success() {
+                return Err(
+                    "`schtasks /Delete` failed.  Re-run from an elevated Command Prompt.".into(),
+                );
+            }
+            removed_any = true;
+        }
+
         let query = Command::new(command_paths::resolve("sc")?)
-            .args(["query", SVC_NAME])
+            .args(["query", LEGACY_SERVICE_NAME])
             .output()
             .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
-        if !query.status.success() {
-            if service_does_not_exist(&query) {
-                return Ok(format!("Windows service `{SVC_NAME}` was not installed."));
+        if query.status.success() {
+            let _ = Command::new(command_paths::resolve("sc")?)
+                .args(["stop", LEGACY_SERVICE_NAME])
+                .status();
+            let status = Command::new(command_paths::resolve("sc")?)
+                .args(["delete", LEGACY_SERVICE_NAME])
+                .status()
+                .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+            if !status.success() {
+                return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
             }
+            removed_any = true;
+        } else if !service_does_not_exist(&query) {
             return Err(format!(
-                "`sc query {SVC_NAME}` failed unexpectedly: {}",
+                "`sc query {LEGACY_SERVICE_NAME}` failed unexpectedly: {}",
                 command_output_summary(&query)
             ));
         }
 
-        let _ = Command::new(command_paths::resolve("sc")?)
-            .args(["stop", SVC_NAME])
-            .status();
-        let status = Command::new(command_paths::resolve("sc")?)
-            .args(["delete", SVC_NAME])
-            .status()
-            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
-        if !status.success() {
-            return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
+        if removed_any {
+            Ok(format!(
+                "Removed Windows boot-time monitor task `{TASK_NAME}` and any legacy Windows service `{LEGACY_SERVICE_NAME}`."
+            ))
+        } else {
+            Ok(format!(
+                "Windows boot-time monitor task `{TASK_NAME}` was not installed."
+            ))
         }
-        Ok(format!("Removed Windows service `{SVC_NAME}`."))
+    }
+
+    fn task_path() -> PathBuf {
+        PathBuf::from(r"C:\Windows\System32\Tasks\VigilBootMonitor")
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
