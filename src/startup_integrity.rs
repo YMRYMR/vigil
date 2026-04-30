@@ -57,10 +57,10 @@ pub fn scan_operator_inputs(cfg: &config::Config) {
         if path.trim().is_empty() {
             continue;
         }
-        observe_operator_path(&mut summary, "blocklist", Path::new(path.trim()));
+        scan_verified_operator_path(&mut summary, "blocklist", Path::new(path.trim()));
     }
     if !cfg.response_rules_path.trim().is_empty() {
-        observe_operator_path(
+        scan_verified_operator_path(
             &mut summary,
             "response_rules",
             Path::new(cfg.response_rules_path.trim()),
@@ -70,16 +70,23 @@ pub fn scan_operator_inputs(cfg: &config::Config) {
 }
 
 #[cfg(test)]
-pub fn load_latest_report(action: &str) -> Option<IntegrityReport> {
+pub fn load_latest_report(action: &str) -> Result<Option<IntegrityReport>, String> {
     let path = report_path(action);
-    let bytes = crate::security::policy::load_json_with_integrity(&path)
-        .ok()
-        .flatten()?;
-    serde_json::from_slice(&bytes).ok()
+    let Some(bytes) = crate::security::policy::load_json_with_integrity(&path)? else {
+        return Ok(None);
+    };
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|e| format!("failed to parse integrity report {}: {e}", path.display()))
 }
 
-fn observe_operator_path(summary: &mut ScanSummary, kind: &str, path: &Path) {
+fn scan_verified_operator_path(summary: &mut ScanSummary, kind: &str, path: &Path) {
     summary.checked += 1;
+    if let Err(err) = crate::security::integrity::read_verified_to_string(path, kind) {
+        summary.failures += 1;
+        tracing::warn!(kind, path = %path.display(), %err, "operator input failed integrity verification");
+        return;
+    }
     match operator_provenance::observe_operator_file(kind, path) {
         operator_provenance::Observation::Unchanged => summary.ok += 1,
         operator_provenance::Observation::FirstSeen | operator_provenance::Observation::Changed => {
@@ -438,7 +445,9 @@ mod tests {
             generated_unix: 1,
         };
         save_report(&report).unwrap();
-        let loaded = load_latest_report("startup_integrity_scan").expect("report must load");
+        let loaded = load_latest_report("startup_integrity_scan")
+            .expect("report must load")
+            .expect("report must exist");
         assert_eq!(loaded.outcome, "warning");
     }
 
