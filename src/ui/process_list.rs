@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use crate::types::ConnInfo;
-use crate::ui::{theme, ProcessSelection, TableState};
+use crate::ui::{inspector::summarize_reasons, theme, ProcessSelection, TableState};
 use egui::RichText;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -815,7 +815,7 @@ fn selection_from_group(
         service_name: group.service_name.to_string(),
         publisher: group.publisher.to_string(),
         score: group.score,
-        reasons: group.reasons.clone(),
+        reason_summary: summarize_reasons(&group.reasons),
         attack_tags: group.attack_tags.clone(),
         baseline_deviation: group.baseline_deviation,
         script_host_suspicious: group.script_host_suspicious,

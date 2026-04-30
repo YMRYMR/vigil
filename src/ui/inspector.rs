@@ -355,13 +355,13 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
         ui.add_space(8.0);
 
         section_header(ui, "Why it scored");
-        if sel.reasons.is_empty() {
+        if sel.reason_summary.is_empty() {
             ui.label(RichText::new("No score reasons recorded.").color(theme::TEXT3).size(11.0));
         } else {
             render_reason_block(
                 ui,
                 "process",
-                &sel.reasons,
+                &sel.reason_summary,
                 ">",
                 theme::WARN,
                 theme::TEXT2,
@@ -390,7 +390,7 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
                 render_reason_block(
                     ui,
                     "connection",
-                    &conn.reasons,
+                    &summarize_reasons(&conn.reasons),
                     "-",
                     theme::TEXT3,
                     theme::TEXT2,
@@ -527,14 +527,20 @@ fn section_header(ui: &mut Ui, title: &str) {
     ui.add_space(4.0);
 }
 
-#[derive(Default)]
-struct ReasonSummary {
+#[derive(Debug, Clone, Default)]
+pub struct ReasonSummary {
     plain: Vec<String>,
     unusual_ports: Vec<u16>,
     truncated_input: usize,
 }
 
-fn summarize_reasons(reasons: &[String]) -> ReasonSummary {
+impl ReasonSummary {
+    fn is_empty(&self) -> bool {
+        self.plain.is_empty() && self.unusual_ports.is_empty() && self.truncated_input == 0
+    }
+}
+
+pub fn summarize_reasons(reasons: &[String]) -> ReasonSummary {
     let mut summary = ReasonSummary::default();
     let mut ports = BTreeSet::new();
     for reason in reasons.iter().take(MAX_REASON_SCAN) {
@@ -577,14 +583,13 @@ fn render_reason_row(
 fn render_reason_block(
     ui: &mut Ui,
     id_prefix: &str,
-    reasons: &[String],
+    summary: &ReasonSummary,
     marker: &str,
     marker_color: egui::Color32,
     text_color: egui::Color32,
     text_size: f32,
     row_gap: f32,
 ) {
-    let summary = summarize_reasons(reasons);
     for reason in summary.plain.iter().take(MAX_REASON_PLAIN_ROWS) {
         render_reason_row(
             ui,
