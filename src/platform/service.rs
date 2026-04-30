@@ -89,7 +89,11 @@ mod platform {
     pub fn uninstall() -> CmdResult {
         let mut removed_any = false;
 
-        if task_path().exists() {
+        let task_path = task_path();
+        if task_path.exists() {
+            let _ = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/End", "/TN", TASK_NAME])
+                .status();
             let status = Command::new(command_paths::resolve("schtasks")?)
                 .args(["/Delete", "/TN", TASK_NAME, "/F"])
                 .status()
@@ -137,7 +141,13 @@ mod platform {
     }
 
     fn task_path() -> PathBuf {
-        PathBuf::from(r"C:\Windows\System32\Tasks\VigilBootMonitor")
+        let mut root = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        root.push("System32");
+        root.push("Tasks");
+        root.push(TASK_NAME);
+        root
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
