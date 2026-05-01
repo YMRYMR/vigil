@@ -1,8 +1,10 @@
-use crate::advisory::{AdvisoryCache, SourceHealth};
+use crate::advisory::{AdvisoryCache, AdvisorySourceCache, SourceHealth};
 use std::path::PathBuf;
 
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
+const NVD_API_ATTRIBUTION_NOTICE: &str =
+    "This product uses the NVD API but is not endorsed or certified by the NVD.";
 
 pub fn run_cli() -> Result<(), String> {
     let path = cache_path();
@@ -72,6 +74,9 @@ pub fn run_cli() -> Result<(), String> {
         if !source.source_url.trim().is_empty() {
             println!("  source_url={}", source.source_url);
         }
+        if let Some(attribution) = source_attribution(source) {
+            println!("  attribution={attribution}");
+        }
         if source.last_attempt_unix > 0 {
             println!("  last_attempt={}", source.last_attempt_unix);
         }
@@ -89,7 +94,7 @@ fn cache_path() -> PathBuf {
     crate::config::data_dir().join(CACHE_FILE)
 }
 
-fn source_state(source: &crate::advisory::AdvisorySourceCache, now: u64) -> &'static str {
+fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
     if is_source_stale(source.expires_unix, now) {
         return "stale";
     }
@@ -97,6 +102,14 @@ fn source_state(source: &crate::advisory::AdvisorySourceCache, now: u64) -> &'st
         SourceHealth::Fresh => "fresh",
         SourceHealth::Stale => "stale",
         SourceHealth::Error => "error",
+    }
+}
+
+fn source_attribution(source: &AdvisorySourceCache) -> Option<&'static str> {
+    if source.source_kind == "nvd" && source.source_key == "nvd-cve" {
+        Some(NVD_API_ATTRIBUTION_NOTICE)
+    } else {
+        None
     }
 }
 
@@ -114,7 +127,6 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::advisory::AdvisorySourceCache;
 
     #[test]
     fn source_state_reports_expired_sources_as_stale() {
@@ -154,5 +166,48 @@ mod tests {
         };
 
         assert_eq!(source_state(&source, 30), "error");
+    }
+
+    #[test]
+    fn source_attribution_reports_nvd_notice() {
+        let source = AdvisorySourceCache {
+            source_key: "nvd-cve".into(),
+            source_kind: "nvd".into(),
+            source_url: String::new(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: 10,
+            expires_unix: 100,
+            snapshot_sha256: String::new(),
+            total_results: 1,
+            status: SourceHealth::Fresh,
+            last_attempt_unix: 0,
+            last_error: None,
+        };
+
+        assert_eq!(
+            source_attribution(&source),
+            Some(NVD_API_ATTRIBUTION_NOTICE)
+        );
+    }
+
+    #[test]
+    fn source_attribution_is_empty_for_non_nvd_sources() {
+        let source = AdvisorySourceCache {
+            source_key: "euvd".into(),
+            source_kind: "euvd".into(),
+            source_url: String::new(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: 10,
+            expires_unix: 100,
+            snapshot_sha256: String::new(),
+            total_results: 1,
+            status: SourceHealth::Fresh,
+            last_attempt_unix: 0,
+            last_error: None,
+        };
+
+        assert_eq!(source_attribution(&source), None);
     }
 }
