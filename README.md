@@ -31,6 +31,7 @@ high-noise event into a destructive action.
 - [Security policy](SECURITY.md) — vulnerability reporting and security contacts
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
 - [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
+- [Advisory source compliance](docs/ADVISORY-SOURCE-COMPLIANCE.md) — attribution, caching, and reuse rules for public vulnerability and advisory feeds
 
 ---
 
