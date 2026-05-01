@@ -671,6 +671,9 @@ fn sync_windows(
     let Some(mut start) = latest else {
         return vec![(None, None)];
     };
+    if start >= now {
+        return Vec::new();
+    }
 
     let max_span = chrono::Duration::days(NVD_MAX_INCREMENTAL_WINDOW_DAYS);
     let mut windows = Vec::new();
@@ -678,10 +681,6 @@ fn sync_windows(
         let end = std::cmp::min(start + max_span, now);
         windows.push((Some(format_datetime(start)), Some(format_datetime(end))));
         start = end;
-    }
-
-    if windows.is_empty() {
-        windows.push((Some(format_datetime(start)), Some(format_datetime(now))));
     }
 
     windows
@@ -947,9 +946,10 @@ fn merge_change(changes: &mut Vec<CveChangeEvent>, imported: CveChangeEvent) {
         .iter_mut()
         .find(|change| change_key(change) == change_key(&imported))
     {
-        if compare_optional_timestamp(imported.created.as_deref(), existing.created.as_deref())
-            == Some(std::cmp::Ordering::Greater)
-        {
+        if !matches!(
+            compare_optional_timestamp(imported.created.as_deref(), existing.created.as_deref()),
+            Some(std::cmp::Ordering::Less)
+        ) {
             *existing = imported;
         }
         return;
@@ -1192,6 +1192,138 @@ mod tests {
     }
 
     #[test]
+    fn merge_change_replaces_duplicate_when_timestamp_is_missing_or_equal() {
+        let mut changes = vec![CveChangeEvent {
+            cve_id: "CVE-2026-9999".into(),
+            event_name: "Initial Analysis".into(),
+            change_id: "change-9999".into(),
+            source_identifier: "nvd@example.com".into(),
+            created: Some("2026-04-26T10:00:00.000".into()),
+            details: vec![CveChangeDetail {
+                action: "Added".into(),
+                kind: "Reference Type".into(),
+                old_value: None,
+                new_value: Some("old".into()),
+            }],
+            provenance: ChangeHistoryProvenance {
+                source_kind: NVD_SOURCE_KIND.into(),
+                source_key: NVD_SOURCE_KEY.into(),
+                source_url: NVD_API_URL.into(),
+                imported_unix: 1,
+            },
+        }];
+
+        merge_change(
+            &mut changes,
+            CveChangeEvent {
+                cve_id: "CVE-2026-9999".into(),
+                event_name: "Reanalysis".into(),
+                change_id: "change-9999".into(),
+                source_identifier: "nvd@example.com".into(),
+                created: Some("2026-04-26T10:00:00.000".into()),
+                details: vec![CveChangeDetail {
+                    action: "Changed".into(),
+                    kind: "Reference Type".into(),
+                    old_value: Some("old".into()),
+                    new_value: Some("equal-ts".into()),
+                }],
+                provenance: ChangeHistoryProvenance {
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_url: NVD_API_URL.into(),
+                    imported_unix: 2,
+                },
+            },
+        );
+
+        assert_eq!(changes[0].event_name, "Reanalysis");
+        assert_eq!(
+            changes[0].details[0].new_value.as_deref(),
+            Some("equal-ts")
+        );
+
+        merge_change(
+            &mut changes,
+            CveChangeEvent {
+                cve_id: "CVE-2026-9999".into(),
+                event_name: "Reanalysis".into(),
+                change_id: "change-9999".into(),
+                source_identifier: "nvd@example.com".into(),
+                created: None,
+                details: vec![CveChangeDetail {
+                    action: "Changed".into(),
+                    kind: "Reference Type".into(),
+                    old_value: Some("equal-ts".into()),
+                    new_value: Some("missing-ts".into()),
+                }],
+                provenance: ChangeHistoryProvenance {
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_url: NVD_API_URL.into(),
+                    imported_unix: 3,
+                },
+            },
+        );
+
+        assert_eq!(changes[0].created, None);
+        assert_eq!(
+            changes[0].details[0].new_value.as_deref(),
+            Some("missing-ts")
+        );
+    }
+
+    #[test]
+    fn merge_change_keeps_newer_existing_duplicate() {
+        let mut changes = vec![CveChangeEvent {
+            cve_id: "CVE-2026-9999".into(),
+            event_name: "Initial Analysis".into(),
+            change_id: "change-9999".into(),
+            source_identifier: "nvd@example.com".into(),
+            created: Some("2026-04-27T10:00:00.000".into()),
+            details: vec![CveChangeDetail {
+                action: "Added".into(),
+                kind: "Reference Type".into(),
+                old_value: None,
+                new_value: Some("newer".into()),
+            }],
+            provenance: ChangeHistoryProvenance {
+                source_kind: NVD_SOURCE_KIND.into(),
+                source_key: NVD_SOURCE_KEY.into(),
+                source_url: NVD_API_URL.into(),
+                imported_unix: 1,
+            },
+        }];
+
+        merge_change(
+            &mut changes,
+            CveChangeEvent {
+                cve_id: "CVE-2026-9999".into(),
+                event_name: "Initial Analysis".into(),
+                change_id: "change-9999".into(),
+                source_identifier: "nvd@example.com".into(),
+                created: Some("2026-04-26T10:00:00.000".into()),
+                details: vec![CveChangeDetail {
+                    action: "Changed".into(),
+                    kind: "Reference Type".into(),
+                    old_value: Some("newer".into()),
+                    new_value: Some("older".into()),
+                }],
+                provenance: ChangeHistoryProvenance {
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_url: NVD_API_URL.into(),
+                    imported_unix: 2,
+                },
+            },
+        );
+
+        assert_eq!(
+            changes[0].details[0].new_value.as_deref(),
+            Some("newer")
+        );
+    }
+
+    #[test]
     fn sync_windows_split_long_offline_gaps() {
         let existing = ChangeHistoryCache {
             schema_version: CACHE_SCHEMA_VERSION,
@@ -1232,6 +1364,34 @@ mod tests {
             )
         );
         assert_eq!(sync_windows(None, now), vec![(None, None)]);
+    }
+
+    #[test]
+    fn sync_windows_skip_future_latest_timestamp() {
+        let existing = ChangeHistoryCache {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_unix: 0,
+            sources: vec![],
+            changes: vec![CveChangeEvent {
+                cve_id: "CVE-2026-12345".into(),
+                event_name: "Initial Analysis".into(),
+                change_id: "change-1".into(),
+                source_identifier: "nvd@example.com".into(),
+                created: Some("2026-07-01T00:00:00.000".into()),
+                details: vec![],
+                provenance: ChangeHistoryProvenance {
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_url: NVD_API_URL.into(),
+                    imported_unix: 0,
+                },
+            }],
+        };
+        let now = parse_timestamp("2026-06-15T00:00:00.000")
+            .unwrap()
+            .timestamp() as u64;
+
+        assert!(sync_windows(Some(&existing), now).is_empty());
     }
 
     #[test]
