@@ -154,6 +154,7 @@ pub fn spawn_event_worker(
     mut event_rx: tokio::sync::broadcast::Receiver<ConnEvent>,
     cfg: Arc<RwLock<Config>>,
     tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
+    notify_tx: std::sync::mpsc::SyncSender<ConnInfo>,
     paused: Arc<AtomicBool>,
 ) -> mpsc::Receiver<UiMessage> {
     let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
@@ -170,7 +171,14 @@ pub fn spawn_event_worker(
                         }
                         match &event {
                             ConnEvent::Alert(info) => {
-                                let _ = tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())));
+                                if let Err(err) = notify_tx.try_send(info.clone()) {
+                                    tracing::warn!("desktop alert notification dropped: {err}");
+                                }
+                                if let Err(err) =
+                                    tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())))
+                                {
+                                    tracing::warn!("tray alert state update dropped: {err}");
+                                }
                                 let cfg_snapshot = cfg.read().unwrap().clone();
                                 if let Some(message) = auto_response::maybe_apply(
                                     info,
@@ -264,6 +272,49 @@ pub struct ProcessSelection {
     pub distinct_remotes: usize,
     pub statuses: Vec<String>,
     pub selected_connection: Option<ConnInfo>,
+    pub selected_connection_reason_summary: Option<inspector::ReasonSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InspectorSnapshotKey {
+    pid: u32,
+    proc_path: String,
+    remote_addr: Option<String>,
+    hostname: Option<String>,
+    tls_sni: Option<String>,
+}
+
+#[derive(Clone)]
+struct InspectorSnapshotRequest {
+    key: InspectorSnapshotKey,
+    pid: u32,
+    proc_path: String,
+    selected_connection: Option<ConnInfo>,
+}
+
+impl InspectorSnapshotRequest {
+    fn from_selection(sel: &ProcessSelection) -> Self {
+        let selected_connection = sel.selected_connection.clone();
+        let key = InspectorSnapshotKey {
+            pid: sel.pid,
+            proc_path: sel.proc_path.clone(),
+            remote_addr: selected_connection
+                .as_ref()
+                .map(|conn| conn.remote_addr.clone()),
+            hostname: selected_connection
+                .as_ref()
+                .and_then(|conn| conn.hostname.clone()),
+            tls_sni: selected_connection
+                .as_ref()
+                .and_then(|conn| conn.tls_sni.clone()),
+        };
+        Self {
+            key,
+            pid: sel.pid,
+            proc_path: sel.proc_path.clone(),
+            selected_connection,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -343,6 +394,11 @@ pub struct VigilApp {
     kill_confirm: bool,
     response_confirm: Option<PendingResponse>,
     response_status: active_response::Status,
+    inspector_snapshot: active_response::InspectorSnapshot,
+    inspector_snapshot_key: Option<InspectorSnapshotKey>,
+    inspector_snapshot_rx:
+        Option<mpsc::Receiver<(InspectorSnapshotKey, active_response::InspectorSnapshot)>>,
+    inspector_snapshot_last_started: std::time::Instant,
     tray_lockdown_sent: bool,
     network_operation: Option<NetworkOperation>,
     reconcile_rx: Option<mpsc::Receiver<active_response::Status>>,
@@ -374,6 +430,7 @@ const UI_EVENT_BUDGET: usize = 128;
 const UI_EVENT_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
 const UI_IDLE_REPAINT: std::time::Duration = std::time::Duration::from_secs(1);
 const UI_BUSY_REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
+const INSPECTOR_SNAPSHOT_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
 const NOTIFICATION_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 const COLLAPSED_PIDS_CAP: usize = 256;
 #[allow(dead_code)]
@@ -473,6 +530,11 @@ impl VigilApp {
             .and_then(|storage| eframe::get_value::<UiState>(storage, "ui"))
             .unwrap_or_default();
         let response_status = active_response::status();
+        let inspector_snapshot = active_response::InspectorSnapshot {
+            status: response_status,
+            ..Default::default()
+        };
+        let tray_lockdown_sent = !response_status.isolated;
         let vigil_logo = load_vigil_logo(&cc.egui_ctx);
         cc.egui_ctx.request_repaint_after(UI_IDLE_REPAINT);
         #[cfg(target_os = "linux")]
@@ -515,7 +577,11 @@ impl VigilApp {
             kill_confirm: false,
             response_confirm: None,
             response_status,
-            tray_lockdown_sent: !response_status.isolated,
+            inspector_snapshot,
+            inspector_snapshot_key: None,
+            inspector_snapshot_rx: None,
+            inspector_snapshot_last_started: std::time::Instant::now() - INSPECTOR_SNAPSHOT_REFRESH,
+            tray_lockdown_sent,
             network_operation: None,
             reconcile_rx: None,
             scheduled_target: None,
@@ -608,7 +674,7 @@ impl VigilApp {
         if let Some(rx) = self.reconcile_rx.as_ref() {
             match rx.try_recv() {
                 Ok(status) => {
-                    self.response_status = status;
+                    self.set_response_status(status);
                     self.reconcile_rx = None;
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -642,6 +708,90 @@ impl VigilApp {
         if self.last_schedule_check.elapsed().as_secs() >= 30 {
             self.apply_scheduled_lockdown();
             self.last_schedule_check = std::time::Instant::now();
+        }
+    }
+
+    fn set_response_status(&mut self, status: active_response::Status) {
+        self.response_status = status;
+        self.inspector_snapshot.status = status;
+    }
+
+    fn current_inspector_request(&self) -> Option<InspectorSnapshotRequest> {
+        match self.active_tab {
+            Tab::Activity => self.selected_activity.as_ref(),
+            Tab::Alerts => self.selected_alert.as_ref(),
+            _ => None,
+        }
+        .map(InspectorSnapshotRequest::from_selection)
+    }
+
+    fn refresh_inspector_snapshot(&mut self, request: Option<InspectorSnapshotRequest>) {
+        if let Some(rx) = self.inspector_snapshot_rx.as_ref() {
+            match rx.try_recv() {
+                Ok((key, snapshot)) => {
+                    if self.inspector_snapshot_key.as_ref() == Some(&key) {
+                        let status = snapshot.status;
+                        self.inspector_snapshot = snapshot;
+                        self.set_response_status(status);
+                    }
+                    self.inspector_snapshot_rx = None;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.inspector_snapshot_rx = None;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+
+        let Some(request) = request else {
+            self.inspector_snapshot_key = None;
+            self.inspector_snapshot_rx = None;
+            self.inspector_snapshot = active_response::InspectorSnapshot {
+                status: self.response_status,
+                ..Default::default()
+            };
+            return;
+        };
+
+        let key_changed = self.inspector_snapshot_key.as_ref() != Some(&request.key);
+        if key_changed {
+            self.inspector_snapshot_key = Some(request.key.clone());
+            self.inspector_snapshot_rx = None;
+            self.inspector_snapshot = active_response::InspectorSnapshot {
+                status: self.response_status,
+                ..Default::default()
+            };
+        }
+
+        if self.inspector_snapshot_rx.is_some()
+            || (!key_changed
+                && self.inspector_snapshot_last_started.elapsed() < INSPECTOR_SNAPSHOT_REFRESH)
+        {
+            return;
+        }
+
+        let (tx, rx) = mpsc::channel();
+        let key = request.key.clone();
+        match std::thread::Builder::new()
+            .name("vigil-inspector-snapshot".into())
+            .spawn(move || {
+                let snapshot = active_response::inspector_snapshot(
+                    request.pid,
+                    &request.proc_path,
+                    request.selected_connection.as_ref(),
+                );
+                let _ = tx.send((key, snapshot));
+            }) {
+            Ok(_) => {
+                self.inspector_snapshot_rx = Some(rx);
+                self.inspector_snapshot_last_started = std::time::Instant::now();
+            }
+            Err(err) => {
+                self.push_notification(
+                    NotificationKind::Error,
+                    format!("Could not start inspector worker: {err}"),
+                );
+            }
         }
     }
 
@@ -722,7 +872,7 @@ impl VigilApp {
                             self.push_notification(kind, text);
                         }
                         UiMessage::ResponseStatus(status) => {
-                            self.response_status = status;
+                            self.set_response_status(status);
                         }
                     }
                 }
@@ -1333,7 +1483,7 @@ impl VigilApp {
                         let result = Self::execute_pending_response(&pending);
                         let kind = Self::kind_from_message(&result);
                         self.push_notification(kind, result);
-                        self.response_status = active_response::status();
+                        self.set_response_status(active_response::status());
                         self.response_confirm = None;
                     }
                     if ui
@@ -1498,7 +1648,7 @@ impl VigilApp {
                         matches!(operation_kind, NetworkOperationKind::Isolate);
                 }
                 self.push_notification(notification_kind, message);
-                self.response_status = result.status;
+                self.set_response_status(result.status);
             }
             Err(mpsc::TryRecvError::Empty) => {}
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -1821,6 +1971,8 @@ impl eframe::App for VigilApp {
             self.kill_confirm = false;
         }
         let mut inspector_action: Option<inspector::Action> = None;
+        let inspector_request = self.current_inspector_request();
+        self.refresh_inspector_snapshot(inspector_request);
         if matches!(self.active_tab, Tab::Activity | Tab::Alerts) {
             let selected_info: Option<&ProcessSelection> = match self.active_tab {
                 Tab::Activity => self.selected_activity.as_ref(),
@@ -1837,7 +1989,9 @@ impl eframe::App for VigilApp {
                         .stroke(egui::Stroke::new(1.0, theme::BORDER))
                         .inner_margin(egui::Margin::symmetric(12, 0)),
                 )
-                .show_inside(ui, |ui| inspector::show(ui, selected_info, kill_confirm))
+                .show_inside(ui, |ui| {
+                    inspector::show(ui, selected_info, kill_confirm, &self.inspector_snapshot)
+                })
                 .inner;
         }
         if let Some(action) = inspector_action {
@@ -1940,7 +2094,10 @@ impl eframe::App for VigilApp {
         self.show_notifications_overlay(&ctx);
         self.show_network_operation_overlay(&ctx);
         ctx.request_repaint_after(
-            if self.network_operation.is_some() || !self.notifications.is_empty() {
+            if self.network_operation.is_some()
+                || self.inspector_snapshot_rx.is_some()
+                || !self.notifications.is_empty()
+            {
                 UI_BUSY_REPAINT
             } else {
                 UI_IDLE_REPAINT
