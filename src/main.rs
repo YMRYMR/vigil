@@ -279,7 +279,10 @@ fn main() {
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     let mut service_mode = false;
-    for a in &args[1..] {
+    let mut data_dir_override: Option<String> = None;
+    let mut i = 1usize;
+    while i < args.len() {
+        let a = &args[i];
         match a.as_str() {
             "--install-service" => std::process::exit(service::run_cmd("install")),
             "--uninstall-service" => std::process::exit(service::run_cmd("uninstall")),
@@ -293,12 +296,25 @@ fn main() {
             autostart::ELEVATED_LAUNCHER_FLAG => {
                 elevated_launcher = true;
             }
+            service::DATA_DIR_FLAG => {
+                let Some(path) = args.get(i + 1) else {
+                    eprintln!("Missing path after {}", service::DATA_DIR_FLAG);
+                    std::process::exit(1);
+                };
+                data_dir_override = Some(path.clone());
+                i += 1;
+            }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json [MORE.json ...]\n                           import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]      fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status   show advisory cache status and source health\n  --service-mode            internal headless service entrypoint\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json [MORE.json ...]\n                           import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]      fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status   show advisory cache status and source health\n  --service-mode            internal headless service entrypoint\n  --data-dir PATH           override Vigil data/config directory\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
         }
+        i += 1;
+    }
+
+    if let Some(path) = data_dir_override {
+        std::env::set_var("VIGIL_DATA_DIR", path);
     }
 
     if elevated_launcher {

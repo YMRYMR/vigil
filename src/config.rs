@@ -386,6 +386,10 @@ impl Default for Config {
 }
 
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("VIGIL_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
