@@ -26,6 +26,7 @@ pub type CmdResult = Result<String, String>;
 
 /// Internal headless entrypoint used by OS services / daemons.
 pub const SERVICE_MODE_FLAG: &str = "--service-mode";
+pub const DATA_DIR_FLAG: &str = "--data-dir";
 
 pub fn install() -> CmdResult {
     let exe =
@@ -50,7 +51,17 @@ mod platform {
     const LEGACY_SERVICE_NAME: &str = "Vigil";
 
     pub fn install(exe: &Path) -> CmdResult {
-        let task_command = format!(r#""{}" {}"#, exe.display(), SERVICE_MODE_FLAG);
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
+        let task_command = format!(
+            r#""{}" {} {} "{}""#,
+            exe.display(),
+            SERVICE_MODE_FLAG,
+            DATA_DIR_FLAG,
+            shared_data_dir.display()
+        );
         let status = Command::new(command_paths::resolve("schtasks")?)
             .args([
                 "/Create",
@@ -209,6 +220,10 @@ mod platform {
                 .into());
         }
 
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
         let exe = xml_escape(&exe.display().to_string());
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -216,7 +231,7 @@ mod platform {
 <plist version="1.0">
 <dict>
     <key>Label</key>             <string>{LABEL}</string>
-    <key>ProgramArguments</key>  <array><string>{exe}</string><string>{service_flag}</string></array>
+    <key>ProgramArguments</key>  <array><string>{exe}</string><string>{service_flag}</string><string>{data_dir_flag}</string><string>{shared_data_dir}</string></array>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <true/>
     <key>StandardOutPath</key>   <string>/var/log/vigil.log</string>
@@ -226,6 +241,8 @@ mod platform {
 "#,
             exe = exe,
             service_flag = SERVICE_MODE_FLAG,
+            data_dir_flag = DATA_DIR_FLAG,
+            shared_data_dir = xml_escape(&shared_data_dir.display().to_string()),
         );
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
@@ -310,6 +327,10 @@ mod platform {
                 .into());
         }
 
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
         let exe = systemd_quote(&exe.display().to_string());
         let unit = format!(
             "[Unit]\n\
@@ -318,7 +339,7 @@ mod platform {
              \n\
              [Service]\n\
              Type=simple\n\
-             ExecStart={exe} {service_flag}\n\
+             ExecStart={exe} {service_flag} {data_dir_flag} {shared_data_dir}\n\
              Restart=on-failure\n\
              RestartSec=5\n\
              StandardOutput=journal\n\
@@ -328,6 +349,8 @@ mod platform {
              WantedBy=multi-user.target\n",
             exe = exe,
             service_flag = SERVICE_MODE_FLAG,
+            data_dir_flag = DATA_DIR_FLAG,
+            shared_data_dir = systemd_quote(&shared_data_dir.display().to_string()),
         );
         let path = unit_path();
         std::fs::write(&path, unit.as_bytes())
