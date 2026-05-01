@@ -97,6 +97,10 @@ guidance, and keeps the last trusted cache if refresh fails:
 vigil --sync-nvd
 ```
 
+When Vigil is using the live NVD API, `vigil --advisory-cache-status` now shows
+the required notice: "This product uses the NVD API but is not endorsed or
+certified by the NVD."
+
 Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if your deployment
 needs higher NVD API headroom.
