@@ -8,7 +8,9 @@
 //!
 //! # Commands
 //! The caller forwards `TrayCmd` values over a `std::sync::mpsc` channel:
-//! - `Alert(Box<ConnInfo>)` — display a notification, switch icon to ⚠
+//! - `Alert(Box<ConnInfo>)` — switch icon to ⚠. Desktop notifications are
+//!   dispatched by the dedicated notifier worker so tray health cannot suppress
+//!   alert toasts.
 //! - `ResetOk`         — switch icon back to the normal ● state
 //! - `SetLockdown(bool)` — force red icon while network isolation is active
 //!
@@ -53,15 +55,13 @@ const TRAY_RED_ICO: &[u8] = include_bytes!(concat!(
 
 fn notification_only_loop(
     cmd_rx: Receiver<TrayCmd>,
-    show_window: Arc<AtomicBool>,
-    pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+    _show_window: Arc<AtomicBool>,
+    _pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                TrayCmd::Alert(info) => {
-                    crate::notifier::send_alert(&info, show_window.clone(), pending_nav.clone());
-                }
+                TrayCmd::Alert(_) => {}
                 TrayCmd::ResetOk | TrayCmd::SetLockdown(_) => {}
             }
         }
@@ -229,7 +229,7 @@ mod imp {
         logs_id: tray_icon::menu::MenuId,
         log_dir: PathBuf,
         show_window: Arc<AtomicBool>,
-        pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+        _pending_nav: Arc<Mutex<Option<ConnInfo>>>,
         _egui_ctx: Arc<OnceLock<egui::Context>>,
     ) {
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -275,11 +275,7 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        crate::notifier::send_alert(
-                            &info,
-                            show_window.clone(),
-                            pending_nav.clone(),
-                        );
+                        let _ = info;
                         in_alert = true;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
@@ -340,11 +336,7 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        crate::notifier::send_alert(
-                            &info,
-                            show_window.clone(),
-                            pending_nav.clone(),
-                        );
+                        let _ = info;
                         in_alert = true;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
