@@ -112,6 +112,21 @@ fn acquire_single_instance(
     }
 }
 
+fn apply_data_dir_override_early(args: &[String]) {
+    let mut i = 1usize;
+    while i < args.len() {
+        if args[i] == service::DATA_DIR_FLAG {
+            let Some(path) = args.get(i + 1) else {
+                eprintln!("Missing path after {}", service::DATA_DIR_FLAG);
+                std::process::exit(1);
+            };
+            std::env::set_var("VIGIL_DATA_DIR", path);
+            return;
+        }
+        i += 1;
+    }
+}
+
 fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: bool) {
     std::thread::Builder::new()
         .name("vigil-bootstrap".into())
@@ -209,6 +224,7 @@ fn spawn_service_event_worker(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    apply_data_dir_override_early(&args);
 
     if args.iter().any(|a| a == "--advisory-cache-status") {
         match advisory_status::run_cli() {
