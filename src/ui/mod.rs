@@ -154,6 +154,7 @@ pub fn spawn_event_worker(
     mut event_rx: tokio::sync::broadcast::Receiver<ConnEvent>,
     cfg: Arc<RwLock<Config>>,
     tray_tx: std::sync::mpsc::SyncSender<TrayCmd>,
+    notify_tx: std::sync::mpsc::SyncSender<ConnInfo>,
     paused: Arc<AtomicBool>,
 ) -> mpsc::Receiver<UiMessage> {
     let (ui_tx, ui_rx) = mpsc::channel::<UiMessage>();
@@ -170,7 +171,14 @@ pub fn spawn_event_worker(
                         }
                         match &event {
                             ConnEvent::Alert(info) => {
-                                let _ = tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())));
+                                if let Err(err) = notify_tx.try_send(info.clone()) {
+                                    tracing::warn!("desktop alert notification dropped: {err}");
+                                }
+                                if let Err(err) =
+                                    tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())))
+                                {
+                                    tracing::warn!("tray alert state update dropped: {err}");
+                                }
                                 let cfg_snapshot = cfg.read().unwrap().clone();
                                 if let Some(message) = auto_response::maybe_apply(
                                     info,
