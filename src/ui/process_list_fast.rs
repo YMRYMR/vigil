@@ -697,6 +697,9 @@ fn selection_from_group(
     group: &OwnedProcessGroup,
     selected_connection: Option<ConnInfo>,
 ) -> ProcessSelection {
+    let selected_connection_reason_summary = selected_connection
+        .as_ref()
+        .map(|conn| summarize_reasons(&conn.reasons));
     ProcessSelection {
         pid: group.pid,
         proc_name: group.proc_name.clone(),
@@ -724,6 +727,7 @@ fn selection_from_group(
         distinct_remotes: group.distinct_remotes,
         statuses: group.statuses.clone(),
         selected_connection,
+        selected_connection_reason_summary,
     }
 }
 

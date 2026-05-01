@@ -351,14 +351,12 @@ pub fn inspector_snapshot(
             .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
             .map(Duration::from_secs)
     });
-    let process_suspended = state_ref
-        .zip(normalized_path.as_ref())
-        .is_some_and(|(state, path)| {
-            state
-                .suspended_processes
-                .iter()
-                .any(|entry| suspended_process_matches(entry, pid, path))
-        });
+    let process_suspended = state_ref.is_some_and(|state| {
+        state
+            .suspended_processes
+            .iter()
+            .any(|entry| suspended_process_matches(entry, pid, path))
+    });
     let connection_kill_enabled = selected_connection.is_some_and(can_kill_connection);
     InspectorSnapshot {
         status,

@@ -573,7 +573,10 @@ fn grouped_rows<'a>(
     let mut groups: HashMap<u32, ProcessGroup<'a>> = HashMap::new();
     let mut order: Vec<u32> = Vec::new();
 
-    for info in rows.iter().filter(|info| matches_filter(info, &lower, kind)) {
+    for info in rows
+        .iter()
+        .filter(|info| matches_filter(info, &lower, kind))
+    {
         let entry = groups.entry(info.pid).or_insert_with(|| {
             order.push(info.pid);
             ProcessGroup {
@@ -692,6 +695,7 @@ fn grouped_rows<'a>(
                 group.distinct_remotes,
                 group.statuses.len(),
             ));
+            group.reason_summary = summarize_reasons(&group.reasons);
             out.push(group);
         }
     }
@@ -806,6 +810,9 @@ fn selection_from_group(
     group: &ProcessGroup<'_>,
     selected_connection: Option<ConnInfo>,
 ) -> ProcessSelection {
+    let selected_connection_reason_summary = selected_connection
+        .as_ref()
+        .map(|conn| summarize_reasons(&conn.reasons));
     ProcessSelection {
         pid: group.pid,
         proc_name: group.proc_name.to_string(),
@@ -833,6 +840,7 @@ fn selection_from_group(
         distinct_remotes: group.distinct_remotes,
         statuses: group.statuses.clone(),
         selected_connection,
+        selected_connection_reason_summary,
     }
 }
 
