@@ -686,35 +686,19 @@ fn sync_windows(
     windows
 }
 
-fn stamp_sync_success(cache: &mut ChangeHistoryCache, requested_pages: usize, now: u64) {
+fn stamp_sync_success(mut cache: &mut ChangeHistoryCache, requested_pages: usize, now: u64) {
     if let Some(source) = cache
         .sources
         .iter_mut()
         .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
     {
-        source.fetched_unix = now;
-        source.last_attempt_unix = now;
-        source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
         source.status = SourceHealth::Fresh;
+        source.last_attempt_unix = now;
         source.last_error = None;
-        if requested_pages > 1 {
-            source.imported_from = None;
+        if requested_pages > 0 {
+            source.fetched_unix = now;
+            source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
         }
-    } else {
-        cache.sources.push(AdvisorySourceCache {
-            source_key: NVD_SOURCE_KEY.into(),
-            source_kind: NVD_SOURCE_KIND.into(),
-            source_url: NVD_API_URL.into(),
-            imported_from: None,
-            imported_from_batch: vec![],
-            fetched_unix: now,
-            expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
-            snapshot_sha256: String::new(),
-            total_results: cache.changes.len(),
-            status: SourceHealth::Fresh,
-            last_attempt_unix: now,
-            last_error: None,
-        });
     }
     cache.generated_unix = now;
 }
@@ -725,9 +709,9 @@ fn stamp_sync_failure(mut cache: ChangeHistoryCache, err: &str, now: u64) -> Cha
         .iter_mut()
         .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
     {
+        source.status = SourceHealth::Error;
         source.last_attempt_unix = now;
         source.last_error = Some(err.to_string());
-        source.status = SourceHealth::Error;
     } else {
         cache.sources.push(AdvisorySourceCache {
             source_key: NVD_SOURCE_KEY.into(),
@@ -748,17 +732,6 @@ fn stamp_sync_failure(mut cache: ChangeHistoryCache, err: &str, now: u64) -> Cha
     cache
 }
 
-fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
-    if is_source_stale(source.expires_unix, now) {
-        return "stale";
-    }
-    match source.status {
-        SourceHealth::Fresh => "fresh",
-        SourceHealth::Stale => "stale",
-        SourceHealth::Error => "error",
-    }
-}
-
 fn is_source_stale(expires_unix: u64, now: u64) -> bool {
     expires_unix > 0 && expires_unix < now
 }
@@ -770,44 +743,50 @@ fn parse_snapshot(
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|err| format!("failed to parse NVD change-history JSON: {err}"))?;
 
-    let fetched_unix = value
-        .get("timestamp")
-        .and_then(Value::as_str)
-        .and_then(parse_timestamp)
-        .map(|timestamp| timestamp.timestamp() as u64)
-        .unwrap_or_else(unix_now);
+    let results_per_page = value
+        .get("resultsPerPage")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let start_index = value
+        .get("startIndex")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
     let total_results = value
         .get("totalResults")
         .and_then(Value::as_u64)
         .unwrap_or(0) as usize;
+    let timestamp = string_field(&value, "timestamp")
+        .and_then(|value| parse_timestamp(&value))
+        .map(|value| value.timestamp() as u64)
+        .unwrap_or_else(unix_now);
 
     let changes = value
         .get("cveChanges")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|entry| parse_change_event(entry, fetched_unix))
+        .ok_or_else(|| "NVD change-history JSON missing cveChanges array".to_string())?
+        .iter()
+        .map(|entry| parse_change_event(entry, timestamp))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let imported_from_value = imported_from.map(|path| path.display().to_string());
+    let imported_from = imported_from.map(|path| path.display().to_string());
     let source = AdvisorySourceCache {
         source_key: NVD_SOURCE_KEY.into(),
         source_kind: NVD_SOURCE_KIND.into(),
         source_url: NVD_API_URL.into(),
-        imported_from: imported_from_value.clone(),
-        imported_from_batch: imported_from_value.into_iter().collect(),
-        fetched_unix,
-        expires_unix: fetched_unix.saturating_add(DEFAULT_SOURCE_TTL_SECS),
+        imported_from: imported_from.clone(),
+        imported_from_batch: imported_from.into_iter().collect(),
+        fetched_unix: timestamp,
+        expires_unix: timestamp.saturating_add(DEFAULT_SOURCE_TTL_SECS),
         snapshot_sha256: sha256_hex(bytes),
-        total_results,
+        total_results: total_results.max(start_index.saturating_add(results_per_page)),
         status: SourceHealth::Fresh,
-        last_attempt_unix: 0,
+        last_attempt_unix: timestamp,
         last_error: None,
     };
 
     Ok(ChangeHistoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
-        generated_unix: fetched_unix,
+        generated_unix: timestamp,
         sources: vec![source],
         changes,
     })
@@ -1237,10 +1216,7 @@ mod tests {
         );
 
         assert_eq!(changes[0].event_name, "Reanalysis");
-        assert_eq!(
-            changes[0].details[0].new_value.as_deref(),
-            Some("equal-ts")
-        );
+        assert_eq!(changes[0].details[0].new_value.as_deref(), Some("equal-ts"));
 
         merge_change(
             &mut changes,
@@ -1317,10 +1293,7 @@ mod tests {
             },
         );
 
-        assert_eq!(
-            changes[0].details[0].new_value.as_deref(),
-            Some("newer")
-        );
+        assert_eq!(changes[0].details[0].new_value.as_deref(), Some("newer"));
     }
 
     #[test]
