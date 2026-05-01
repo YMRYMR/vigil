@@ -283,8 +283,8 @@ pub fn run_status_cli() -> Result<(), String> {
         return Ok(());
     }
 
-    let loaded: Option<ChangeHistoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| {
+    let loaded: Option<ChangeHistoryCache> =
+        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
             format!(
                 "failed to load protected change-history cache {}: {e}",
                 path.display()
@@ -434,21 +434,21 @@ pub fn sync_nvd_change_history(force: bool) -> Result<SyncOutcome, String> {
     }
 
     let fetcher = HttpNvdFetcher::new()?;
-    let (cache, requested_pages, imported_changes) =
-        match sync_with_fetcher(existing.clone(), &fetcher, now) {
-            Ok(result) => result,
-            Err(err) => {
-                let failed_cache = stamp_sync_failure(
-                    existing.unwrap_or_else(|| empty_cache(now)),
-                    &err,
-                    now,
-                );
-                if let Err(save_err) = save_cache(&failed_cache) {
-                    tracing::warn!(%save_err, "failed to persist NVD change-history sync failure state");
-                }
-                return Err(err);
+    let (cache, requested_pages, imported_changes) = match sync_with_fetcher(
+        existing.clone(),
+        &fetcher,
+        now,
+    ) {
+        Ok(result) => result,
+        Err(err) => {
+            let failed_cache =
+                stamp_sync_failure(existing.unwrap_or_else(|| empty_cache(now)), &err, now);
+            if let Err(save_err) = save_cache(&failed_cache) {
+                tracing::warn!(%save_err, "failed to persist NVD change-history sync failure state");
             }
-        };
+            return Err(err);
+        }
+    };
 
     let summary = SyncSummary {
         requested_pages,
@@ -543,9 +543,8 @@ fn load_snapshot_batch(paths: &[PathBuf]) -> Result<ChangeHistoryCache, String> 
         });
     }
 
-    let mut imported = imported.ok_or_else(|| {
-        "expected at least one NVD change-history snapshot path".to_string()
-    })?;
+    let mut imported = imported
+        .ok_or_else(|| "expected at least one NVD change-history snapshot path".to_string())?;
     finalize_import_batch_metadata(&mut imported, &page_hashes);
     Ok(imported)
 }
@@ -721,11 +720,7 @@ fn stamp_sync_success(cache: &mut ChangeHistoryCache, requested_pages: usize, no
     cache.generated_unix = now;
 }
 
-fn stamp_sync_failure(
-    mut cache: ChangeHistoryCache,
-    err: &str,
-    now: u64,
-) -> ChangeHistoryCache {
+fn stamp_sync_failure(mut cache: ChangeHistoryCache, err: &str, now: u64) -> ChangeHistoryCache {
     if let Some(source) = cache
         .sources
         .iter_mut()
@@ -769,7 +764,10 @@ fn is_source_stale(expires_unix: u64, now: u64) -> bool {
     expires_unix > 0 && expires_unix < now
 }
 
-fn parse_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<ChangeHistoryCache, String> {
+fn parse_snapshot(
+    bytes: &[u8],
+    imported_from: Option<&Path>,
+) -> Result<ChangeHistoryCache, String> {
     let value: Value = serde_json::from_slice(bytes)
         .map_err(|err| format!("failed to parse NVD change-history JSON: {err}"))?;
 
@@ -973,20 +971,15 @@ fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
         .or_else(|_| {
-            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
-                .map(|timestamp| {
-                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(
-                        timestamp,
-                        chrono::Utc,
-                    )
-                })
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f").map(|timestamp| {
+                chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(timestamp, chrono::Utc)
+            })
         })
         .ok()
 }
 
 fn unix_timestamp(unix: u64) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(unix as i64, 0)
-        .unwrap_or_else(chrono::Utc::now)
+    chrono::DateTime::<chrono::Utc>::from_timestamp(unix as i64, 0).unwrap_or_else(chrono::Utc::now)
 }
 
 fn format_datetime(timestamp: chrono::DateTime<chrono::Utc>) -> String {
