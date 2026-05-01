@@ -12,8 +12,9 @@ use egui::{RichText, Ui};
 use std::collections::BTreeSet;
 
 const MAX_REASON_SCAN: usize = 1_200;
-const MAX_REASON_PLAIN_ROWS: usize = 140;
-const MAX_REASON_PORT_ROWS: usize = 80;
+const MAX_REASON_PLAIN_ROWS: usize = 40;
+const MAX_REASON_PORT_ROWS: usize = 24;
+const MAX_INSPECTOR_VALUE_CHARS: usize = 600;
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -44,9 +45,10 @@ pub fn show(
     ui: &mut Ui,
     selection: Option<&ProcessSelection>,
     kill_confirm: bool,
+    inspector_state: &active_response::InspectorSnapshot,
 ) -> Option<Action> {
     match selection {
-        Some(selection) => show_detail(ui, selection, kill_confirm),
+        Some(selection) => show_detail(ui, selection, kill_confirm, inspector_state),
         None => {
             show_placeholder(ui);
             None
@@ -65,47 +67,36 @@ fn show_placeholder(ui: &mut Ui) {
     );
 }
 
-fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Option<Action> {
+fn show_detail(
+    ui: &mut Ui,
+    sel: &ProcessSelection,
+    kill_confirm: bool,
+    inspector_state: &active_response::InspectorSnapshot,
+) -> Option<Action> {
     let mut action: Option<Action> = None;
     let ghost = is_ghost_process_name(&sel.proc_name);
     let known_location = has_known_location(sel);
     let trust_enabled = known_location;
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
-    let suspend_enabled = active_response::can_suspend_process(sel.pid) && !ghost;
-    let response_enabled = active_response::can_modify_firewall();
-    let isolation_enabled = active_response::can_isolate_network();
-    let domain_enabled = active_response::can_block_domain();
-    let response_status = active_response::status();
-    let remote_target = sel
-        .selected_connection
-        .as_ref()
-        .and_then(|conn| active_response::extract_remote_target(&conn.remote_addr));
-    let remote_blocked = remote_target
-        .as_deref()
-        .is_some_and(active_response::is_blocked);
-    let remote_remaining = remote_target
-        .as_deref()
-        .and_then(active_response::remote_block_remaining);
-    let domain_target = sel
-        .selected_connection
-        .as_ref()
-        .and_then(active_response::extract_domain_target);
-    let domain_blocked = domain_target
-        .as_deref()
-        .is_some_and(active_response::is_domain_blocked);
-    let process_blocked = active_response::is_process_blocked(sel.pid, &sel.proc_path);
-    let process_remaining = active_response::process_block_remaining(sel.pid, &sel.proc_path);
-    let process_suspended = active_response::is_process_suspended(sel.pid, &sel.proc_path);
-    let connection_kill_enabled = sel
-        .selected_connection
-        .as_ref()
-        .is_some_and(active_response::can_kill_connection);
+    let suspend_enabled = inspector_state.suspend_enabled && !ghost;
+    let response_enabled = inspector_state.firewall_modifiable;
+    let isolation_enabled = inspector_state.network_isolation_modifiable;
+    let domain_enabled = inspector_state.domain_modifiable;
+    let response_status = inspector_state.status;
+    let remote_target = inspector_state.remote_target.as_ref();
+    let remote_blocked = inspector_state.remote_blocked;
+    let remote_remaining = inspector_state.remote_remaining;
+    let domain_target = inspector_state.domain_target.as_ref();
+    let domain_blocked = inspector_state.domain_blocked;
+    let process_blocked = inspector_state.process_blocked;
+    let process_remaining = inspector_state.process_remaining;
+    let process_suspended = inspector_state.process_suspended;
+    let connection_kill_enabled = inspector_state.connection_kill_enabled;
     let isolated = response_status.isolated;
-    let quarantine_ready =
-        active_response::can_apply_quarantine_profile(sel.pid, &sel.proc_path) && !ghost;
+    let quarantine_ready = inspector_state.quarantine_ready && !ghost;
     let quarantine_active = isolated || process_blocked || process_suspended;
-    let autoruns_frozen = active_response::has_frozen_autoruns();
+    let autoruns_frozen = response_status.frozen_autoruns;
 
     egui::ScrollArea::vertical().id_salt("help_scroll").show(ui, |ui| {
         ui.add_space(8.0);
@@ -377,20 +368,30 @@ fn show_detail(ui: &mut Ui, sel: &ProcessSelection, kill_confirm: bool) -> Optio
             section_header(ui, "Selected connection");
             kv_mono(ui, "Local", &conn.local_addr);
             kv_mono(ui, "Remote", &conn.remote_addr);
-            if let Some(host) = domain_target.as_deref() { kv(ui, "Hostname", host); }
-            if let Some(sni) = conn.tls_sni.as_deref() { kv(ui, "TLS SNI", sni); }
-            if let Some(ja3) = conn.tls_ja3.as_deref() { kv_mono(ui, "TLS JA3", ja3); }
+            if let Some(host) = domain_target {
+                kv(ui, "Hostname", host);
+            }
+            if let Some(sni) = conn.tls_sni.as_deref() {
+                kv(ui, "TLS SNI", sni);
+            }
+            if let Some(ja3) = conn.tls_ja3.as_deref() {
+                kv_mono(ui, "TLS JA3", ja3);
+            }
             kv(ui, "Status", &conn.status);
             kv(ui, "Time", &conn.timestamp);
             if !conn.attack_tags.is_empty() {
                 kv(ui, "ATT&CK", &conn.attack_tags.join(", "));
             }
-            if !conn.reasons.is_empty() {
+            if let Some(summary) = sel
+                .selected_connection_reason_summary
+                .as_ref()
+                .filter(|summary| !summary.is_empty())
+            {
                 ui.add_space(4.0);
                 render_reason_block(
                     ui,
                     "connection",
-                    &summarize_reasons(&conn.reasons),
+                    summary,
                     "-",
                     theme::TEXT3,
                     theme::TEXT2,
@@ -535,7 +536,7 @@ pub struct ReasonSummary {
 }
 
 impl ReasonSummary {
-    fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.plain.is_empty() && self.unusual_ports.is_empty() && self.truncated_input == 0
     }
 }
@@ -660,7 +661,8 @@ fn kv(ui: &mut Ui, key: &str, val: &str) {
             [88.0, 16.0],
             egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
         );
-        ui.add(egui::Label::new(RichText::new(val).color(theme::TEXT).size(11.0)).wrap());
+        let display = bounded_display(val);
+        ui.add(egui::Label::new(RichText::new(display).color(theme::TEXT).size(11.0)).wrap());
     });
     ui.add_space(2.0);
 }
@@ -670,11 +672,27 @@ fn kv_mono(ui: &mut Ui, key: &str, val: &str) {
             [88.0, 16.0],
             egui::Label::new(RichText::new(key).color(theme::TEXT3).size(11.0)),
         );
+        let display = bounded_display(val);
         ui.add(
-            egui::Label::new(RichText::new(val).color(theme::TEXT).monospace().size(10.5)).wrap(),
+            egui::Label::new(
+                RichText::new(display)
+                    .color(theme::TEXT)
+                    .monospace()
+                    .size(10.5),
+            )
+            .wrap(),
         );
     });
     ui.add_space(2.0);
+}
+
+fn bounded_display(value: &str) -> std::borrow::Cow<'_, str> {
+    if value.len() <= MAX_INSPECTOR_VALUE_CHARS {
+        std::borrow::Cow::Borrowed(value)
+    } else {
+        let truncated: String = value.chars().take(MAX_INSPECTOR_VALUE_CHARS).collect();
+        std::borrow::Cow::Owned(format!("{truncated} ..."))
+    }
 }
 fn score_badge(ui: &mut Ui, score: u8) {
     let (fg, bg) = theme::score_colors(score);
