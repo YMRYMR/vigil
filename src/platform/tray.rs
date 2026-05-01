@@ -586,11 +586,7 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        crate::notifier::send_alert(
-                            &info,
-                            show_window.clone(),
-                            pending_nav.clone(),
-                        );
+                        let _ = info;
                         in_alert = true;
                         alert_since = Some(std::time::Instant::now());
                         apply(&handle, in_alert, in_lockdown);
