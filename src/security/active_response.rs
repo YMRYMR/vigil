@@ -39,6 +39,25 @@ pub struct Status {
     pub isolated: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct InspectorSnapshot {
+    pub status: Status,
+    pub remote_target: Option<String>,
+    pub remote_blocked: bool,
+    pub remote_remaining: Option<Duration>,
+    pub domain_target: Option<String>,
+    pub domain_blocked: bool,
+    pub process_blocked: bool,
+    pub process_remaining: Option<Duration>,
+    pub process_suspended: bool,
+    pub connection_kill_enabled: bool,
+    pub quarantine_ready: bool,
+    pub suspend_enabled: bool,
+    pub firewall_modifiable: bool,
+    pub network_isolation_modifiable: bool,
+    pub domain_modifiable: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct State {
     blocked: Vec<BlockedTarget>,
@@ -247,6 +266,115 @@ pub fn can_block_domain() -> bool {
 }
 pub fn can_apply_quarantine_profile(pid: u32, path: &str) -> bool {
     platform::is_supported() && platform::is_elevated() && (pid != 0 || !path.trim().is_empty())
+}
+
+pub fn inspector_snapshot(
+    pid: u32,
+    path: &str,
+    selected_connection: Option<&ConnInfo>,
+) -> InspectorSnapshot {
+    let state = load_state_for_query("inspector_snapshot");
+    let state_ref = state.as_ref();
+    let now = unix_now();
+    let status = state_ref.map_or_else(
+        || Status {
+            isolated: platform::isolation_controls_active(&State::default()).unwrap_or(false),
+            ..Status::default()
+        },
+        |state| Status {
+            blocked_rules: state.blocked.len() + state.blocked_processes.len(),
+            blocked_processes: state.blocked_processes.len(),
+            blocked_domains: state.blocked_domains.len(),
+            suspended_processes: state.suspended_processes.len(),
+            frozen_autoruns: state.autorun_snapshot.is_some(),
+            isolated: isolation_effective_now(state, now),
+        },
+    );
+    let firewall_modifiable = can_modify_firewall();
+    let network_isolation_modifiable = can_isolate_network();
+    let domain_modifiable = can_block_domain();
+    let suspend_enabled = can_suspend_process(pid);
+    let quarantine_ready = can_apply_quarantine_profile(pid, path);
+    let (remote_target, remote_blocked, remote_remaining, domain_target, domain_blocked) =
+        if let Some(conn) = selected_connection {
+            let remote_target = extract_remote_target(&conn.remote_addr);
+            let domain_target = extract_domain_target(conn);
+            let remote_blocked = remote_target.as_deref().is_some_and(|target| {
+                state_ref
+                    .is_some_and(|state| state.blocked.iter().any(|rule| rule.target == target))
+            });
+            let remote_remaining = remote_target.as_deref().and_then(|target| {
+                state_ref.and_then(|state| {
+                    state
+                        .blocked
+                        .iter()
+                        .find(|rule| rule.target == target)
+                        .and_then(|rule| rule.expires_at_unix)
+                        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+                        .map(Duration::from_secs)
+                })
+            });
+            let domain_blocked = domain_target.as_deref().is_some_and(|domain| {
+                state_ref.is_some_and(|state| {
+                    state
+                        .blocked_domains
+                        .iter()
+                        .any(|entry| entry.domain == domain)
+                })
+            });
+            (
+                remote_target,
+                remote_blocked,
+                remote_remaining,
+                domain_target,
+                domain_blocked,
+            )
+        } else {
+            (None, false, None, None, false)
+        };
+    let normalized_path = normalise_target(path).ok();
+    let process_blocked = state_ref
+        .zip(normalized_path.as_ref())
+        .is_some_and(|(state, path)| {
+            state
+                .blocked_processes
+                .iter()
+                .any(|rule| process_block_matches(rule, path))
+        });
+    let process_remaining = state_ref.and_then(|state| {
+        let path = normalise_target(path).ok()?;
+        state
+            .blocked_processes
+            .iter()
+            .find(|rule| process_block_matches(rule, &path))
+            .and_then(|rule| rule.expires_at_unix)
+            .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+            .map(Duration::from_secs)
+    });
+    let process_suspended = state_ref.is_some_and(|state| {
+        state
+            .suspended_processes
+            .iter()
+            .any(|entry| suspended_process_matches(entry, pid, path))
+    });
+    let connection_kill_enabled = selected_connection.is_some_and(can_kill_connection);
+    InspectorSnapshot {
+        status,
+        remote_target,
+        remote_blocked,
+        remote_remaining,
+        domain_target,
+        domain_blocked,
+        process_blocked,
+        process_remaining,
+        process_suspended,
+        connection_kill_enabled,
+        quarantine_ready,
+        suspend_enabled,
+        firewall_modifiable,
+        network_isolation_modifiable,
+        domain_modifiable,
+    }
 }
 
 pub fn freeze_autoruns() -> Result<String, String> {

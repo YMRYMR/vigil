@@ -398,7 +398,28 @@ fn main() {
     let pending_nav_tray = pending_nav.clone();
     let pending_nav_ui = pending_nav.clone();
     let (tray_tx, tray_rx) = std::sync::mpsc::sync_channel::<tray::TrayCmd>(64);
-    let ui_rx = ui::spawn_event_worker(event_rx, cfg.clone(), tray_tx.clone(), paused_flag.clone());
+    let (notify_tx, notify_rx) = std::sync::mpsc::sync_channel::<crate::types::ConnInfo>(128);
+    let show_window_notify = show_window.clone();
+    let pending_nav_notify = pending_nav.clone();
+    std::thread::Builder::new()
+        .name("vigil-desktop-notifier".into())
+        .spawn(move || {
+            while let Ok(info) = notify_rx.recv() {
+                notifier::send_alert(
+                    &info,
+                    show_window_notify.clone(),
+                    pending_nav_notify.clone(),
+                );
+            }
+        })
+        .expect("failed to spawn desktop notifier thread");
+    let ui_rx = ui::spawn_event_worker(
+        event_rx,
+        cfg.clone(),
+        tray_tx.clone(),
+        notify_tx,
+        paused_flag.clone(),
+    );
 
     let egui_ctx: Arc<std::sync::OnceLock<egui::Context>> = Arc::new(std::sync::OnceLock::new());
     let egui_ctx_tray = egui_ctx.clone();
