@@ -13,6 +13,7 @@
 )]
 
 mod advisory;
+mod advisory_history;
 mod advisory_status;
 mod artifact_provenance;
 mod audit;
@@ -111,6 +112,21 @@ fn acquire_single_instance(
     }
 }
 
+fn apply_data_dir_override_early(args: &[String]) {
+    let mut i = 1usize;
+    while i < args.len() {
+        if args[i] == service::DATA_DIR_FLAG {
+            let Some(path) = args.get(i + 1) else {
+                eprintln!("Missing path after {}", service::DATA_DIR_FLAG);
+                std::process::exit(1);
+            };
+            std::env::set_var("VIGIL_DATA_DIR", path);
+            return;
+        }
+        i += 1;
+    }
+}
+
 fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: bool) {
     std::thread::Builder::new()
         .name("vigil-bootstrap".into())
@@ -134,10 +150,12 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
                 c.reverse_dns_enabled
             );
             advisory::log_cache_status();
+            advisory_history::log_cache_status();
 
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             advisory::refresh_nvd_in_background_if_due();
+            advisory_history::refresh_nvd_in_background_if_due();
 
             if manage_login_autostart {
                 {
@@ -206,9 +224,20 @@ fn spawn_service_event_worker(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    apply_data_dir_override_early(&args);
 
     if args.iter().any(|a| a == "--advisory-cache-status") {
         match advisory_status::run_cli() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if args.iter().any(|a| a == "--advisory-change-history-status") {
+        match advisory_history::run_status_cli() {
             Ok(()) => std::process::exit(0),
             Err(err) => {
                 eprintln!("{err}");
@@ -224,6 +253,21 @@ fn main() {
             .take_while(|arg| !arg.starts_with("--") || *arg == "--force")
             .any(|arg| arg == "--force");
         match advisory::run_sync_cli(force) {
+            Ok(_) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--sync-nvd-change-history") {
+        let force = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--") || *arg == "--force")
+            .any(|arg| arg == "--force");
+        match advisory_history::run_sync_cli(force) {
             Ok(_) => std::process::exit(0),
             Err(err) => {
                 eprintln!("{err}");
@@ -276,6 +320,28 @@ fn main() {
         }
     }
 
+    if let Some(idx) = args.iter().position(|a| a == "--import-nvd-change-history") {
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-nvd-change-history SNAPSHOT.json [MORE.json ...]"
+            );
+            std::process::exit(1);
+        }
+        match advisory_history::run_import_cli(&snapshots) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     let mut service_mode = false;
@@ -305,7 +371,7 @@ fn main() {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service         register Vigil as a boot-time service\n  --uninstall-service       remove the boot-time service\n  --break-glass-recover     watchdog entrypoint for network recovery\n  --verify-update-manifest  MANIFEST SIG\n                           verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot     SNAPSHOT.json [MORE.json ...]\n                           import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]      fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status   show advisory cache status and source health\n  --service-mode            internal headless service entrypoint\n  --data-dir PATH           override Vigil data/config directory\n  -h, --help                show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service              register Vigil as a boot-time service\n  --uninstall-service            remove the boot-time service\n  --break-glass-recover          watchdog entrypoint for network recovery\n  --verify-update-manifest       MANIFEST SIG\n                                 verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot          SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]           fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status        show advisory cache status and source health\n  --import-nvd-change-history    SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE change-history JSON snapshots into the protected change-history cache\n  --sync-nvd-change-history [--force]\n                                 fetch or incrementally refresh the protected NVD CVE change-history cache from the live API\n  --advisory-change-history-status\n                                 show NVD change-history cache status and source health\n  --service-mode                 internal headless service entrypoint\n  --data-dir PATH                override Vigil data/config directory\n  -h, --help                     show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
