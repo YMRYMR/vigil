@@ -71,11 +71,11 @@ fn derive_product_key(display_name: &str, executable_path: &str) -> String {
 }
 
 fn normalize_name(input: &str) -> String {
-    let lower = input.trim().to_ascii_lowercase();
+    let lower = input.trim().to_lowercase();
     let no_ext = lower.strip_suffix(".exe").unwrap_or(&lower);
     no_ext
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .map(|c| if c.is_alphanumeric() { c } else { '-' })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
@@ -88,6 +88,13 @@ mod tests {
     #[test]
     fn normalize_name_strips_case_and_extension() {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
+    }
+
+
+    #[test]
+    fn normalize_name_preserves_unicode_letters() {
+        assert_eq!(normalize_name("Программа.EXE"), "программа");
+        assert_eq!(normalize_name("監視ツール.exe"), "監視ツール");
     }
 
     #[test]
