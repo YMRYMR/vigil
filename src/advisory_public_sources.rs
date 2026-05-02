@@ -800,22 +800,31 @@ fn products_from_value(value: &Value) -> Vec<AffectedProduct> {
     let mut products = Vec::new();
     for key in ["affected", "affectedProducts", "products", "vendors", "cpe", "cpes"] {
         if let Some(found) = value.get(key) {
-            collect_products(found, &mut products);
+            collect_products(found, &mut products, None);
         }
     }
     products
 }
 
-fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>) {
+fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>, inherited_vendor: Option<&str>) {
     match value {
-        Value::String(product) => push_product(out, product, None, None, true),
+        Value::String(product) => {
+            let criteria = inherited_vendor
+                .filter(|vendor| !product.contains(vendor))
+                .map(|vendor| format!("{vendor}:{product}"))
+                .unwrap_or_else(|| product.clone());
+            push_product(out, &criteria, None, None, true);
+        }
         Value::Array(values) => {
             for item in values {
-                collect_products(item, out);
+                collect_products(item, out, inherited_vendor);
             }
         }
         Value::Object(map) => {
-            let vendor = map.get("vendor").and_then(value_to_string);
+            let vendor = map
+                .get("vendor")
+                .and_then(value_to_string)
+                .or_else(|| inherited_vendor.map(str::to_string));
             let product = map
                 .get("product")
                 .or_else(|| map.get("name"))
@@ -825,6 +834,7 @@ fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>) {
                 .and_then(value_to_string);
             if let Some(product) = product {
                 let criteria = vendor
+                    .as_deref()
                     .filter(|vendor| !product.contains(vendor))
                     .map(|vendor| format!("{vendor}:{product}"))
                     .unwrap_or(product);
@@ -838,7 +848,7 @@ fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>) {
             }
             for nested in ["products", "children", "versions"] {
                 if let Some(value) = map.get(nested) {
-                    collect_products(value, out);
+                    collect_products(value, out, vendor.as_deref());
                 }
             }
         }
@@ -968,6 +978,35 @@ mod tests {
         assert!(record.known_exploited);
         assert_eq!(record.affected_products[0].criteria, "Example:Agent");
         assert_eq!(record.provenance.source_kind, EUVD_SOURCE_KIND);
+    }
+
+    #[test]
+    fn preserves_vendor_context_for_nested_products() {
+        let bytes = br#"{
+            "timestamp": "2026-05-01T00:00:00Z",
+            "records": [{
+                "euvdId": "EUVD-2026-0002",
+                "title": "Nested product payload",
+                "affectedProducts": [{
+                    "vendor": "Example",
+                    "products": [
+                        {"product": "Agent"},
+                        {"product": "Console"}
+                    ]
+                }]
+            }]
+        }"#;
+
+        let cache = parse_euvd_json_snapshot(bytes, None).unwrap();
+        let record = &cache.records[0];
+        assert!(record
+            .affected_products
+            .iter()
+            .any(|product| product.criteria == "Example:Agent"));
+        assert!(record
+            .affected_products
+            .iter()
+            .any(|product| product.criteria == "Example:Console"));
     }
 
     #[test]
