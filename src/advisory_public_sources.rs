@@ -613,7 +613,7 @@ fn flatten_strings(value: &Value, out: &mut Vec<String>) {
         Value::Object(map) => {
             for key in ["id", "name", "title", "value", "url", "reference", "product", "vendor"] {
                 if let Some(value) = map.get(key) {
-                    flatten_strings(value, &mut out);
+                    flatten_strings(value, out);
                 }
             }
         }
