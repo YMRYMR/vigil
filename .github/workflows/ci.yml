@@ -16,9 +16,38 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect Rust-related changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          changed_files=$(git diff --name-only FETCH_HEAD...HEAD)
+
+          if printf '%s\n' "$changed_files" | grep -Eq '(^|/).*\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$'; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=false" >> "$GITHUB_OUTPUT"
+          fi
+
   # ── Format + lint (fast gate) ────────────────────────────────────────────────
   check:
     name: Format & lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -43,7 +72,8 @@ jobs:
   # ── Build + test matrix ──────────────────────────────────────────────────────
   build:
     name: Build & test (${{ matrix.target }})
-    needs: check
+    needs: [changes, check]
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
