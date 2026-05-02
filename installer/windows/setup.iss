@@ -81,7 +81,7 @@ Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks
 Filename: "{app}\{#MyAppExeName}"; \
   Parameters: "--install-service"; \
   StatusMsg: "Registering the Vigil boot-time monitor service..."; \
-  Flags: runhidden waituntilterminated skipifsilent; \
+  Flags: runhidden waituntilterminated; \
   Check: IsAdminInstallMode and WizardIsTaskSelected('bootservice')
 
 ; Offer to launch Vigil immediately after installation.
