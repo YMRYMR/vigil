@@ -20,10 +20,10 @@ Vigil is intentionally conservative about action. Scores and advisory context ar
 ### Windows
 
 1. Download the Windows installer from the latest GitHub Release.
-2. Run the installer. By default it installs for the current user; if you
-   choose an all-users install during setup, it installs to `Program Files`.
-3. Launch Vigil from the Start Menu or the installed shortcut.
-4. Use **Run as Admin** in the header when you need ETW visibility or active response actions.
+2. Run the installer. By default it installs for the current user and enables Vigil to start when you log in.
+3. If you want Vigil to start before login, choose an all-users install during setup. On Windows, that elevated installer path now registers the boot-time monitor service automatically.
+4. Launch Vigil from the Start Menu or the installed shortcut.
+5. Use **Run as Admin** in the header when you need ETW visibility or active response actions.
 
 ### macOS
 
@@ -166,7 +166,7 @@ To monitor before login, install the OS service from an elevated shell:
 | macOS | `sudo vigil --install-service` | `sudo vigil --uninstall-service` |
 | Linux | `sudo vigil --install-service` | `sudo vigil --uninstall-service` |
 
-Service mode runs the monitor without the desktop UI. The GUI/tray launches normally after login.
+On Windows, the all-users installer path now performs that service registration automatically. Service mode runs the monitor without the desktop UI. The GUI/tray launches normally after login.
 
 ## Uninstall from Settings
 
