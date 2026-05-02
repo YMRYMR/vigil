@@ -485,7 +485,12 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                 .changed();
             ui.add_space(2.0);
             ui.label(
-                RichText::new("On Windows, elevated runs use a highest-privilege scheduled task.")
+                RichText::new("This controls the desktop app after login. Before-login monitoring uses the separate boot-time service.")
+                    .color(theme::TEXT3)
+                    .size(10.2),
+            );
+            ui.label(
+                RichText::new("On Windows, all-users installs register that boot-time service during setup; you can also install it manually with vigil.exe --install-service.")
                     .color(theme::TEXT3)
                     .size(10.2),
             );
