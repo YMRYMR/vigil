@@ -60,6 +60,11 @@ Name: "desktopicon"; \
   Description: "{cm:CreateDesktopIcon}"; \
   GroupDescription: "{cm:AdditionalIcons}"; \
   Flags: unchecked
+Name: "bootservice"; \
+  Description: "Start Vigil before login (boot-time monitor service)"; \
+  GroupDescription: "Startup"; \
+  Flags: checked; \
+  Check: IsAdminInstallMode
 
 [Files]
 ; The binary is staged next to setup.iss before ISCC runs (see release.yml).
@@ -71,8 +76,17 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}";     Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; When Setup is already elevated for an all-users install, register the
+; monitor-only boot-time service so monitoring begins before login.
+Filename: "{app}\{#MyAppExeName}"; \
+  Parameters: "--install-service"; \
+  StatusMsg: "Registering the Vigil boot-time monitor service..."; \
+  Flags: runhidden waituntilterminated; \
+  Check: IsAdminInstallMode and WizardIsTaskSelected('bootservice')
+
 ; Offer to launch Vigil immediately after installation.
-; Vigil enables autostart on its own first run — no registry entry needed here.
+; Vigil enables login autostart on its own first run — no registry entry
+; needed here.
 Filename: "{app}\{#MyAppExeName}"; \
   Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; \
   Flags: nowait postinstall skipifsilent
