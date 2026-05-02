@@ -97,6 +97,22 @@ guidance, and keeps the last trusted cache if refresh fails:
 vigil --sync-nvd
 ```
 
+Vigil can also maintain a separate protected cache of the public NVD CVE
+change-history feed so operators can audit re-analysis and upstream metadata
+changes over time:
+
+```bash
+vigil --sync-nvd-change-history
+vigil --advisory-change-history-status
+```
+
+For offline or batched imports, pass one or more local NVD CVE change-history
+JSON snapshots:
+
+```bash
+vigil --import-nvd-change-history nvdcvehistory-page-1.json nvdcvehistory-page-2.json
+```
+
 When Vigil is using the live NVD API, `vigil --advisory-cache-status` now shows
 the required notice: "This product uses the NVD API but is not endorsed or
 certified by the NVD."
