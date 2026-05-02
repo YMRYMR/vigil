@@ -35,20 +35,17 @@ pub fn run_cli() -> Result<(), String> {
     }
 
     let now = unix_now();
-    let stale_sources = cache
+    let attention_sources = cache
         .sources
         .iter()
-        .filter(|source| {
-            is_source_stale(source.expires_unix, now)
-                || matches!(source.status, SourceHealth::Stale)
-        })
+        .filter(|source| source_needs_attention(source, now))
         .count();
 
     println!(
-        "Advisory cache: {} records, {} sources ({} stale)",
+        "Advisory cache: {} records, {} sources ({} stale/error)",
         cache.records.len(),
         cache.sources.len(),
-        stale_sources
+        attention_sources
     );
 
     for source in &cache.sources {
@@ -103,6 +100,11 @@ fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
         SourceHealth::Stale => "stale",
         SourceHealth::Error => "error",
     }
+}
+
+fn source_needs_attention(source: &AdvisorySourceCache, now: u64) -> bool {
+    is_source_stale(source.expires_unix, now)
+        || matches!(source.status, SourceHealth::Stale | SourceHealth::Error)
 }
 
 fn source_attribution(source: &AdvisorySourceCache) -> Option<&'static str> {
@@ -166,6 +168,26 @@ mod tests {
         };
 
         assert_eq!(source_state(&source, 30), "error");
+    }
+
+    #[test]
+    fn source_needs_attention_for_error_sources_before_expiry() {
+        let source = AdvisorySourceCache {
+            source_key: "nvd-cve".into(),
+            source_kind: "nvd".into(),
+            source_url: String::new(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: 10,
+            expires_unix: 100,
+            snapshot_sha256: String::new(),
+            total_results: 1,
+            status: SourceHealth::Error,
+            last_attempt_unix: 0,
+            last_error: Some("rate limit".into()),
+        };
+
+        assert!(source_needs_attention(&source, 30));
     }
 
     #[test]
