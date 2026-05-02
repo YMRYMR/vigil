@@ -232,8 +232,10 @@ Vigil also runs two passive persistence watchers that raise synthetic alerts
 
 1. Download `Vigil-Setup-<version>-x86_64.exe` from the [latest release].
 2. Run the installer — by default it installs for the current user, creates a
-   Start Menu shortcut, and registers it for autostart. If you choose an
-   all-users install during setup, Vigil is installed in `Program Files`.
+   Start Menu shortcut, and enables Vigil to start when you log in.
+3. If you want monitoring to begin before login, choose an all-users install
+   during setup. On Windows, the elevated installer now registers the boot-time
+   monitor service automatically for that install mode.
 
 > **Note:** ETW-based real-time monitoring requires Administrator rights.
 > Without elevation, Vigil falls back to polling every few seconds — all
@@ -381,7 +383,9 @@ Connections captured before login get a **+2 score bump** and a red
 **`PL`** badge in the Time column, so when the first user logs in they
 immediately see everything the monitor caught during boot.
 
-From an elevated shell:
+On Windows, the all-users installer path now registers this boot-time monitor
+service automatically. You can still install or repair it manually from an
+elevated shell:
 
 | OS      | Command                                          |
 | ------- | ------------------------------------------------ |
@@ -393,7 +397,7 @@ To remove the boot-time service, replace with `--uninstall-service`.
 
 Under the hood:
 
-- Windows uses the Service Control Manager (`sc create Vigil …`).
+- Windows uses Task Scheduler with an `ONSTART` task that runs Vigil as `SYSTEM`.
 - macOS writes a launchd system daemon at
   `/Library/LaunchDaemons/com.vigil.monitor.plist` and `launchctl load`s it.
 - Linux writes a systemd unit at `/etc/systemd/system/vigil.service` and
