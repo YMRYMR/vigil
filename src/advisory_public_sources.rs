@@ -613,7 +613,7 @@ fn flatten_strings(value: &Value, out: &mut Vec<String>) {
         Value::Object(map) => {
             for key in ["id", "name", "title", "value", "url", "reference", "product", "vendor"] {
                 if let Some(value) = map.get(key) {
-                    flatten_strings(value, out);
+                    flatten_strings(value, &mut out);
                 }
             }
         }
@@ -864,7 +864,14 @@ fn push_product(
     vulnerable: bool,
 ) {
     let criteria = criteria.trim();
-    if criteria.is_empty() || out.iter().any(|product| product.criteria == criteria) {
+    if criteria.is_empty()
+        || out.iter().any(|product| {
+            product.criteria == criteria
+                && product.match_criteria_id == match_criteria_id
+                && product.cpe_name == cpe_name
+                && product.vulnerable == vulnerable
+        })
+    {
         return;
     }
     out.push(AffectedProduct {
@@ -982,7 +989,7 @@ mod tests {
 
     #[test]
     fn preserves_vendor_context_for_nested_products() {
-        let bytes = br#"{
+        let bytes = br#"{ 
             "timestamp": "2026-05-01T00:00:00Z",
             "records": [{
                 "euvdId": "EUVD-2026-0002",
@@ -1007,6 +1014,43 @@ mod tests {
             .affected_products
             .iter()
             .any(|product| product.criteria == "Example:Console"));
+    }
+
+    #[test]
+    fn keeps_distinct_product_rows_with_shared_criteria() {
+        let bytes = br#"{
+            "timestamp": "2026-05-01T00:00:00Z",
+            "records": [{
+                "euvdId": "EUVD-2026-0003",
+                "title": "Duplicate criteria payload",
+                "affectedProducts": [
+                    {
+                        "vendor": "Example",
+                        "product": "Agent",
+                        "matchCriteriaId": "id-one",
+                        "cpeName": "cpe:2.3:a:example:agent:1.0.0:*:*:*:*:*:*:*"
+                    },
+                    {
+                        "vendor": "Example",
+                        "product": "Agent",
+                        "matchCriteriaId": "id-two",
+                        "cpeName": "cpe:2.3:a:example:agent:1.1.0:*:*:*:*:*:*:*"
+                    }
+                ]
+            }]
+        }"#;
+
+        let cache = parse_euvd_json_snapshot(bytes, None).unwrap();
+        let record = &cache.records[0];
+        assert_eq!(record.affected_products.len(), 2);
+        assert!(record
+            .affected_products
+            .iter()
+            .any(|product| product.match_criteria_id.as_deref() == Some("id-one")));
+        assert!(record
+            .affected_products
+            .iter()
+            .any(|product| product.match_criteria_id.as_deref() == Some("id-two")));
     }
 
     #[test]
