@@ -300,8 +300,8 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 - [ ] **Offline-first and fail-closed behaviour** — keep protection working from the last trusted cache, never weaken existing detection if source refresh fails, and surface stale or partial-source state clearly to the operator
 
 ### Docs and policy
-- [ ] **Attribution / terms compliance** — document source-specific attribution, caching, redistribution, and update-frequency rules for NVD, EUVD, JVN, NCSC public content, and BSI public content
-- [ ] **Operator guidance** — explain what a “matched advisory” means, what confidence limits remain, and why a public CVE match is not by itself proof of compromise
+- [x] **Attribution / terms compliance** — `docs/ADVISORY-SOURCE-COMPLIANCE.md` documents source-specific attribution, caching, redistribution, and update-frequency rules for NVD, EUVD, JVN, NCSC public content, and BSI public content
+- [x] **Operator guidance** — `README.md` and `docs/USER-GUIDE.md` explain what a matched advisory means, what confidence limits remain, and why a public CVE match is not by itself proof of compromise
 
 ---
 
