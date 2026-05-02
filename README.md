@@ -21,6 +21,13 @@ activity quickly, help the operator understand what is happening, preserve
 evidence when needed, and contain the machine or process without turning every
 high-noise event into a destructive action.
 
+Vigil also treats public vulnerability and advisory matches conservatively. A
+match means Vigil found a plausible link between software on the machine and a
+public CVE or advisory record from its local source cache; it does not mean
+exploitation happened or that the machine is confirmed compromised. Treat a
+match as operator decision support alongside process context, exposure, and
+vendor remediation guidance.
+
 ![Vigil current UI](docs/images/vigil-current.png)
 
 ---
