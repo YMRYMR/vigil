@@ -24,7 +24,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - id: filter
         shell: bash
@@ -34,7 +34,7 @@ jobs:
             exit 0
           fi
 
-          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git fetch --no-tags origin "${{ github.base_ref }}"
           changed_files=$(git diff --name-only FETCH_HEAD...HEAD)
 
           if printf '%s\n' "$changed_files" | grep -Eq '(^|/).*\.rs$|^Cargo\.(toml|lock)$|(^|/)build\.rs$'; then
