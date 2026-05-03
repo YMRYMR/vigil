@@ -456,8 +456,8 @@ on disk. Then edit the `vigil.json` file in the per-user Vigil data directory:
 
 ```json
 {
-  "geoip_city_db": "C:\vigil\GeoLite2-City.mmdb",
-  "geoip_asn_db":  "C:\vigil\GeoLite2-ASN.mmdb",
+  "geoip_city_db": "C:\\vigil\\GeoLite2-City.mmdb",
+  "geoip_asn_db":  "C:\\vigil\\GeoLite2-ASN.mmdb",
   "allowed_countries": ["US", "GB", "ES"]
 }
 ```
@@ -474,8 +474,8 @@ Drop plain-text blocklists anywhere and list them:
 ```json
 {
   "blocklist_paths": [
-    "C:\vigil\abuseipdb.txt",
-    "C:\vigil\firehol-level1.txt"
+    "C:\\vigil\\abuseipdb.txt",
+    "C:\\vigil\\firehol-level1.txt"
   ]
 }
 ```
@@ -487,7 +487,7 @@ gets a red `REP` badge naming the source list.
 
 ### File-drop correlation
 
-Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\Temp`,
+Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\\Temp`,
 `%APPDATA%`, `Downloads`, and (on Unix) `/tmp` and `/var/tmp` for new
 `.exe` / `.dll` / `.ps1` / `.scr` / `.msi` / `.sh` / `.py` drops. When a
 connection originates from a file that was dropped within the last
