@@ -268,7 +268,10 @@ fn parse_euvd_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityR
             "recommendations",
         ],
     ));
-    mitigations.extend(urls_from_keys(value, &["mitigationUrl", "mitigation_url", "remediationUrl"]));
+    mitigations.extend(urls_from_keys(
+        value,
+        &["mitigationUrl", "mitigation_url", "remediationUrl"],
+    ));
     mitigations = unique_strings(mitigations);
 
     Some(VulnerabilityRecord {
@@ -276,11 +279,22 @@ fn parse_euvd_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityR
         aliases,
         summary: first_string(value, &["summary", "description", "title", "name"])
             .unwrap_or_default(),
-        published: first_string(value, &["published", "datePublished", "publishedDate", "created"]),
-        last_modified: first_string(value, &["lastModified", "last_modified", "updated", "dateUpdated"]),
+        published: first_string(
+            value,
+            &["published", "datePublished", "publishedDate", "created"],
+        ),
+        last_modified: first_string(
+            value,
+            &["lastModified", "last_modified", "updated", "dateUpdated"],
+        ),
         known_exploited: bool_from_keys(
             value,
-            &["knownExploited", "exploited", "isExploited", "exploitationDetected"],
+            &[
+                "knownExploited",
+                "exploited",
+                "isExploited",
+                "exploitationDetected",
+            ],
         ),
         severities: severities_from_value(value, "EUVD"),
         affected_products: products_from_value(value),
@@ -321,7 +335,10 @@ fn parse_jvn_json_record(value: &Value, imported_unix: u64) -> Option<Vulnerabil
             "fixed_version",
         ],
     ));
-    mitigations.extend(urls_from_keys(value, &["solutionUrl", "solution_url", "vendorUrl"]));
+    mitigations.extend(urls_from_keys(
+        value,
+        &["solutionUrl", "solution_url", "vendorUrl"],
+    ));
     mitigations = unique_strings(mitigations);
 
     Some(VulnerabilityRecord {
@@ -330,7 +347,10 @@ fn parse_jvn_json_record(value: &Value, imported_unix: u64) -> Option<Vulnerabil
         summary: first_string(value, &["summary", "description", "title", "name"])
             .unwrap_or_default(),
         published: first_string(value, &["issued", "published", "datePublished", "created"]),
-        last_modified: first_string(value, &["modified", "lastModified", "last_modified", "updated"]),
+        last_modified: first_string(
+            value,
+            &["modified", "lastModified", "last_modified", "updated"],
+        ),
         known_exploited: bool_from_keys(value, &["knownExploited", "exploited"]),
         severities: severities_from_value(value, "JVN"),
         affected_products: products_from_value(value),
@@ -363,7 +383,11 @@ fn parse_jvn_rss_item(item: &str, imported_unix: u64) -> Option<VulnerabilityRec
     Some(VulnerabilityRecord {
         primary_id: identifier,
         aliases: unique_strings(aliases),
-        summary: if description.is_empty() { title } else { description },
+        summary: if description.is_empty() {
+            title
+        } else {
+            description
+        },
         published: xml_tag(item, "dc:date").or_else(|| xml_tag(item, "pubDate")),
         last_modified: xml_tag(item, "dcterms:modified").or_else(|| xml_tag(item, "modified")),
         known_exploited: false,
@@ -390,7 +414,12 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
         return Ok(None);
     }
     let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|err| format!("failed to load protected advisory cache {}: {err}", path.display()))?;
+        .map_err(|err| {
+            format!(
+                "failed to load protected advisory cache {}: {err}",
+                path.display()
+            )
+        })?;
     match loaded {
         Some(cache) if cache.schema_version == CACHE_SCHEMA_VERSION => Ok(Some(cache)),
         Some(cache) => {
@@ -546,7 +575,14 @@ impl PublicSourceKind {
 }
 
 fn record_array(value: &Value) -> Option<&Vec<Value>> {
-    for key in ["records", "vulnerabilities", "items", "data", "results", "entries"] {
+    for key in [
+        "records",
+        "vulnerabilities",
+        "items",
+        "data",
+        "results",
+        "entries",
+    ] {
         if let Some(values) = value.get(key).and_then(Value::as_array) {
             return Some(values);
         }
@@ -611,7 +647,16 @@ fn flatten_strings(value: &Value, out: &mut Vec<String>) {
             }
         }
         Value::Object(map) => {
-            for key in ["id", "name", "title", "value", "url", "reference", "product", "vendor"] {
+            for key in [
+                "id",
+                "name",
+                "title",
+                "value",
+                "url",
+                "reference",
+                "product",
+                "vendor",
+            ] {
                 if let Some(value) = map.get(key) {
                     flatten_strings(value, out);
                 }
@@ -658,7 +703,9 @@ fn first_cve_text(text: &str) -> Option<String> {
     while idx + 13 <= bytes.len() {
         if &bytes[idx..idx + 4] == b"CVE-" {
             let tail = &upper[idx..];
-            let parts = tail.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-')).next()?;
+            let parts = tail
+                .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '-'))
+                .next()?;
             if parts.len() >= 13 {
                 return Some(parts.to_string());
             }
@@ -668,7 +715,11 @@ fn first_cve_text(text: &str) -> Option<String> {
     None
 }
 
-fn references_from_value(value: &Value, source: &str, source_url: &str) -> Vec<VulnerabilityReference> {
+fn references_from_value(
+    value: &Value,
+    source: &str,
+    source_url: &str,
+) -> Vec<VulnerabilityReference> {
     let mut refs = Vec::new();
     for key in ["references", "reference", "urls", "links", "advisories"] {
         if let Some(found) = value.get(key) {
@@ -702,11 +753,13 @@ fn collect_references(value: &Value, source: &str, refs: &mut Vec<VulnerabilityR
             {
                 let tags = map
                     .get("tags")
-                    .map(|value| unique_strings({
-                        let mut values = Vec::new();
-                        flatten_strings(value, &mut values);
-                        values
-                    }))
+                    .map(|value| {
+                        unique_strings({
+                            let mut values = Vec::new();
+                            flatten_strings(value, &mut values);
+                            values
+                        })
+                    })
                     .unwrap_or_default();
                 let reference_source = map
                     .get("source")
@@ -719,7 +772,12 @@ fn collect_references(value: &Value, source: &str, refs: &mut Vec<VulnerabilityR
     }
 }
 
-fn push_reference(refs: &mut Vec<VulnerabilityReference>, url: &str, source: &str, tags: Vec<String>) {
+fn push_reference(
+    refs: &mut Vec<VulnerabilityReference>,
+    url: &str,
+    source: &str,
+    tags: Vec<String>,
+) {
     let url = url.trim();
     if url.is_empty() || refs.iter().any(|reference| reference.url == url) {
         return;
@@ -798,7 +856,14 @@ fn collect_severities(value: &Value, source: &str, out: &mut Vec<VulnerabilitySe
 
 fn products_from_value(value: &Value) -> Vec<AffectedProduct> {
     let mut products = Vec::new();
-    for key in ["affected", "affectedProducts", "products", "vendors", "cpe", "cpes"] {
+    for key in [
+        "affected",
+        "affectedProducts",
+        "products",
+        "vendors",
+        "cpe",
+        "cpes",
+    ] {
         if let Some(found) = value.get(key) {
             collect_products(found, &mut products, None);
         }
@@ -842,8 +907,12 @@ fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>, inherited_ven
                     out,
                     &criteria,
                     map.get("matchCriteriaId").and_then(value_to_string),
-                    map.get("cpeName").or_else(|| map.get("cpe")).and_then(value_to_string),
-                    map.get("vulnerable").and_then(Value::as_bool).unwrap_or(true),
+                    map.get("cpeName")
+                        .or_else(|| map.get("cpe"))
+                        .and_then(value_to_string),
+                    map.get("vulnerable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
                 );
             }
             for nested in ["products", "children", "versions"] {
@@ -891,9 +960,13 @@ fn xml_items(xml: &str) -> Vec<String> {
     let mut rest = xml;
     while let Some(start) = rest.find("<item") {
         rest = &rest[start..];
-        let Some(open_end) = rest.find('>') else { break };
+        let Some(open_end) = rest.find('>') else {
+            break;
+        };
         let body_start = open_end + 1;
-        let Some(end) = rest[body_start..].find("</item>") else { break };
+        let Some(end) = rest[body_start..].find("</item>") else {
+            break;
+        };
         items.push(rest[body_start..body_start + end].to_string());
         rest = &rest[body_start + end + "</item>".len()..];
     }
@@ -939,7 +1012,9 @@ fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
         .or_else(|| {
             chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
-                .map(|ts| chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ts, chrono::Utc))
+                .map(|ts| {
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ts, chrono::Utc)
+                })
         })
 }
 
