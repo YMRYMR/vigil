@@ -94,36 +94,35 @@ mod tests {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
     }
 
+#[test]
+fn normalize_name_preserves_unicode_letters() {
+    assert_eq!(normalize_name("Программа.EXE"), "программа");
+    assert_eq!(normalize_name("監視ツール.exe"), "監視ツール");
+}
 
-    #[test]
-    fn normalize_name_preserves_unicode_letters() {
-        assert_eq!(normalize_name("Программа.EXE"), "программа");
-        assert_eq!(normalize_name("監視ツール.exe"), "監視ツール");
-    }
+#[test]
+fn derive_product_key_prefers_display_name() {
+    let key = derive_product_key("Google Chrome", "/opt/chrome/chrome");
+    assert_eq!(key, "google-chrome");
+}
 
-    #[test]
-    fn derive_product_key_prefers_display_name() {
-        let key = derive_product_key("Google Chrome", "/opt/chrome/chrome");
-        assert_eq!(key, "google-chrome");
-    }
+#[test]
+fn derive_product_key_uses_path_when_name_missing() {
+    let key = derive_product_key("", "/usr/bin/curl");
+    assert_eq!(key, "curl");
+}
 
-    #[test]
-    fn derive_product_key_uses_path_when_name_missing() {
-        let key = derive_product_key("", "/usr/bin/curl");
-        assert_eq!(key, "curl");
-    }
+#[test]
+fn derive_product_key_unknown_when_name_and_path_missing() {
+    let key = derive_product_key("", "");
+    assert_eq!(key, "unknown-product");
+}
 
-    #[test]
-    fn derive_product_key_unknown_when_name_and_path_missing() {
-        let key = derive_product_key("", "");
-        assert_eq!(key, "unknown-product");
-    }
-
-    #[test]
-    fn collect_from_entries_keeps_empty_name_when_path_present() {
-        let entries = vec![("".to_string(), "/opt/vendor/agentd".to_string())];
-        let inventory = collect_from_entries(entries);
-        assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].product_key, "agentd");
-    }
+#[test]
+fn collect_from_entries_keeps_empty_name_when_path_present() {
+    let entries = vec![("".to_string(), "/opt/vendor/agentd".to_string())];
+    let inventory = collect_from_entries(entries);
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].product_key, "agentd");
+}
 }
