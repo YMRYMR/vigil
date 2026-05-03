@@ -47,15 +47,31 @@ where
             continue;
         }
         let product_key = derive_product_key(&display_name, &executable_path);
-        by_key.entry(product_key.clone()).or_insert(InstalledSoftware {
-            product_key,
+        let candidate = InstalledSoftware {
+            product_key: product_key.clone(),
             display_name,
             executable_path,
             publisher_hint: None,
             source: InventorySource::RunningProcess,
-        });
+        };
+        by_key
+            .entry(product_key)
+            .and_modify(|existing| {
+                if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing) {
+                    *existing = candidate.clone();
+                }
+            })
+            .or_insert(candidate);
     }
     by_key.into_values().collect()
+}
+
+fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, String, String) {
+    (
+        entry.display_name.trim().is_empty(),
+        entry.display_name.to_lowercase(),
+        entry.executable_path.to_lowercase(),
+    )
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -124,5 +140,19 @@ mod tests {
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].product_key, "agentd");
+    }
+
+    #[test]
+    fn collect_from_entries_prefers_stable_named_entry_for_duplicate_key() {
+        let entries = vec![
+            ("".to_string(), "/opt/vendor/chrome".to_string()),
+            ("Google Chrome".to_string(), "/Applications/Google Chrome.app".to_string()),
+            ("google chrome".to_string(), "/opt/google/chrome".to_string()),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].product_key, "google-chrome");
+        assert_eq!(inventory[0].display_name, "Google Chrome");
+        assert_eq!(inventory[0].executable_path, "/Applications/Google Chrome.app");
     }
 }

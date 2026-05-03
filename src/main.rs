@@ -41,6 +41,7 @@ mod security;
 mod session;
 mod software_inventory;
 mod startup_integrity;
+mod storage;
 mod tls;
 mod tls_artifacts;
 mod types;
@@ -159,8 +160,15 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             advisory::refresh_nvd_in_background_if_due();
             advisory_history::refresh_nvd_in_background_if_due();
 
-            let software_count = software_inventory::collect_installed_software().len();
+            let inventory = software_inventory::collect_installed_software();
+            let software_count = inventory.len();
             tracing::info!(software_count, "software inventory snapshot collected");
+            let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
+            if let Err(err) =
+                storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
+            {
+                tracing::warn!(%err, "failed to persist software inventory snapshot");
+            }
 
             if manage_login_autostart {
                 {
