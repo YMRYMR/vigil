@@ -613,7 +613,14 @@ fn fallback_identifier(
 }
 
 fn record_array(value: &Value) -> Option<&Vec<Value>> {
-    for key in ["records", "items", "data", "results", "entries", "advisories"] {
+    for key in [
+        "records",
+        "items",
+        "data",
+        "results",
+        "entries",
+        "advisories",
+    ] {
         if let Some(values) = value.get(key).and_then(Value::as_array) {
             return Some(values);
         }
@@ -788,11 +795,13 @@ fn collect_references(value: &Value, source: &str, refs: &mut Vec<VulnerabilityR
             {
                 let tags = map
                     .get("tags")
-                    .map(|value| unique_strings({
-                        let mut values = Vec::new();
-                        flatten_strings(value, &mut values);
-                        values
-                    }))
+                    .map(|value| {
+                        unique_strings({
+                            let mut values = Vec::new();
+                            flatten_strings(value, &mut values);
+                            values
+                        })
+                    })
                     .unwrap_or_default();
                 let reference_source = map
                     .get("source")
@@ -831,8 +840,7 @@ fn urls_from_keys(value: &Value, keys: &[&str]) -> Vec<String> {
 
 fn severities_from_value(value: &Value, source: &str) -> Vec<VulnerabilitySeverity> {
     let mut severities = Vec::new();
-    if let Some(severity) = first_string(value, &["severity", "cvssSeverity", "baseSeverity"])
-    {
+    if let Some(severity) = first_string(value, &["severity", "cvssSeverity", "baseSeverity"]) {
         severities.push(VulnerabilitySeverity {
             source: source.into(),
             scheme: first_string(value, &["severityScheme", "cvssVersion"])
@@ -890,7 +898,14 @@ fn collect_severities(value: &Value, source: &str, out: &mut Vec<VulnerabilitySe
 
 fn products_from_value(value: &Value) -> Vec<AffectedProduct> {
     let mut products = Vec::new();
-    for key in ["affected", "affectedProducts", "products", "vendors", "cpe", "cpes"] {
+    for key in [
+        "affected",
+        "affectedProducts",
+        "products",
+        "vendors",
+        "cpe",
+        "cpes",
+    ] {
         if let Some(found) = value.get(key) {
             collect_products(found, &mut products, None);
         }
@@ -934,8 +949,12 @@ fn collect_products(value: &Value, out: &mut Vec<AffectedProduct>, inherited_ven
                     out,
                     &criteria,
                     map.get("matchCriteriaId").and_then(value_to_string),
-                    map.get("cpeName").or_else(|| map.get("cpe")).and_then(value_to_string),
-                    map.get("vulnerable").and_then(Value::as_bool).unwrap_or(true),
+                    map.get("cpeName")
+                        .or_else(|| map.get("cpe"))
+                        .and_then(value_to_string),
+                    map.get("vulnerable")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true),
                 );
             }
             for nested in ["products", "children", "versions"] {
@@ -1025,9 +1044,8 @@ fn xml_tags(xml: &str, tag: &str) -> Vec<String> {
             break;
         };
         let header = &rest[..=open_end];
-        let is_target_tag = header.starts_with(&attr_tag)
-            || header == bare_tag
-            || header == self_closing_tag;
+        let is_target_tag =
+            header.starts_with(&attr_tag) || header == bare_tag || header == self_closing_tag;
         if !is_target_tag {
             rest = &rest[open_end + 1..];
             continue;
@@ -1104,13 +1122,8 @@ mod tests {
             <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
         </item></channel></rss>"#;
 
-        let cache = parse_rss_snapshot(
-            NationalAdvisorySourceKind::Ncsc,
-            xml,
-            xml.as_bytes(),
-            None,
-        )
-        .unwrap();
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
         assert_eq!(cache.records.len(), 1);
         let record = &cache.records[0];
         assert_eq!(
@@ -1163,8 +1176,7 @@ mod tests {
         assert_eq!(cache.records.len(), 2);
         assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
         assert_eq!(
-            cache.records[0].provenance.source_url,
-            BSI_SOURCE_URL,
+            cache.records[0].provenance.source_url, BSI_SOURCE_URL,
             "records without per-item URLs should still point provenance at the source homepage"
         );
     }
@@ -1196,13 +1208,8 @@ mod tests {
             <enclosure url="https://www.ncsc.gov.uk/files/example-two.pdf" />
         </item></channel></rss>"#;
 
-        let cache = parse_rss_snapshot(
-            NationalAdvisorySourceKind::Ncsc,
-            xml,
-            xml.as_bytes(),
-            None,
-        )
-        .unwrap();
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
         assert_eq!(cache.records.len(), 1);
         let record = &cache.records[0];
         assert!(record.references.iter().any(|reference| {
