@@ -26,31 +26,35 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let mut by_key: BTreeMap<String, InstalledSoftware> = BTreeMap::new();
-
-    for process in sys.processes().values() {
+    let entries = sys.processes().values().map(|process| {
         let display_name = process.name().to_string_lossy().trim().to_string();
-        if display_name.is_empty() {
-            continue;
-        }
-
         let executable_path = process
             .exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
+        (display_name, executable_path)
+    });
+    collect_from_entries(entries)
+}
 
+fn collect_from_entries<I>(entries: I) -> Vec<InstalledSoftware>
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    let mut by_key: BTreeMap<String, InstalledSoftware> = BTreeMap::new();
+    for (display_name, executable_path) in entries {
+        if display_name.is_empty() && executable_path.is_empty() {
+            continue;
+        }
         let product_key = derive_product_key(&display_name, &executable_path);
-        let entry = InstalledSoftware {
-            product_key: product_key.clone(),
+        by_key.entry(product_key.clone()).or_insert(InstalledSoftware {
+            product_key,
             display_name,
             executable_path,
             publisher_hint: None,
             source: InventorySource::RunningProcess,
-        };
-
-        by_key.entry(product_key).or_insert(entry);
+        });
     }
-
     by_key.into_values().collect()
 }
 
@@ -90,7 +94,6 @@ mod tests {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
     }
 
-
     #[test]
     fn normalize_name_preserves_unicode_letters() {
         assert_eq!(normalize_name("Программа.EXE"), "программа");
@@ -107,5 +110,19 @@ mod tests {
     fn derive_product_key_uses_path_when_name_missing() {
         let key = derive_product_key("", "/usr/bin/curl");
         assert_eq!(key, "curl");
+    }
+
+    #[test]
+    fn derive_product_key_unknown_when_name_and_path_missing() {
+        let key = derive_product_key("", "");
+        assert_eq!(key, "unknown-product");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_empty_name_when_path_present() {
+        let entries = vec![("".to_string(), "/opt/vendor/agentd".to_string())];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].product_key, "agentd");
     }
 }
