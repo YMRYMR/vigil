@@ -75,16 +75,16 @@ fn entry_rank(entry: &InstalledSoftware) -> (bool, bool, &str, &str) {
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
-    let normalized_name = normalize_name(display_name);
-    if !normalized_name.is_empty() {
-        return normalized_name;
-    }
-
     if let Some(file_name) = std::path::Path::new(executable_path).file_name() {
         let candidate = normalize_name(&file_name.to_string_lossy());
         if !candidate.is_empty() {
             return candidate;
         }
+    }
+
+    let normalized_name = normalize_name(display_name);
+    if !normalized_name.is_empty() {
+        return normalized_name;
     }
 
     "unknown-product".to_string()
@@ -141,15 +141,15 @@ mod tests {
     }
 
     #[test]
-    fn derive_product_key_prefers_display_name() {
-        let key = derive_product_key("Google Chrome", "/opt/chrome/chrome");
-        assert_eq!(key, "google-chrome");
+    fn derive_product_key_prefers_executable_basename() {
+        let key = derive_product_key("google-chrome-sta", "/opt/google/chrome/google-chrome-stable");
+        assert_eq!(key, "google-chrome-stable");
     }
 
     #[test]
-    fn derive_product_key_uses_path_when_name_missing() {
-        let key = derive_product_key("", "/usr/bin/curl");
-        assert_eq!(key, "curl");
+    fn derive_product_key_uses_display_name_when_path_missing() {
+        let key = derive_product_key("Google Chrome", "");
+        assert_eq!(key, "google-chrome");
     }
 
     #[test]
