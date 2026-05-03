@@ -14,6 +14,8 @@
 
 mod advisory;
 mod advisory_history;
+mod advisory_ncsc_bsi;
+mod advisory_public_sources;
 mod advisory_status;
 mod artifact_provenance;
 mod audit;
@@ -38,7 +40,9 @@ mod revdns;
 mod score;
 mod security;
 mod session;
+mod software_inventory;
 mod startup_integrity;
+mod storage;
 mod tls;
 mod tls_artifacts;
 mod types;
@@ -156,6 +160,16 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             advisory::refresh_nvd_in_background_if_due();
             advisory_history::refresh_nvd_in_background_if_due();
+
+            let inventory = software_inventory::collect_installed_software();
+            let software_count = inventory.len();
+            tracing::info!(software_count, "software inventory snapshot collected");
+            let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
+            if let Err(err) =
+                storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
+            {
+                tracing::warn!(%err, "failed to persist software inventory snapshot");
+            }
 
             if manage_login_autostart {
                 {
@@ -342,6 +356,94 @@ fn main() {
         }
     }
 
+    if let Some(idx) = args.iter().position(|a| a == "--import-euvd") {
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-euvd SNAPSHOT.json [MORE.json ...]"
+            );
+            std::process::exit(1);
+        }
+        match advisory_public_sources::run_import_euvd_cli(&snapshots) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--import-jvn") {
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-jvn SNAPSHOT.json|RSS.xml [MORE ...]"
+            );
+            std::process::exit(1);
+        }
+        match advisory_public_sources::run_import_jvn_cli(&snapshots) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--import-ncsc") {
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-ncsc SNAPSHOT.json|RSS.xml [MORE ...]"
+            );
+            std::process::exit(1);
+        }
+        match advisory_ncsc_bsi::run_import_ncsc_cli(&snapshots) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(idx) = args.iter().position(|a| a == "--import-bsi") {
+        let snapshots = args
+            .iter()
+            .skip(idx + 1)
+            .take_while(|arg| !arg.starts_with("--"))
+            .map(|arg| PathBuf::from(arg.as_str()))
+            .collect::<Vec<_>>();
+        if snapshots.is_empty() {
+            eprintln!(
+                "Missing snapshot path.\n\nUsage: vigil --import-bsi SNAPSHOT.json|RSS.xml [MORE ...]"
+            );
+            std::process::exit(1);
+        }
+        match advisory_ncsc_bsi::run_import_bsi_cli(&snapshots) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let mut elevated_relaunch = false;
     let mut elevated_launcher = false;
     let mut service_mode = false;
@@ -371,7 +473,7 @@ fn main() {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service              register Vigil as a boot-time service\n  --uninstall-service            remove the boot-time service\n  --break-glass-recover          watchdog entrypoint for network recovery\n  --verify-update-manifest       MANIFEST SIG\n                                 verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot          SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]           fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status        show advisory cache status and source health\n  --import-nvd-change-history    SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE change-history JSON snapshots into the protected change-history cache\n  --sync-nvd-change-history [--force]\n                                 fetch or incrementally refresh the protected NVD CVE change-history cache from the live API\n  --advisory-change-history-status\n                                 show NVD change-history cache status and source health\n  --service-mode                 internal headless service entrypoint\n  --data-dir PATH                override Vigil data/config directory\n  -h, --help                     show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service              register Vigil as a boot-time service\n  --uninstall-service            remove the boot-time service\n  --break-glass-recover          watchdog entrypoint for network recovery\n  --verify-update-manifest       MANIFEST SIG\n                                 verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot          SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]           fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status        show advisory cache status and source health\n  --import-nvd-change-history    SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE change-history JSON snapshots into the protected change-history cache\n  --sync-nvd-change-history [--force]\n                                 fetch or incrementally refresh the protected NVD CVE change-history cache from the live API\n  --advisory-change-history-status\n                                 show NVD change-history cache status and source health\n  --import-euvd                  SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more operator-supplied EUVD JSON snapshots into the protected advisory cache\n  --import-jvn                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more JVN / JVN iPedia JSON or JVNDBRSS XML snapshots into the protected advisory cache\n  --import-ncsc                  SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more NCSC public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --import-bsi                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more BSI or CERT-Bund public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --service-mode                 internal headless service entrypoint\n  --data-dir PATH                override Vigil data/config directory\n  -h, --help                     show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}
