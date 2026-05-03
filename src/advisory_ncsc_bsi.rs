@@ -260,7 +260,9 @@ fn parse_json_record(
         fallback_identifier(
             source_kind,
             record_url.as_deref().unwrap_or(""),
-            title.as_deref(),
+            title
+                .as_deref()
+                .or_else(|| (!summary.trim().is_empty()).then_some(summary.as_str())),
             imported_unix,
         )
     });
@@ -1214,6 +1216,23 @@ mod tests {
             cache.records[0].provenance.source_url, BSI_SOURCE_URL,
             "records without per-item URLs should still point provenance at the source homepage"
         );
+    }
+
+    #[test]
+    fn fallback_ids_use_description_when_json_records_lack_titles_and_urls() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {"description": "First advisory without explicit ID"},
+                {"description": "Second advisory without explicit ID"}
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 2);
+        assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
+        assert_eq!(cache.records[0].summary, "First advisory without explicit ID");
+        assert_eq!(cache.records[1].summary, "Second advisory without explicit ID");
     }
 
     #[test]
