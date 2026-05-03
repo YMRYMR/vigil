@@ -147,8 +147,9 @@ fn parse_snapshot(
     path: Option<&Path>,
 ) -> Result<AdvisoryCache, String> {
     let trimmed = String::from_utf8_lossy(bytes);
+    let trimmed = trimmed.strip_prefix('\u{feff}').unwrap_or(trimmed.as_ref());
     if trimmed.trim_start().starts_with('<') {
-        parse_rss_snapshot(source_kind, &trimmed, bytes, path)
+        parse_rss_snapshot(source_kind, trimmed, bytes, path)
     } else {
         parse_json_snapshot(source_kind, bytes, path)
     }
@@ -1096,9 +1097,15 @@ fn unescape_xml(value: &str) -> String {
 }
 
 fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let value = value.trim();
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|ts| ts.with_timezone(&chrono::Utc))
         .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc2822(value)
+                .map(|ts| ts.with_timezone(&chrono::Utc))
+                .ok()
+        })
         .or_else(|| {
             chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
@@ -1172,6 +1179,22 @@ mod tests {
         assert_eq!(record.severities[0].severity, "HIGH");
         assert_eq!(record.affected_products[0].criteria, "Example:Gateway");
         assert_eq!(record.provenance.source_kind, BSI_SOURCE_KIND);
+    }
+
+    #[test]
+    fn detects_xml_snapshots_with_utf8_bom() {
+        let xml = "\u{feff}<rss><channel><item>
+            <title>NCSC guidance with BOM</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+        </item></channel></rss>";
+
+        let cache = parse_snapshot(NationalAdvisorySourceKind::Ncsc, xml.as_bytes(), None).unwrap();
+        assert_eq!(cache.records.len(), 1);
+        assert_eq!(
+            cache.records[0].primary_id,
+            "https://www.ncsc.gov.uk/report/example-guidance"
+        );
     }
 
     #[test]
@@ -1292,6 +1315,47 @@ mod tests {
         assert_eq!(
             merged.records[0].published.as_deref(),
             Some("2026-05-04T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn merge_prefers_rfc2822_published_timestamp_over_import_time() {
+        let existing = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>newer published content</description>
+                <pubDate>Mon, 04 May 2026 00:00:00 GMT</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            100,
+        )
+        .unwrap();
+        let incoming = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>older published content imported later</description>
+                <pubDate>Fri, 01 May 2026 00:00:00 GMT</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            200,
+        )
+        .unwrap();
+
+        let mut existing_cache = empty_cache(100);
+        existing_cache.records.push(existing);
+        let mut incoming_cache = empty_cache(200);
+        incoming_cache.records.push(incoming);
+
+        let merged = merge_cache(Some(existing_cache), incoming_cache);
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "newer published content");
+        assert_eq!(
+            merged.records[0].published.as_deref(),
+            Some("Mon, 04 May 2026 00:00:00 GMT")
         );
     }
 }
