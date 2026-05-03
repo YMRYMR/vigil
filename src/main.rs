@@ -39,6 +39,7 @@ mod revdns;
 mod score;
 mod security;
 mod session;
+mod software_inventory;
 mod startup_integrity;
 mod tls;
 mod tls_artifacts;
@@ -157,6 +158,9 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             advisory::refresh_nvd_in_background_if_due();
             advisory_history::refresh_nvd_in_background_if_due();
+
+            let software_count = software_inventory::collect_installed_software().len();
+            tracing::info!(software_count, "software inventory snapshot collected");
 
             if manage_login_autostart {
                 {
