@@ -1081,10 +1081,15 @@ fn xml_tags(xml: &str, tag: &str) -> Vec<String> {
 }
 
 fn xml_attr(tag_xml: &str, attr: &str) -> Option<String> {
-    let needle = format!("{attr}=\"");
-    let start = tag_xml.find(&needle)? + needle.len();
-    let end = tag_xml[start..].find('"')? + start;
-    Some(unescape_xml(tag_xml[start..end].trim()))
+    for quote in ['"', '\''] {
+        let needle = format!("{attr}={quote}");
+        let Some(start) = tag_xml.find(&needle).map(|idx| idx + needle.len()) else {
+            continue;
+        };
+        let end = tag_xml[start..].find(quote)? + start;
+        return Some(unescape_xml(tag_xml[start..end].trim()));
+    }
+    None
 }
 
 fn unescape_xml(value: &str) -> String {
@@ -1278,6 +1283,25 @@ mod tests {
         }));
         assert!(record.references.iter().any(|reference| {
             reference.url == "https://www.ncsc.gov.uk/files/example-two.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
+    }
+
+    #[test]
+    fn parses_single_quoted_rss_enclosures_as_attachment_references() {
+        let xml = r#"<rss><channel><item>
+            <title>NCSC advisory with single-quoted attachments</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <description>Single-quoted attachment references should be preserved.</description>
+            <enclosure url='https://www.ncsc.gov.uk/files/example-one.pdf' />
+        </item></channel></rss>"#;
+
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
+        assert_eq!(cache.records.len(), 1);
+        let record = &cache.records[0];
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-one.pdf"
                 && reference.tags.iter().any(|tag| tag == "attachment")
         }));
     }
