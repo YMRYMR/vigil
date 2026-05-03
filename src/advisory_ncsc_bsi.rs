@@ -687,6 +687,10 @@ fn flatten_strings(value: &Value, out: &mut Vec<String>) {
                 "reference",
                 "product",
                 "vendor",
+                "cve",
+                "cves",
+                "cveId",
+                "cve_id",
             ] {
                 if let Some(value) = map.get(key) {
                     flatten_strings(value, out);
@@ -1146,5 +1150,22 @@ mod tests {
             BSI_SOURCE_URL,
             "records without per-item URLs should still point provenance at the source homepage"
         );
+    }
+
+    #[test]
+    fn json_records_without_explicit_ids_use_cves_as_primary_id() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {
+                    "title": "Advisory with only CVE metadata",
+                    "cves": ["CVE-2026-4242"]
+                }
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 1);
+        assert_eq!(cache.records[0].primary_id, "CVE-2026-4242");
     }
 }
