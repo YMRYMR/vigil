@@ -128,6 +128,27 @@ Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if your deployment
 needs higher NVD API headroom.
 
+Phase 16 also includes offline foundations for additional public advisory
+sources. Operators can import one or more local EUVD JSON snapshots into the
+same protected advisory cache with:
+
+```bash
+vigil --import-euvd euvd-export.json
+```
+
+JVN / JVN iPedia snapshots support either JSON exports or JVNDBRSS XML items,
+including batched imports when a feed is mirrored into multiple files:
+
+```bash
+vigil --import-jvn jvn-export.json jvndbrss.xml
+```
+
+Those EUVD and JVN import paths preserve source-specific identifiers,
+references, mitigation guidance, and provenance in the protected advisory cache.
+They are intentionally operator-supplied/offline foundations for now; live
+scheduled fetching remains future work until the upstream feed contracts are
+pinned down conservatively.
+
 ---
 
 ## What Vigil Does

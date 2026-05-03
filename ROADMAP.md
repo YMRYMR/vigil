@@ -280,8 +280,8 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 - [x] **Signed local source cache** — fetched records and source snapshots are stored as tamper-evident local state with expiry, rollback-safe refresh, and operator-visible source health/status
 - [x] **NVD CVE ingestion foundations** — protected local cache for NVD CVE snapshots now supports offline import, live API sync, source attribution, rate-limit-aware refresh, and incremental `lastMod*` updates; remaining work for this slice is NVD CPE and CPE-match ingestion
 - [x] **NVD CVE change-history ingestion** — protected local cache for NVD CVE change-history snapshots now supports offline import, live API sync, source attribution, rate-limit-aware refresh, and incremental `changeStartDate` / `changeEndDate` updates
-- [ ] **EUVD ingestion** — ingest EUVD records and preserve EU-specific aliases, references, mitigation guidance, exploitation indicators, and coordinator metadata
-- [ ] **JVN ingestion** — ingest MyJVN / JVN iPedia records and preserve vendor, product, advisory, and remediation metadata where it complements NVD coverage
+- [x] **EUVD ingestion foundations** — operator-supplied EUVD JSON snapshots can now be normalized into the shared advisory cache while preserving EU-specific aliases, references, mitigation guidance, exploitation indicators, and provenance
+- [x] **JVN ingestion foundations** — operator-supplied JVN / JVN iPedia JSON snapshots and JVNDBRSS XML items can now be normalized into the shared advisory cache while preserving vendor, product, advisory, remediation, and provenance metadata
 - [ ] **Public advisory ingestion for NCSC and BSI** — ingest public RSS, advisory, and malware-analysis content only; do not depend on closed, partner-only, or registration-gated feeds
 
 ### Endpoint relevance and matching
