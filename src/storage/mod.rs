@@ -1,6 +1,6 @@
 use crate::software_inventory::InstalledSoftware;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const SOFTWARE_INVENTORY_FILE: &str = "vigil-software-inventory.json";
 const SOFTWARE_INVENTORY_SCHEMA_VERSION: u32 = 1;
@@ -23,9 +23,15 @@ pub struct ProtectedJsonInventoryStore {
 
 impl ProtectedJsonInventoryStore {
     pub fn new_default() -> Self {
-        Self {
-            path: crate::config::data_dir().join(SOFTWARE_INVENTORY_FILE),
-        }
+        Self::from_path(crate::config::data_dir().join(SOFTWARE_INVENTORY_FILE))
+    }
+
+    pub fn from_path(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 }
 
@@ -36,20 +42,20 @@ impl InventoryStore for ProtectedJsonInventoryStore {
             generated_unix: chrono::Utc::now().timestamp().max(0) as u64,
             entries: entries.to_vec(),
         };
-        crate::security::policy::save_struct_with_integrity(&self.path, &state).map_err(|e| {
+        crate::security::policy::save_struct_with_integrity(self.path(), &state).map_err(|e| {
             format!(
                 "failed to persist protected software inventory {}: {e}",
-                self.path.display()
+                self.path().display()
             )
         })
     }
 
     fn load_inventory(&self) -> Result<Vec<InstalledSoftware>, String> {
         let loaded: Option<SoftwareInventoryState> =
-            crate::security::policy::load_struct_with_integrity(&self.path).map_err(|e| {
+            crate::security::policy::load_struct_with_integrity(self.path()).map_err(|e| {
                 format!(
                     "failed to load protected software inventory {}: {e}",
-                    self.path.display()
+                    self.path().display()
                 )
             })?;
         let Some(state) = loaded else {
@@ -59,7 +65,7 @@ impl InventoryStore for ProtectedJsonInventoryStore {
             return Err(format!(
                 "unsupported software inventory schema {} in {}",
                 state.schema_version,
-                self.path.display()
+                self.path().display()
             ));
         }
         Ok(state.entries)
@@ -70,9 +76,26 @@ impl InventoryStore for ProtectedJsonInventoryStore {
 mod tests {
     use super::*;
 
+    fn test_inventory_store() -> (ProtectedJsonInventoryStore, PathBuf) {
+        let unique = format!(
+            "vigil-storage-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        (
+            ProtectedJsonInventoryStore::from_path(dir.join(SOFTWARE_INVENTORY_FILE)),
+            dir,
+        )
+    }
+
     #[test]
     fn protected_store_round_trip() {
-        let store = ProtectedJsonInventoryStore::new_default();
+        let (store, dir) = test_inventory_store();
         let rows = vec![InstalledSoftware {
             product_key: "curl".into(),
             display_name: "curl".into(),
@@ -83,5 +106,6 @@ mod tests {
         store.replace_inventory(&rows).unwrap();
         let loaded = store.load_inventory().unwrap();
         assert!(loaded.iter().any(|r| r.product_key == "curl"));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
