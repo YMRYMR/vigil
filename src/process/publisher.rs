@@ -85,7 +85,7 @@ fn query_string_file_info(path: &str, value_names: &[&str]) -> String {
         }
 
         for value_name in value_names {
-            let sub_block = format!(r"\StringFileInfo\040904B0\{value_name}");
+            let sub_block = format!("\\StringFileInfo\\040904B0\\{}", value_name);
             let sub_block: Vec<u16> = OsStr::new(&sub_block)
                 .encode_wide()
                 .chain(std::iter::once(0))
