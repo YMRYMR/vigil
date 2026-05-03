@@ -57,8 +57,7 @@ where
         by_key
             .entry(product_key)
             .and_modify(|existing| {
-                if canonical_inventory_sort_key(&candidate)
-                    < canonical_inventory_sort_key(existing)
+                if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
                 {
                     *existing = candidate.clone();
                 }
