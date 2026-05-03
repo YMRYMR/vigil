@@ -94,7 +94,6 @@ mod tests {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
     }
 
-
     #[test]
     fn normalize_name_preserves_unicode_letters() {
         assert_eq!(normalize_name("Программа.EXE"), "программа");
