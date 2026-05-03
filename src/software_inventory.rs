@@ -57,7 +57,8 @@ where
         by_key
             .entry(product_key)
             .and_modify(|existing| {
-                if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing) {
+                if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
+                {
                     *existing = candidate.clone();
                 }
             })
@@ -146,13 +147,22 @@ mod tests {
     fn collect_from_entries_prefers_stable_named_entry_for_duplicate_key() {
         let entries = vec![
             ("".to_string(), "/opt/vendor/chrome".to_string()),
-            ("Google Chrome".to_string(), "/Applications/Google Chrome.app".to_string()),
-            ("google chrome".to_string(), "/opt/google/chrome".to_string()),
+            (
+                "Google Chrome".to_string(),
+                "/Applications/Google Chrome.app".to_string(),
+            ),
+            (
+                "google chrome".to_string(),
+                "/opt/google/chrome".to_string(),
+            ),
         ];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].product_key, "google-chrome");
         assert_eq!(inventory[0].display_name, "Google Chrome");
-        assert_eq!(inventory[0].executable_path, "/Applications/Google Chrome.app");
+        assert_eq!(
+            inventory[0].executable_path,
+            "/Applications/Google Chrome.app"
+        );
     }
 }

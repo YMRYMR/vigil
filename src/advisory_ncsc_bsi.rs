@@ -1,17 +1,18 @@
-//! EUVD and JVN public advisory ingestion foundations.
+//! NCSC and BSI public advisory ingestion foundations.
 //!
-//! This module intentionally starts with offline/operator-supplied snapshots.
-//! EUVD's public web surface has not exposed a stable documented API contract
-//! yet, and JVN has several feed shapes. The safe first slice is therefore:
+//! This module intentionally starts with offline/operator-supplied snapshots so
+//! Vigil can ingest public RSS or mirrored JSON without depending on unstable
+//! page scraping or closed feeds. The safe first slice is therefore:
 //!
-//! - normalize EUVD JSON exports or mirrored records into `VulnerabilityRecord`
-//! - normalize JVN/JVN iPedia JSON snapshots and JVNDBRSS XML items
-//! - preserve source-specific identifiers, aliases, references, timestamps,
-//!   vendor/product metadata, mitigation/remediation hints, and provenance
-//! - merge imported records into the same protected advisory cache used by NVD
+//! - normalize NCSC and BSI/CERT-Bund RSS or JSON snapshots into
+//!   `VulnerabilityRecord`
+//! - preserve source-specific identifiers, CVE aliases, references,
+//!   timestamps, severity hints, and provenance
+//! - merge imported records into the same protected advisory cache used by NVD,
+//!   EUVD, and JVN
 //!
 //! Live scheduled fetching can build on these parsers once the exact official
-//! endpoints and schemas are pinned down.
+//! feed shapes are pinned down conservatively.
 
 use crate::advisory::{
     AdvisoryCache, AdvisorySourceCache, AffectedProduct, SourceHealth, VulnerabilityProvenance,
@@ -25,21 +26,21 @@ use std::path::{Path, PathBuf};
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
-const EUVD_SOURCE_KEY: &str = "euvd-records";
-const EUVD_SOURCE_KIND: &str = "euvd";
-const EUVD_SOURCE_URL: &str = "https://euvd.enisa.europa.eu/";
-const JVN_SOURCE_KEY: &str = "jvn-ipedia";
-const JVN_SOURCE_KIND: &str = "jvn";
-const JVN_SOURCE_URL: &str = "https://jvndb.jvn.jp/";
+const NCSC_SOURCE_KEY: &str = "ncsc-advisories";
+const NCSC_SOURCE_KIND: &str = "ncsc";
+const NCSC_SOURCE_URL: &str = "https://www.ncsc.gov.uk/";
+const BSI_SOURCE_KEY: &str = "bsi-advisories";
+const BSI_SOURCE_KIND: &str = "bsi";
+const BSI_SOURCE_URL: &str = "https://www.bsi.bund.de/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublicSourceKind {
-    Euvd,
-    Jvn,
+pub enum NationalAdvisorySourceKind {
+    Ncsc,
+    Bsi,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PublicSourceImportSummary {
+pub struct NationalAdvisoryImportSummary {
     pub imported_files: usize,
     pub imported_records: usize,
     pub known_exploited: usize,
@@ -54,23 +55,10 @@ struct RecordKey {
     source_key: String,
 }
 
-pub fn run_import_euvd_cli(paths: &[PathBuf]) -> Result<(), String> {
-    let summary = import_public_source_snapshots(PublicSourceKind::Euvd, paths)?;
+pub fn run_import_ncsc_cli(paths: &[PathBuf]) -> Result<(), String> {
+    let summary = import_snapshots(NationalAdvisorySourceKind::Ncsc, paths)?;
     println!(
-        "Merged {} EUVD record(s) from {} snapshot file(s) into the protected advisory cache ({} marked exploited in this import set). Cache now holds {} records across {} sources.",
-        summary.imported_records,
-        summary.imported_files,
-        summary.known_exploited,
-        summary.total_records,
-        summary.total_sources,
-    );
-    Ok(())
-}
-
-pub fn run_import_jvn_cli(paths: &[PathBuf]) -> Result<(), String> {
-    let summary = import_public_source_snapshots(PublicSourceKind::Jvn, paths)?;
-    println!(
-        "Merged {} JVN/JVN iPedia record(s) from {} snapshot file(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+        "Merged {} NCSC advisory record(s) from {} snapshot file(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
         summary.imported_records,
         summary.imported_files,
         summary.total_records,
@@ -79,10 +67,22 @@ pub fn run_import_jvn_cli(paths: &[PathBuf]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn import_public_source_snapshots(
-    source_kind: PublicSourceKind,
+pub fn run_import_bsi_cli(paths: &[PathBuf]) -> Result<(), String> {
+    let summary = import_snapshots(NationalAdvisorySourceKind::Bsi, paths)?;
+    println!(
+        "Merged {} BSI/CERT-Bund advisory record(s) from {} snapshot file(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+        summary.imported_records,
+        summary.imported_files,
+        summary.total_records,
+        summary.total_sources,
+    );
+    Ok(())
+}
+
+pub fn import_snapshots(
+    source_kind: NationalAdvisorySourceKind,
     paths: &[PathBuf],
-) -> Result<PublicSourceImportSummary, String> {
+) -> Result<NationalAdvisoryImportSummary, String> {
     if paths.is_empty() {
         return Err(format!(
             "expected at least one {} snapshot path",
@@ -98,7 +98,7 @@ pub fn import_public_source_snapshots(
         .filter(|record| record.known_exploited)
         .count();
     let cache = merge_cache(load_cache_for_import()?, imported);
-    let summary = PublicSourceImportSummary {
+    let summary = NationalAdvisoryImportSummary {
         imported_files: paths.len(),
         imported_records,
         known_exploited,
@@ -110,7 +110,7 @@ pub fn import_public_source_snapshots(
 }
 
 fn load_snapshot_batch(
-    source_kind: PublicSourceKind,
+    source_kind: NationalAdvisorySourceKind,
     paths: &[PathBuf],
 ) -> Result<AdvisoryCache, String> {
     let mut imported = empty_cache(unix_now());
@@ -142,60 +142,47 @@ fn load_snapshot_batch(
 }
 
 fn parse_snapshot(
-    source_kind: PublicSourceKind,
+    source_kind: NationalAdvisorySourceKind,
     bytes: &[u8],
     path: Option<&Path>,
 ) -> Result<AdvisoryCache, String> {
-    match source_kind {
-        PublicSourceKind::Euvd => parse_euvd_json_snapshot(bytes, path),
-        PublicSourceKind::Jvn => parse_jvn_snapshot(bytes, path),
-    }
-}
-
-fn parse_euvd_json_snapshot(bytes: &[u8], path: Option<&Path>) -> Result<AdvisoryCache, String> {
-    let value: Value = serde_json::from_slice(bytes)
-        .map_err(|err| format!("failed to parse EUVD JSON snapshot: {err}"))?;
-    let fetched_unix = snapshot_timestamp(&value).unwrap_or_else(unix_now);
-    let records = record_array(&value)
-        .ok_or_else(|| "EUVD snapshot did not contain a recognizable records array".to_string())?
-        .iter()
-        .filter_map(|item| parse_euvd_record(item, fetched_unix))
-        .collect::<Vec<_>>();
-
-    Ok(AdvisoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
-        generated_unix: fetched_unix,
-        sources: vec![source_cache(
-            PublicSourceKind::Euvd,
-            fetched_unix,
-            path.map(|path| vec![path.display().to_string()]),
-            sha256_hex(bytes),
-            records.len(),
-        )],
-        records,
-    })
-}
-
-fn parse_jvn_snapshot(bytes: &[u8], path: Option<&Path>) -> Result<AdvisoryCache, String> {
     let trimmed = String::from_utf8_lossy(bytes);
+    let trimmed = trimmed.strip_prefix('\u{feff}').unwrap_or(trimmed.as_ref());
     if trimmed.trim_start().starts_with('<') {
-        return parse_jvn_rss_snapshot(&trimmed, bytes, path);
+        parse_rss_snapshot(source_kind, trimmed, bytes, path)
+    } else {
+        parse_json_snapshot(source_kind, bytes, path)
     }
+}
 
-    let value: Value = serde_json::from_slice(bytes)
-        .map_err(|err| format!("failed to parse JVN JSON snapshot: {err}"))?;
+fn parse_json_snapshot(
+    source_kind: NationalAdvisorySourceKind,
+    bytes: &[u8],
+    path: Option<&Path>,
+) -> Result<AdvisoryCache, String> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|err| {
+        format!(
+            "failed to parse {} JSON snapshot: {err}",
+            source_kind.label()
+        )
+    })?;
     let fetched_unix = snapshot_timestamp(&value).unwrap_or_else(unix_now);
     let records = record_array(&value)
-        .ok_or_else(|| "JVN snapshot did not contain a recognizable records array".to_string())?
+        .ok_or_else(|| {
+            format!(
+                "{} snapshot did not contain a recognizable records array",
+                source_kind.label()
+            )
+        })?
         .iter()
-        .filter_map(|item| parse_jvn_json_record(item, fetched_unix))
+        .filter_map(|item| parse_json_record(source_kind, item, fetched_unix))
         .collect::<Vec<_>>();
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
         generated_unix: fetched_unix,
         sources: vec![source_cache(
-            PublicSourceKind::Jvn,
+            source_kind,
             fetched_unix,
             path.map(|path| vec![path.display().to_string()]),
             sha256_hex(bytes),
@@ -205,7 +192,8 @@ fn parse_jvn_snapshot(bytes: &[u8], path: Option<&Path>) -> Result<AdvisoryCache
     })
 }
 
-fn parse_jvn_rss_snapshot(
+fn parse_rss_snapshot(
+    source_kind: NationalAdvisorySourceKind,
     xml: &str,
     bytes: &[u8],
     path: Option<&Path>,
@@ -213,14 +201,14 @@ fn parse_jvn_rss_snapshot(
     let fetched_unix = unix_now();
     let records = xml_items(xml)
         .into_iter()
-        .filter_map(|item| parse_jvn_rss_item(&item, fetched_unix))
+        .filter_map(|item| parse_rss_item(source_kind, &item, fetched_unix))
         .collect::<Vec<_>>();
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
         generated_unix: fetched_unix,
         sources: vec![source_cache(
-            PublicSourceKind::Jvn,
+            source_kind,
             fetched_unix,
             path.map(|path| vec![path.display().to_string()]),
             sha256_hex(bytes),
@@ -230,29 +218,70 @@ fn parse_jvn_rss_snapshot(
     })
 }
 
-fn parse_euvd_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityRecord> {
-    let primary_id = first_string(value, &["id", "euvd", "euvdId", "euvd_id", "recordId"])
-        .or_else(|| first_cve(value))?;
-    let source_url = first_string(value, &["url", "sourceUrl", "source_url", "recordUrl"])
-        .unwrap_or_else(|| format!("{EUVD_SOURCE_URL}vulnerability/{}", primary_id));
+fn parse_json_record(
+    source_kind: NationalAdvisorySourceKind,
+    value: &Value,
+    imported_unix: u64,
+) -> Option<VulnerabilityRecord> {
+    let title = first_string(value, &["title", "summary", "name", "headline"]);
+    let summary = first_string(
+        value,
+        &[
+            "summary",
+            "description",
+            "title",
+            "name",
+            "content",
+            "details",
+        ],
+    )
+    .unwrap_or_else(|| title.clone().unwrap_or_default());
+    let record_url = first_string(
+        value,
+        &["url", "link", "href", "sourceUrl", "source_url", "guid"],
+    );
+    let source_url = record_url
+        .clone()
+        .unwrap_or_else(|| source_kind.source_url().to_string());
+    let primary_id = first_string(
+        value,
+        &[
+            "id",
+            "identifier",
+            "guid",
+            "advisoryId",
+            "advisory_id",
+            "trackingId",
+            "tracking_id",
+        ],
+    )
+    .or_else(|| first_cve(value))
+    .unwrap_or_else(|| {
+        fallback_identifier(
+            source_kind,
+            record_url.as_deref().unwrap_or(""),
+            title
+                .as_deref()
+                .or_else(|| (!summary.trim().is_empty()).then_some(summary.as_str())),
+            imported_unix,
+        )
+    });
     let mut aliases = unique_strings(flatten_strings_from_keys(
         value,
         &[
             "aliases",
             "alias",
             "cve",
+            "cves",
             "cveId",
             "cve_id",
-            "cves",
-            "vulnerabilityId",
-            "vulnerability_id",
+            "identifier",
         ],
     ));
     if !aliases.iter().any(|alias| alias == &primary_id) {
         aliases.push(primary_id.clone());
     }
 
-    let references = references_from_value(value, "EUVD", &source_url);
     let mut mitigations = unique_strings(flatten_strings_from_keys(
         value,
         &[
@@ -260,149 +289,138 @@ fn parse_euvd_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityR
             "mitigations",
             "remediation",
             "remediations",
-            "workaround",
-            "workarounds",
+            "guidance",
+            "guidanceSummary",
             "solution",
             "solutions",
-            "recommendation",
-            "recommendations",
         ],
     ));
     mitigations.extend(urls_from_keys(
         value,
-        &["mitigationUrl", "mitigation_url", "remediationUrl"],
+        &[
+            "mitigationUrl",
+            "mitigation_url",
+            "remediationUrl",
+            "remediation_url",
+            "guidanceUrl",
+            "guidance_url",
+            "vendorUrl",
+            "vendor_url",
+        ],
     ));
     mitigations = unique_strings(mitigations);
 
     Some(VulnerabilityRecord {
         primary_id,
         aliases,
-        summary: first_string(value, &["summary", "description", "title", "name"])
-            .unwrap_or_default(),
+        summary,
         published: first_string(
             value,
-            &["published", "datePublished", "publishedDate", "created"],
+            &[
+                "published",
+                "pubDate",
+                "datePublished",
+                "created",
+                "issued",
+                "dc:date",
+            ],
         ),
         last_modified: first_string(
             value,
-            &["lastModified", "last_modified", "updated", "dateUpdated"],
+            &[
+                "lastModified",
+                "last_modified",
+                "updated",
+                "modified",
+                "reviewed",
+                "reviewed_at",
+            ],
         ),
         known_exploited: bool_from_keys(
             value,
             &[
                 "knownExploited",
+                "known_exploited",
                 "exploited",
                 "isExploited",
                 "exploitationDetected",
             ],
         ),
-        severities: severities_from_value(value, "EUVD"),
+        severities: severities_from_value(value, source_kind.source_name()),
         affected_products: products_from_value(value),
-        references,
+        references: references_from_value(value, source_kind.source_name(), &source_url),
         mitigations,
         provenance: VulnerabilityProvenance {
-            source_kind: EUVD_SOURCE_KIND.into(),
-            source_key: EUVD_SOURCE_KEY.into(),
+            source_kind: source_kind.source_kind().into(),
+            source_key: source_kind.source_key().into(),
             source_url,
             imported_unix,
         },
     })
 }
 
-fn parse_jvn_json_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityRecord> {
-    let primary_id = first_string(
-        value,
-        &["id", "jvnId", "jvn_id", "jvndbId", "jvndb_id", "identifier"],
-    )
-    .or_else(|| first_cve(value))?;
-    let source_url = first_string(value, &["link", "url", "sourceUrl", "source_url"])
-        .unwrap_or_else(|| format!("{JVN_SOURCE_URL}ja/contents/{}", primary_id));
-    let aliases = unique_strings(flatten_strings_from_keys(
-        value,
-        &["aliases", "cve", "cveId", "cve_id", "cves", "identifier"],
-    ));
-    let mut mitigations = unique_strings(flatten_strings_from_keys(
-        value,
-        &[
-            "solution",
-            "solutions",
-            "remediation",
-            "remediations",
-            "workaround",
-            "workarounds",
-            "fix",
-            "fixedVersion",
-            "fixed_version",
-        ],
-    ));
-    mitigations.extend(urls_from_keys(
-        value,
-        &["solutionUrl", "solution_url", "vendorUrl"],
-    ));
-    mitigations = unique_strings(mitigations);
-
-    Some(VulnerabilityRecord {
-        primary_id,
-        aliases,
-        summary: first_string(value, &["summary", "description", "title", "name"])
-            .unwrap_or_default(),
-        published: first_string(value, &["issued", "published", "datePublished", "created"]),
-        last_modified: first_string(
-            value,
-            &["modified", "lastModified", "last_modified", "updated"],
-        ),
-        known_exploited: bool_from_keys(value, &["knownExploited", "exploited"]),
-        severities: severities_from_value(value, "JVN"),
-        affected_products: products_from_value(value),
-        references: references_from_value(value, "JVN", &source_url),
-        mitigations,
-        provenance: VulnerabilityProvenance {
-            source_kind: JVN_SOURCE_KIND.into(),
-            source_key: JVN_SOURCE_KEY.into(),
-            source_url,
-            imported_unix,
-        },
-    })
-}
-
-fn parse_jvn_rss_item(item: &str, imported_unix: u64) -> Option<VulnerabilityRecord> {
+fn parse_rss_item(
+    source_kind: NationalAdvisorySourceKind,
+    item: &str,
+    imported_unix: u64,
+) -> Option<VulnerabilityRecord> {
     let title = xml_tag(item, "title").unwrap_or_default();
-    let link = xml_tag(item, "link").unwrap_or_else(|| JVN_SOURCE_URL.into());
+    let item_link = xml_tag(item, "link").filter(|link| !link.trim().is_empty());
+    let source_url = item_link
+        .clone()
+        .unwrap_or_else(|| source_kind.source_url().to_string());
     let description = xml_tag(item, "description").unwrap_or_default();
-    let identifier = xml_tag(item, "sec:identifier")
-        .or_else(|| xml_tag(item, "identifier"))
-        .or_else(|| extract_jvn_id(&link))
+    let identifier = xml_tag(item, "guid")
+        .or_else(|| xml_tag(item, "dc:identifier"))
+        .or_else(|| item_link.clone())
         .or_else(|| first_cve_text(&title))
-        .or_else(|| first_cve_text(&description))?;
+        .or_else(|| first_cve_text(&description))
+        .unwrap_or_else(|| fallback_identifier(source_kind, "", Some(&title), imported_unix));
     let mut aliases = Vec::new();
     if let Some(cve) = first_cve_text(&title).or_else(|| first_cve_text(&description)) {
         aliases.push(cve);
     }
     aliases.push(identifier.clone());
 
+    let mut references = vec![VulnerabilityReference {
+        url: source_url.clone(),
+        source: Some(source_kind.source_name().into()),
+        tags: vec!["source".into()],
+    }];
+    for enclosure in xml_tags(item, "enclosure") {
+        if let Some(url) = xml_attr(&enclosure, "url") {
+            push_reference(
+                &mut references,
+                &url,
+                source_kind.source_name(),
+                vec!["attachment".into()],
+            );
+        }
+    }
+
     Some(VulnerabilityRecord {
         primary_id: identifier,
         aliases: unique_strings(aliases),
         summary: if description.is_empty() {
-            title
+            title.clone()
         } else {
             description
         },
-        published: xml_tag(item, "dc:date").or_else(|| xml_tag(item, "pubDate")),
-        last_modified: xml_tag(item, "dcterms:modified").or_else(|| xml_tag(item, "modified")),
+        published: xml_tag(item, "pubDate")
+            .or_else(|| xml_tag(item, "dc:date"))
+            .or_else(|| xml_tag(item, "published")),
+        last_modified: xml_tag(item, "dcterms:modified")
+            .or_else(|| xml_tag(item, "updated"))
+            .or_else(|| xml_tag(item, "modified")),
         known_exploited: false,
         severities: Vec::new(),
         affected_products: Vec::new(),
-        references: vec![VulnerabilityReference {
-            url: link.clone(),
-            source: Some("JVN".into()),
-            tags: vec!["source".into()],
-        }],
+        references,
         mitigations: Vec::new(),
         provenance: VulnerabilityProvenance {
-            source_kind: JVN_SOURCE_KIND.into(),
-            source_key: JVN_SOURCE_KEY.into(),
-            source_url: link,
+            source_kind: source_kind.source_kind().into(),
+            source_key: source_kind.source_key().into(),
+            source_url,
             imported_unix,
         },
     })
@@ -425,7 +443,7 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
         Some(cache) => {
             tracing::warn!(
                 schema_version = cache.schema_version,
-                "ignoring incompatible advisory cache during EUVD/JVN import"
+                "ignoring incompatible advisory cache during NCSC/BSI import"
             );
             Ok(None)
         }
@@ -494,13 +512,20 @@ fn replace_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySource
 }
 
 fn newer_or_equal(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
-    match (
-        existing.last_modified.as_deref().and_then(parse_timestamp),
-        incoming.last_modified.as_deref().and_then(parse_timestamp),
-    ) {
+    match (record_timestamp(existing), record_timestamp(incoming)) {
         (Some(left), Some(right)) => left >= right,
-        _ => existing.provenance.imported_unix >= incoming.provenance.imported_unix,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => existing.provenance.imported_unix >= incoming.provenance.imported_unix,
     }
+}
+
+fn record_timestamp(record: &VulnerabilityRecord) -> Option<chrono::DateTime<chrono::Utc>> {
+    record
+        .last_modified
+        .as_deref()
+        .and_then(parse_timestamp)
+        .or_else(|| record.published.as_deref().and_then(parse_timestamp))
 }
 
 fn record_key(record: &VulnerabilityRecord) -> RecordKey {
@@ -512,7 +537,7 @@ fn record_key(record: &VulnerabilityRecord) -> RecordKey {
 }
 
 fn source_cache(
-    source_kind: PublicSourceKind,
+    source_kind: NationalAdvisorySourceKind,
     fetched_unix: u64,
     imported_from_batch: Option<Vec<String>>,
     snapshot_sha256: String,
@@ -544,44 +569,72 @@ fn empty_cache(now: u64) -> AdvisoryCache {
     }
 }
 
-impl PublicSourceKind {
+impl NationalAdvisorySourceKind {
     fn label(self) -> &'static str {
         match self {
-            PublicSourceKind::Euvd => "EUVD",
-            PublicSourceKind::Jvn => "JVN",
+            NationalAdvisorySourceKind::Ncsc => "NCSC",
+            NationalAdvisorySourceKind::Bsi => "BSI",
         }
     }
 
     fn source_key(self) -> &'static str {
         match self {
-            PublicSourceKind::Euvd => EUVD_SOURCE_KEY,
-            PublicSourceKind::Jvn => JVN_SOURCE_KEY,
+            NationalAdvisorySourceKind::Ncsc => NCSC_SOURCE_KEY,
+            NationalAdvisorySourceKind::Bsi => BSI_SOURCE_KEY,
         }
     }
 
     fn source_kind(self) -> &'static str {
         match self {
-            PublicSourceKind::Euvd => EUVD_SOURCE_KIND,
-            PublicSourceKind::Jvn => JVN_SOURCE_KIND,
+            NationalAdvisorySourceKind::Ncsc => NCSC_SOURCE_KIND,
+            NationalAdvisorySourceKind::Bsi => BSI_SOURCE_KIND,
+        }
+    }
+
+    fn source_name(self) -> &'static str {
+        match self {
+            NationalAdvisorySourceKind::Ncsc => "NCSC",
+            NationalAdvisorySourceKind::Bsi => "BSI",
         }
     }
 
     fn source_url(self) -> &'static str {
         match self {
-            PublicSourceKind::Euvd => EUVD_SOURCE_URL,
-            PublicSourceKind::Jvn => JVN_SOURCE_URL,
+            NationalAdvisorySourceKind::Ncsc => NCSC_SOURCE_URL,
+            NationalAdvisorySourceKind::Bsi => BSI_SOURCE_URL,
         }
     }
+}
+
+fn fallback_identifier(
+    source_kind: NationalAdvisorySourceKind,
+    source_url: &str,
+    title: Option<&str>,
+    imported_unix: u64,
+) -> String {
+    let seed = if !source_url.trim().is_empty() {
+        source_url.trim().to_string()
+    } else if let Some(title) = title {
+        title.trim().to_string()
+    } else {
+        format!("{}-{imported_unix}", source_kind.source_key())
+    };
+    let digest = Sha256::digest(seed.as_bytes());
+    let short = digest[..6]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("{}-{short}", source_kind.source_key())
 }
 
 fn record_array(value: &Value) -> Option<&Vec<Value>> {
     for key in [
         "records",
-        "vulnerabilities",
         "items",
         "data",
         "results",
         "entries",
+        "advisories",
     ] {
         if let Some(values) = value.get(key).and_then(Value::as_array) {
             return Some(values);
@@ -656,6 +709,10 @@ fn flatten_strings(value: &Value, out: &mut Vec<String>) {
                 "reference",
                 "product",
                 "vendor",
+                "cve",
+                "cves",
+                "cveId",
+                "cve_id",
             ] {
                 if let Some(value) = map.get(key) {
                     flatten_strings(value, out);
@@ -988,6 +1045,53 @@ fn xml_tag(xml: &str, tag: &str) -> Option<String> {
     Some(unescape_xml(xml[start..end].trim()))
 }
 
+fn xml_tags(xml: &str, tag: &str) -> Vec<String> {
+    let start_tag = format!("<{tag}");
+    let attr_tag = format!("<{tag} ");
+    let bare_tag = format!("<{tag}>");
+    let self_closing_tag = format!("<{tag}/>");
+    let close_tag = format!("</{tag}>");
+    let mut rest = xml;
+    let mut values = Vec::new();
+    while let Some(start) = rest.find(&start_tag) {
+        rest = &rest[start..];
+        let Some(open_end) = rest.find('>') else {
+            break;
+        };
+        let header = &rest[..=open_end];
+        let is_target_tag =
+            header.starts_with(&attr_tag) || header == bare_tag || header == self_closing_tag;
+        if !is_target_tag {
+            rest = &rest[open_end + 1..];
+            continue;
+        }
+        if header.trim_end().ends_with("/>") {
+            values.push(header.to_string());
+            rest = &rest[open_end + 1..];
+            continue;
+        }
+        let body_start = open_end + 1;
+        let Some(end) = rest[body_start..].find(&close_tag) else {
+            break;
+        };
+        values.push(rest[..body_start + end].to_string());
+        rest = &rest[body_start + end + close_tag.len()..];
+    }
+    values
+}
+
+fn xml_attr(tag_xml: &str, attr: &str) -> Option<String> {
+    for quote in ['"', '\''] {
+        let needle = format!("{attr}={quote}");
+        let Some(start) = tag_xml.find(&needle).map(|idx| idx + needle.len()) else {
+            continue;
+        };
+        let end = tag_xml[start..].find(quote)? + start;
+        return Some(unescape_xml(tag_xml[start..end].trim()));
+    }
+    None
+}
+
 fn unescape_xml(value: &str) -> String {
     value
         .replace("<![CDATA[", "")
@@ -999,16 +1103,16 @@ fn unescape_xml(value: &str) -> String {
         .replace("&#39;", "'")
 }
 
-fn extract_jvn_id(link: &str) -> Option<String> {
-    link.split('/')
-        .find(|part| part.to_ascii_uppercase().starts_with("JVN"))
-        .map(|part| part.trim_end_matches(".html").to_string())
-}
-
 fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let value = value.trim();
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|ts| ts.with_timezone(&chrono::Utc))
         .ok()
+        .or_else(|| {
+            chrono::DateTime::parse_from_rfc2822(value)
+                .map(|ts| ts.with_timezone(&chrono::Utc))
+                .ok()
+        })
         .or_else(|| {
             chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
@@ -1035,114 +1139,272 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_euvd_json_record_with_metadata() {
-        let bytes = br#"{
-            "timestamp": "2026-05-01T00:00:00Z",
-            "records": [{
-                "euvdId": "EUVD-2026-0001",
-                "cve": ["CVE-2026-0001"],
-                "title": "Example vulnerability",
-                "updated": "2026-05-01T01:00:00Z",
-                "knownExploited": true,
-                "severity": "HIGH",
-                "score": "8.8",
-                "affectedProducts": [{"vendor":"Example","product":"Agent"}],
-                "mitigations": ["Apply the vendor fix"],
-                "references": [{"url":"https://example.test/advisory","tags":["vendor"]}]
-            }]
-        }"#;
-
-        let cache = parse_euvd_json_snapshot(bytes, None).unwrap();
-        assert_eq!(cache.records.len(), 1);
-        let record = &cache.records[0];
-        assert_eq!(record.primary_id, "EUVD-2026-0001");
-        assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-0001"));
-        assert!(record.known_exploited);
-        assert_eq!(record.affected_products[0].criteria, "Example:Agent");
-        assert_eq!(record.provenance.source_kind, EUVD_SOURCE_KIND);
-    }
-
-    #[test]
-    fn preserves_vendor_context_for_nested_products() {
-        let bytes = br#"{ 
-            "timestamp": "2026-05-01T00:00:00Z",
-            "records": [{
-                "euvdId": "EUVD-2026-0002",
-                "title": "Nested product payload",
-                "affectedProducts": [{
-                    "vendor": "Example",
-                    "products": [
-                        {"product": "Agent"},
-                        {"product": "Console"}
-                    ]
-                }]
-            }]
-        }"#;
-
-        let cache = parse_euvd_json_snapshot(bytes, None).unwrap();
-        let record = &cache.records[0];
-        assert!(record
-            .affected_products
-            .iter()
-            .any(|product| product.criteria == "Example:Agent"));
-        assert!(record
-            .affected_products
-            .iter()
-            .any(|product| product.criteria == "Example:Console"));
-    }
-
-    #[test]
-    fn keeps_distinct_product_rows_with_shared_criteria() {
-        let bytes = br#"{
-            "timestamp": "2026-05-01T00:00:00Z",
-            "records": [{
-                "euvdId": "EUVD-2026-0003",
-                "title": "Duplicate criteria payload",
-                "affectedProducts": [
-                    {
-                        "vendor": "Example",
-                        "product": "Agent",
-                        "matchCriteriaId": "id-one",
-                        "cpeName": "cpe:2.3:a:example:agent:1.0.0:*:*:*:*:*:*:*"
-                    },
-                    {
-                        "vendor": "Example",
-                        "product": "Agent",
-                        "matchCriteriaId": "id-two",
-                        "cpeName": "cpe:2.3:a:example:agent:1.1.0:*:*:*:*:*:*:*"
-                    }
-                ]
-            }]
-        }"#;
-
-        let cache = parse_euvd_json_snapshot(bytes, None).unwrap();
-        let record = &cache.records[0];
-        assert_eq!(record.affected_products.len(), 2);
-        assert!(record
-            .affected_products
-            .iter()
-            .any(|product| product.match_criteria_id.as_deref() == Some("id-one")));
-        assert!(record
-            .affected_products
-            .iter()
-            .any(|product| product.match_criteria_id.as_deref() == Some("id-two")));
-    }
-
-    #[test]
-    fn parses_jvn_rss_item() {
+    fn parses_ncsc_rss_item_with_guid_and_cve_alias() {
         let xml = r#"<rss><channel><item>
-            <title>JVNDB-2026-000001 CVE-2026-1234 Example product issue</title>
-            <link>https://jvndb.jvn.jp/ja/contents/2026/JVNDB-2026-000001.html</link>
-            <description>Example JVN advisory</description>
-            <dc:date>2026-05-01T00:00:00Z</dc:date>
-            <sec:identifier>JVNDB-2026-000001</sec:identifier>
+            <title>NCSC guidance for CVE-2026-1234</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <description>Operator guidance for a public issue.</description>
+            <pubDate>2026-05-03T00:00:00Z</pubDate>
+            <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
         </item></channel></rss>"#;
 
-        let cache = parse_jvn_rss_snapshot(xml, xml.as_bytes(), None).unwrap();
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
         assert_eq!(cache.records.len(), 1);
         let record = &cache.records[0];
-        assert_eq!(record.primary_id, "JVNDB-2026-000001");
+        assert_eq!(
+            record.primary_id,
+            "https://www.ncsc.gov.uk/report/example-guidance"
+        );
         assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-1234"));
-        assert_eq!(record.references[0].source.as_deref(), Some("JVN"));
+        assert_eq!(record.references[0].source.as_deref(), Some("NCSC"));
+        assert_eq!(record.provenance.source_kind, NCSC_SOURCE_KIND);
+    }
+
+    #[test]
+    fn parses_bsi_json_record_with_metadata() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [{
+                "id": "CERT-BUND-2026-0001",
+                "cves": ["CVE-2026-9999"],
+                "title": "BSI advisory example",
+                "updated": "2026-05-03T01:00:00Z",
+                "severity": "HIGH",
+                "score": "8.0",
+                "affectedProducts": [{"vendor":"Example","product":"Gateway"}],
+                "references": [{"url":"https://www.bsi.bund.de/example","tags":["vendor"]}]
+            }]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 1);
+        let record = &cache.records[0];
+        assert_eq!(record.primary_id, "CERT-BUND-2026-0001");
+        assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-9999"));
+        assert_eq!(record.severities.len(), 1);
+        assert_eq!(record.severities[0].severity, "HIGH");
+        assert_eq!(record.affected_products[0].criteria, "Example:Gateway");
+        assert_eq!(record.provenance.source_kind, BSI_SOURCE_KIND);
+    }
+
+    #[test]
+    fn detects_xml_snapshots_with_utf8_bom() {
+        let xml = "\u{feff}<rss><channel><item>
+            <title>NCSC guidance with BOM</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+        </item></channel></rss>";
+
+        let cache = parse_snapshot(NationalAdvisorySourceKind::Ncsc, xml.as_bytes(), None).unwrap();
+        assert_eq!(cache.records.len(), 1);
+        assert_eq!(
+            cache.records[0].primary_id,
+            "https://www.ncsc.gov.uk/report/example-guidance"
+        );
+    }
+
+    #[test]
+    fn fallback_ids_use_title_when_json_records_lack_item_urls() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {"title": "First advisory without explicit ID"},
+                {"title": "Second advisory without explicit ID"}
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 2);
+        assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
+        assert_eq!(
+            cache.records[0].provenance.source_url, BSI_SOURCE_URL,
+            "records without per-item URLs should still point provenance at the source homepage"
+        );
+    }
+
+    #[test]
+    fn fallback_ids_use_description_when_json_records_lack_titles_and_urls() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {"description": "First advisory without explicit ID"},
+                {"description": "Second advisory without explicit ID"}
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 2);
+        assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
+        assert_eq!(
+            cache.records[0].summary,
+            "First advisory without explicit ID"
+        );
+        assert_eq!(
+            cache.records[1].summary,
+            "Second advisory without explicit ID"
+        );
+    }
+
+    #[test]
+    fn json_records_without_explicit_ids_use_cves_as_primary_id() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {
+                    "title": "Advisory with only CVE metadata",
+                    "cves": ["CVE-2026-4242"]
+                }
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 1);
+        assert_eq!(cache.records[0].primary_id, "CVE-2026-4242");
+    }
+
+    #[test]
+    fn parses_self_closing_rss_enclosures_as_attachment_references() {
+        let xml = r#"<rss><channel><item>
+            <title>NCSC advisory with attachments</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <description>Attachment references should be preserved.</description>
+            <enclosure url="https://www.ncsc.gov.uk/files/example-one.pdf" />
+            <enclosure url="https://www.ncsc.gov.uk/files/example-two.pdf" />
+        </item></channel></rss>"#;
+
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
+        assert_eq!(cache.records.len(), 1);
+        let record = &cache.records[0];
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-one.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-two.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
+    }
+
+    #[test]
+    fn parses_single_quoted_rss_enclosures_as_attachment_references() {
+        let xml = r#"<rss><channel><item>
+            <title>NCSC advisory with single-quoted attachments</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <description>Single-quoted attachment references should be preserved.</description>
+            <enclosure url='https://www.ncsc.gov.uk/files/example-one.pdf' />
+        </item></channel></rss>"#;
+
+        let cache = parse_rss_snapshot(NationalAdvisorySourceKind::Ncsc, xml, xml.as_bytes(), None)
+            .unwrap();
+        assert_eq!(cache.records.len(), 1);
+        let record = &cache.records[0];
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-one.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
+    }
+
+    #[test]
+    fn rss_items_without_guid_prefer_link_over_cve_for_primary_id() {
+        let item = r#"<item>
+            <title>Advisory update for CVE-2026-1234</title>
+            <link>https://www.ncsc.gov.uk/report/shared-cve-update</link>
+            <description>Multiple advisories can mention the same CVE.</description>
+        </item>"#;
+
+        let record = parse_rss_item(NationalAdvisorySourceKind::Ncsc, item, 42).unwrap();
+        assert_eq!(
+            record.primary_id,
+            "https://www.ncsc.gov.uk/report/shared-cve-update"
+        );
+        assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-1234"));
+        assert_eq!(
+            record.provenance.source_url,
+            "https://www.ncsc.gov.uk/report/shared-cve-update"
+        );
+    }
+
+    #[test]
+    fn merge_prefers_published_timestamp_over_import_time() {
+        let existing = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>newer published content</description>
+                <pubDate>2026-05-04T00:00:00Z</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            100,
+        )
+        .unwrap();
+        let incoming = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>older published content imported later</description>
+                <pubDate>2026-05-01T00:00:00Z</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            200,
+        )
+        .unwrap();
+
+        let mut existing_cache = empty_cache(100);
+        existing_cache.records.push(existing);
+        let mut incoming_cache = empty_cache(200);
+        incoming_cache.records.push(incoming);
+
+        let merged = merge_cache(Some(existing_cache), incoming_cache);
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "newer published content");
+        assert_eq!(
+            merged.records[0].published.as_deref(),
+            Some("2026-05-04T00:00:00Z")
+        );
+    }
+
+    #[test]
+    fn merge_prefers_rfc2822_published_timestamp_over_import_time() {
+        let existing = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>newer published content</description>
+                <pubDate>Mon, 04 May 2026 00:00:00 GMT</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            100,
+        )
+        .unwrap();
+        let incoming = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>older published content imported later</description>
+                <pubDate>Fri, 01 May 2026 00:00:00 GMT</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            200,
+        )
+        .unwrap();
+
+        let mut existing_cache = empty_cache(100);
+        existing_cache.records.push(existing);
+        let mut incoming_cache = empty_cache(200);
+        incoming_cache.records.push(incoming);
+
+        let merged = merge_cache(Some(existing_cache), incoming_cache);
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "newer published content");
+        assert_eq!(
+            merged.records[0].published.as_deref(),
+            Some("Mon, 04 May 2026 00:00:00 GMT")
+        );
     }
 }
