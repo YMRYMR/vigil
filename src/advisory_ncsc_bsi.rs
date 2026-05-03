@@ -1231,8 +1231,14 @@ mod tests {
         let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
         assert_eq!(cache.records.len(), 2);
         assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
-        assert_eq!(cache.records[0].summary, "First advisory without explicit ID");
-        assert_eq!(cache.records[1].summary, "Second advisory without explicit ID");
+        assert_eq!(
+            cache.records[0].summary,
+            "First advisory without explicit ID"
+        );
+        assert_eq!(
+            cache.records[1].summary,
+            "Second advisory without explicit ID"
+        );
     }
 
     #[test]
