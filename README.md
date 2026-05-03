@@ -149,6 +149,20 @@ They are intentionally operator-supplied/offline foundations for now; live
 scheduled fetching remains future work until the upstream feed contracts are
 pinned down conservatively.
 
+Vigil also supports public NCSC and BSI/CERT-Bund imports from RSS snapshots or
+mirrored JSON exports:
+
+```bash
+vigil --import-ncsc ncsc-feed.xml ncsc-mirror.json
+vigil --import-bsi certbund-feed.xml bsi-advisories.json
+```
+
+Those NCSC and BSI/CERT-Bund imports preserve source-specific identifiers, CVE
+aliases, source links, timestamps, severity hints, and provenance in the same
+protected advisory cache. Like EUVD and JVN, they are intentionally
+operator-supplied/offline foundations for now while Vigil keeps live refresh
+work conservative and source-contract aware.
+
 ---
 
 ## What Vigil Does
@@ -218,7 +232,7 @@ score 3 + 3 + 4 + 5 = 15. The alert threshold is configurable (default: 3).
 | +5 | Connection to a known malware / C2 port (4444, 1337, 31337, …) |
 | +4 | Living-off-the-land binary making a network connection (`powershell`, `cmd`, `mshta`, …) |
 | +3 | No executable path found — possible process injection or hollowing |
-| +3 | Running from a suspicious directory (`\\Temp\\`, `\\AppData\\Roaming\\`, …) |
+| +3 | Running from a suspicious directory (`\Temp\`, `\AppData\Roaming\`, …) |
 | +3 | Suspicious parent process (e.g. `winword.exe` spawning `powershell.exe`) |
 | +3 | Beaconing pattern detected — regular C2 callback timing signature |
 | +3 | IP reputation hit — remote matched a user-supplied blocklist (**Phase 10**, REP badge) |
@@ -240,7 +254,7 @@ app suddenly dials a C2 port, you want to know.
 Vigil also runs two passive persistence watchers that raise synthetic alerts
 (independent of active connections):
 
-- **Registry autorun watcher** (Windows) — polls `HKCU\\…\\Run`, `HKLM\\…\\Run`,
+- **Registry autorun watcher** (Windows) — polls `HKCU\…\Run`, `HKLM\…\Run`,
   and both `RunOnce` keys every 30 s; alerts on any new entry.
 - **Beaconing detector** — tracks inter-arrival time per `(pid, remote_ip)`
   across a rolling 30-sample window; flags stddev < 5 s / mean 1 – 600 s.
@@ -442,8 +456,8 @@ on disk. Then edit the `vigil.json` file in the per-user Vigil data directory:
 
 ```json
 {
-  "geoip_city_db": "C:\\vigil\\GeoLite2-City.mmdb",
-  "geoip_asn_db":  "C:\\vigil\\GeoLite2-ASN.mmdb",
+  "geoip_city_db": "C:\vigil\GeoLite2-City.mmdb",
+  "geoip_asn_db":  "C:\vigil\GeoLite2-ASN.mmdb",
   "allowed_countries": ["US", "GB", "ES"]
 }
 ```
@@ -460,8 +474,8 @@ Drop plain-text blocklists anywhere and list them:
 ```json
 {
   "blocklist_paths": [
-    "C:\\vigil\\abuseipdb.txt",
-    "C:\\vigil\\firehol-level1.txt"
+    "C:\vigil\abuseipdb.txt",
+    "C:\vigil\firehol-level1.txt"
   ]
 }
 ```
@@ -473,7 +487,7 @@ gets a red `REP` badge naming the source list.
 
 ### File-drop correlation
 
-Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\\Temp`,
+Enabled by default. Vigil watches `%TEMP%`, `%LOCALAPPDATA%\Temp`,
 `%APPDATA%`, `Downloads`, and (on Unix) `/tmp` and `/var/tmp` for new
 `.exe` / `.dll` / `.ps1` / `.scr` / `.msi` / `.sh` / `.py` drops. When a
 connection originates from a file that was dropped within the last
