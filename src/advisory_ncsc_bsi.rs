@@ -235,11 +235,13 @@ fn parse_json_record(
         ],
     )
     .unwrap_or_else(|| title.clone().unwrap_or_default());
-    let source_url = first_string(
+    let record_url = first_string(
         value,
         &["url", "link", "href", "sourceUrl", "source_url", "guid"],
-    )
-    .unwrap_or_else(|| source_kind.source_url().to_string());
+    );
+    let source_url = record_url
+        .clone()
+        .unwrap_or_else(|| source_kind.source_url().to_string());
     let primary_id = first_string(
         value,
         &[
@@ -253,7 +255,14 @@ fn parse_json_record(
         ],
     )
     .or_else(|| first_cve(value))
-    .unwrap_or_else(|| fallback_identifier(source_kind, &source_url, title.as_deref(), imported_unix));
+    .unwrap_or_else(|| {
+        fallback_identifier(
+            source_kind,
+            record_url.as_deref().unwrap_or(""),
+            title.as_deref(),
+            imported_unix,
+        )
+    });
     let mut aliases = unique_strings(flatten_strings_from_keys(
         value,
         &[
@@ -1117,5 +1126,25 @@ mod tests {
         assert_eq!(record.severities[0].severity, "HIGH");
         assert_eq!(record.affected_products[0].criteria, "Example:Gateway");
         assert_eq!(record.provenance.source_kind, BSI_SOURCE_KIND);
+    }
+
+    #[test]
+    fn fallback_ids_use_title_when_json_records_lack_item_urls() {
+        let bytes = br#"{
+            "timestamp": "2026-05-03T00:00:00Z",
+            "items": [
+                {"title": "First advisory without explicit ID"},
+                {"title": "Second advisory without explicit ID"}
+            ]
+        }"#;
+
+        let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
+        assert_eq!(cache.records.len(), 2);
+        assert_ne!(cache.records[0].primary_id, cache.records[1].primary_id);
+        assert_eq!(
+            cache.records[0].provenance.source_url,
+            BSI_SOURCE_URL,
+            "records without per-item URLs should still point provenance at the source homepage"
+        );
     }
 }
