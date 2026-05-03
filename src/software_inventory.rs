@@ -49,10 +49,29 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             source: InventorySource::RunningProcess,
         };
 
-        by_key.entry(product_key).or_insert(entry);
+        match by_key.get_mut(&product_key) {
+            Some(existing) if should_replace_existing(existing, &entry) => *existing = entry,
+            Some(_) => {}
+            None => {
+                by_key.insert(product_key, entry);
+            }
+        }
     }
 
     by_key.into_values().collect()
+}
+
+fn should_replace_existing(existing: &InstalledSoftware, candidate: &InstalledSoftware) -> bool {
+    entry_rank(candidate) > entry_rank(existing)
+}
+
+fn entry_rank(entry: &InstalledSoftware) -> (bool, bool, &str, &str) {
+    (
+        !entry.executable_path.is_empty(),
+        !entry.display_name.is_empty(),
+        entry.executable_path.as_str(),
+        entry.display_name.as_str(),
+    )
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -91,11 +110,34 @@ mod tests {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
     }
 
-
     #[test]
     fn normalize_name_preserves_unicode_letters() {
         assert_eq!(normalize_name("Программа.EXE"), "программа");
         assert_eq!(normalize_name("監視ツール.exe"), "監視ツール");
+    }
+
+    #[test]
+    fn prefers_richer_duplicate_entry() {
+        let mut existing = InstalledSoftware {
+            product_key: "curl".into(),
+            display_name: "curl".into(),
+            executable_path: String::new(),
+            publisher_hint: None,
+            source: InventorySource::RunningProcess,
+        };
+        let candidate = InstalledSoftware {
+            product_key: "curl".into(),
+            display_name: "curl".into(),
+            executable_path: "/usr/bin/curl".into(),
+            publisher_hint: None,
+            source: InventorySource::RunningProcess,
+        };
+
+        if should_replace_existing(&existing, &candidate) {
+            existing = candidate;
+        }
+
+        assert_eq!(existing.executable_path, "/usr/bin/curl");
     }
 
     #[test]
