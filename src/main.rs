@@ -164,7 +164,9 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             let software_count = inventory.len();
             tracing::info!(software_count, "software inventory snapshot collected");
             let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
-            if let Err(err) = storage::InventoryStore::replace_inventory(&inventory_store, &inventory) {
+            if let Err(err) =
+                storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
+            {
                 tracing::warn!(%err, "failed to persist software inventory snapshot");
             }
 
