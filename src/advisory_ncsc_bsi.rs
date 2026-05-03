@@ -805,7 +805,12 @@ fn collect_references(value: &Value, source: &str, refs: &mut Vec<VulnerabilityR
     }
 }
 
-fn push_reference(refs: &mut Vec<VulnerabilityReference>, url: &str, source: &str, tags: Vec<String>) {
+fn push_reference(
+    refs: &mut Vec<VulnerabilityReference>,
+    url: &str,
+    source: &str,
+    tags: Vec<String>,
+) {
     let url = url.trim();
     if url.is_empty() || refs.iter().any(|reference| reference.url == url) {
         return;
@@ -826,7 +831,8 @@ fn urls_from_keys(value: &Value, keys: &[&str]) -> Vec<String> {
 
 fn severities_from_value(value: &Value, source: &str) -> Vec<VulnerabilitySeverity> {
     let mut severities = Vec::new();
-    if let Some(severity) = first_string(value, &["severity", "cvssSeverity", "baseSeverity"]) {
+    if let Some(severity) = first_string(value, &["severity", "cvssSeverity", "baseSeverity"])
+    {
         severities.push(VulnerabilitySeverity {
             source: source.into(),
             scheme: first_string(value, &["severityScheme", "cvssVersion"])
@@ -1007,6 +1013,9 @@ fn xml_tag(xml: &str, tag: &str) -> Option<String> {
 
 fn xml_tags(xml: &str, tag: &str) -> Vec<String> {
     let start_tag = format!("<{tag}");
+    let attr_tag = format!("<{tag} ");
+    let bare_tag = format!("<{tag}>");
+    let self_closing_tag = format!("<{tag}/>");
     let close_tag = format!("</{tag}>");
     let mut rest = xml;
     let mut values = Vec::new();
@@ -1016,16 +1025,24 @@ fn xml_tags(xml: &str, tag: &str) -> Vec<String> {
             break;
         };
         let header = &rest[..=open_end];
-        if header.starts_with(&format!("<{tag} ")) || header == format!("<{tag}>") {
-            let body_start = open_end + 1;
-            let Some(end) = rest[body_start..].find(&close_tag) else {
-                break;
-            };
-            values.push(rest[..body_start + end].to_string());
-            rest = &rest[body_start + end + close_tag.len()..];
-        } else {
+        let is_target_tag = header.starts_with(&attr_tag)
+            || header == bare_tag
+            || header == self_closing_tag;
+        if !is_target_tag {
             rest = &rest[open_end + 1..];
+            continue;
         }
+        if header.trim_end().ends_with("/>") {
+            values.push(header.to_string());
+            rest = &rest[open_end + 1..];
+            continue;
+        }
+        let body_start = open_end + 1;
+        let Some(end) = rest[body_start..].find(&close_tag) else {
+            break;
+        };
+        values.push(rest[..body_start + end].to_string());
+        rest = &rest[body_start + end + close_tag.len()..];
     }
     values
 }
@@ -1167,5 +1184,34 @@ mod tests {
         let cache = parse_json_snapshot(NationalAdvisorySourceKind::Bsi, bytes, None).unwrap();
         assert_eq!(cache.records.len(), 1);
         assert_eq!(cache.records[0].primary_id, "CVE-2026-4242");
+    }
+
+    #[test]
+    fn parses_self_closing_rss_enclosures_as_attachment_references() {
+        let xml = r#"<rss><channel><item>
+            <title>NCSC advisory with attachments</title>
+            <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+            <description>Attachment references should be preserved.</description>
+            <enclosure url="https://www.ncsc.gov.uk/files/example-one.pdf" />
+            <enclosure url="https://www.ncsc.gov.uk/files/example-two.pdf" />
+        </item></channel></rss>"#;
+
+        let cache = parse_rss_snapshot(
+            NationalAdvisorySourceKind::Ncsc,
+            xml,
+            xml.as_bytes(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(cache.records.len(), 1);
+        let record = &cache.records[0];
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-one.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
+        assert!(record.references.iter().any(|reference| {
+            reference.url == "https://www.ncsc.gov.uk/files/example-two.pdf"
+                && reference.tags.iter().any(|tag| tag == "attachment")
+        }));
     }
 }
