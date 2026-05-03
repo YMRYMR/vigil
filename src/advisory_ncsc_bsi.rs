@@ -362,12 +362,17 @@ fn parse_rss_item(
     imported_unix: u64,
 ) -> Option<VulnerabilityRecord> {
     let title = xml_tag(item, "title").unwrap_or_default();
-    let link = xml_tag(item, "link").unwrap_or_else(|| source_kind.source_url().to_string());
+    let item_link = xml_tag(item, "link").filter(|link| !link.trim().is_empty());
+    let source_url = item_link
+        .clone()
+        .unwrap_or_else(|| source_kind.source_url().to_string());
     let description = xml_tag(item, "description").unwrap_or_default();
     let identifier = xml_tag(item, "guid")
         .or_else(|| xml_tag(item, "dc:identifier"))
+        .or_else(|| item_link.clone())
         .or_else(|| first_cve_text(&title))
-        .unwrap_or_else(|| fallback_identifier(source_kind, &link, Some(&title), imported_unix));
+        .or_else(|| first_cve_text(&description))
+        .unwrap_or_else(|| fallback_identifier(source_kind, "", Some(&title), imported_unix));
     let mut aliases = Vec::new();
     if let Some(cve) = first_cve_text(&title).or_else(|| first_cve_text(&description)) {
         aliases.push(cve);
@@ -375,7 +380,7 @@ fn parse_rss_item(
     aliases.push(identifier.clone());
 
     let mut references = vec![VulnerabilityReference {
-        url: link.clone(),
+        url: source_url.clone(),
         source: Some(source_kind.source_name().into()),
         tags: vec!["source".into()],
     }];
@@ -412,7 +417,7 @@ fn parse_rss_item(
         provenance: VulnerabilityProvenance {
             source_kind: source_kind.source_kind().into(),
             source_key: source_kind.source_key().into(),
-            source_url: link,
+            source_url,
             imported_unix,
         },
     })
@@ -504,13 +509,20 @@ fn replace_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySource
 }
 
 fn newer_or_equal(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
-    match (
-        existing.last_modified.as_deref().and_then(parse_timestamp),
-        incoming.last_modified.as_deref().and_then(parse_timestamp),
-    ) {
+    match (record_timestamp(existing), record_timestamp(incoming)) {
         (Some(left), Some(right)) => left >= right,
-        _ => existing.provenance.imported_unix >= incoming.provenance.imported_unix,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => existing.provenance.imported_unix >= incoming.provenance.imported_unix,
     }
+}
+
+fn record_timestamp(record: &VulnerabilityRecord) -> Option<chrono::DateTime<chrono::Utc>> {
+    record
+        .last_modified
+        .as_deref()
+        .and_then(parse_timestamp)
+        .or_else(|| record.published.as_deref().and_then(parse_timestamp))
 }
 
 fn record_key(record: &VulnerabilityRecord) -> RecordKey {
@@ -1220,5 +1232,66 @@ mod tests {
             reference.url == "https://www.ncsc.gov.uk/files/example-two.pdf"
                 && reference.tags.iter().any(|tag| tag == "attachment")
         }));
+    }
+
+    #[test]
+    fn rss_items_without_guid_prefer_link_over_cve_for_primary_id() {
+        let item = r#"<item>
+            <title>Advisory update for CVE-2026-1234</title>
+            <link>https://www.ncsc.gov.uk/report/shared-cve-update</link>
+            <description>Multiple advisories can mention the same CVE.</description>
+        </item>"#;
+
+        let record = parse_rss_item(NationalAdvisorySourceKind::Ncsc, item, 42).unwrap();
+        assert_eq!(
+            record.primary_id,
+            "https://www.ncsc.gov.uk/report/shared-cve-update"
+        );
+        assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-1234"));
+        assert_eq!(
+            record.provenance.source_url,
+            "https://www.ncsc.gov.uk/report/shared-cve-update"
+        );
+    }
+
+    #[test]
+    fn merge_prefers_published_timestamp_over_import_time() {
+        let existing = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>newer published content</description>
+                <pubDate>2026-05-04T00:00:00Z</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            100,
+        )
+        .unwrap();
+        let incoming = parse_rss_item(
+            NationalAdvisorySourceKind::Ncsc,
+            r#"<item>
+                <title>NCSC advisory</title>
+                <link>https://www.ncsc.gov.uk/report/example-guidance</link>
+                <description>older published content imported later</description>
+                <pubDate>2026-05-01T00:00:00Z</pubDate>
+                <guid>https://www.ncsc.gov.uk/report/example-guidance</guid>
+            </item>"#,
+            200,
+        )
+        .unwrap();
+
+        let mut existing_cache = empty_cache(100);
+        existing_cache.records.push(existing);
+        let mut incoming_cache = empty_cache(200);
+        incoming_cache.records.push(incoming);
+
+        let merged = merge_cache(Some(existing_cache), incoming_cache);
+        assert_eq!(merged.records.len(), 1);
+        assert_eq!(merged.records[0].summary, "newer published content");
+        assert_eq!(
+            merged.records[0].published.as_deref(),
+            Some("2026-05-04T00:00:00Z")
+        );
     }
 }
