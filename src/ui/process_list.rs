@@ -3,9 +3,10 @@
 //! One process becomes one card. Each card shows summary metadata up top and
 //! then groups repeated sockets by remote endpoint so the UI stays useful even
 //! when a process opens many connections to the same destination.
+#![allow(dead_code)]
 
 use crate::types::ConnInfo;
-use crate::ui::{theme, ProcessSelection, TableState};
+use crate::ui::{inspector::summarize_reasons, theme, ProcessSelection, TableState};
 use egui::RichText;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
@@ -46,6 +47,7 @@ struct ProcessGroup<'a> {
     distinct_remotes: usize,
     statuses: Vec<String>,
     reasons: Vec<String>,
+    reason_summary: crate::ui::inspector::ReasonSummary,
     attack_tags: Vec<String>,
     baseline_deviation: bool,
     script_host_suspicious: bool,
@@ -567,11 +569,14 @@ fn grouped_rows<'a>(
     filter: &str,
     kind: Kind,
 ) -> Vec<ProcessGroup<'a>> {
-    let f = filter.to_lowercase();
+    let lower = filter.to_ascii_lowercase();
     let mut groups: HashMap<u32, ProcessGroup<'a>> = HashMap::new();
     let mut order: Vec<u32> = Vec::new();
 
-    for info in rows.iter().filter(|r| matches_filter(r, &f, kind)) {
+    for info in rows
+        .iter()
+        .filter(|info| matches_filter(info, &lower, kind))
+    {
         let entry = groups.entry(info.pid).or_insert_with(|| {
             order.push(info.pid);
             ProcessGroup {
@@ -596,6 +601,7 @@ fn grouped_rows<'a>(
                 distinct_remotes: 0,
                 statuses: Vec::new(),
                 reasons: Vec::new(),
+                reason_summary: Default::default(),
                 attack_tags: Vec::new(),
                 baseline_deviation: false,
                 script_host_suspicious: false,
@@ -682,12 +688,14 @@ fn grouped_rows<'a>(
                     group.distinct_remotes
                 ));
             }
+            group.reason_summary = summarize_reasons(&group.reasons);
             group.score = group.score.saturating_add(fanout_bonus(
                 group.conn_count,
                 group.distinct_ports,
                 group.distinct_remotes,
                 group.statuses.len(),
             ));
+            group.reason_summary = summarize_reasons(&group.reasons);
             out.push(group);
         }
     }
@@ -802,6 +810,9 @@ fn selection_from_group(
     group: &ProcessGroup<'_>,
     selected_connection: Option<ConnInfo>,
 ) -> ProcessSelection {
+    let selected_connection_reason_summary = selected_connection
+        .as_ref()
+        .map(|conn| summarize_reasons(&conn.reasons));
     ProcessSelection {
         pid: group.pid,
         proc_name: group.proc_name.to_string(),
@@ -814,7 +825,7 @@ fn selection_from_group(
         service_name: group.service_name.to_string(),
         publisher: group.publisher.to_string(),
         score: group.score,
-        reasons: group.reasons.clone(),
+        reason_summary: group.reason_summary.clone(),
         attack_tags: group.attack_tags.clone(),
         baseline_deviation: group.baseline_deviation,
         script_host_suspicious: group.script_host_suspicious,
@@ -829,6 +840,7 @@ fn selection_from_group(
         distinct_remotes: group.distinct_remotes,
         statuses: group.statuses.clone(),
         selected_connection,
+        selected_connection_reason_summary,
     }
 }
 

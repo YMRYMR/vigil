@@ -134,10 +134,10 @@ fn default_true() -> bool {
     true
 }
 fn default_activity_history_cap() -> usize {
-    2048
+    1024
 }
 fn default_alerts_history_cap() -> usize {
-    1024
+    512
 }
 fn default_fswatch_window() -> u64 {
     600
@@ -386,6 +386,10 @@ impl Default for Config {
 }
 
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("VIGIL_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+
     #[cfg(target_os = "windows")]
     {
         if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
@@ -469,10 +473,10 @@ impl Config {
         self.ui_scale.clamp(0.8, 1.8)
     }
     pub fn sanitised_activity_history_cap(&self) -> usize {
-        self.activity_history_cap.clamp(256, 16_384)
+        self.activity_history_cap.clamp(128, 8_192)
     }
     pub fn sanitised_alerts_history_cap(&self) -> usize {
-        self.alerts_history_cap.clamp(128, 8_192)
+        self.alerts_history_cap.clamp(64, 4_096)
     }
     #[allow(dead_code)]
     pub fn remove_trusted(&mut self, name: &str) -> bool {
@@ -550,7 +554,7 @@ mod tests {
             alerts_history_cap: usize::MAX,
             ..Config::default()
         };
-        assert_eq!(cfg.sanitised_activity_history_cap(), 256);
-        assert_eq!(cfg.sanitised_alerts_history_cap(), 8_192);
+        assert_eq!(cfg.sanitised_activity_history_cap(), 128);
+        assert_eq!(cfg.sanitised_alerts_history_cap(), 4_096);
     }
 }

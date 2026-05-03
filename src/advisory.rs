@@ -6,8 +6,12 @@
 //!
 //! - a normalized vulnerability record model
 //! - protected local cache storage for imported NVD CVE snapshots
+//! - preserved CPE match metadata such as `matchCriteriaId` and `cpeName`
+//!   so future CPE-match joins keep the original NVD identifiers intact
 //! - a CLI import path for offline or operator-driven snapshot ingestion,
 //!   including batched page or incremental-file imports
+//! - live NVD CVE sync with conservative rate limiting and incremental
+//!   last-modified windows
 //! - startup status logging so the cache state is visible to operators
 
 use serde::{Deserialize, Serialize};
@@ -15,10 +19,22 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 const CACHE_FILE: &str = "vigil-advisory-cache.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
+const NVD_SOURCE_KEY: &str = "nvd-cve";
+const NVD_SOURCE_KIND: &str = "nvd";
+const NVD_API_URL: &str = "https://services.nvd.nist.gov/rest/json/cves/2.0";
+const NVD_RESULTS_PER_PAGE: usize = 2_000;
+const NVD_MIN_SYNC_INTERVAL_SECS: u64 = 2 * 60 * 60;
+const NVD_MAX_INCREMENTAL_WINDOW_DAYS: i64 = 120;
+const NVD_REQUEST_DELAY_NO_KEY_SECS: u64 = 6;
+const NVD_REQUEST_DELAY_WITH_KEY_SECS: u64 = 1;
+const HTTP_TIMEOUT_SECS: u64 = 20;
+const MAX_RETRY_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AdvisoryCache {
@@ -41,9 +57,13 @@ pub struct AdvisorySourceCache {
     pub snapshot_sha256: String,
     pub total_results: usize,
     pub status: SourceHealth,
+    #[serde(default)]
+    pub last_attempt_unix: u64,
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceHealth {
     #[default]
@@ -79,6 +99,8 @@ pub struct VulnerabilitySeverity {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AffectedProduct {
     pub criteria: String,
+    pub match_criteria_id: Option<String>,
+    pub cpe_name: Option<String>,
     pub vulnerable: bool,
     pub version_start_including: Option<String>,
     pub version_start_excluding: Option<String>,
@@ -117,6 +139,159 @@ pub struct CacheSummary {
     pub stale_sources: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncSummary {
+    pub requested_pages: usize,
+    pub imported_records: usize,
+    pub total_records: usize,
+    pub total_sources: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SyncOutcome {
+    Updated(SyncSummary),
+    SkippedRateLimit { remaining_secs: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NvdSyncRequest {
+    start_index: usize,
+    results_per_page: usize,
+    last_mod_start_date: Option<String>,
+    last_mod_end_date: Option<String>,
+}
+
+trait NvdFetcher {
+    fn fetch_page(&self, request: &NvdSyncRequest) -> Result<Vec<u8>, String>;
+}
+
+struct HttpNvdFetcher {
+    client: reqwest::blocking::Client,
+    base_url: String,
+    api_key: Option<String>,
+    last_request_started: Mutex<Option<Instant>>,
+}
+
+impl HttpNvdFetcher {
+    fn new() -> Result<Self, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .build()
+            .map_err(|err| format!("failed to build NVD HTTP client: {err}"))?;
+        Ok(Self {
+            client,
+            base_url: std::env::var("VIGIL_NVD_API_BASE_URL")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| NVD_API_URL.to_string()),
+            api_key: std::env::var("VIGIL_NVD_API_KEY")
+                .ok()
+                .filter(|value| !value.trim().is_empty()),
+            last_request_started: Mutex::new(None),
+        })
+    }
+
+    fn request_delay(&self) -> Duration {
+        if self.api_key.is_some() {
+            Duration::from_secs(NVD_REQUEST_DELAY_WITH_KEY_SECS)
+        } else {
+            Duration::from_secs(NVD_REQUEST_DELAY_NO_KEY_SECS)
+        }
+    }
+
+    fn wait_for_request_slot(&self) {
+        let delay = self.request_delay();
+        let now = Instant::now();
+        let mut last_request_started = self.last_request_started.lock().unwrap();
+        let remaining = next_request_delay(*last_request_started, now, delay);
+        if !remaining.is_zero() {
+            std::thread::sleep(remaining);
+        }
+        *last_request_started = Some(Instant::now());
+    }
+}
+
+impl NvdFetcher for HttpNvdFetcher {
+    fn fetch_page(&self, request: &NvdSyncRequest) -> Result<Vec<u8>, String> {
+        let mut attempt = 0usize;
+        loop {
+            if attempt == 0 {
+                self.wait_for_request_slot();
+            }
+            let mut http = self.client.get(&self.base_url).query(&[
+                ("resultsPerPage", request.results_per_page.to_string()),
+                ("startIndex", request.start_index.to_string()),
+            ]);
+            if let Some(last_mod_start) = request.last_mod_start_date.as_deref() {
+                http = http.query(&[("lastModStartDate", last_mod_start)]);
+            }
+            if let Some(last_mod_end) = request.last_mod_end_date.as_deref() {
+                http = http.query(&[("lastModEndDate", last_mod_end)]);
+            }
+            if let Some(api_key) = self.api_key.as_deref() {
+                http = http.header("apiKey", api_key);
+            }
+            http = http.header(
+                reqwest::header::USER_AGENT,
+                format!("Vigil/{}", env!("CARGO_PKG_VERSION")),
+            );
+
+            let response = http.send().map_err(|err| {
+                format!(
+                    "failed to fetch NVD page at startIndex {}: {err}",
+                    request.start_index
+                )
+            })?;
+            let status = response.status();
+            if status.is_success() {
+                return response.bytes().map(|bytes| bytes.to_vec()).map_err(|err| {
+                    format!(
+                        "failed to read NVD response body at startIndex {}: {err}",
+                        request.start_index
+                    )
+                });
+            }
+
+            if (status.as_u16() == 429 || status.as_u16() == 503)
+                && attempt + 1 < MAX_RETRY_ATTEMPTS
+            {
+                let retry_after = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .unwrap_or(self.request_delay().as_secs());
+                std::thread::sleep(Duration::from_secs(retry_after.max(1)));
+                attempt += 1;
+                continue;
+            }
+
+            let body = response.text().unwrap_or_default();
+            return Err(format!(
+                "NVD request failed with HTTP {} at startIndex {}{}",
+                status.as_u16(),
+                request.start_index,
+                if body.trim().is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", body.trim())
+                }
+            ));
+        }
+    }
+}
+
+fn next_request_delay(
+    last_request_started: Option<Instant>,
+    now: Instant,
+    delay: Duration,
+) -> Duration {
+    let Some(last_request_started) = last_request_started else {
+        return Duration::ZERO;
+    };
+    delay.saturating_sub(now.saturating_duration_since(last_request_started))
+}
+
 pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
     let summary = if paths.len() == 1 {
         import_nvd_snapshot(&paths[0])?
@@ -132,6 +307,28 @@ pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
         summary.total_sources
     );
     Ok(())
+}
+
+pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
+    let outcome = sync_nvd(force)?;
+    match &outcome {
+        SyncOutcome::Updated(summary) => {
+            println!(
+                "Fetched {} NVD page(s) and merged {} CVE record(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+                summary.requested_pages,
+                summary.imported_records,
+                summary.total_records,
+                summary.total_sources
+            );
+        }
+        SyncOutcome::SkippedRateLimit { remaining_secs } => {
+            println!(
+                "Skipped NVD sync because the last automated pull is still inside the 2-hour minimum interval ({}s remaining). Use --sync-nvd --force to override.",
+                remaining_secs
+            );
+        }
+    }
+    Ok(outcome)
 }
 
 pub fn import_nvd_snapshot(path: &Path) -> Result<ImportSummary, String> {
@@ -162,6 +359,38 @@ pub fn import_nvd_snapshots(paths: &[PathBuf]) -> Result<ImportSummary, String> 
     Ok(summary)
 }
 
+pub fn sync_nvd(force: bool) -> Result<SyncOutcome, String> {
+    let existing = load_cache_for_import()?;
+    let now = unix_now();
+    if !force {
+        if let Some(remaining_secs) = nvd_rate_limit_remaining(existing.as_ref(), now) {
+            return Ok(SyncOutcome::SkippedRateLimit { remaining_secs });
+        }
+    }
+
+    let fetcher = HttpNvdFetcher::new()?;
+    let (cache, fetched_pages, imported_records) =
+        match sync_nvd_with_fetcher(existing.clone(), &fetcher, now) {
+            Ok(result) => result,
+            Err(err) => {
+                let failed_cache =
+                    stamp_nvd_sync_failure(existing.unwrap_or_else(|| empty_cache(now)), &err, now);
+                if let Err(save_err) = save_cache(&failed_cache) {
+                    tracing::warn!(%save_err, "failed to persist NVD sync failure state");
+                }
+                return Err(err);
+            }
+        };
+    let summary = SyncSummary {
+        requested_pages: fetched_pages,
+        imported_records,
+        total_records: cache.records.len(),
+        total_sources: cache.sources.len(),
+    };
+    save_cache(&cache)?;
+    Ok(SyncOutcome::Updated(summary))
+}
+
 pub fn log_cache_status() {
     match load_cache_summary() {
         Ok(Some(summary)) => {
@@ -175,6 +404,33 @@ pub fn log_cache_status() {
         Ok(None) => {}
         Err(err) => {
             tracing::error!(%err, "failed to load public advisory cache");
+        }
+    }
+}
+
+pub fn refresh_nvd_in_background_if_due() {
+    if !nvd_refresh_due() {
+        return;
+    }
+
+    match sync_nvd(false) {
+        Ok(SyncOutcome::Updated(summary)) => {
+            tracing::info!(
+                requested_pages = summary.requested_pages,
+                imported_records = summary.imported_records,
+                total_records = summary.total_records,
+                total_sources = summary.total_sources,
+                "refreshed NVD advisory cache"
+            );
+        }
+        Ok(SyncOutcome::SkippedRateLimit { remaining_secs }) => {
+            tracing::debug!(
+                remaining_secs,
+                "skipped NVD advisory refresh because the rate-limit interval is still active"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(%err, "failed to refresh NVD advisory cache");
         }
     }
 }
@@ -265,211 +521,365 @@ fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
     Ok(imported)
 }
 
-fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<AdvisoryCache, String> {
-    let value: Value =
-        serde_json::from_slice(bytes).map_err(|e| format!("failed to parse NVD JSON: {e}"))?;
-    let vulnerabilities = value
-        .get("vulnerabilities")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "NVD snapshot did not contain a vulnerabilities array".to_string())?;
+fn sync_nvd_with_fetcher(
+    existing: Option<AdvisoryCache>,
+    fetcher: &dyn NvdFetcher,
+    now: u64,
+) -> Result<(AdvisoryCache, usize, usize), String> {
+    let mut imported = None;
+    let mut page_hashes = Vec::new();
+    let mut page_count = 0usize;
+    let mut imported_records = 0usize;
+    for (last_mod_start_date, last_mod_end_date) in nvd_sync_windows(existing.as_ref(), now) {
+        let request_template = NvdSyncRequest {
+            start_index: 0,
+            results_per_page: NVD_RESULTS_PER_PAGE,
+            last_mod_start_date,
+            last_mod_end_date,
+        };
 
-    let now = unix_now();
-    let source_url = value
-        .get("source")
-        .and_then(Value::as_str)
-        .unwrap_or("https://services.nvd.nist.gov/rest/json/cves/2.0")
-        .to_string();
+        let mut start_index = 0usize;
+        loop {
+            let request = NvdSyncRequest {
+                start_index,
+                ..request_template.clone()
+            };
+            let bytes = fetcher.fetch_page(&request)?;
+            page_hashes.push(sha256_hex(&bytes));
+            let page = parse_nvd_snapshot(&bytes, None)?;
+            let total_results = page
+                .sources
+                .first()
+                .map(|source| source.total_results)
+                .unwrap_or(page.records.len());
+            let page_records = page.records.len();
+            imported_records += page_records;
+            imported = Some(match imported {
+                Some(existing_pages) => merge_import_batch_cache(existing_pages, page),
+                None => page,
+            });
+            page_count += 1;
 
-    let mut records = Vec::with_capacity(vulnerabilities.len());
-    for item in vulnerabilities {
-        if let Some(record) = parse_nvd_record(item, now, &source_url)? {
-            records.push(record);
+            if page_records == 0
+                || start_index.saturating_add(request.results_per_page) >= total_results
+            {
+                break;
+            }
+            start_index = start_index.saturating_add(request.results_per_page);
         }
     }
 
+    let mut imported = imported.unwrap_or_else(|| empty_cache(now));
+    finalize_import_batch_metadata(&mut imported, &page_hashes);
+    let mut merged = merge_cache(existing, imported);
+    stamp_nvd_sync_success(&mut merged, page_count, now);
+    Ok((merged, page_count, imported_records))
+}
+
+fn empty_cache(now: u64) -> AdvisoryCache {
+    AdvisoryCache {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_unix: now,
+        sources: vec![],
+        records: vec![],
+    }
+}
+
+fn nvd_refresh_due() -> bool {
+    let now = unix_now();
+    match load_cache() {
+        Ok(Some(cache)) => cache
+            .sources
+            .iter()
+            .find(|source| {
+                source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
+            })
+            .is_none_or(|source| {
+                source.expires_unix <= now
+                    || matches!(source.status, SourceHealth::Error | SourceHealth::Stale)
+            }),
+        Ok(None) => true,
+        Err(err) => {
+            tracing::warn!(%err, "assuming NVD refresh is due because the cache could not be read");
+            true
+        }
+    }
+}
+
+fn nvd_rate_limit_remaining(existing: Option<&AdvisoryCache>, now: u64) -> Option<u64> {
+    let source = existing?.sources.iter().find(|source| {
+        source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
+    })?;
+    let last_request_unix = source.last_attempt_unix.max(source.fetched_unix);
+    let next_allowed = last_request_unix.saturating_add(NVD_MIN_SYNC_INTERVAL_SECS);
+    if next_allowed > now {
+        Some(next_allowed - now)
+    } else {
+        None
+    }
+}
+
+fn latest_nvd_last_modified(existing: Option<&AdvisoryCache>) -> Option<String> {
+    existing?
+        .records
+        .iter()
+        .filter(|record| {
+            record.provenance.source_kind == NVD_SOURCE_KIND
+                && record.provenance.source_key == NVD_SOURCE_KEY
+        })
+        .filter_map(|record| record.last_modified.as_deref())
+        .filter_map(parse_timestamp)
+        .max()
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+fn nvd_sync_windows(
+    existing: Option<&AdvisoryCache>,
+    now: u64,
+) -> Vec<(Option<String>, Option<String>)> {
+    let now = unix_timestamp(now);
+    let latest = latest_nvd_last_modified(existing).and_then(|value| parse_timestamp(&value));
+    let Some(mut start) = latest else {
+        return vec![(None, None)];
+    };
+
+    let max_span = chrono::Duration::days(NVD_MAX_INCREMENTAL_WINDOW_DAYS);
+    let mut windows = Vec::new();
+    while start < now {
+        let end = std::cmp::min(start + max_span, now);
+        windows.push((Some(format_datetime(start)), Some(format_datetime(end))));
+        start = end;
+    }
+
+    if windows.is_empty() {
+        windows.push((Some(format_datetime(start)), Some(format_datetime(now))));
+    }
+
+    windows
+}
+
+fn unix_timestamp(unix: u64) -> chrono::DateTime<chrono::Utc> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(unix as i64, 0).unwrap_or_else(chrono::Utc::now)
+}
+
+fn format_datetime(timestamp: chrono::DateTime<chrono::Utc>) -> String {
+    timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+fn stamp_nvd_sync_success(cache: &mut AdvisoryCache, requested_pages: usize, now: u64) {
+    if let Some(source) = cache
+        .sources
+        .iter_mut()
+        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
+    {
+        source.fetched_unix = now;
+        source.last_attempt_unix = now;
+        source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
+        source.status = SourceHealth::Fresh;
+        source.last_error = None;
+        if requested_pages > 1 {
+            source.imported_from = None;
+        }
+    } else {
+        cache.sources.push(AdvisorySourceCache {
+            source_key: NVD_SOURCE_KEY.into(),
+            source_kind: NVD_SOURCE_KIND.into(),
+            source_url: NVD_API_URL.into(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: now,
+            expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
+            snapshot_sha256: String::new(),
+            total_results: 0,
+            status: SourceHealth::Fresh,
+            last_attempt_unix: now,
+            last_error: None,
+        });
+    }
+}
+
+fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> AdvisoryCache {
+    if let Some(source) = cache
+        .sources
+        .iter_mut()
+        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
+    {
+        source.last_attempt_unix = now;
+        source.status = if source.expires_unix <= now {
+            SourceHealth::Stale
+        } else {
+            SourceHealth::Error
+        };
+        source.last_error = Some(err.to_string());
+    } else {
+        cache.sources.push(AdvisorySourceCache {
+            source_key: NVD_SOURCE_KEY.into(),
+            source_kind: NVD_SOURCE_KIND.into(),
+            source_url: NVD_API_URL.into(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: 0,
+            expires_unix: 0,
+            snapshot_sha256: String::new(),
+            total_results: 0,
+            status: SourceHealth::Stale,
+            last_attempt_unix: now,
+            last_error: Some(err.to_string()),
+        });
+    }
+    cache
+}
+
+fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<AdvisoryCache, String> {
+    let value: Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("failed to parse NVD JSON: {e}"))?;
     let total_results = value
         .get("totalResults")
         .and_then(Value::as_u64)
-        .map(|value| value as usize)
-        .unwrap_or(records.len());
+        .unwrap_or_default() as usize;
+    let timestamp = value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let fetched_unix = parse_timestamp(timestamp)
+        .map(|ts| ts.timestamp().max(0) as u64)
+        .unwrap_or_else(unix_now);
+    let source = AdvisorySourceCache {
+        source_key: NVD_SOURCE_KEY.into(),
+        source_kind: NVD_SOURCE_KIND.into(),
+        source_url: NVD_API_URL.into(),
+        imported_from: imported_from.map(|path| path.display().to_string()),
+        imported_from_batch: imported_from
+            .map(|path| vec![path.display().to_string()])
+            .unwrap_or_default(),
+        fetched_unix,
+        expires_unix: fetched_unix.saturating_add(DEFAULT_SOURCE_TTL_SECS),
+        snapshot_sha256: sha256_hex(bytes),
+        total_results,
+        status: SourceHealth::Fresh,
+        last_attempt_unix: 0,
+        last_error: None,
+    };
+
+    let imported_unix = fetched_unix;
+    let vulnerabilities = value
+        .get("vulnerabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "NVD snapshot missing vulnerabilities array".to_string())?;
+    let records = vulnerabilities
+        .iter()
+        .filter_map(|item| {
+            item.get("cve")
+                .and_then(|cve| parse_nvd_record(cve, source.source_url.as_str(), imported_unix))
+        })
+        .collect::<Vec<_>>();
 
     Ok(AdvisoryCache {
         schema_version: CACHE_SCHEMA_VERSION,
-        generated_unix: now,
-        sources: vec![AdvisorySourceCache {
-            source_key: "nvd-cve".into(),
-            source_kind: "nvd".into(),
-            source_url: source_url.clone(),
-            imported_from: imported_from.map(|path| path.display().to_string()),
-            imported_from_batch: imported_from
-                .map(|path| vec![path.display().to_string()])
-                .unwrap_or_default(),
-            fetched_unix: now,
-            expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
-            snapshot_sha256: sha256_hex(bytes),
-            total_results,
-            status: SourceHealth::Fresh,
-        }],
+        generated_unix: fetched_unix,
+        sources: vec![source],
         records,
     })
 }
 
-fn merge_cache(existing: Option<AdvisoryCache>, imported: AdvisoryCache) -> AdvisoryCache {
-    let Some(mut merged) = existing else {
-        return imported;
-    };
+fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> AdvisoryCache {
+    let mut merged = existing.unwrap_or_else(|| AdvisoryCache {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_unix: incoming.generated_unix,
+        sources: vec![],
+        records: vec![],
+    });
+    let mut record_index = HashMap::with_capacity(merged.records.len());
+    for (idx, record) in merged.records.iter().enumerate() {
+        record_index.insert(record_key(record), idx);
+    }
 
+    for source in incoming.sources {
+        if !source.imported_from_batch.is_empty() {
+            merge_batch_source(&mut merged.sources, source);
+        } else {
+            merge_source(&mut merged.sources, source);
+        }
+    }
+
+    for record in incoming.records {
+        merge_record_indexed(&mut merged.records, &mut record_index, record);
+    }
+    merged.generated_unix = unix_now();
     merged.schema_version = CACHE_SCHEMA_VERSION;
-    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
-    let mut record_index = merged
-        .records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| (record_identity_key(record), index))
-        .collect::<HashMap<_, _>>();
-
-    for source in imported.sources {
-        merge_source(&mut merged.sources, source);
-    }
-    for record in imported.records {
-        merge_record(&mut merged.records, &mut record_index, record);
-    }
-
     merged
 }
 
-fn merge_import_batch_cache(mut merged: AdvisoryCache, imported: AdvisoryCache) -> AdvisoryCache {
-    merged.schema_version = CACHE_SCHEMA_VERSION;
-    merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
-    let mut record_index = merged
-        .records
-        .iter()
-        .enumerate()
-        .map(|(index, record)| (record_identity_key(record), index))
-        .collect::<HashMap<_, _>>();
-
-    for source in imported.sources {
-        merge_batch_source(&mut merged.sources, source);
-    }
-    for record in imported.records {
-        merge_record(&mut merged.records, &mut record_index, record);
-    }
-
-    merged
+fn merge_import_batch_cache(existing: AdvisoryCache, incoming: AdvisoryCache) -> AdvisoryCache {
+    merge_cache(Some(existing), incoming)
 }
 
-fn merge_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|source| same_source_identity(source, &incoming))
-    {
-        *existing = incoming;
-    } else {
-        sources.push(incoming);
-    }
-}
-
-fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, incoming: AdvisorySourceCache) {
-    if let Some(existing) = sources
-        .iter_mut()
-        .find(|source| same_source_identity(source, &incoming))
-    {
-        existing.source_url =
-            choose_preferred_source_url(&existing.source_url, &incoming.source_url);
-        if existing.imported_from.is_none() {
-            existing.imported_from = incoming.imported_from.clone();
-        }
-        for path in incoming.imported_from_batch {
-            push_unique(&mut existing.imported_from_batch, path);
-        }
-        existing.fetched_unix = existing.fetched_unix.max(incoming.fetched_unix);
-        existing.expires_unix = existing.expires_unix.max(incoming.expires_unix);
-        existing.total_results = existing.total_results.max(incoming.total_results);
-        existing.status = combine_source_health(existing.status.clone(), incoming.status);
-    } else {
-        sources.push(incoming);
-    }
-}
-
-fn merge_record(
-    records: &mut Vec<VulnerabilityRecord>,
-    record_index: &mut HashMap<RecordIdentityKey, usize>,
-    incoming: VulnerabilityRecord,
-) {
-    let key = record_identity_key(&incoming);
-    if let Some(&existing_index) = record_index.get(&key) {
-        if should_replace_record(&records[existing_index], &incoming) {
-            records[existing_index] = incoming;
-        }
-    } else {
-        records.push(incoming);
-        record_index.insert(key, records.len() - 1);
-    }
-}
-
-fn same_source_identity(left: &AdvisorySourceCache, right: &AdvisorySourceCache) -> bool {
-    left.source_kind == right.source_kind && left.source_key == right.source_key
-}
-
-fn choose_preferred_source_url(existing: &str, incoming: &str) -> String {
-    if !incoming.trim().is_empty() {
-        incoming.to_string()
-    } else {
-        existing.to_string()
-    }
-}
-
-fn combine_source_health(left: SourceHealth, right: SourceHealth) -> SourceHealth {
-    if matches!(left, SourceHealth::Error) || matches!(right, SourceHealth::Error) {
-        SourceHealth::Error
-    } else if matches!(left, SourceHealth::Stale) || matches!(right, SourceHealth::Stale) {
-        SourceHealth::Stale
-    } else {
-        SourceHealth::Fresh
-    }
-}
-
-fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
-    let batch_sha256 = if page_hashes.len() > 1 {
-        Some(sha256_hex(page_hashes.join("\n").as_bytes()))
-    } else {
-        None
-    };
-
-    for source in &mut cache.sources {
-        source.imported_from_batch.sort();
-        source.imported_from_batch.dedup();
-        if source.imported_from_batch.len() > 1 {
-            source.imported_from = None;
-            if let Some(batch_sha256) = &batch_sha256 {
-                source.snapshot_sha256 = batch_sha256.clone();
+fn merge_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCache) {
+    if let Some(existing) = sources.iter_mut().find(|existing| {
+        existing.source_key == source.source_key && existing.source_kind == source.source_kind
+    }) {
+        let mut imported_from_batch = existing.imported_from_batch.clone();
+        for path in &source.imported_from_batch {
+            if !imported_from_batch
+                .iter()
+                .any(|existing_path| existing_path == path)
+            {
+                imported_from_batch.push(path.clone());
             }
-        } else if source.imported_from_batch.len() == 1 {
-            source.imported_from = source.imported_from_batch.first().cloned();
         }
+        *existing = source;
+        existing.imported_from_batch = imported_from_batch;
+        if existing.imported_from_batch.len() > 1 {
+            existing.imported_from = None;
+        }
+    } else {
+        sources.push(source);
     }
 }
 
-type RecordIdentityKey = (String, String, String);
-
-fn record_identity_key(record: &VulnerabilityRecord) -> RecordIdentityKey {
-    (
-        record.primary_id.clone(),
-        record.provenance.source_kind.clone(),
-        record.provenance.source_key.clone(),
-    )
+fn merge_batch_source(sources: &mut Vec<AdvisorySourceCache>, source: AdvisorySourceCache) {
+    merge_source(sources, source);
 }
 
-fn should_replace_record(existing: &VulnerabilityRecord, incoming: &VulnerabilityRecord) -> bool {
-    match compare_optional_timestamp(
-        incoming.last_modified.as_deref(),
-        existing.last_modified.as_deref(),
-    ) {
-        Some(std::cmp::Ordering::Greater) => true,
-        Some(std::cmp::Ordering::Less) => false,
-        Some(std::cmp::Ordering::Equal) | None => {
-            incoming.provenance.imported_unix >= existing.provenance.imported_unix
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RecordKey {
+    primary_id: String,
+    source_kind: String,
+    source_key: String,
+}
+
+fn record_key(record: &VulnerabilityRecord) -> RecordKey {
+    RecordKey {
+        primary_id: record.primary_id.clone(),
+        source_kind: record.provenance.source_kind.clone(),
+        source_key: record.provenance.source_key.clone(),
+    }
+}
+
+fn merge_record_indexed(
+    records: &mut Vec<VulnerabilityRecord>,
+    index: &mut HashMap<RecordKey, usize>,
+    record: VulnerabilityRecord,
+) {
+    let key = record_key(&record);
+    if let Some(&existing_idx) = index.get(&key) {
+        let existing = &mut records[existing_idx];
+        let keep_existing = match compare_optional_timestamp(
+            existing.last_modified.as_deref(),
+            record.last_modified.as_deref(),
+        ) {
+            Some(std::cmp::Ordering::Greater) => true,
+            Some(std::cmp::Ordering::Less) => false,
+            Some(std::cmp::Ordering::Equal) | None => {
+                existing.provenance.imported_unix >= record.provenance.imported_unix
+            }
+        };
+        if !keep_existing {
+            *existing = record;
         }
+    } else {
+        index.insert(key, records.len());
+        records.push(record);
     }
 }
 
@@ -477,124 +887,162 @@ fn compare_optional_timestamp(
     left: Option<&str>,
     right: Option<&str>,
 ) -> Option<std::cmp::Ordering> {
-    let left = parse_timestamp(left?)?;
-    let right = parse_timestamp(right?)?;
+    let left = left.and_then(parse_timestamp)?;
+    let right = right.and_then(parse_timestamp)?;
     Some(left.cmp(&right))
 }
 
 fn parse_timestamp(value: &str) -> Option<chrono::DateTime<chrono::Utc>> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    chrono::DateTime::parse_from_rfc3339(trimmed)
-        .map(|timestamp| timestamp.with_timezone(&chrono::Utc))
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|ts| ts.with_timezone(&chrono::Utc))
         .ok()
         .or_else(|| {
-            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%dT%H:%M:%S%.f")
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
                 .ok()
-                .map(|timestamp| timestamp.and_utc())
+                .map(|ts| {
+                    chrono::DateTime::<chrono::Utc>::from_naive_utc_and_offset(ts, chrono::Utc)
+                })
         })
 }
 
 fn parse_nvd_record(
-    item: &Value,
-    imported_unix: u64,
+    cve: &Value,
     source_url: &str,
-) -> Result<Option<VulnerabilityRecord>, String> {
-    let Some(cve) = item.get("cve") else {
-        return Ok(None);
-    };
-    let Some(primary_id) = cve.get("id").and_then(Value::as_str) else {
-        return Ok(None);
-    };
-
-    let references = cve
-        .get("references")
-        .and_then(Value::as_array)
-        .map(|refs| refs.iter().filter_map(parse_reference).collect::<Vec<_>>())
-        .unwrap_or_default();
-
-    let mut mitigations = Vec::new();
-    for reference in &references {
-        let lower_tags = reference
-            .tags
-            .iter()
-            .map(|tag| tag.to_ascii_lowercase())
-            .collect::<Vec<_>>();
-        if lower_tags.iter().any(|tag| {
-            tag.contains("mitigation") || tag.contains("vendor advisory") || tag.contains("patch")
-        }) {
-            push_unique(&mut mitigations, reference.url.clone());
-        }
+    imported_unix: u64,
+) -> Option<VulnerabilityRecord> {
+    let id = cve.get("id").and_then(Value::as_str)?.trim();
+    if id.is_empty() {
+        return None;
     }
 
-    Ok(Some(VulnerabilityRecord {
-        primary_id: primary_id.to_string(),
-        aliases: Vec::new(),
-        summary: english_description(cve),
-        published: cve
-            .get("published")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        last_modified: cve
-            .get("lastModified")
-            .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
+    let summary = extract_summary(cve);
+    let severities = parse_severities(cve);
+    let references = parse_references(cve);
+    let mitigations = parse_mitigations(cve);
+    let affected_products = parse_affected_products(cve);
+    let aliases = cve
+        .get("weaknesses")
+        .and_then(Value::as_array)
+        .map(|weaknesses| {
+            weaknesses
+                .iter()
+                .flat_map(|weakness| {
+                    weakness
+                        .get("description")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|description| description.get("value").and_then(Value::as_str))
+                        .map(|value| value.trim().to_string())
+                })
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let published = cve
+        .get("published")
+        .and_then(Value::as_str)
+        .map(|value| value.to_string());
+    let last_modified = cve
+        .get("lastModified")
+        .and_then(Value::as_str)
+        .map(|value| value.to_string());
+
+    Some(VulnerabilityRecord {
+        primary_id: id.to_string(),
+        aliases,
+        summary,
+        published,
+        last_modified,
         known_exploited: parse_known_exploited(cve),
-        severities: parse_severities(cve),
-        affected_products: parse_affected_products(cve),
+        severities,
+        affected_products,
         references,
         mitigations,
         provenance: VulnerabilityProvenance {
-            source_kind: "nvd".into(),
-            source_key: "nvd-cve".into(),
+            source_kind: NVD_SOURCE_KIND.into(),
+            source_key: NVD_SOURCE_KEY.into(),
             source_url: source_url.to_string(),
             imported_unix,
         },
-    }))
+    })
 }
 
-fn english_description(cve: &Value) -> String {
-    cve.get("descriptions")
-        .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find_map(|item| {
-                let lang = item.get("lang").and_then(Value::as_str)?;
-                if lang.eq_ignore_ascii_case("en") {
-                    item.get("value").and_then(Value::as_str)
-                } else {
+fn extract_summary(cve: &Value) -> String {
+    let Some(descriptions) = cve.get("descriptions").and_then(Value::as_array) else {
+        return String::new();
+    };
+
+    descriptions
+        .iter()
+        .find_map(|description| {
+            let lang = description.get("lang").and_then(Value::as_str)?;
+            if !lang.eq_ignore_ascii_case("en") && !lang.to_ascii_lowercase().starts_with("en-") {
+                return None;
+            }
+            let value = description.get("value").and_then(Value::as_str)?.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            }
+        })
+        .or_else(|| {
+            descriptions.iter().find_map(|description| {
+                let value = description.get("value").and_then(Value::as_str)?.trim();
+                if value.is_empty() {
                     None
+                } else {
+                    Some(value.to_string())
                 }
             })
         })
-        .or_else(|| {
-            cve.get("descriptions")
-                .and_then(Value::as_array)
-                .and_then(|items| {
-                    items
-                        .iter()
-                        .find_map(|item| item.get("value").and_then(Value::as_str))
-                })
-        })
         .unwrap_or_default()
-        .trim()
-        .to_string()
 }
 
-fn parse_reference(value: &Value) -> Option<VulnerabilityReference> {
-    let url = value.get("url").and_then(Value::as_str)?.trim();
+fn parse_mitigations(cve: &Value) -> Vec<String> {
+    let mut mitigations = Vec::new();
+    if let Some(references) = cve.get("references").and_then(Value::as_array) {
+        for reference in references {
+            let Some(url) = reference.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(tags) = reference.get("tags").and_then(Value::as_array) else {
+                continue;
+            };
+            if tags.iter().filter_map(Value::as_str).any(|tag| {
+                tag.eq_ignore_ascii_case("mitigation")
+                    || tag.eq_ignore_ascii_case("vendor advisory")
+                    || tag.eq_ignore_ascii_case("patch")
+            }) {
+                push_unique(&mut mitigations, url.to_string());
+            }
+        }
+    }
+    mitigations
+}
+
+fn parse_references(cve: &Value) -> Vec<VulnerabilityReference> {
+    cve.get("references")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(parse_reference).collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+fn parse_reference(item: &Value) -> Option<VulnerabilityReference> {
+    let url = item.get("url").and_then(Value::as_str)?.trim();
     if url.is_empty() {
         return None;
     }
+
     Some(VulnerabilityReference {
         url: url.to_string(),
-        source: value
+        source: item
             .get("source")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned),
-        tags: value
+            .map(|value| value.to_string()),
+        tags: item
             .get("tags")
             .and_then(Value::as_array)
             .map(|tags| {
@@ -679,6 +1127,22 @@ fn parse_affected_products(cve: &Value) -> Vec<AffectedProduct> {
     dedupe_products(products)
 }
 
+fn finalize_import_batch_metadata(cache: &mut AdvisoryCache, page_hashes: &[String]) {
+    if page_hashes.len() <= 1 {
+        return;
+    }
+
+    let combined_hash = sha256_hex(page_hashes.join(":").as_bytes());
+    for source in &mut cache.sources {
+        if !source.imported_from_batch.is_empty() {
+            source.snapshot_sha256 = combined_hash.clone();
+            if source.imported_from_batch.len() > 1 {
+                source.imported_from = None;
+            }
+        }
+    }
+}
+
 fn collect_cpe_matches(value: &Value, out: &mut Vec<AffectedProduct>) {
     match value {
         Value::Array(items) => {
@@ -709,6 +1173,8 @@ fn parse_cpe_match(value: &Value) -> Option<AffectedProduct> {
     }
     Some(AffectedProduct {
         criteria: criteria.to_string(),
+        match_criteria_id: string_field(value, "matchCriteriaId"),
+        cpe_name: string_field(value, "cpeName"),
         vulnerable: value
             .get("vulnerable")
             .and_then(Value::as_bool)
@@ -734,6 +1200,8 @@ fn dedupe_products(products: Vec<AffectedProduct>) -> Vec<AffectedProduct> {
     for product in products {
         if deduped.iter().any(|existing: &AffectedProduct| {
             existing.criteria == product.criteria
+                && existing.match_criteria_id == product.match_criteria_id
+                && existing.cpe_name == product.cpe_name
                 && existing.vulnerable == product.vulnerable
                 && existing.version_start_including == product.version_start_including
                 && existing.version_start_excluding == product.version_start_excluding
@@ -819,6 +1287,8 @@ mod tests {
                             "cpeMatch": [{
                                 "vulnerable": true,
                                 "criteria": "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*",
+                                "matchCriteriaId": "36FBCF0F-8CEE-474C-8A04-5075AF53FAF4",
+                                "cpeName": "cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*",
                                 "versionStartIncluding": "1.0.0",
                                 "versionEndExcluding": "1.2.0"
                             }]
@@ -854,8 +1324,47 @@ mod tests {
             record.affected_products[0].criteria,
             "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*"
         );
+        assert_eq!(
+            record.affected_products[0].match_criteria_id.as_deref(),
+            Some("36FBCF0F-8CEE-474C-8A04-5075AF53FAF4")
+        );
+        assert_eq!(
+            record.affected_products[0].cpe_name.as_deref(),
+            Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*")
+        );
         assert_eq!(record.references.len(), 1);
         assert_eq!(record.mitigations, vec!["https://example.com/advisory"]);
+    }
+
+    #[test]
+    fn dedupe_products_keeps_distinct_cpe_metadata_rows() {
+        let primary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-one".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.0.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+        let secondary = AffectedProduct {
+            criteria: "cpe:2.3:a:example:vigil-helper:*:*:*:*:*:*:*:*".into(),
+            match_criteria_id: Some("id-two".into()),
+            cpe_name: Some("cpe:2.3:a:example:vigil-helper:1.1.0:*:*:*:*:*:*:*".into()),
+            vulnerable: true,
+            version_start_including: Some("1.0.0".into()),
+            version_start_excluding: None,
+            version_end_including: None,
+            version_end_excluding: Some("1.2.0".into()),
+        };
+
+        let deduped = dedupe_products(vec![primary.clone(), secondary.clone()]);
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].criteria, primary.criteria);
+        assert_eq!(deduped[0].match_criteria_id, primary.match_criteria_id);
+        assert_eq!(deduped[1].criteria, secondary.criteria);
+        assert_eq!(deduped[1].match_criteria_id, secondary.match_criteria_id);
     }
 
     #[test]
@@ -876,6 +1385,8 @@ mod tests {
                 snapshot_sha256: "abc".into(),
                 total_results: 1,
                 status: SourceHealth::Fresh,
+                last_attempt_unix: 0,
+                last_error: None,
             }],
             records: vec![VulnerabilityRecord {
                 primary_id: "CVE-2026-9999".into(),
@@ -909,6 +1420,8 @@ mod tests {
                     snapshot_sha256: "old".into(),
                     total_results: 1,
                     status: SourceHealth::Fresh,
+                    last_attempt_unix: 0,
+                    last_error: None,
                 },
                 AdvisorySourceCache {
                     source_key: "euvd".into(),
@@ -921,6 +1434,8 @@ mod tests {
                     snapshot_sha256: "euvd".into(),
                     total_results: 1,
                     status: SourceHealth::Fresh,
+                    last_attempt_unix: 0,
+                    last_error: None,
                 },
             ],
             records: vec![
@@ -963,6 +1478,8 @@ mod tests {
                 snapshot_sha256: "new".into(),
                 total_results: 2,
                 status: SourceHealth::Fresh,
+                last_attempt_unix: 0,
+                last_error: None,
             }],
             records: vec![
                 VulnerabilityRecord {
@@ -1147,6 +1664,93 @@ mod tests {
             .records
             .iter()
             .any(|record| record.primary_id == "CVE-2026-2000"));
+    }
+
+    #[test]
+    fn extract_summary_prefers_english_locale_and_falls_back() {
+        let english_locale = json!({
+            "descriptions": [
+                {"lang": "fr", "value": "Resume"},
+                {"lang": "en-US", "value": "English summary"}
+            ]
+        });
+        assert_eq!(extract_summary(&english_locale), "English summary");
+
+        let fallback = json!({
+            "descriptions": [
+                {"lang": "fr", "value": "Resume"},
+                {"lang": "de", "value": "Zusammenfassung"}
+            ]
+        });
+        assert_eq!(extract_summary(&fallback), "Resume");
+    }
+
+    #[test]
+    fn nvd_sync_windows_split_long_offline_gaps() {
+        let existing = AdvisoryCache {
+            schema_version: CACHE_SCHEMA_VERSION,
+            generated_unix: 0,
+            sources: vec![],
+            records: vec![VulnerabilityRecord {
+                primary_id: "CVE-2026-12345".into(),
+                last_modified: Some("2026-01-01T00:00:00.000".into()),
+                provenance: VulnerabilityProvenance {
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_url: NVD_API_URL.into(),
+                    imported_unix: 0,
+                },
+                ..VulnerabilityRecord::default()
+            }],
+        };
+        let now = parse_timestamp("2026-06-15T00:00:00.000")
+            .unwrap()
+            .timestamp() as u64;
+        let windows = nvd_sync_windows(Some(&existing), now);
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            windows[0],
+            (
+                Some("2026-01-01T00:00:00.000Z".into()),
+                Some("2026-05-01T00:00:00.000Z".into())
+            )
+        );
+        assert_eq!(
+            windows[1],
+            (
+                Some("2026-05-01T00:00:00.000Z".into()),
+                Some("2026-06-15T00:00:00.000Z".into())
+            )
+        );
+        assert_eq!(nvd_sync_windows(None, now), vec![(None, None)]);
+    }
+
+    #[test]
+    fn stamp_nvd_sync_failure_creates_source_for_first_failure() {
+        let cache = stamp_nvd_sync_failure(empty_cache(0), "boom", 42);
+        assert_eq!(cache.sources.len(), 1);
+        let source = &cache.sources[0];
+        assert_eq!(source.source_key, NVD_SOURCE_KEY);
+        assert_eq!(source.source_kind, NVD_SOURCE_KIND);
+        assert_eq!(source.last_attempt_unix, 42);
+        assert_eq!(source.last_error.as_deref(), Some("boom"));
+        assert_eq!(source.status, SourceHealth::Stale);
+    }
+
+    #[test]
+    fn next_request_delay_only_throttles_close_successive_requests() {
+        let now = Instant::now();
+        let delay = Duration::from_secs(6);
+
+        assert_eq!(next_request_delay(None, now, delay), Duration::ZERO);
+        assert_eq!(
+            next_request_delay(now.checked_sub(Duration::from_secs(8)), now, delay),
+            Duration::ZERO
+        );
+        assert_eq!(
+            next_request_delay(now.checked_sub(Duration::from_secs(2)), now, delay),
+            Duration::from_secs(4)
+        );
     }
 
     fn temp_dir() -> PathBuf {

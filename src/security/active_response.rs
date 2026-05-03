@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::net::{IpAddr, SocketAddr, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, RwLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
@@ -24,6 +24,7 @@ const ISOLATION_MAX_SECS: u64 = 60 * 60;
 const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 const PROCESS_RULE_PREFIX_LEN: usize = 48;
 const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
+const QUERY_STATE_CACHE_TTL: Duration = Duration::from_millis(250);
 
 #[path = "active_response_platform.rs"]
 mod platform;
@@ -36,6 +37,25 @@ pub struct Status {
     pub suspended_processes: usize,
     pub frozen_autoruns: bool,
     pub isolated: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct InspectorSnapshot {
+    pub status: Status,
+    pub remote_target: Option<String>,
+    pub remote_blocked: bool,
+    pub remote_remaining: Option<Duration>,
+    pub domain_target: Option<String>,
+    pub domain_blocked: bool,
+    pub process_blocked: bool,
+    pub process_remaining: Option<Duration>,
+    pub process_suspended: bool,
+    pub connection_kill_enabled: bool,
+    pub quarantine_ready: bool,
+    pub suspend_enabled: bool,
+    pub firewall_modifiable: bool,
+    pub network_isolation_modifiable: bool,
+    pub domain_modifiable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -189,6 +209,14 @@ impl DurationPreset {
             Self::Permanent => None,
         }
     }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OneHour => "1h",
+            Self::OneDay => "24h",
+            Self::Permanent => "Permanent",
+        }
+    }
 }
 
 pub fn status() -> Status {
@@ -238,6 +266,115 @@ pub fn can_block_domain() -> bool {
 }
 pub fn can_apply_quarantine_profile(pid: u32, path: &str) -> bool {
     platform::is_supported() && platform::is_elevated() && (pid != 0 || !path.trim().is_empty())
+}
+
+pub fn inspector_snapshot(
+    pid: u32,
+    path: &str,
+    selected_connection: Option<&ConnInfo>,
+) -> InspectorSnapshot {
+    let state = load_state_for_query("inspector_snapshot");
+    let state_ref = state.as_ref();
+    let now = unix_now();
+    let status = state_ref.map_or_else(
+        || Status {
+            isolated: platform::isolation_controls_active(&State::default()).unwrap_or(false),
+            ..Status::default()
+        },
+        |state| Status {
+            blocked_rules: state.blocked.len() + state.blocked_processes.len(),
+            blocked_processes: state.blocked_processes.len(),
+            blocked_domains: state.blocked_domains.len(),
+            suspended_processes: state.suspended_processes.len(),
+            frozen_autoruns: state.autorun_snapshot.is_some(),
+            isolated: isolation_effective_now(state, now),
+        },
+    );
+    let firewall_modifiable = can_modify_firewall();
+    let network_isolation_modifiable = can_isolate_network();
+    let domain_modifiable = can_block_domain();
+    let suspend_enabled = can_suspend_process(pid);
+    let quarantine_ready = can_apply_quarantine_profile(pid, path);
+    let (remote_target, remote_blocked, remote_remaining, domain_target, domain_blocked) =
+        if let Some(conn) = selected_connection {
+            let remote_target = extract_remote_target(&conn.remote_addr);
+            let domain_target = extract_domain_target(conn);
+            let remote_blocked = remote_target.as_deref().is_some_and(|target| {
+                state_ref
+                    .is_some_and(|state| state.blocked.iter().any(|rule| rule.target == target))
+            });
+            let remote_remaining = remote_target.as_deref().and_then(|target| {
+                state_ref.and_then(|state| {
+                    state
+                        .blocked
+                        .iter()
+                        .find(|rule| rule.target == target)
+                        .and_then(|rule| rule.expires_at_unix)
+                        .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+                        .map(Duration::from_secs)
+                })
+            });
+            let domain_blocked = domain_target.as_deref().is_some_and(|domain| {
+                state_ref.is_some_and(|state| {
+                    state
+                        .blocked_domains
+                        .iter()
+                        .any(|entry| entry.domain == domain)
+                })
+            });
+            (
+                remote_target,
+                remote_blocked,
+                remote_remaining,
+                domain_target,
+                domain_blocked,
+            )
+        } else {
+            (None, false, None, None, false)
+        };
+    let normalized_path = normalise_target(path).ok();
+    let process_blocked = state_ref
+        .zip(normalized_path.as_ref())
+        .is_some_and(|(state, path)| {
+            state
+                .blocked_processes
+                .iter()
+                .any(|rule| process_block_matches(rule, path))
+        });
+    let process_remaining = state_ref.and_then(|state| {
+        let path = normalise_target(path).ok()?;
+        state
+            .blocked_processes
+            .iter()
+            .find(|rule| process_block_matches(rule, &path))
+            .and_then(|rule| rule.expires_at_unix)
+            .and_then(|expires_at_unix| expires_at_unix.checked_sub(now))
+            .map(Duration::from_secs)
+    });
+    let process_suspended = state_ref.is_some_and(|state| {
+        state
+            .suspended_processes
+            .iter()
+            .any(|entry| suspended_process_matches(entry, pid, path))
+    });
+    let connection_kill_enabled = selected_connection.is_some_and(can_kill_connection);
+    InspectorSnapshot {
+        status,
+        remote_target,
+        remote_blocked,
+        remote_remaining,
+        domain_target,
+        domain_blocked,
+        process_blocked,
+        process_remaining,
+        process_suspended,
+        connection_kill_enabled,
+        quarantine_ready,
+        suspend_enabled,
+        firewall_modifiable,
+        network_isolation_modifiable,
+        domain_modifiable,
+    }
 }
 
 pub fn freeze_autoruns() -> Result<String, String> {
@@ -857,9 +994,6 @@ pub fn restore_machine() -> Result<String, String> {
                 isolated: true,
                 ..State::default()
             };
-            // Restore is the safety path. If the protected state is unreadable,
-            // still attempt legacy rule cleanup plus adapter re-enable instead
-            // of leaving the host isolated until manual intervention.
             (state, Some(err))
         }
     };
@@ -1344,6 +1478,22 @@ fn note_state_load_error_once(context: &str, err: &str) {
 }
 
 static STATE_PATH_OVERRIDE: OnceLock<RwLock<Option<PathBuf>>> = OnceLock::new();
+#[derive(Clone)]
+struct QueryStateCache {
+    path: PathBuf,
+    signature: Option<StateFileSignature>,
+    loaded_at: Instant,
+    state: State,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateFileSignature {
+    modified: Option<SystemTime>,
+    len: u64,
+}
+
+static QUERY_STATE_CACHE: OnceLock<RwLock<Option<QueryStateCache>>> = OnceLock::new();
+
 fn state_path() -> PathBuf {
     let override_lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
     if let Some(path) = override_lock.read().unwrap().clone() {
@@ -1356,18 +1506,84 @@ fn load_state() -> Result<State, String> {
     load_state_from_path(&path)
 }
 fn load_state_for_query(context: &str) -> Option<State> {
-    match load_state() {
+    let path = state_path();
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    {
+        let cache = cache_lock.read().unwrap();
+        if let Some(cache) = cache.as_ref() {
+            if cache.path == path && cache.loaded_at.elapsed() <= QUERY_STATE_CACHE_TTL {
+                return Some(cache.state.clone());
+            }
+        }
+    }
+
+    let signature = state_file_signature(&path);
+    {
+        let mut cache = cache_lock.write().unwrap();
+        if let Some(existing) = cache.as_mut() {
+            if existing.path == path && existing.signature == signature {
+                existing.loaded_at = Instant::now();
+                return Some(existing.state.clone());
+            }
+        }
+    }
+
+    match load_state_from_path(&path) {
         Ok(state) => Some(state),
         Err(err) => {
             note_state_load_error_once(context, &err);
             None
         }
     }
+    .inspect(|state| {
+        let mut cache = cache_lock.write().unwrap();
+        *cache = Some(QueryStateCache {
+            path,
+            signature,
+            loaded_at: Instant::now(),
+            state: state.clone(),
+        });
+    })
 }
+
+fn state_file_signature(path: &Path) -> Option<StateFileSignature> {
+    path.metadata().ok().map(|metadata| StateFileSignature {
+        modified: metadata.modified().ok(),
+        len: metadata.len(),
+    })
+}
+
+fn update_query_state_cache(path: &Path, state: &State) {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = Some(QueryStateCache {
+        path: path.to_path_buf(),
+        signature: state_file_signature(path),
+        loaded_at: Instant::now(),
+        state: state.clone(),
+    });
+}
+
+fn clear_query_state_cache() {
+    let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
+    let mut cache = cache_lock.write().unwrap();
+    *cache = None;
+}
+
 fn save_state(state: &State) -> Result<(), String> {
     let data = serde_json::to_vec_pretty(state)
         .map_err(|e| format!("serialize active response state: {e}"))?;
-    crate::security::policy::save_json_with_integrity(&state_path(), &data)
+    let path = state_path();
+    match crate::security::policy::save_json_with_integrity(&path, &data) {
+        Ok(()) => {
+            update_query_state_cache(&path, state);
+            Ok(())
+        }
+        Err(err) => {
+            clear_query_state_cache();
+            Err(err)
+        }
+    }
 }
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
@@ -1391,23 +1607,6 @@ fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::RwLock;
-
-    struct StatePathGuard;
-    impl StatePathGuard {
-        fn set(path: PathBuf) -> Self {
-            let lock = STATE_PATH_OVERRIDE.get_or_init(|| RwLock::new(None));
-            *lock.write().unwrap() = Some(path);
-            Self
-        }
-    }
-    impl Drop for StatePathGuard {
-        fn drop(&mut self) {
-            if let Some(lock) = STATE_PATH_OVERRIDE.get() {
-                *lock.write().unwrap() = None;
-            }
-        }
-    }
 
     fn blocked_target(target: &str, expires_at_unix: Option<u64>) -> BlockedTarget {
         BlockedTarget {

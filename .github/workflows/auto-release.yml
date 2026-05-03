@@ -319,6 +319,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEXT_VERSION: ${{ steps.version.outputs.next_version }}
           SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          PR_NUMBER: ${{ steps.pr.outputs.pr_number }}
         run: |
           gh api \
             --method POST \
@@ -327,7 +328,8 @@ jobs:
             -f ref="master" \
             -f inputs[tag]="v${NEXT_VERSION}" \
             -f inputs[version]="${NEXT_VERSION}" \
-            -f inputs[source_ref]="${SOURCE_REF}"
+            -f inputs[source_ref]="${SOURCE_REF}" \
+            -f inputs[pr_number]="${PR_NUMBER}"
 
       - name: Report skipped release
         if: always() && steps.tag.outputs.release_ready != 'true'

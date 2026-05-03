@@ -21,6 +21,13 @@ activity quickly, help the operator understand what is happening, preserve
 evidence when needed, and contain the machine or process without turning every
 high-noise event into a destructive action.
 
+Vigil also treats public vulnerability and advisory matches conservatively. A
+match means Vigil found a plausible link between software on the machine and a
+public CVE or advisory record from its local source cache; it does not mean
+exploitation happened or that the machine is confirmed compromised. Treat a
+match as operator decision support alongside process context, exposure, and
+vendor remediation guidance.
+
 ![Vigil current UI](docs/images/vigil-current.png)
 
 ---
@@ -31,6 +38,7 @@ high-noise event into a destructive action.
 - [Security policy](SECURITY.md) — vulnerability reporting and security contacts
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
 - [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
+- [Advisory source compliance](docs/ADVISORY-SOURCE-COMPLIANCE.md) — attribution, caching, and reuse rules for public vulnerability and advisory feeds
 
 ---
 
@@ -86,6 +94,60 @@ incremental batches:
 ```bash
 vigil --import-nvd-snapshot nvdcve-page-1.json nvdcve-page-2.json
 ```
+
+Vigil can also pull the live NVD CVE API directly into the same protected
+cache. The sync path uses incremental `lastModStartDate` / `lastModEndDate`
+windows after the first fetch, respects the NVD's 2-hour automated polling
+guidance, and keeps the last trusted cache if refresh fails:
+
+```bash
+vigil --sync-nvd
+```
+
+Vigil can also maintain a separate protected cache of the public NVD CVE
+change-history feed so operators can audit re-analysis and upstream metadata
+changes over time:
+
+```bash
+vigil --sync-nvd-change-history
+vigil --advisory-change-history-status
+```
+
+For offline or batched imports, pass one or more local NVD CVE change-history
+JSON snapshots:
+
+```bash
+vigil --import-nvd-change-history nvdcvehistory-page-1.json nvdcvehistory-page-2.json
+```
+
+When Vigil is using the live NVD API, `vigil --advisory-cache-status` now shows
+the required notice: "This product uses the NVD API but is not endorsed or
+certified by the NVD."
+
+Use `--sync-nvd --force` only when you need to override the normal 2-hour
+minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if your deployment
+needs higher NVD API headroom.
+
+Phase 16 also includes offline foundations for additional public advisory
+sources. Operators can import one or more local EUVD JSON snapshots into the
+same protected advisory cache with:
+
+```bash
+vigil --import-euvd euvd-export.json
+```
+
+JVN / JVN iPedia snapshots support either JSON exports or JVNDBRSS XML items,
+including batched imports when a feed is mirrored into multiple files:
+
+```bash
+vigil --import-jvn jvn-export.json jvndbrss.xml
+```
+
+Those EUVD and JVN import paths preserve source-specific identifiers,
+references, mitigation guidance, and provenance in the protected advisory cache.
+They are intentionally operator-supplied/offline foundations for now; live
+scheduled fetching remains future work until the upstream feed contracts are
+pinned down conservatively.
 
 ---
 
@@ -191,8 +253,10 @@ Vigil also runs two passive persistence watchers that raise synthetic alerts
 
 1. Download `Vigil-Setup-<version>-x86_64.exe` from the [latest release].
 2. Run the installer — by default it installs for the current user, creates a
-   Start Menu shortcut, and registers it for autostart. If you choose an
-   all-users install during setup, Vigil is installed in `Program Files`.
+   Start Menu shortcut, and enables Vigil to start when you log in.
+3. If you want monitoring to begin before login, choose an all-users install
+   during setup. On Windows, the elevated installer now registers the boot-time
+   monitor service automatically for that install mode.
 
 > **Note:** ETW-based real-time monitoring requires Administrator rights.
 > Without elevation, Vigil falls back to polling every few seconds — all
@@ -340,7 +404,9 @@ Connections captured before login get a **+2 score bump** and a red
 **`PL`** badge in the Time column, so when the first user logs in they
 immediately see everything the monitor caught during boot.
 
-From an elevated shell:
+On Windows, the all-users installer path now registers this boot-time monitor
+service automatically. You can still install or repair it manually from an
+elevated shell:
 
 | OS      | Command                                          |
 | ------- | ------------------------------------------------ |
@@ -352,7 +418,7 @@ To remove the boot-time service, replace with `--uninstall-service`.
 
 Under the hood:
 
-- Windows uses the Service Control Manager (`sc create Vigil …`).
+- Windows uses Task Scheduler with an `ONSTART` task that runs Vigil as `SYSTEM`.
 - macOS writes a launchd system daemon at
   `/Library/LaunchDaemons/com.vigil.monitor.plist` and `launchctl load`s it.
 - Linux writes a systemd unit at `/etc/systemd/system/vigil.service` and

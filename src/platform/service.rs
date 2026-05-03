@@ -7,7 +7,7 @@
 //!
 //! | OS      | Mechanism                     | Location                                      |
 //! | ------- | ----------------------------- | --------------------------------------------- |
-//! | Windows | Service Control Manager (SCM) | `sc create Vigil …`                           |
+//! | Windows | Task Scheduler                | `schtasks /Create ...`                        |
 //! | macOS   | launchd system daemon         | `/Library/LaunchDaemons/com.vigil.monitor.plist` |
 //! | Linux   | systemd system unit           | `/etc/systemd/system/vigil.service`           |
 //!
@@ -24,6 +24,10 @@
 /// to stdout; `Err(msg)` is printed to stderr and the process exits 1.
 pub type CmdResult = Result<String, String>;
 
+/// Internal headless entrypoint used by OS services / daemons.
+pub const SERVICE_MODE_FLAG: &str = "--service-mode";
+pub const DATA_DIR_FLAG: &str = "--data-dir";
+
 pub fn install() -> CmdResult {
     let exe =
         std::env::current_exe().map_err(|e| format!("could not resolve current exe path: {e}"))?;
@@ -34,75 +38,140 @@ pub fn uninstall() -> CmdResult {
     platform::uninstall()
 }
 
-// ── Windows ───────────────────────────────────────────────────────────────────
+// ── Windows ─────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
 mod platform {
     use super::*;
     use crate::platform::command_paths;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
 
-    const SVC_NAME: &str = "Vigil";
+    const TASK_NAME: &str = "VigilBootMonitor";
+    const LEGACY_SERVICE_NAME: &str = "Vigil";
 
     pub fn install(exe: &Path) -> CmdResult {
-        // sc create Vigil binPath= "\"C:\path\to\vigil.exe\"" start= auto
-        let bin_path = format!("\"{}\"", exe.display());
-        let status = Command::new(command_paths::resolve("sc")?)
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
+        let task_command = format!(
+            r#""{}" {} {} "{}""#,
+            exe.display(),
+            SERVICE_MODE_FLAG,
+            DATA_DIR_FLAG,
+            shared_data_dir.display()
+        );
+        let status = Command::new(command_paths::resolve("schtasks")?)
             .args([
-                "create",
-                SVC_NAME,
-                "binPath=",
-                &bin_path,
-                "start=",
-                "auto",
-                "DisplayName=",
-                "Vigil Network Monitor",
+                "/Create",
+                "/TN",
+                TASK_NAME,
+                "/TR",
+                &task_command,
+                "/SC",
+                "ONSTART",
+                "/RU",
+                "SYSTEM",
+                "/RL",
+                "HIGHEST",
+                "/F",
             ])
             .status()
-            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
         if !status.success() {
-            return Err("`sc create` failed.  Open an *elevated* Command Prompt \
+            return Err(
+                "`schtasks /Create` failed.  Open an *elevated* Command Prompt \
                  (Run as Administrator) and re-run `vigil --install-service`."
-                .into());
+                    .into(),
+            );
         }
 
-        let _ = Command::new(command_paths::resolve("sc")?)
-            .args(["start", SVC_NAME])
+        let _ = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Run", "/TN", TASK_NAME])
             .status();
         Ok(format!(
-            "Installed Windows service `{SVC_NAME}` and started it.  \
-             It will auto-start at boot from now on.\n\
+            "Installed Windows boot-time monitor task `{TASK_NAME}` and started it.  \
+             It will auto-start before login from now on.\n\
              To remove:  vigil --uninstall-service"
         ))
     }
 
     pub fn uninstall() -> CmdResult {
+        let mut removed_any = false;
+        let task_path = task_path();
+
+        let task_query = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Query", "/TN", TASK_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+        if task_query.status.success() {
+            let _ = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/End", "/TN", TASK_NAME])
+                .status();
+            let delete = Command::new(command_paths::resolve("schtasks")?)
+                .args(["/Delete", "/TN", TASK_NAME, "/F"])
+                .output()
+                .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+            if !delete.status.success() {
+                return Err(format!(
+                    "`schtasks /Delete` failed unexpectedly: {}",
+                    command_output_summary(&delete)
+                ));
+            }
+            removed_any = true;
+        } else if task_path
+            .try_exists()
+            .map_err(|e| format!("could not inspect {}: {e}", task_path.display()))?
+        {
+            return Err(format!(
+                "`schtasks /Query /TN {TASK_NAME}` failed unexpectedly: {}",
+                command_output_summary(&task_query)
+            ));
+        }
+
         let query = Command::new(command_paths::resolve("sc")?)
-            .args(["query", SVC_NAME])
+            .args(["query", LEGACY_SERVICE_NAME])
             .output()
             .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
-        if !query.status.success() {
-            if service_does_not_exist(&query) {
-                return Ok(format!("Windows service `{SVC_NAME}` was not installed."));
+        if query.status.success() {
+            let _ = Command::new(command_paths::resolve("sc")?)
+                .args(["stop", LEGACY_SERVICE_NAME])
+                .status();
+            let status = Command::new(command_paths::resolve("sc")?)
+                .args(["delete", LEGACY_SERVICE_NAME])
+                .status()
+                .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
+            if !status.success() {
+                return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
             }
+            removed_any = true;
+        } else if !service_does_not_exist(&query) {
             return Err(format!(
-                "`sc query {SVC_NAME}` failed unexpectedly: {}",
+                "`sc query {LEGACY_SERVICE_NAME}` failed unexpectedly: {}",
                 command_output_summary(&query)
             ));
         }
 
-        let _ = Command::new(command_paths::resolve("sc")?)
-            .args(["stop", SVC_NAME])
-            .status();
-        let status = Command::new(command_paths::resolve("sc")?)
-            .args(["delete", SVC_NAME])
-            .status()
-            .map_err(|e| format!("failed to spawn `sc`: {e}"))?;
-        if !status.success() {
-            return Err("`sc delete` failed.  Re-run from an elevated Command Prompt.".into());
+        if removed_any {
+            Ok(format!(
+                "Removed Windows boot-time monitor task `{TASK_NAME}` and any legacy Windows service `{LEGACY_SERVICE_NAME}`."
+            ))
+        } else {
+            Ok(format!(
+                "Windows boot-time monitor task `{TASK_NAME}` was not installed."
+            ))
         }
-        Ok(format!("Removed Windows service `{SVC_NAME}`."))
+    }
+
+    fn task_path() -> PathBuf {
+        let mut path = std::env::var_os("SystemRoot")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+        path.push("System32");
+        path.push("Tasks");
+        path.push(TASK_NAME);
+        path
     }
 
     fn service_does_not_exist(output: &Output) -> bool {
@@ -151,6 +220,10 @@ mod platform {
                 .into());
         }
 
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
         let exe = xml_escape(&exe.display().to_string());
         let plist = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -158,7 +231,7 @@ mod platform {
 <plist version="1.0">
 <dict>
     <key>Label</key>             <string>{LABEL}</string>
-    <key>ProgramArguments</key>  <array><string>{exe}</string></array>
+    <key>ProgramArguments</key>  <array><string>{exe}</string><string>{service_flag}</string><string>{data_dir_flag}</string><string>{shared_data_dir}</string></array>
     <key>RunAtLoad</key>         <true/>
     <key>KeepAlive</key>         <true/>
     <key>StandardOutPath</key>   <string>/var/log/vigil.log</string>
@@ -167,6 +240,9 @@ mod platform {
 </plist>
 "#,
             exe = exe,
+            service_flag = SERVICE_MODE_FLAG,
+            data_dir_flag = DATA_DIR_FLAG,
+            shared_data_dir = xml_escape(&shared_data_dir.display().to_string()),
         );
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
@@ -223,7 +299,7 @@ mod platform {
         text.replace('&', "&amp;")
             .replace('<', "&lt;")
             .replace('>', "&gt;")
-            .replace('\"', "&quot;")
+            .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
 }
@@ -251,6 +327,10 @@ mod platform {
                 .into());
         }
 
+        let shared_data_dir = exe
+            .parent()
+            .map(|d| d.join("vigil-data"))
+            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
         let exe = systemd_quote(&exe.display().to_string());
         let unit = format!(
             "[Unit]\n\
@@ -259,7 +339,7 @@ mod platform {
              \n\
              [Service]\n\
              Type=simple\n\
-             ExecStart={exe}\n\
+             ExecStart={exe} {service_flag} {data_dir_flag} {shared_data_dir}\n\
              Restart=on-failure\n\
              RestartSec=5\n\
              StandardOutput=journal\n\
@@ -268,6 +348,9 @@ mod platform {
              [Install]\n\
              WantedBy=multi-user.target\n",
             exe = exe,
+            service_flag = SERVICE_MODE_FLAG,
+            data_dir_flag = DATA_DIR_FLAG,
+            shared_data_dir = systemd_quote(&shared_data_dir.display().to_string()),
         );
         let path = unit_path();
         std::fs::write(&path, unit.as_bytes())
@@ -321,7 +404,7 @@ mod platform {
     }
 
     fn systemd_quote(text: &str) -> String {
-        format!("\"{}\"", text.replace('\"', "\\\""))
+        format!("\"{}\"", text.replace('"', "\\\""))
     }
 }
 
