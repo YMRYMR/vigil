@@ -24,6 +24,7 @@ pub struct InstalledSoftware {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InventorySource {
     RunningProcess,
+    RunningService,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,30 +33,64 @@ struct InventorySeed {
     executable_path: String,
     publisher_hint: Option<String>,
     version_hint: Option<String>,
+    source: InventorySource,
 }
 
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let entries = sys.processes().values().map(|process| {
+    let service_map = crate::process::build_service_map();
+    let mut entries = Vec::new();
+    for process in sys.processes().values() {
         let display_name = process.name().to_string_lossy().trim().to_string();
         let executable_path = process
             .exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        InventorySeed {
-            display_name,
-            publisher_hint: inventory_hint(crate::process::publisher::get_publisher(
-                &executable_path,
-            )),
-            version_hint: inventory_hint(crate::process::publisher::get_file_version(
-                &executable_path,
-            )),
-            executable_path,
+        let publisher_hint = inventory_hint(crate::process::publisher::get_publisher(
+            &executable_path,
+        ));
+        let version_hint = inventory_hint(crate::process::publisher::get_file_version(
+            &executable_path,
+        ));
+        entries.push(InventorySeed {
+            display_name: display_name.clone(),
+            executable_path: executable_path.clone(),
+            publisher_hint: publisher_hint.clone(),
+            version_hint: version_hint.clone(),
+            source: InventorySource::RunningProcess,
+        });
+        if let Some(service_name) = service_name_for_process(
+            process.pid().as_u32(),
+            &service_map,
+            &display_name,
+        ) {
+            entries.push(InventorySeed {
+                display_name: service_name,
+                executable_path: executable_path.clone(),
+                publisher_hint: publisher_hint.clone(),
+                version_hint: version_hint.clone(),
+                source: InventorySource::RunningService,
+            });
         }
-    });
+    }
     collect_from_entries(entries)
+}
+
+fn service_name_for_process(
+    pid: u32,
+    service_map: &std::collections::HashMap<u32, String>,
+    display_name: &str,
+) -> Option<String> {
+    let service_name = service_map.get(&pid)?.trim();
+    if service_name.is_empty() {
+        return None;
+    }
+    if normalize_name(service_name) == normalize_name(display_name) {
+        return None;
+    }
+    Some(service_name.to_string())
 }
 
 fn collect_from_entries<I>(entries: I) -> Vec<InstalledSoftware>
@@ -74,7 +109,7 @@ where
             executable_path: entry.executable_path,
             publisher_hint: entry.publisher_hint,
             version_hint: entry.version_hint,
-            source: InventorySource::RunningProcess,
+            source: entry.source,
         };
         by_key
             .entry(product_key)
@@ -93,14 +128,24 @@ where
     by_key.into_values().collect()
 }
 
-fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, bool, bool, String, String) {
+fn canonical_inventory_sort_key(
+    entry: &InstalledSoftware,
+) -> (bool, bool, bool, u8, String, String) {
     (
         entry.display_name.trim().is_empty(),
         entry.publisher_hint.is_none(),
         entry.version_hint.is_none(),
+        source_sort_key(entry.source),
         entry.display_name.to_lowercase(),
         entry.executable_path.to_lowercase(),
     )
+}
+
+fn source_sort_key(source: InventorySource) -> u8 {
+    match source {
+        InventorySource::RunningProcess => 0,
+        InventorySource::RunningService => 1,
+    }
 }
 
 fn merge_missing_inventory_hints(target: &mut InstalledSoftware, source: &InstalledSoftware) {
@@ -157,12 +202,14 @@ mod tests {
         executable_path: &str,
         publisher_hint: Option<&str>,
         version_hint: Option<&str>,
+        source: InventorySource,
     ) -> InventorySeed {
         InventorySeed {
             display_name: display_name.to_string(),
             executable_path: executable_path.to_string(),
             publisher_hint: publisher_hint.map(str::to_string),
             version_hint: version_hint.map(str::to_string),
+            source,
         }
     }
 
@@ -196,8 +243,24 @@ mod tests {
     }
 
     #[test]
+    fn service_name_for_process_ignores_blank_and_duplicate_names() {
+        let mut service_map = std::collections::HashMap::new();
+        service_map.insert(42, "   ".to_string());
+        service_map.insert(43, "agentd".to_string());
+        assert_eq!(service_name_for_process(42, &service_map, "agentd"), None);
+        assert_eq!(service_name_for_process(43, &service_map, "AgentD.exe"), None);
+        assert_eq!(service_name_for_process(44, &service_map, "agentd"), None);
+    }
+
+    #[test]
     fn collect_from_entries_keeps_empty_name_when_path_present() {
-        let entries = vec![seed("", "/opt/vendor/agentd", None, None)];
+        let entries = vec![seed(
+            "",
+            "/opt/vendor/agentd",
+            None,
+            None,
+            InventorySource::RunningProcess,
+        )];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].product_key, "agentd");
@@ -206,14 +269,27 @@ mod tests {
     #[test]
     fn collect_from_entries_prefers_stable_named_entry_for_duplicate_key() {
         let entries = vec![
-            seed("", "/opt/vendor/chrome", None, None),
+            seed(
+                "",
+                "/opt/vendor/chrome",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
             seed(
                 "Google Chrome",
                 "/Applications/Google Chrome.app",
                 None,
                 None,
+                InventorySource::RunningProcess,
             ),
-            seed("google chrome", "/opt/google/chrome", None, None),
+            seed(
+                "google chrome",
+                "/opt/google/chrome",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
         ];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
@@ -228,12 +304,19 @@ mod tests {
     #[test]
     fn collect_from_entries_prefers_richer_metadata_for_duplicate_key() {
         let entries = vec![
-            seed("Example Agent", "/opt/example/agent", None, None),
+            seed(
+                "Example Agent",
+                "/opt/example/agent",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
             seed(
                 "Example Agent",
                 "/Applications/Example Agent.app",
                 Some("Example Corp"),
                 Some("2.4.1"),
+                InventorySource::RunningProcess,
             ),
         ];
         let inventory = collect_from_entries(entries);
@@ -255,12 +338,14 @@ mod tests {
                 "/opt/example/agent",
                 Some("Example Corp"),
                 None,
+                InventorySource::RunningProcess,
             ),
             seed(
                 "Example Agent",
                 "/Applications/Example Agent.app",
                 None,
                 Some("2.4.1"),
+                InventorySource::RunningProcess,
             ),
         ];
         let inventory = collect_from_entries(entries);
@@ -269,5 +354,33 @@ mod tests {
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
         assert_eq!(inventory[0].executable_path, "/opt/example/agent");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_service_identity_alongside_shared_host_process() {
+        let entries = vec![
+            seed(
+                "svchost.exe",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "Dnscache",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningService,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 2);
+        assert!(inventory.iter().any(|row| {
+            row.product_key == "svchost" && row.source == InventorySource::RunningProcess
+        }));
+        assert!(inventory.iter().any(|row| {
+            row.product_key == "dnscache" && row.source == InventorySource::RunningService
+        }));
     }
 }
