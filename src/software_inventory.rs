@@ -1,9 +1,10 @@
 //! Minimal local software inventory foundations for advisory relevance.
 //!
-//! Phase 16 starts with a conservative, low-risk inventory source:
-//! currently-running processes. This avoids package-manager-specific parsing
-//! while still giving the advisory pipeline stable product candidates plus
-//! lightweight publisher/version hints for later matching.
+//! Phase 16 starts with conservative, low-risk inventory sources:
+//! currently-running processes plus Windows uninstall-registry entries. This
+//! avoids package-manager-specific parsing while still giving the advisory
+//! pipeline stable product candidates plus lightweight publisher/version hints
+//! for later matching.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,6 +25,7 @@ pub struct InstalledSoftware {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InventorySource {
     RunningProcess,
+    WindowsUninstallRegistry,
     RunningService,
 }
 
@@ -73,6 +75,7 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             });
         }
     }
+    entries.extend(collect_windows_uninstall_entries());
     collect_from_entries(entries)
 }
 
@@ -107,6 +110,111 @@ fn service_names_for_process(
     distinct
 }
 
+#[cfg(windows)]
+fn collect_windows_uninstall_entries() -> Vec<InventorySeed> {
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+    use winreg::RegKey;
+
+    let mut entries = Vec::new();
+    let uninstall_roots = [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
+    ];
+
+    for (hive, path, flags) in uninstall_roots {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(path, flags) else {
+            continue;
+        };
+        for child in root.enum_keys().flatten() {
+            let Ok(entry_key) = root.open_subkey_with_flags(&child, flags) else {
+                continue;
+            };
+            if let Some(entry) = inventory_seed_from_uninstall_key(&entry_key) {
+                entries.push(entry);
+            }
+        }
+    }
+
+    entries
+}
+
+#[cfg(not(windows))]
+fn collect_windows_uninstall_entries() -> Vec<InventorySeed> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn inventory_seed_from_uninstall_key(key: &winreg::RegKey) -> Option<InventorySeed> {
+    let display_name = registry_string(key, "DisplayName").unwrap_or_default();
+    let executable_path = preferred_registry_path(
+        registry_string(key, "DisplayIcon").as_deref().unwrap_or_default(),
+        registry_string(key, "InstallLocation")
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    if display_name.is_empty() && executable_path.is_empty() {
+        return None;
+    }
+
+    Some(InventorySeed {
+        display_name,
+        executable_path,
+        publisher_hint: registry_string(key, "Publisher"),
+        version_hint: registry_string(key, "DisplayVersion"),
+        source: InventorySource::WindowsUninstallRegistry,
+    })
+}
+
+#[cfg(windows)]
+fn registry_string(key: &winreg::RegKey, name: &str) -> Option<String> {
+    key.get_value::<String, _>(name)
+        .ok()
+        .and_then(inventory_hint)
+}
+
+fn preferred_registry_path(display_icon: &str, install_location: &str) -> String {
+    let display_icon = clean_display_icon_path(display_icon);
+    if !display_icon.is_empty() {
+        return display_icon;
+    }
+    install_location.trim().to_string()
+}
+
+fn clean_display_icon_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let candidate = if let Some(rest) = trimmed.strip_prefix('"') {
+        rest.split_once('"').map(|(path, _)| path).unwrap_or(rest)
+    } else {
+        trimmed.split_once(',').map(|(path, _)| path).unwrap_or(trimmed)
+    };
+
+    candidate.trim().trim_matches('"').to_string()
+}
+
 fn collect_from_entries<I>(entries: I) -> Vec<InstalledSoftware>
 where
     I: IntoIterator<Item = InventorySeed>,
@@ -131,10 +239,10 @@ where
                 if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
                 {
                     let mut preferred = candidate.clone();
-                    merge_missing_inventory_hints(&mut preferred, existing);
+                    merge_missing_inventory_fields(&mut preferred, existing);
                     *existing = preferred;
                 } else {
-                    merge_missing_inventory_hints(existing, &candidate);
+                    merge_missing_inventory_fields(existing, &candidate);
                 }
             })
             .or_insert(candidate);
@@ -158,11 +266,18 @@ fn canonical_inventory_sort_key(
 fn source_sort_key(source: InventorySource) -> u8 {
     match source {
         InventorySource::RunningProcess => 0,
-        InventorySource::RunningService => 1,
+        InventorySource::WindowsUninstallRegistry => 1,
+        InventorySource::RunningService => 2,
     }
 }
 
-fn merge_missing_inventory_hints(target: &mut InstalledSoftware, source: &InstalledSoftware) {
+fn merge_missing_inventory_fields(target: &mut InstalledSoftware, source: &InstalledSoftware) {
+    if target.display_name.trim().is_empty() {
+        target.display_name = source.display_name.clone();
+    }
+    if target.executable_path.trim().is_empty() {
+        target.executable_path = source.executable_path.clone();
+    }
     if target.publisher_hint.is_none() {
         target.publisher_hint = source.publisher_hint.clone();
     }
@@ -299,6 +414,21 @@ mod tests {
     }
 
     #[test]
+    fn preferred_registry_path_prefers_display_icon_and_strips_resource_suffix() {
+        assert_eq!(
+            preferred_registry_path(
+                "\"C:\\Program Files\\Vendor\\agent.exe\",0",
+                "C:\\Program Files\\Vendor"
+            ),
+            "C:\\Program Files\\Vendor\\agent.exe"
+        );
+        assert_eq!(
+            preferred_registry_path("", "C:\\Program Files\\Vendor"),
+            "C:\\Program Files\\Vendor"
+        );
+    }
+
+    #[test]
     fn collect_from_entries_keeps_empty_name_when_path_present() {
         let entries = vec![seed(
             "",
@@ -400,6 +530,35 @@ mod tests {
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
         assert_eq!(inventory[0].executable_path, "/opt/example/agent");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_registry_metadata_wins() {
+        let entries = vec![
+            seed(
+                "Example Agent",
+                "C:/Program Files/Example/agent.exe",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "Example Agent",
+                "",
+                Some("Example Corp"),
+                Some("2.4.1"),
+                InventorySource::WindowsUninstallRegistry,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::WindowsUninstallRegistry);
+        assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(
+            inventory[0].executable_path,
+            "C:/Program Files/Example/agent.exe"
+        );
     }
 
     #[test]
