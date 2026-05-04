@@ -183,3 +183,25 @@ To verify an update manifest offline:
 ```bash
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
+
+## Advisory snapshot imports
+
+Vigil can also extend its protected local advisory cache with operator-supplied
+public-source snapshots. This is useful when you want advisory context to stay
+available offline from the last trusted local cache.
+
+Use the CLI importer that matches the source material you have:
+
+```bash
+vigil --import-nvd-snapshot nvdcve-page-1.json nvdcve-page-2.json
+vigil --import-nvd-change-history nvdcvehistory-page-1.json
+vigil --import-euvd euvd-export.json
+vigil --import-jvn jvn-export.json jvndbrss.xml
+vigil --import-ncsc ncsc-feed.xml ncsc-mirror.json
+vigil --import-bsi certbund-feed.xml bsi-advisories.json
+```
+
+The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored
+JSON, then preserve source links, identifiers, timestamps, and other
+provenance fields in the same protected advisory cache as the other Phase 16
+sources.

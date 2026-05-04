@@ -54,12 +54,13 @@ pub fn load_json_with_integrity(path: &Path) -> Result<Option<Vec<u8>>, String> 
     }
 
     tracing::warn!(
-        "policy store {} is unsigned legacy state; sealing it with integrity sidecars",
+        "policy signature missing for existing store {}; refusing unsigned policy",
         path.display()
     );
-    let secret = load_or_create_secret(path)?;
-    save_current_and_backup(path, &secret, &current)?;
-    Ok(Some(current))
+    Err(format!(
+        "policy signature missing for existing store {}; refusing unsigned policy to avoid silently resetting configuration",
+        path.display()
+    ))
 }
 
 pub fn save_json_with_integrity(path: &Path, data: &[u8]) -> Result<(), String> {
@@ -313,36 +314,36 @@ mod tests {
     }
 
     #[test]
-    fn unsigned_existing_store_is_migrated_to_protected_state() {
+    fn unsigned_existing_store_returns_error_without_creating_sidecars() {
         let base = unique_temp_dir();
         fs::create_dir_all(&base).unwrap();
         let path = base.join("vigil.json");
         let json = br#"{"poll_interval_secs":5,"alert_threshold":3,"log_all_connections":false,"autostart":false,"first_run_done":false,"trusted_processes":[],"common_ports":[],"malware_ports":[],"suspicious_path_fragments":[],"lolbins":[],"activity_history_cap":2048,"alerts_history_cap":1024,"geoip_city_db":"","geoip_asn_db":"","allowed_countries":[],"blocklist_paths":[],"fswatch_enabled":true,"fswatch_window_secs":600,"long_lived_secs":3600,"reverse_dns_enabled":false,"dga_entropy_threshold":3.2,"auto_response_enabled":false,"auto_response_dry_run":false,"auto_kill_connection":false,"auto_block_remote":false,"auto_block_process":false,"auto_isolate_machine":false,"auto_response_min_score":10,"auto_response_cooldown_secs":300,"allowlist_mode_enabled":false,"allowlist_mode_dry_run":false,"allowlist_processes":[],"response_rules_enabled":false,"response_rules_dry_run":true,"response_rules_path":"","scheduled_lockdown_enabled":false,"scheduled_lockdown_start_hour":23,"scheduled_lockdown_start_minute":0,"scheduled_lockdown_end_hour":6,"scheduled_lockdown_end_minute":0,"process_dump_on_alert":false,"process_dump_min_score":12,"process_dump_cooldown_secs":600,"process_dump_dir":"","pcap_on_alert":false,"pcap_min_score":12,"pcap_duration_secs":15,"pcap_cooldown_secs":300,"pcap_packet_size_bytes":0,"pcap_dir":"","honeypot_decoys_enabled":false,"honeypot_auto_isolate":false,"honeypot_poll_secs":10,"honeypot_decoy_names":[],"break_glass_enabled":true,"break_glass_timeout_mins":10,"break_glass_heartbeat_secs":30,"ui_scale":1.0}"#;
         fs::write(&path, json).unwrap();
-        let loaded = load_json_with_integrity(&path).unwrap().unwrap();
-        assert_eq!(loaded, json);
-        assert!(secret_path(&path).exists());
-        assert!(signature_path(&path).exists());
-        assert!(backup_data_path(&path).exists());
-        assert!(backup_sig_path(&path).exists());
+        let err = load_json_with_integrity(&path).unwrap_err();
+        assert!(err.contains("refusing unsigned policy"));
+        assert!(!secret_path(&path).exists());
+        assert!(!signature_path(&path).exists());
+        assert!(!backup_data_path(&path).exists());
+        assert!(!backup_sig_path(&path).exists());
         let _ = fs::remove_dir_all(base);
     }
 
     #[test]
-    fn unsigned_existing_store_migration_is_stable_across_reloads() {
+    fn unsigned_existing_store_remains_an_error_across_reloads() {
         let base = unique_temp_dir();
         fs::create_dir_all(&base).unwrap();
         let path = base.join("vigil.json");
         fs::write(&path, br#"{"version":1}"#).unwrap();
 
-        let first = load_json_with_integrity(&path).unwrap().unwrap();
-        assert_eq!(first, br#"{"version":1}"#);
-        assert!(secret_path(&path).exists());
-        assert!(signature_path(&path).exists());
+        let first = load_json_with_integrity(&path).unwrap_err();
+        assert!(first.contains("refusing unsigned policy"));
+        assert!(!secret_path(&path).exists());
+        assert!(!signature_path(&path).exists());
 
-        let second = load_json_with_integrity(&path).unwrap().unwrap();
-        assert_eq!(second, br#"{"version":1}"#);
-        assert!(secret_path(&path).exists());
+        let second = load_json_with_integrity(&path).unwrap_err();
+        assert!(second.contains("refusing unsigned policy"));
+        assert!(!secret_path(&path).exists());
 
         let _ = fs::remove_dir_all(base);
     }
