@@ -46,12 +46,12 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             .unwrap_or_default();
         InventorySeed {
             display_name,
-            publisher_hint: inventory_hint(crate::process::publisher::get_publisher(
-                &executable_path,
-            )),
-            version_hint: inventory_hint(crate::process::publisher::get_file_version(
-                &executable_path,
-            )),
+            publisher_hint: inventory_hint(
+                crate::process::publisher::get_publisher(&executable_path),
+            ),
+            version_hint: inventory_hint(
+                crate::process::publisher::get_file_version(&executable_path),
+            ),
             executable_path,
         }
     });
@@ -79,7 +79,8 @@ where
         by_key
             .entry(product_key)
             .and_modify(|existing| {
-                if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
+                if canonical_inventory_sort_key(&candidate)
+                    < canonical_inventory_sort_key(existing)
                 {
                     *existing = candidate.clone();
                 }
@@ -89,7 +90,9 @@ where
     by_key.into_values().collect()
 }
 
-fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, bool, bool, String, String) {
+fn canonical_inventory_sort_key(
+    entry: &InstalledSoftware,
+) -> (bool, bool, bool, String, String) {
     (
         entry.display_name.trim().is_empty(),
         entry.publisher_hint.is_none(),
