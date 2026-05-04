@@ -121,22 +121,22 @@ fn collect_windows_uninstall_entries() -> Vec<InventorySeed> {
     let uninstall_roots = [
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
     ];
@@ -192,12 +192,12 @@ fn registry_string(key: &winreg::RegKey, name: &str) -> Option<String> {
         .and_then(inventory_hint)
 }
 
-fn preferred_registry_path(display_icon: &str, install_location: &str) -> String {
+fn preferred_registry_path(display_icon: &str, _install_location: &str) -> String {
     let display_icon = clean_display_icon_path(display_icon);
     if !display_icon.is_empty() {
         return display_icon;
     }
-    install_location.trim().to_string()
+    String::new()
 }
 
 fn clean_display_icon_path(value: &str) -> String {
@@ -422,10 +422,7 @@ mod tests {
             ),
             "C:\\Program Files\\Vendor\\agent.exe"
         );
-        assert_eq!(
-            preferred_registry_path("", "C:\\Program Files\\Vendor"),
-            "C:\\Program Files\\Vendor"
-        );
+        assert_eq!(preferred_registry_path("", "C:\\Program Files\\Vendor"), "");
     }
 
     #[test]
