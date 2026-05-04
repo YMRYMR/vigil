@@ -1,10 +1,10 @@
 //! Minimal local software inventory foundations for advisory relevance.
 //!
 //! Phase 16 starts with conservative, low-risk inventory sources:
-//! currently-running processes plus Windows uninstall-registry entries. This
-//! avoids package-manager-specific parsing while still giving the advisory
-//! pipeline stable product candidates plus lightweight publisher/version hints
-//! for later matching.
+//! currently-running processes, Windows uninstall-registry entries, and the
+//! Debian dpkg status database on Linux. This keeps inventory collection
+//! offline and low-risk while still giving the advisory pipeline stable product
+//! candidates plus lightweight publisher/version hints for later matching.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +25,7 @@ pub struct InstalledSoftware {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InventorySource {
     RunningProcess,
+    LinuxDpkgStatus,
     WindowsUninstallRegistry,
     RunningService,
 }
@@ -76,6 +77,7 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
         }
     }
     entries.extend(collect_windows_uninstall_entries());
+    entries.extend(collect_linux_dpkg_entries());
     collect_from_entries(entries)
 }
 
@@ -161,6 +163,96 @@ fn collect_windows_uninstall_entries() -> Vec<InventorySeed> {
 #[cfg(not(windows))]
 fn collect_windows_uninstall_entries() -> Vec<InventorySeed> {
     Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
+    let Ok(status) = std::fs::read_to_string("/var/lib/dpkg/status") else {
+        return Vec::new();
+    };
+    parse_dpkg_status(&status)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
+    Vec::new()
+}
+
+fn parse_dpkg_status(status: &str) -> Vec<InventorySeed> {
+    let mut entries = Vec::new();
+    let mut fields = BTreeMap::<String, String>::new();
+    let mut current_key: Option<String> = None;
+
+    for line in status.lines().chain(std::iter::once("")) {
+        if line.trim().is_empty() {
+            if let Some(entry) = inventory_seed_from_dpkg_fields(&fields) {
+                entries.push(entry);
+            }
+            fields.clear();
+            current_key = None;
+            continue;
+        }
+
+        if let Some(continuation) = line.strip_prefix(' ') {
+            if let Some(key) = current_key.as_ref() {
+                if let Some(value) = fields.get_mut(key) {
+                    value.push('\n');
+                    value.push_str(continuation.trim_end());
+                }
+            }
+            continue;
+        }
+
+        let Some((key, value)) = line.split_once(':') else {
+            current_key = None;
+            continue;
+        };
+        let key = key.trim().to_string();
+        let value = value.trim().to_string();
+        fields.insert(key.clone(), value);
+        current_key = Some(key);
+    }
+
+    entries
+}
+
+fn inventory_seed_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option<InventorySeed> {
+    if !dpkg_status_is_installed(
+        fields
+            .get("Status")
+            .map(String::as_str)
+            .unwrap_or_default(),
+    ) {
+        return None;
+    }
+
+    let display_name = fields
+        .get("Package")
+        .map(String::as_str)
+        .unwrap_or_default()
+        .trim();
+    if display_name.is_empty() {
+        return None;
+    }
+
+    Some(InventorySeed {
+        display_name: display_name.to_string(),
+        executable_path: String::new(),
+        publisher_hint: fields
+            .get("Maintainer")
+            .cloned()
+            .and_then(inventory_hint),
+        version_hint: fields.get("Version").cloned().and_then(inventory_hint),
+        source: InventorySource::LinuxDpkgStatus,
+    })
+}
+
+fn dpkg_status_is_installed(status: &str) -> bool {
+    let mut parts = status.split_whitespace();
+    matches!(
+        (parts.next(), parts.next(), parts.next(), parts.next(),),
+        (Some("install"), Some("ok"), Some("installed"), None)
+    )
 }
 
 #[cfg(windows)]
@@ -291,8 +383,9 @@ fn canonical_inventory_sort_key(
 fn source_sort_key(source: InventorySource) -> u8 {
     match source {
         InventorySource::RunningProcess => 0,
-        InventorySource::WindowsUninstallRegistry => 1,
-        InventorySource::RunningService => 2,
+        InventorySource::LinuxDpkgStatus => 1,
+        InventorySource::WindowsUninstallRegistry => 2,
+        InventorySource::RunningService => 3,
     }
 }
 
@@ -439,6 +532,29 @@ mod tests {
     }
 
     #[test]
+    fn dpkg_status_requires_installed_triplet() {
+        assert!(dpkg_status_is_installed("install ok installed"));
+        assert!(!dpkg_status_is_installed("deinstall ok config-files"));
+        assert!(!dpkg_status_is_installed("install reinstreq half-installed"));
+    }
+
+    #[test]
+    fn parse_dpkg_status_collects_installed_packages() {
+        let parsed = parse_dpkg_status(
+            "Package: curl\nStatus: install ok installed\nVersion: 8.8.0-1\nMaintainer: Example Maintainer <maint@example.com>\nDescription: command line tool\n installed everywhere\n\nPackage: removed\nStatus: deinstall ok config-files\nVersion: 1.0\n",
+        );
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "curl");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("8.8.0-1"));
+        assert_eq!(
+            parsed[0].publisher_hint.as_deref(),
+            Some("Example Maintainer <maint@example.com>")
+        );
+        assert_eq!(parsed[0].source, InventorySource::LinuxDpkgStatus);
+    }
+
+    #[test]
     fn preferred_registry_path_prefers_display_icon_and_strips_resource_suffix() {
         assert_eq!(
             preferred_registry_path(
@@ -567,6 +683,35 @@ mod tests {
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
         assert_eq!(inventory[0].executable_path, "/opt/example/agent");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_dpkg_metadata_wins() {
+        let entries = vec![
+            seed(
+                "curl",
+                "/usr/bin/curl",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "curl",
+                "",
+                Some("Debian curl maintainers"),
+                Some("8.8.0-1"),
+                InventorySource::LinuxDpkgStatus,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::LinuxDpkgStatus);
+        assert_eq!(
+            inventory[0].publisher_hint.as_deref(),
+            Some("Debian curl maintainers")
+        );
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
+        assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
 
     #[test]
