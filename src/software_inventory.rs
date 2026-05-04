@@ -197,7 +197,32 @@ fn preferred_registry_path(display_icon: &str, install_location: &str) -> String
     if !display_icon.is_empty() {
         return display_icon;
     }
-    install_location.trim().to_string()
+
+    let install_location = install_location.trim();
+    if registry_install_location_looks_executable(install_location) {
+        return install_location.to_string();
+    }
+
+    String::new()
+}
+
+fn registry_install_location_looks_executable(value: &str) -> bool {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let Some(extension) = std::path::Path::new(trimmed)
+        .extension()
+        .and_then(|ext| ext.to_str())
+    else {
+        return false;
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "exe" | "com" | "bat" | "cmd" | "scr" | "pif"
+    )
 }
 
 fn clean_display_icon_path(value: &str) -> String {
@@ -422,9 +447,21 @@ mod tests {
             ),
             "C:\\Program Files\\Vendor\\agent.exe"
         );
+    }
+
+    #[test]
+    fn preferred_registry_path_ignores_directory_install_locations() {
         assert_eq!(
             preferred_registry_path("", "C:\\Program Files\\Vendor"),
-            "C:\\Program Files\\Vendor"
+            ""
+        );
+    }
+
+    #[test]
+    fn preferred_registry_path_keeps_executable_install_locations() {
+        assert_eq!(
+            preferred_registry_path("", "C:\\Program Files\\Vendor\\agent.exe"),
+            "C:\\Program Files\\Vendor\\agent.exe"
         );
     }
 
