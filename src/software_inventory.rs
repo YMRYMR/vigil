@@ -81,7 +81,11 @@ where
             .and_modify(|existing| {
                 if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
                 {
-                    *existing = candidate.clone();
+                    let mut preferred = candidate.clone();
+                    merge_missing_inventory_hints(&mut preferred, existing);
+                    *existing = preferred;
+                } else {
+                    merge_missing_inventory_hints(existing, &candidate);
                 }
             })
             .or_insert(candidate);
@@ -97,6 +101,15 @@ fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, bool, bool,
         entry.display_name.to_lowercase(),
         entry.executable_path.to_lowercase(),
     )
+}
+
+fn merge_missing_inventory_hints(target: &mut InstalledSoftware, source: &InstalledSoftware) {
+    if target.publisher_hint.is_none() {
+        target.publisher_hint = source.publisher_hint.clone();
+    }
+    if target.version_hint.is_none() {
+        target.version_hint = source.version_hint.clone();
+    }
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -232,5 +245,29 @@ mod tests {
             inventory[0].executable_path,
             "/Applications/Example Agent.app"
         );
+    }
+
+    #[test]
+    fn collect_from_entries_merges_complementary_metadata_for_duplicate_key() {
+        let entries = vec![
+            seed(
+                "Example Agent",
+                "/opt/example/agent",
+                Some("Example Corp"),
+                None,
+            ),
+            seed(
+                "Example Agent",
+                "/Applications/Example Agent.app",
+                None,
+                Some("2.4.1"),
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].product_key, "example-agent");
+        assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(inventory[0].executable_path, "/opt/example/agent");
     }
 }
