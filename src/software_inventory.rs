@@ -6,7 +6,7 @@
 //! lightweight publisher/version hints for later matching.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use sysinfo::System;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,7 +40,7 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
-    let service_map = crate::process::build_service_map();
+    let service_map = crate::process::build_services_by_pid();
     let mut entries = Vec::new();
     for process in sys.processes().values() {
         let display_name = process.name().to_string_lossy().trim().to_string();
@@ -61,11 +61,9 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             version_hint: version_hint.clone(),
             source: InventorySource::RunningProcess,
         });
-        if let Some(service_name) = service_name_for_process(
-            process.pid().as_u32(),
-            &service_map,
-            &display_name,
-        ) {
+        for service_name in
+            service_names_for_process(process.pid().as_u32(), &service_map, &display_name)
+        {
             entries.push(InventorySeed {
                 display_name: service_name,
                 executable_path: executable_path.clone(),
@@ -78,19 +76,35 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     collect_from_entries(entries)
 }
 
-fn service_name_for_process(
+fn service_names_for_process(
     pid: u32,
-    service_map: &std::collections::HashMap<u32, String>,
+    service_map: &std::collections::HashMap<u32, Vec<String>>,
     display_name: &str,
-) -> Option<String> {
-    let service_name = service_map.get(&pid)?.trim();
-    if service_name.is_empty() {
-        return None;
+) -> Vec<String> {
+    let Some(service_names) = service_map.get(&pid) else {
+        return Vec::new();
+    };
+
+    let normalized_display_name = normalize_name(display_name);
+    let mut seen = BTreeSet::new();
+    let mut distinct = Vec::new();
+    for service_name in service_names {
+        let trimmed = service_name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let normalized = normalize_name(trimmed);
+        if normalized.is_empty()
+            || normalized == normalized_display_name
+            || !seen.insert(normalized)
+        {
+            continue;
+        }
+
+        distinct.push(trimmed.to_string());
     }
-    if normalize_name(service_name) == normalize_name(display_name) {
-        return None;
-    }
-    Some(service_name.to_string())
+    distinct
 }
 
 fn collect_from_entries<I>(entries: I) -> Vec<InstalledSoftware>
@@ -243,13 +257,45 @@ mod tests {
     }
 
     #[test]
-    fn service_name_for_process_ignores_blank_and_duplicate_names() {
+    fn service_names_for_process_ignores_blank_duplicate_and_process_names() {
         let mut service_map = std::collections::HashMap::new();
-        service_map.insert(42, "   ".to_string());
-        service_map.insert(43, "agentd".to_string());
-        assert_eq!(service_name_for_process(42, &service_map, "agentd"), None);
-        assert_eq!(service_name_for_process(43, &service_map, "AgentD.exe"), None);
-        assert_eq!(service_name_for_process(44, &service_map, "agentd"), None);
+        service_map.insert(
+            42,
+            vec![
+                "   ".to_string(),
+                "agentd".to_string(),
+                "AgentD".to_string(),
+                "Backup Agent".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            service_names_for_process(42, &service_map, "AgentD.exe"),
+            vec!["Backup Agent".to_string()]
+        );
+        assert!(service_names_for_process(44, &service_map, "agentd").is_empty());
+    }
+
+    #[test]
+    fn service_names_for_process_keeps_multiple_distinct_services() {
+        let mut service_map = std::collections::HashMap::new();
+        service_map.insert(
+            42,
+            vec![
+                "Dnscache".to_string(),
+                "LanmanWorkstation".to_string(),
+                "Dhcp".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            service_names_for_process(42, &service_map, "svchost.exe"),
+            vec![
+                "Dnscache".to_string(),
+                "LanmanWorkstation".to_string(),
+                "Dhcp".to_string(),
+            ]
+        );
     }
 
     #[test]

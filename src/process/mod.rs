@@ -135,16 +135,52 @@ fn join_cmdline(parts: &[std::ffi::OsString]) -> String {
         .join(" ")
 }
 
-pub fn build_service_map() -> std::collections::HashMap<u32, String> {
+pub fn build_services_by_pid() -> std::collections::HashMap<u32, Vec<String>> {
     #[cfg(windows)]
-    return windows_service_map();
+    return windows_services_by_pid();
 
     #[cfg(not(windows))]
     std::collections::HashMap::new()
 }
 
+pub fn build_service_map() -> std::collections::HashMap<u32, String> {
+    primary_service_name_map(build_services_by_pid())
+}
+
+fn primary_service_name_map(
+    services_by_pid: std::collections::HashMap<u32, Vec<String>>,
+) -> std::collections::HashMap<u32, String> {
+    services_by_pid
+        .into_iter()
+        .filter_map(|(pid, names)| {
+            names
+                .into_iter()
+                .rev()
+                .find(|name| !name.trim().is_empty())
+                .map(|name| (pid, name))
+        })
+        .collect()
+}
+
+fn remember_service_name(
+    map: &mut std::collections::HashMap<u32, Vec<String>>,
+    pid: u32,
+    name: String,
+) {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+
+    let names = map.entry(pid).or_default();
+    if names.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+        return;
+    }
+    names.push(trimmed.to_string());
+}
+
 #[cfg(windows)]
-fn windows_service_map() -> std::collections::HashMap<u32, String> {
+fn windows_services_by_pid() -> std::collections::HashMap<u32, Vec<String>> {
     use windows::Win32::System::Services::{
         EnumServicesStatusExW, OpenSCManagerW, ENUM_SERVICE_STATUS_PROCESSW, SC_ENUM_PROCESS_INFO,
         SC_MANAGER_ENUMERATE_SERVICE, SERVICE_STATE_ALL, SERVICE_WIN32,
@@ -204,7 +240,7 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
                 let pid = entry.ServiceStatusProcess.dwProcessId;
                 if pid != 0 {
                     let name = entry.lpServiceName.to_string().unwrap_or_default();
-                    map.insert(pid, name);
+                    remember_service_name(&mut map, pid, name);
                 }
             }
         }
@@ -213,4 +249,37 @@ fn windows_service_map() -> std::collections::HashMap<u32, String> {
     }
 
     map
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remember_service_name_skips_blank_and_duplicates() {
+        let mut map = std::collections::HashMap::new();
+        remember_service_name(&mut map, 42, "   ".to_string());
+        remember_service_name(&mut map, 42, "Dnscache".to_string());
+        remember_service_name(&mut map, 42, "dnscache".to_string());
+        remember_service_name(&mut map, 42, "LanmanWorkstation".to_string());
+
+        assert_eq!(
+            map.get(&42),
+            Some(&vec!["Dnscache".to_string(), "LanmanWorkstation".to_string()])
+        );
+    }
+
+    #[test]
+    fn primary_service_name_map_keeps_last_service_per_pid_for_live_process_context() {
+        let mut grouped = std::collections::HashMap::new();
+        grouped.insert(
+            42,
+            vec!["Dnscache".to_string(), "LanmanWorkstation".to_string()],
+        );
+        grouped.insert(7, vec!["Spooler".to_string()]);
+
+        let primary = primary_service_name_map(grouped);
+        assert_eq!(primary.get(&42).map(String::as_str), Some("LanmanWorkstation"));
+        assert_eq!(primary.get(&7).map(String::as_str), Some("Spooler"));
+    }
 }
