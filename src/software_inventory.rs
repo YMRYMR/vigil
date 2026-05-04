@@ -1,8 +1,9 @@
 //! Minimal local software inventory foundations for advisory relevance.
 //!
-//! Phase 16 Task 1 starts with a conservative, low-risk inventory source:
+//! Phase 16 starts with a conservative, low-risk inventory source:
 //! currently-running processes. This avoids package-manager-specific parsing
-//! while still giving the advisory pipeline stable product candidates.
+//! while still giving the advisory pipeline stable product candidates plus
+//! lightweight publisher/version hints for later matching.
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,13 +14,24 @@ pub struct InstalledSoftware {
     pub product_key: String,
     pub display_name: String,
     pub executable_path: String,
+    #[serde(default)]
     pub publisher_hint: Option<String>,
+    #[serde(default)]
+    pub version_hint: Option<String>,
     pub source: InventorySource,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum InventorySource {
     RunningProcess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InventorySeed {
+    display_name: String,
+    executable_path: String,
+    publisher_hint: Option<String>,
+    version_hint: Option<String>,
 }
 
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
@@ -32,26 +44,36 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             .exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        (display_name, executable_path)
+        InventorySeed {
+            display_name,
+            publisher_hint: inventory_hint(crate::process::publisher::get_publisher(
+                &executable_path,
+            )),
+            version_hint: inventory_hint(crate::process::publisher::get_file_version(
+                &executable_path,
+            )),
+            executable_path,
+        }
     });
     collect_from_entries(entries)
 }
 
 fn collect_from_entries<I>(entries: I) -> Vec<InstalledSoftware>
 where
-    I: IntoIterator<Item = (String, String)>,
+    I: IntoIterator<Item = InventorySeed>,
 {
     let mut by_key: BTreeMap<String, InstalledSoftware> = BTreeMap::new();
-    for (display_name, executable_path) in entries {
-        if display_name.is_empty() && executable_path.is_empty() {
+    for entry in entries {
+        if entry.display_name.is_empty() && entry.executable_path.is_empty() {
             continue;
         }
-        let product_key = derive_product_key(&display_name, &executable_path);
+        let product_key = derive_product_key(&entry.display_name, &entry.executable_path);
         let candidate = InstalledSoftware {
             product_key: product_key.clone(),
-            display_name,
-            executable_path,
-            publisher_hint: None,
+            display_name: entry.display_name,
+            executable_path: entry.executable_path,
+            publisher_hint: entry.publisher_hint,
+            version_hint: entry.version_hint,
             source: InventorySource::RunningProcess,
         };
         by_key
@@ -59,7 +81,11 @@ where
             .and_modify(|existing| {
                 if canonical_inventory_sort_key(&candidate) < canonical_inventory_sort_key(existing)
                 {
-                    *existing = candidate.clone();
+                    let mut preferred = candidate.clone();
+                    merge_missing_inventory_hints(&mut preferred, existing);
+                    *existing = preferred;
+                } else {
+                    merge_missing_inventory_hints(existing, &candidate);
                 }
             })
             .or_insert(candidate);
@@ -67,12 +93,23 @@ where
     by_key.into_values().collect()
 }
 
-fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, String, String) {
+fn canonical_inventory_sort_key(entry: &InstalledSoftware) -> (bool, bool, bool, String, String) {
     (
         entry.display_name.trim().is_empty(),
+        entry.publisher_hint.is_none(),
+        entry.version_hint.is_none(),
         entry.display_name.to_lowercase(),
         entry.executable_path.to_lowercase(),
     )
+}
+
+fn merge_missing_inventory_hints(target: &mut InstalledSoftware, source: &InstalledSoftware) {
+    if target.publisher_hint.is_none() {
+        target.publisher_hint = source.publisher_hint.clone();
+    }
+    if target.version_hint.is_none() {
+        target.version_hint = source.version_hint.clone();
+    }
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -102,9 +139,32 @@ fn normalize_name(input: &str) -> String {
         .to_string()
 }
 
+fn inventory_hint(value: String) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn seed(
+        display_name: &str,
+        executable_path: &str,
+        publisher_hint: Option<&str>,
+        version_hint: Option<&str>,
+    ) -> InventorySeed {
+        InventorySeed {
+            display_name: display_name.to_string(),
+            executable_path: executable_path.to_string(),
+            publisher_hint: publisher_hint.map(str::to_string),
+            version_hint: version_hint.map(str::to_string),
+        }
+    }
 
     #[test]
     fn normalize_name_strips_case_and_extension() {
@@ -137,7 +197,7 @@ mod tests {
 
     #[test]
     fn collect_from_entries_keeps_empty_name_when_path_present() {
-        let entries = vec![("".to_string(), "/opt/vendor/agentd".to_string())];
+        let entries = vec![seed("", "/opt/vendor/agentd", None, None)];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].product_key, "agentd");
@@ -146,15 +206,14 @@ mod tests {
     #[test]
     fn collect_from_entries_prefers_stable_named_entry_for_duplicate_key() {
         let entries = vec![
-            ("".to_string(), "/opt/vendor/chrome".to_string()),
-            (
-                "Google Chrome".to_string(),
-                "/Applications/Google Chrome.app".to_string(),
+            seed("", "/opt/vendor/chrome", None, None),
+            seed(
+                "Google Chrome",
+                "/Applications/Google Chrome.app",
+                None,
+                None,
             ),
-            (
-                "google chrome".to_string(),
-                "/opt/google/chrome".to_string(),
-            ),
+            seed("google chrome", "/opt/google/chrome", None, None),
         ];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
@@ -164,5 +223,51 @@ mod tests {
             inventory[0].executable_path,
             "/Applications/Google Chrome.app"
         );
+    }
+
+    #[test]
+    fn collect_from_entries_prefers_richer_metadata_for_duplicate_key() {
+        let entries = vec![
+            seed("Example Agent", "/opt/example/agent", None, None),
+            seed(
+                "Example Agent",
+                "/Applications/Example Agent.app",
+                Some("Example Corp"),
+                Some("2.4.1"),
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].product_key, "example-agent");
+        assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(
+            inventory[0].executable_path,
+            "/Applications/Example Agent.app"
+        );
+    }
+
+    #[test]
+    fn collect_from_entries_merges_complementary_metadata_for_duplicate_key() {
+        let entries = vec![
+            seed(
+                "Example Agent",
+                "/opt/example/agent",
+                Some("Example Corp"),
+                None,
+            ),
+            seed(
+                "Example Agent",
+                "/Applications/Example Agent.app",
+                None,
+                Some("2.4.1"),
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].product_key, "example-agent");
+        assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(inventory[0].executable_path, "/opt/example/agent");
     }
 }

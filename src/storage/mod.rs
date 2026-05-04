@@ -100,12 +100,15 @@ mod tests {
             product_key: "curl".into(),
             display_name: "curl".into(),
             executable_path: "/usr/bin/curl".into(),
-            publisher_hint: None,
+            publisher_hint: Some("curl project".into()),
+            version_hint: Some("8.8.0".into()),
             source: crate::software_inventory::InventorySource::RunningProcess,
         }];
         store.replace_inventory(&rows).unwrap();
         let loaded = store.load_inventory().unwrap();
         assert!(loaded.iter().any(|r| r.product_key == "curl"));
+        assert_eq!(loaded[0].publisher_hint.as_deref(), Some("curl project"));
+        assert_eq!(loaded[0].version_hint.as_deref(), Some("8.8.0"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
