@@ -64,7 +64,7 @@ Name: "bootservice"; \
   Description: "Start Vigil before login (boot-time monitor service)"; \
   GroupDescription: "Startup"; \
   Flags: checked; \
-  Check: IsAdminInstallMode
+  Check: IsAdminInstallMode and IsProtectedAdminInstallPath
 
 [Files]
 ; The binary is staged next to setup.iss before ISCC runs (see release.yml).
@@ -82,7 +82,7 @@ Filename: "{app}\{#MyAppExeName}"; \
   Parameters: "--install-service"; \
   StatusMsg: "Registering the Vigil boot-time monitor service..."; \
   Flags: runhidden waituntilterminated; \
-  Check: IsAdminInstallMode and WizardIsTaskSelected('bootservice')
+  Check: IsAdminInstallMode and IsProtectedAdminInstallPath and WizardIsTaskSelected('bootservice')
 
 ; Offer to launch Vigil immediately after installation.
 ; Vigil enables login autostart on its own first run — no registry entry
@@ -90,3 +90,20 @@ Filename: "{app}\{#MyAppExeName}"; \
 Filename: "{app}\{#MyAppExeName}"; \
   Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; \
   Flags: nowait postinstall skipifsilent
+
+[Code]
+function IsProtectedAdminInstallPath: Boolean;
+var
+  AppDir, ProgramFilesDir: String;
+begin
+  if not IsAdminInstallMode then
+  begin
+    Result := False;
+    exit;
+  end;
+
+  AppDir := AddBackslash(Uppercase(ExpandConstant('{app}')));
+  ProgramFilesDir := AddBackslash(Uppercase(ExpandConstant('{autopf}')));
+
+  Result := Pos(ProgramFilesDir, AppDir) = 1;
+end;
