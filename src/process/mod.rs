@@ -155,6 +155,7 @@ fn primary_service_name_map(
         .filter_map(|(pid, names)| {
             names
                 .into_iter()
+                .rev()
                 .find(|name| !name.trim().is_empty())
                 .map(|name| (pid, name))
         })
@@ -269,7 +270,7 @@ mod tests {
     }
 
     #[test]
-    fn primary_service_name_map_keeps_first_service_per_pid_for_live_process_context() {
+    fn primary_service_name_map_keeps_last_service_per_pid_for_live_process_context() {
         let mut grouped = std::collections::HashMap::new();
         grouped.insert(
             42,
@@ -278,7 +279,7 @@ mod tests {
         grouped.insert(7, vec!["Spooler".to_string()]);
 
         let primary = primary_service_name_map(grouped);
-        assert_eq!(primary.get(&42).map(String::as_str), Some("Dnscache"));
+        assert_eq!(primary.get(&42).map(String::as_str), Some("LanmanWorkstation"));
         assert_eq!(primary.get(&7).map(String::as_str), Some("Spooler"));
     }
 }
