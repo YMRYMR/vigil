@@ -80,7 +80,14 @@ fn query_string_file_info(path: &str, value_names: &[&str]) -> String {
         }
 
         let mut buf: Vec<u8> = vec![0u8; size as usize];
-        if GetFileVersionInfoW(pcwstr, Some(0), size, buf.as_mut_ptr() as *mut _).is_err() {
+        if GetFileVersionInfoW(
+            pcwstr,
+            Some(0),
+            size,
+            buf.as_mut_ptr() as *mut _,
+        )
+        .is_err()
+        {
             return String::new();
         }
 
@@ -102,7 +109,10 @@ fn query_string_file_info(path: &str, value_names: &[&str]) -> String {
             .as_bool()
                 && p_len > 1
             {
-                let chars = std::slice::from_raw_parts(p_val as *const u16, (p_len - 1) as usize);
+                let chars = std::slice::from_raw_parts(
+                    p_val as *const u16,
+                    (p_len - 1) as usize,
+                );
                 let value = String::from_utf16_lossy(chars).trim().to_string();
                 if !value.is_empty() {
                     return value;
