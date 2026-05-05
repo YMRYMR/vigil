@@ -173,7 +173,10 @@ fn remember_service_name(
     }
 
     let names = map.entry(pid).or_default();
-    if names.iter().any(|existing| existing.eq_ignore_ascii_case(trimmed)) {
+    if names
+        .iter()
+        .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+    {
         return;
     }
     names.push(trimmed.to_string());
@@ -265,7 +268,10 @@ mod tests {
 
         assert_eq!(
             map.get(&42),
-            Some(&vec!["Dnscache".to_string(), "LanmanWorkstation".to_string()])
+            Some(&vec![
+                "Dnscache".to_string(),
+                "LanmanWorkstation".to_string()
+            ])
         );
     }
 
@@ -279,7 +285,10 @@ mod tests {
         grouped.insert(7, vec!["Spooler".to_string()]);
 
         let primary = primary_service_name_map(grouped);
-        assert_eq!(primary.get(&42).map(String::as_str), Some("LanmanWorkstation"));
+        assert_eq!(
+            primary.get(&42).map(String::as_str),
+            Some("LanmanWorkstation")
+        );
         assert_eq!(primary.get(&7).map(String::as_str), Some("Spooler"));
     }
 }
