@@ -251,7 +251,7 @@ fn dpkg_status_is_installed(status: &str) -> bool {
     let mut parts = status.split_whitespace();
     matches!(
         (parts.next(), parts.next(), parts.next(), parts.next(),),
-        (Some("install"), Some("ok"), Some("installed"), None)
+        (Some(_), Some("ok"), Some("installed"), None)
     )
 }
 
@@ -532,8 +532,9 @@ mod tests {
     }
 
     #[test]
-    fn dpkg_status_requires_installed_triplet() {
+    fn dpkg_status_requires_ok_installed_state() {
         assert!(dpkg_status_is_installed("install ok installed"));
+        assert!(dpkg_status_is_installed("hold ok installed"));
         assert!(!dpkg_status_is_installed("deinstall ok config-files"));
         assert!(!dpkg_status_is_installed("install reinstreq half-installed"));
     }
