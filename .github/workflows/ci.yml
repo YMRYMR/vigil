@@ -37,7 +37,7 @@ jobs:
           git fetch --no-tags origin "${{ github.base_ref }}"
           changed_files=$(git diff --name-only FETCH_HEAD...HEAD)
 
-          if printf '%s\n' "$changed_files" | grep -Eq '(^|/).*\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$'; then
+          if printf '%s\n' "$changed_files" | grep -Eq '(^|/).*\.rs$|(^|/)Cargo\.(toml|lock)$|(^|/)build\.rs$|^\.github/workflows/ci\.yml$'; then
             echo "rust=true" >> "$GITHUB_OUTPUT"
           else
             echo "rust=false" >> "$GITHUB_OUTPUT"
