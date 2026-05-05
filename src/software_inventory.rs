@@ -53,9 +53,8 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             .exe()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let publisher_hint = inventory_hint(crate::process::publisher::get_publisher(
-            &executable_path,
-        ));
+        let publisher_hint =
+            inventory_hint(crate::process::publisher::get_publisher(&executable_path));
         let version_hint = inventory_hint(crate::process::publisher::get_file_version(
             &executable_path,
         ));
@@ -224,7 +223,8 @@ fn collect_homebrew_entries_from_roots(
         else {
             continue;
         };
-        let version_hint = homebrew_version_hint_for_package(&display_name, &package.path(), opt_root);
+        let version_hint =
+            homebrew_version_hint_for_package(&display_name, &package.path(), opt_root);
         entries.push(InventorySeed {
             display_name,
             executable_path: String::new(),
@@ -242,11 +242,9 @@ fn homebrew_version_hint_for_package(
     opt_root: &std::path::Path,
 ) -> Option<String> {
     let canonical_package_root = std::fs::canonicalize(package_root).ok()?;
-    if let Some(active_version) = active_homebrew_version_from_opt(
-        package_name,
-        &canonical_package_root,
-        opt_root,
-    ) {
+    if let Some(active_version) =
+        active_homebrew_version_from_opt(package_name, &canonical_package_root, opt_root)
+    {
         return Some(active_version);
     }
     sole_child_directory_name(&canonical_package_root)
@@ -324,12 +322,7 @@ fn parse_dpkg_status(status: &str) -> Vec<InventorySeed> {
 }
 
 fn inventory_seed_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option<InventorySeed> {
-    if !dpkg_status_is_installed(
-        fields
-            .get("Status")
-            .map(String::as_str)
-            .unwrap_or_default(),
-    ) {
+    if !dpkg_status_is_installed(fields.get("Status").map(String::as_str).unwrap_or_default()) {
         return None;
     }
 
@@ -345,10 +338,7 @@ fn inventory_seed_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option<
     Some(InventorySeed {
         display_name: display_name.to_string(),
         executable_path: String::new(),
-        publisher_hint: fields
-            .get("Maintainer")
-            .cloned()
-            .and_then(inventory_hint),
+        publisher_hint: fields.get("Maintainer").cloned().and_then(inventory_hint),
         version_hint: fields.get("Version").cloned().and_then(inventory_hint),
         source: InventorySource::LinuxDpkgStatus,
     })
@@ -366,7 +356,9 @@ fn dpkg_status_is_installed(status: &str) -> bool {
 fn inventory_seed_from_uninstall_key(key: &winreg::RegKey) -> Option<InventorySeed> {
     let display_name = registry_string(key, "DisplayName").unwrap_or_default();
     let executable_path = preferred_registry_path(
-        registry_string(key, "DisplayIcon").as_deref().unwrap_or_default(),
+        registry_string(key, "DisplayIcon")
+            .as_deref()
+            .unwrap_or_default(),
         registry_string(key, "InstallLocation")
             .as_deref()
             .unwrap_or_default(),
@@ -433,7 +425,10 @@ fn clean_display_icon_path(value: &str) -> String {
     let candidate = if let Some(rest) = trimmed.strip_prefix('"') {
         rest.split_once('"').map(|(path, _)| path).unwrap_or(rest)
     } else {
-        trimmed.split_once(',').map(|(path, _)| path).unwrap_or(trimmed)
+        trimmed
+            .split_once(',')
+            .map(|(path, _)| path)
+            .unwrap_or(trimmed)
     };
 
     candidate.trim().trim_matches('"').to_string()
@@ -716,7 +711,9 @@ mod tests {
         assert!(dpkg_status_is_installed("install ok installed"));
         assert!(dpkg_status_is_installed("hold ok installed"));
         assert!(!dpkg_status_is_installed("deinstall ok config-files"));
-        assert!(!dpkg_status_is_installed("install reinstreq half-installed"));
+        assert!(!dpkg_status_is_installed(
+            "install reinstreq half-installed"
+        ));
     }
 
     #[test]
@@ -748,10 +745,7 @@ mod tests {
 
     #[test]
     fn preferred_registry_path_ignores_directory_install_locations() {
-        assert_eq!(
-            preferred_registry_path("", "C:\\Program Files\\Vendor"),
-            ""
-        );
+        assert_eq!(preferred_registry_path("", "C:\\Program Files\\Vendor"), "");
     }
 
     #[test]
@@ -940,7 +934,10 @@ mod tests {
         ];
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
-        assert_eq!(inventory[0].source, InventorySource::WindowsUninstallRegistry);
+        assert_eq!(
+            inventory[0].source,
+            InventorySource::WindowsUninstallRegistry
+        );
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
         assert_eq!(
