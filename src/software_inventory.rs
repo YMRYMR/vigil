@@ -1,10 +1,11 @@
 //! Minimal local software inventory foundations for advisory relevance.
 //!
 //! Phase 16 starts with conservative, low-risk inventory sources:
-//! currently-running processes, Windows uninstall-registry entries, and the
-//! Debian dpkg status database on Linux. This keeps inventory collection
-//! offline and low-risk while still giving the advisory pipeline stable product
-//! candidates plus lightweight publisher/version hints for later matching.
+//! currently-running processes, Windows uninstall-registry entries, the
+//! Debian dpkg status database on Linux, and Homebrew Cellar formula inventory
+//! on macOS. This keeps inventory collection offline and low-risk while still
+//! giving the advisory pipeline stable product candidates plus lightweight
+//! publisher/version hints for later matching.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,6 +27,7 @@ pub struct InstalledSoftware {
 pub enum InventorySource {
     RunningProcess,
     LinuxDpkgStatus,
+    MacosHomebrew,
     WindowsUninstallRegistry,
     RunningService,
 }
@@ -78,6 +80,7 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     }
     entries.extend(collect_windows_uninstall_entries());
     entries.extend(collect_linux_dpkg_entries());
+    entries.extend(collect_macos_homebrew_entries());
     collect_from_entries(entries)
 }
 
@@ -176,6 +179,110 @@ fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
 #[cfg(not(target_os = "linux"))]
 fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
     Vec::new()
+}
+
+#[cfg(target_os = "macos")]
+fn collect_macos_homebrew_entries() -> Vec<InventorySeed> {
+    [
+        (
+            std::path::Path::new("/opt/homebrew/Cellar"),
+            std::path::Path::new("/opt/homebrew/opt"),
+        ),
+        (
+            std::path::Path::new("/usr/local/Cellar"),
+            std::path::Path::new("/usr/local/opt"),
+        ),
+    ]
+    .into_iter()
+    .flat_map(|(cellar_root, opt_root)| collect_homebrew_entries_from_roots(cellar_root, opt_root))
+    .collect()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_macos_homebrew_entries() -> Vec<InventorySeed> {
+    Vec::new()
+}
+
+fn collect_homebrew_entries_from_roots(
+    cellar_root: &std::path::Path,
+    opt_root: &std::path::Path,
+) -> Vec<InventorySeed> {
+    let Ok(packages) = std::fs::read_dir(cellar_root) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    for package in packages.flatten() {
+        let Ok(file_type) = package.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        let Some(display_name) = inventory_hint(package.file_name().to_string_lossy().to_string())
+        else {
+            continue;
+        };
+        let version_hint = homebrew_version_hint_for_package(&display_name, &package.path(), opt_root);
+        entries.push(InventorySeed {
+            display_name,
+            executable_path: String::new(),
+            publisher_hint: None,
+            version_hint,
+            source: InventorySource::MacosHomebrew,
+        });
+    }
+    entries
+}
+
+fn homebrew_version_hint_for_package(
+    package_name: &str,
+    package_root: &std::path::Path,
+    opt_root: &std::path::Path,
+) -> Option<String> {
+    let canonical_package_root = std::fs::canonicalize(package_root).ok()?;
+    if let Some(active_version) = active_homebrew_version_from_opt(
+        package_name,
+        &canonical_package_root,
+        opt_root,
+    ) {
+        return Some(active_version);
+    }
+    sole_child_directory_name(&canonical_package_root)
+}
+
+fn active_homebrew_version_from_opt(
+    package_name: &str,
+    canonical_package_root: &std::path::Path,
+    opt_root: &std::path::Path,
+) -> Option<String> {
+    let resolved = std::fs::canonicalize(opt_root.join(package_name)).ok()?;
+    if !resolved.starts_with(canonical_package_root) {
+        return None;
+    }
+    resolved
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .and_then(inventory_hint)
+}
+
+fn sole_child_directory_name(dir: &std::path::Path) -> Option<String> {
+    let mut only = None;
+    for child in std::fs::read_dir(dir).ok()? {
+        let child = child.ok()?;
+        if !child.file_type().ok()?.is_dir() {
+            continue;
+        }
+        let Some(name) = inventory_hint(child.file_name().to_string_lossy().to_string()) else {
+            continue;
+        };
+        if only.is_some() {
+            return None;
+        }
+        only = Some(name);
+    }
+    only
 }
 
 fn parse_dpkg_status(status: &str) -> Vec<InventorySeed> {
@@ -384,8 +491,9 @@ fn source_sort_key(source: InventorySource) -> u8 {
     match source {
         InventorySource::RunningProcess => 0,
         InventorySource::LinuxDpkgStatus => 1,
-        InventorySource::WindowsUninstallRegistry => 2,
-        InventorySource::RunningService => 3,
+        InventorySource::MacosHomebrew => 2,
+        InventorySource::WindowsUninstallRegistry => 3,
+        InventorySource::RunningService => 4,
     }
 }
 
@@ -443,6 +551,7 @@ fn inventory_hint(value: String) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     fn seed(
         display_name: &str,
@@ -458,6 +567,28 @@ mod tests {
             version_hint: version_hint.map(str::to_string),
             source,
         }
+    }
+
+    fn temp_test_dir(label: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "vigil-homebrew-test-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn make_homebrew_roots(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let base = temp_test_dir(label);
+        let cellar = base.join("Cellar");
+        let opt = base.join("opt");
+        std::fs::create_dir_all(&cellar).unwrap();
+        std::fs::create_dir_all(&opt).unwrap();
+        (base, cellar, opt)
     }
 
     #[test]
@@ -529,6 +660,55 @@ mod tests {
                 "Dhcp".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn collect_homebrew_entries_from_roots_uses_sole_version_without_opt_link() {
+        let (base, cellar, opt) = make_homebrew_roots("sole-version");
+        std::fs::create_dir_all(cellar.join("ripgrep/14.1.0")).unwrap();
+
+        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "ripgrep");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("14.1.0"));
+        assert_eq!(parsed[0].source, InventorySource::MacosHomebrew);
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn collect_homebrew_entries_from_roots_leaves_ambiguous_versions_unset() {
+        let (base, cellar, opt) = make_homebrew_roots("ambiguous-version");
+        std::fs::create_dir_all(cellar.join("wget/1.0.0")).unwrap();
+        std::fs::create_dir_all(cellar.join("wget/1.2.0")).unwrap();
+
+        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "wget");
+        assert_eq!(parsed[0].version_hint, None);
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn collect_homebrew_entries_from_roots_prefers_opt_link_version() {
+        let (base, cellar, opt) = make_homebrew_roots("opt-version");
+        let old_version = cellar.join("wget/1.0.0");
+        let active_version = cellar.join("wget/1.2.0");
+        std::fs::create_dir_all(&old_version).unwrap();
+        std::fs::create_dir_all(&active_version).unwrap();
+        std::os::unix::fs::symlink(&active_version, opt.join("wget")).unwrap();
+
+        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "wget");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("1.2.0"));
+
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]
@@ -713,6 +893,31 @@ mod tests {
         );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_homebrew_metadata_wins() {
+        let entries = vec![
+            seed(
+                "wget",
+                "/opt/homebrew/bin/wget",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "wget",
+                "",
+                None,
+                Some("1.25.0"),
+                InventorySource::MacosHomebrew,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::MacosHomebrew);
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("1.25.0"));
+        assert_eq!(inventory[0].executable_path, "/opt/homebrew/bin/wget");
     }
 
     #[test]
