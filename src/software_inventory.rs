@@ -246,9 +246,7 @@ fn collect_homebrew_formula_entries_from_roots(
     entries
 }
 
-fn collect_homebrew_cask_entries_from_root(
-    caskroom_root: &std::path::Path,
-) -> Vec<InventorySeed> {
+fn collect_homebrew_cask_entries_from_root(caskroom_root: &std::path::Path) -> Vec<InventorySeed> {
     let Ok(casks) = std::fs::read_dir(caskroom_root) else {
         return Vec::new();
     };
@@ -269,9 +267,7 @@ fn collect_homebrew_cask_entries_from_root(
     entries
 }
 
-fn inventory_seed_from_homebrew_cask_dir(
-    cask_dir: &std::path::Path,
-) -> Option<InventorySeed> {
+fn inventory_seed_from_homebrew_cask_dir(cask_dir: &std::path::Path) -> Option<InventorySeed> {
     let version_dir = sole_child_directory_path(cask_dir)?;
     let version_hint = version_dir
         .file_name()
