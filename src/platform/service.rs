@@ -155,7 +155,7 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
                 )
             })?;
             return Err(
-                "Vigil disabled its boot-time startup after an unclean pre-login run so Windows can finish booting safely. Re-enable only after reviewing the failure."
+                "Vigil disabled its boot-time startup after an unclean pre-login run so the operating system can finish booting safely. Re-enable only after reviewing the failure."
                     .into(),
             );
         }
@@ -441,7 +441,7 @@ mod platform {
     use super::*;
     use crate::platform::command_paths;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Output};
 
     const LABEL: &str = "com.vigil.monitor";
 
@@ -524,7 +524,25 @@ mod platform {
     }
 
     pub fn disable_boot_start() -> Result<(), String> {
-        Ok(())
+        let path = plist_path();
+        if !path.exists() {
+            return Ok(());
+        }
+        if !is_root() {
+            return Err("launchd daemon disable requires root".into());
+        }
+        let output = Command::new(command_paths::resolve("launchctl")?)
+            .args(["unload", "-w", &path.display().to_string()])
+            .output()
+            .map_err(|e| format!("failed to spawn `launchctl`: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to disable launchd daemon `{LABEL}`: {}",
+                command_output_summary(&output)
+            ))
+        }
     }
 
     fn is_root() -> bool {
@@ -543,6 +561,21 @@ mod platform {
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
+
+    fn command_output_summary(output: &Output) -> String {
+        let text = command_output_text(output);
+        if text.trim().is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            format!("exit status {}; {}", output.status, text.trim())
+        }
+    }
+
+    fn command_output_text(output: &Output) -> String {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        format!("{stdout}{stderr}")
+    }
 }
 
 // ── Linux ─────────────────────────────────────────────────────────────────────
@@ -552,7 +585,7 @@ mod platform {
     use super::*;
     use crate::platform::command_paths;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Output};
 
     const UNIT_NAME: &str = "vigil.service";
 
@@ -638,6 +671,25 @@ mod platform {
     }
 
     pub fn disable_boot_start() -> Result<(), String> {
+        if !unit_path().exists() {
+            return Ok(());
+        }
+        if !is_root() {
+            return Err("systemd unit disable requires root".into());
+        }
+        let output = Command::new(command_paths::resolve("systemctl")?)
+            .args(["disable", "--now", UNIT_NAME])
+            .output()
+            .map_err(|e| format!("failed to spawn `systemctl`: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "failed to disable systemd unit `{UNIT_NAME}`: {}",
+                command_output_summary(&output)
+            ));
+        }
+        let _ = Command::new(command_paths::resolve("systemctl")?)
+            .args(["daemon-reload"])
+            .status();
         Ok(())
     }
 
@@ -650,6 +702,21 @@ mod platform {
 
     fn systemd_quote(text: &str) -> String {
         format!("\"{}\"", text.replace('"', "\\\""))
+    }
+
+    fn command_output_summary(output: &Output) -> String {
+        let text = command_output_text(output);
+        if text.trim().is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            format!("exit status {}; {}", output.status, text.trim())
+        }
+    }
+
+    fn command_output_text(output: &Output) -> String {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        format!("{stdout}{stderr}")
     }
 }
 
