@@ -131,7 +131,11 @@ fn apply_data_dir_override_early(args: &[String]) {
     }
 }
 
-fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: bool) {
+fn spawn_bootstrap(
+    cfg_bootstrap: Arc<RwLock<Config>>,
+    manage_login_autostart: bool,
+    pre_login_service_mode: bool,
+) {
     std::thread::Builder::new()
         .name("vigil-bootstrap".into())
         .spawn(move || {
@@ -141,7 +145,7 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             if c.fswatch_enabled {
                 fswatch::start();
             }
-            if c.reverse_dns_enabled {
+            if c.reverse_dns_enabled && !pre_login_service_mode {
                 revdns::start();
             }
             let (n_lists, n_entries) = blocklist::stats();
@@ -151,24 +155,42 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
                 n_lists,
                 n_entries,
                 c.fswatch_enabled,
-                c.reverse_dns_enabled
+                c.reverse_dns_enabled && !pre_login_service_mode
             );
             advisory::log_cache_status();
             advisory_history::log_cache_status();
 
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
-            advisory::refresh_nvd_in_background_if_due();
-            advisory_history::refresh_nvd_in_background_if_due();
+            if !pre_login_service_mode {
+                let _ = std::thread::Builder::new()
+                    .name("vigil-bootstrap-nvd-refresh".into())
+                    .spawn(advisory::refresh_nvd_in_background_if_due);
+                let _ = std::thread::Builder::new()
+                    .name("vigil-bootstrap-nvd-history-refresh".into())
+                    .spawn(advisory_history::refresh_nvd_in_background_if_due);
+            }
 
-            let inventory = software_inventory::collect_installed_software();
-            let software_count = inventory.len();
-            tracing::info!(software_count, "software inventory snapshot collected");
-            let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
-            if let Err(err) =
-                storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
-            {
-                tracing::warn!(%err, "failed to persist software inventory snapshot");
+            std::thread::sleep(software_inventory::startup_inventory_delay());
+            match std::panic::catch_unwind(software_inventory::collect_startup_inventory) {
+                Ok(inventory) => {
+                    let software_count = inventory.len();
+                    tracing::info!(
+                        software_count,
+                        "startup-safe software inventory snapshot collected"
+                    );
+                    let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
+                    if let Err(err) =
+                        storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
+                    {
+                        tracing::warn!(%err, "failed to persist software inventory snapshot");
+                    }
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "software inventory refresh panicked; continuing without startup inventory snapshot"
+                    );
+                }
             }
 
             if manage_login_autostart {
@@ -495,6 +517,20 @@ fn main() {
         }
     }
 
+    let pre_login = session::is_pre_login();
+    let pre_login_service_mode = service_mode && pre_login;
+    let mut pre_login_boot_guard = if pre_login_service_mode {
+        match service::enter_prelogin_boot_guard() {
+            Ok(guard) => Some(guard),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(0);
+            }
+        }
+    } else {
+        None
+    };
+
     let instance_id = if service_mode {
         SINGLE_INSTANCE_SERVICE_ID
     } else {
@@ -522,7 +558,7 @@ fn main() {
     let log_dir = _log_dir.clone();
 
     tracing::info!("Vigil v{} starting", env!("CARGO_PKG_VERSION"));
-    tracing::info!("pre-login session: {}", session::is_pre_login());
+    tracing::info!("pre-login session: {}", pre_login);
 
     #[cfg(windows)]
     {
@@ -548,7 +584,7 @@ fn main() {
     startup_integrity::run();
     startup_integrity::scan_operator_inputs(&loaded_cfg);
     let cfg = Arc::new(RwLock::new(loaded_cfg));
-    spawn_bootstrap(cfg.clone(), !service_mode);
+    spawn_bootstrap(cfg.clone(), !service_mode, pre_login_service_mode);
 
     let mon = Monitor::new(cfg.clone());
     let service_event_rx = if service_mode {
@@ -562,6 +598,10 @@ fn main() {
         Some(mon.subscribe())
     };
     let _mon_handle = mon.start();
+
+    if let Some(guard) = pre_login_boot_guard.as_mut() {
+        guard.disarm();
+    }
 
     if service_mode {
         if let Some(service_event_rx) = service_event_rx {
