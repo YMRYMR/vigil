@@ -83,14 +83,9 @@ fn main() {
 }
 
 fn enrich_inventory_identity(entry: &mut InventoryEntry) {
-    entry.product_aliases = collect_product_aliases(
-        &entry.display_name,
-        entry.executable_path.as_deref(),
-    );
-    entry.product_key = primary_product_key(
-        &entry.display_name,
-        entry.executable_path.as_deref(),
-    );
+    entry.product_aliases =
+        collect_product_aliases(&entry.display_name, entry.executable_path.as_deref());
+    entry.product_key = primary_product_key(&entry.display_name, entry.executable_path.as_deref());
     entry.vendor_key = entry
         .publisher_hint
         .as_deref()
@@ -336,7 +331,10 @@ fn collect_rpm_entries() -> Vec<InventoryEntry> {
 }
 
 fn parse_rpm_query_output(output: &str) -> Vec<InventoryEntry> {
-    output.lines().filter_map(inventory_entry_from_rpm_line).collect()
+    output
+        .lines()
+        .filter_map(inventory_entry_from_rpm_line)
+        .collect()
 }
 
 fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
@@ -480,7 +478,10 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].display_name, "curl");
         assert_eq!(parsed[0].version_hint.as_deref(), Some("8.8.0-1"));
-        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Example Maintainer"));
+        assert_eq!(
+            parsed[0].publisher_hint.as_deref(),
+            Some("Example Maintainer")
+        );
     }
 
     #[test]
@@ -508,7 +509,10 @@ mod tests {
             Some("Natanael Copa <ncopa@alpinelinux.org>")
         );
         assert_eq!(parsed[1].display_name, "musl");
-        assert_eq!(parsed[1].publisher_hint.as_deref(), Some("alpine-baselayout"));
+        assert_eq!(
+            parsed[1].publisher_hint.as_deref(),
+            Some("alpine-baselayout")
+        );
     }
 
     #[test]
@@ -535,7 +539,10 @@ mod tests {
     #[test]
     fn inventory_hint_drops_none_marker() {
         assert_eq!(inventory_hint("(none)".to_string()), None);
-        assert_eq!(inventory_hint("  value  ".to_string()).as_deref(), Some("value"));
+        assert_eq!(
+            inventory_hint("  value  ".to_string()).as_deref(),
+            Some("value")
+        );
     }
 
     #[test]
@@ -556,7 +563,10 @@ mod tests {
             "Google Chrome",
             Some("C:/Program Files/Google/Chrome/chrome.exe"),
         );
-        assert_eq!(aliases, vec!["chrome".to_string(), "google-chrome".to_string()]);
+        assert_eq!(
+            aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
     }
 
     #[test]
