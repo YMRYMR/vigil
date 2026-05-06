@@ -22,6 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::time::Duration;
 
 /// Result of an install / uninstall command.  `Ok(msg)` is printed verbatim
 /// to stdout; `Err(msg)` is printed to stderr and the process exits 1.
@@ -31,6 +32,7 @@ pub type CmdResult = Result<String, String>;
 pub const SERVICE_MODE_FLAG: &str = "--service-mode";
 pub const DATA_DIR_FLAG: &str = "--data-dir";
 const PRELOGIN_GUARD_FILE: &str = "vigil-prelogin-guard.json";
+const PRELOGIN_GUARD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct PreLoginGuardState {
@@ -44,11 +46,23 @@ struct PreLoginGuardState {
 pub struct PreLoginBootGuard {
     active: bool,
     disarmed: bool,
+    handoff_started: bool,
 }
 
 impl PreLoginBootGuard {
     pub fn disarm(&mut self) {
         if !self.active || self.disarmed {
+            return;
+        }
+        if crate::session::is_pre_login() {
+            if self.handoff_started {
+                return;
+            }
+            if let Err(err) = spawn_deferred_disarm_worker() {
+                tracing::warn!(%err, "failed to defer pre-login boot guard disarm until login");
+                return;
+            }
+            self.handoff_started = true;
             return;
         }
         if let Err(err) = disarm_prelogin_guard() {
@@ -61,12 +75,59 @@ impl PreLoginBootGuard {
 
 impl Drop for PreLoginBootGuard {
     fn drop(&mut self) {
-        if self.active && !self.disarmed {
+        if !self.active || self.disarmed {
+            return;
+        }
+        if crate::session::is_pre_login() {
             tracing::warn!(
                 "pre-login Vigil service exited before boot guard disarm; the next boot will trip the circuit breaker"
             );
+            return;
         }
+        if let Err(err) = disarm_prelogin_guard() {
+            tracing::warn!(%err, "failed to disarm pre-login boot guard during shutdown handoff");
+            return;
+        }
+        self.disarmed = true;
     }
+}
+
+fn spawn_deferred_disarm_worker() -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("vigil-prelogin-guard".into())
+        .spawn(|| {
+            drive_prelogin_guard_until_login(
+                PRELOGIN_GUARD_POLL_INTERVAL,
+                crate::session::is_pre_login,
+                || {
+                    tracing::info!(
+                        "interactive login detected; disarming pre-login boot guard"
+                    );
+                    if let Err(err) = disarm_prelogin_guard() {
+                        tracing::warn!(
+                            %err,
+                            "failed to disarm pre-login boot guard after login transition"
+                        );
+                    }
+                },
+            );
+        })
+        .map(|_| ())
+        .map_err(|err| format!("failed to spawn pre-login guard handoff thread: {err}"))
+}
+
+fn drive_prelogin_guard_until_login<FCheck, FDisarm>(
+    poll_interval: Duration,
+    mut still_pre_login: FCheck,
+    mut disarm: FDisarm,
+) where
+    FCheck: FnMut() -> bool,
+    FDisarm: FnMut(),
+{
+    while still_pre_login() {
+        std::thread::sleep(poll_interval);
+    }
+    disarm();
 }
 
 pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
@@ -93,6 +154,7 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
     Ok(PreLoginBootGuard {
         active: true,
         disarmed: false,
+        handoff_started: false,
     })
 }
 
@@ -566,7 +628,12 @@ pub fn run_cmd(cmd: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{next_failure_streak, should_disable_boot_start, PreLoginGuardState};
+    use super::{
+        drive_prelogin_guard_until_login, next_failure_streak, should_disable_boot_start,
+        PreLoginGuardState,
+    };
+    use std::cell::Cell;
+    use std::time::Duration;
 
     #[test]
     fn next_unclean_prelogin_run_increments_failure_streak() {
@@ -585,5 +652,42 @@ mod tests {
             ..Default::default()
         };
         assert!(should_disable_boot_start(&state));
+    }
+
+    #[test]
+    fn deferred_guard_handoff_waits_for_login_transition() {
+        let mut states = vec![true, true, false].into_iter();
+        let polls = Cell::new(0);
+        let disarmed = Cell::new(false);
+
+        drive_prelogin_guard_until_login(
+            Duration::ZERO,
+            || {
+                polls.set(polls.get() + 1);
+                states.next().unwrap_or(false)
+            },
+            || disarmed.set(true),
+        );
+
+        assert!(disarmed.get());
+        assert_eq!(polls.get(), 3);
+    }
+
+    #[test]
+    fn deferred_guard_handoff_disarms_immediately_after_login() {
+        let polls = Cell::new(0);
+        let disarmed = Cell::new(false);
+
+        drive_prelogin_guard_until_login(
+            Duration::ZERO,
+            || {
+                polls.set(polls.get() + 1);
+                false
+            },
+            || disarmed.set(true),
+        );
+
+        assert!(disarmed.get());
+        assert_eq!(polls.get(), 1);
     }
 }
