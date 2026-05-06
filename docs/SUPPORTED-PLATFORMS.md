@@ -2,7 +2,7 @@
 
 Vigil's active product scope is **Windows and Linux only**.
 
-This document is the project-level support contract for new development. When roadmap text, older docs, or legacy code mention macOS, treat that macOS material as historical or deprecated unless a later support-policy change explicitly re-adds it.
+This document is the project-level support contract for new development. When roadmap text, older docs, generated artifacts, installer leftovers, or legacy code mention other platforms, treat that material as historical until it is removed.
 
 ## Tier 1: Windows
 
@@ -28,17 +28,17 @@ Current Linux-specific priorities:
 - Reversible active-response actions through Linux-native controls.
 - Clear privilege UX around root and Linux capabilities.
 
-## Deprecated: macOS
+## Out of active scope
 
-macOS is not an active support target right now.
+Only Windows and Linux are active support targets.
 
 Practical consequences:
 
-- Do not add new macOS-only features.
-- Do not spend roadmap effort on macOS parity.
-- Do not expand macOS packaging, launchd, DTrace, Endpoint Security, or Network Extension work.
-- When touching shared code, avoid making macOS behavior worse accidentally, but do not block Windows/Linux work on macOS parity.
-- Existing macOS code can be removed gradually when doing so reduces maintenance burden and does not destabilize Windows/Linux builds.
+- Do not add new features for unsupported platforms.
+- Do not spend roadmap effort on unsupported-platform parity.
+- Do not expand unsupported packaging, service, monitor, or installer work.
+- When touching shared code, avoid making unsupported legacy paths worse accidentally, but do not block Windows/Linux work on parity outside the active scope.
+- Existing unsupported-platform code can be removed gradually when doing so reduces maintenance burden and does not destabilize Windows/Linux builds.
 
 ## Development rule
 
