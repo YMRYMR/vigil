@@ -9,7 +9,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 use sysinfo::System;
+
+const STARTUP_INVENTORY_DELAY: Duration = Duration::from_secs(15);
+const STARTUP_INVENTORY_MAX_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstalledSoftware {
@@ -41,13 +45,29 @@ struct InventorySeed {
     source: InventorySource,
 }
 
+pub fn startup_inventory_delay() -> Duration {
+    STARTUP_INVENTORY_DELAY
+}
+
+pub fn collect_startup_inventory() -> Vec<InstalledSoftware> {
+    collect_installed_software_limited(STARTUP_INVENTORY_MAX_ENTRIES)
+}
+
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
+    collect_installed_software_limited(usize::MAX)
+}
+
+fn collect_installed_software_limited(max_entries: usize) -> Vec<InstalledSoftware> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
     let service_map = crate::process::build_services_by_pid();
     let mut entries = Vec::new();
     for process in sys.processes().values() {
+        if entries.len() >= max_entries {
+            break;
+        }
+
         let display_name = process.name().to_string_lossy().trim().to_string();
         let executable_path = process
             .exe()
@@ -65,9 +85,13 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             version_hint: version_hint.clone(),
             source: InventorySource::RunningProcess,
         });
+
         for service_name in
             service_names_for_process(process.pid().as_u32(), &service_map, &display_name)
         {
+            if entries.len() >= max_entries {
+                break;
+            }
             entries.push(InventorySeed {
                 display_name: service_name,
                 executable_path: executable_path.clone(),
@@ -77,10 +101,32 @@ pub fn collect_installed_software() -> Vec<InstalledSoftware> {
             });
         }
     }
-    entries.extend(collect_windows_uninstall_entries());
-    entries.extend(collect_linux_dpkg_entries());
-    entries.extend(collect_macos_homebrew_entries());
+
+    if entries.len() < max_entries {
+        let remaining = max_entries - entries.len();
+        append_limited_entries(&mut entries, collect_windows_uninstall_entries(), remaining);
+    }
+    if entries.len() < max_entries {
+        let remaining = max_entries - entries.len();
+        append_limited_entries(&mut entries, collect_linux_dpkg_entries(), remaining);
+    }
+    if entries.len() < max_entries {
+        let remaining = max_entries - entries.len();
+        append_limited_entries(&mut entries, collect_macos_homebrew_entries(), remaining);
+    }
+
     collect_from_entries(entries)
+}
+
+fn append_limited_entries(
+    entries: &mut Vec<InventorySeed>,
+    additional: Vec<InventorySeed>,
+    remaining: usize,
+) {
+    if remaining == 0 {
+        return;
+    }
+    entries.extend(additional.into_iter().take(remaining));
 }
 
 fn service_names_for_process(
@@ -1155,5 +1201,22 @@ mod tests {
         assert!(inventory.iter().any(|row| {
             row.product_key == "dnscache" && row.source == InventorySource::RunningService
         }));
+    }
+
+    #[test]
+    fn startup_inventory_limit_caps_seed_count_before_deduplication() {
+        let mut entries = Vec::new();
+        for i in 0..(STARTUP_INVENTORY_MAX_ENTRIES + 25) {
+            entries.push(seed(
+                &format!("proc-{i}"),
+                &format!("/opt/proc-{i}"),
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ));
+        }
+        let mut limited = Vec::new();
+        append_limited_entries(&mut limited, entries, STARTUP_INVENTORY_MAX_ENTRIES);
+        assert_eq!(limited.len(), STARTUP_INVENTORY_MAX_ENTRIES);
     }
 }
