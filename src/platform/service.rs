@@ -20,6 +20,9 @@
 //! user-mode Vigil process starts via autostart and reads the same log
 //! file, so pre-login events remain visible via the log.
 
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
 /// Result of an install / uninstall command.  `Ok(msg)` is printed verbatim
 /// to stdout; `Err(msg)` is printed to stderr and the process exits 1.
 pub type CmdResult = Result<String, String>;
@@ -27,6 +30,110 @@ pub type CmdResult = Result<String, String>;
 /// Internal headless entrypoint used by OS services / daemons.
 pub const SERVICE_MODE_FLAG: &str = "--service-mode";
 pub const DATA_DIR_FLAG: &str = "--data-dir";
+const PRELOGIN_GUARD_FILE: &str = "vigil-prelogin-guard.json";
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PreLoginGuardState {
+    armed: bool,
+    last_start_unix: u64,
+    last_success_unix: u64,
+    failure_streak: u32,
+    disabled_boot_start: bool,
+}
+
+pub struct PreLoginBootGuard {
+    active: bool,
+    disarmed: bool,
+}
+
+impl PreLoginBootGuard {
+    pub fn disarm(&mut self) {
+        if !self.active || self.disarmed {
+            return;
+        }
+        if let Err(err) = disarm_prelogin_guard() {
+            tracing::warn!(%err, "failed to disarm pre-login boot guard");
+            return;
+        }
+        self.disarmed = true;
+    }
+}
+
+impl Drop for PreLoginBootGuard {
+    fn drop(&mut self) {
+        if self.active && !self.disarmed {
+            tracing::warn!(
+                "pre-login Vigil service exited before boot guard disarm; the next boot will trip the circuit breaker"
+            );
+        }
+    }
+}
+
+pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
+    let path = prelogin_guard_path();
+    let mut state = load_prelogin_guard_state(&path)?;
+    if state.armed {
+        state.failure_streak = state.failure_streak.saturating_add(1);
+        if state.failure_streak >= 1 {
+            disable_boot_start()?
+                ;
+            state.armed = false;
+            state.disabled_boot_start = true;
+            save_prelogin_guard_state(&path, &state)?;
+            return Err(
+                "Vigil disabled its boot-time startup after an unclean pre-login run so Windows can finish booting safely. Re-enable only after reviewing the failure."
+                    .into(),
+            );
+        }
+    }
+
+    state.armed = true;
+    state.disabled_boot_start = false;
+    state.last_start_unix = unix_now();
+    save_prelogin_guard_state(&path, &state)?;
+    Ok(PreLoginBootGuard {
+        active: true,
+        disarmed: false,
+    })
+}
+
+fn disarm_prelogin_guard() -> Result<(), String> {
+    let path = prelogin_guard_path();
+    let mut state = load_prelogin_guard_state(&path)?;
+    state.armed = false;
+    state.failure_streak = 0;
+    state.disabled_boot_start = false;
+    state.last_success_unix = unix_now();
+    save_prelogin_guard_state(&path, &state)
+}
+
+fn prelogin_guard_path() -> PathBuf {
+    crate::config::data_dir().join(PRELOGIN_GUARD_FILE)
+}
+
+fn load_prelogin_guard_state(path: &std::path::Path) -> Result<PreLoginGuardState, String> {
+    if !path.exists() {
+        return Ok(PreLoginGuardState::default());
+    }
+    let loaded = crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| format!("failed to load pre-login guard {}: {e}", path.display()))?;
+    Ok(loaded.unwrap_or_default())
+}
+
+fn save_prelogin_guard_state(
+    path: &std::path::Path,
+    state: &PreLoginGuardState,
+) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
+        .map_err(|e| format!("failed to save pre-login guard {}: {e}", path.display()))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 pub fn install() -> CmdResult {
     let exe =
@@ -36,6 +143,10 @@ pub fn install() -> CmdResult {
 
 pub fn uninstall() -> CmdResult {
     platform::uninstall()
+}
+
+fn disable_boot_start() -> Result<(), String> {
+    platform::disable_boot_start()
 }
 
 // ── Windows ─────────────────────────────────────────────────────────────────
@@ -164,6 +275,21 @@ mod platform {
         }
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        let output = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Change", "/TN", TASK_NAME, "/DISABLE"])
+            .output()
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to disable Windows boot-time monitor task `{TASK_NAME}`: {}",
+                command_output_summary(&output)
+            ))
+        }
+    }
+
     fn task_path() -> PathBuf {
         let mut path = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
@@ -247,7 +373,6 @@ mod platform {
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        // Permissions: root:wheel 0644
         let _ = Command::new(command_paths::resolve("chown")?)
             .args(["root:wheel", &path.display().to_string()])
             .status();
@@ -286,9 +411,11 @@ mod platform {
         Ok(format!("Removed launchd daemon `{LABEL}`."))
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_root() -> bool {
-        // Declare getuid() directly to avoid pulling in a `libc` dependency
-        // just for a single uid comparison.  It's an infallible C ABI call.
         extern "C" {
             fn getuid() -> u32;
         }
@@ -396,6 +523,10 @@ mod platform {
         Ok(format!("Removed systemd unit `{UNIT_NAME}`."))
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_root() -> bool {
         extern "C" {
             fn getuid() -> u32;
@@ -407,8 +538,6 @@ mod platform {
         format!("\"{}\"", text.replace('"', "\\\""))
     }
 }
-
-// ── Shared pretty-printer used by main.rs ─────────────────────────────────────
 
 pub fn run_cmd(cmd: &str) -> i32 {
     let res = match cmd {
