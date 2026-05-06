@@ -132,14 +132,30 @@ fn drive_prelogin_guard_until_login<FCheck, FDisarm>(
 
 pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
     let path = prelogin_guard_path();
-    let mut state = load_prelogin_guard_state(&path)?;
+    let mut state = load_prelogin_guard_state(&path).map_err(|err| {
+        fail_open_disable_boot_start(
+            &format!(
+                "Vigil could not read its pre-login boot guard state at {}",
+                path.display()
+            ),
+            err,
+        )
+    })?;
     if state.armed {
         state.failure_streak = next_failure_streak(&state);
         if should_disable_boot_start(&state) {
             disable_boot_start()?;
             state.armed = false;
             state.disabled_boot_start = true;
-            save_prelogin_guard_state(&path, &state)?;
+            save_prelogin_guard_state(&path, &state).map_err(|err| {
+                fail_open_disable_boot_start(
+                    &format!(
+                        "Vigil disabled its boot-time startup after an unclean pre-login run, but could not persist that guard state at {}",
+                        path.display()
+                    ),
+                    err,
+                )
+            })?;
             return Err(
                 "Vigil disabled its boot-time startup after an unclean pre-login run so Windows can finish booting safely. Re-enable only after reviewing the failure."
                     .into(),
@@ -150,12 +166,31 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
     state.armed = true;
     state.disabled_boot_start = false;
     state.last_start_unix = unix_now();
-    save_prelogin_guard_state(&path, &state)?;
+    save_prelogin_guard_state(&path, &state).map_err(|err| {
+        fail_open_disable_boot_start(
+            &format!(
+                "Vigil could not arm its pre-login boot guard at {}",
+                path.display()
+            ),
+            err,
+        )
+    })?;
     Ok(PreLoginBootGuard {
         active: true,
         disarmed: false,
         handoff_started: false,
     })
+}
+
+fn fail_open_disable_boot_start(context: &str, cause: String) -> String {
+    match disable_boot_start() {
+        Ok(()) => format!(
+            "{context}: {cause}. Vigil disabled its own boot-time startup so one bad boot cannot repeat on the next restart."
+        ),
+        Err(disable_err) => format!(
+            "{context}: {cause}. Vigil then tried to disable its own boot-time startup but failed: {disable_err}"
+        ),
+    }
 }
 
 fn next_failure_streak(state: &PreLoginGuardState) -> u32 {
@@ -629,8 +664,8 @@ pub fn run_cmd(cmd: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        drive_prelogin_guard_until_login, next_failure_streak, should_disable_boot_start,
-        PreLoginGuardState,
+        drive_prelogin_guard_until_login, fail_open_disable_boot_start, next_failure_streak,
+        should_disable_boot_start, PreLoginGuardState,
     };
     use std::cell::Cell;
     use std::time::Duration;
@@ -689,5 +724,13 @@ mod tests {
 
         assert!(disarmed.get());
         assert_eq!(polls.get(), 1);
+    }
+
+    #[test]
+    fn fail_open_message_mentions_boot_disable_attempt() {
+        let message = fail_open_disable_boot_start("guard write failed", "disk full".into());
+        assert!(message.contains("guard write failed"));
+        assert!(message.contains("disk full"));
+        assert!(message.contains("boot-time startup"));
     }
 }
