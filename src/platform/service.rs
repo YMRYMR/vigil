@@ -1,24 +1,23 @@
-//! Cross-platform boot-time service installation.
+//! Boot-time service installation for supported platforms.
 //!
-//! Vigil can run as an OS-managed service/daemon so it starts **before** any
-//! user logs in and catches malware that activates during boot (rootkits,
-//! dropper callbacks, persistence mechanisms).  This module implements the
-//! install / uninstall commands for each supported OS:
+//! Vigil can run as an OS-managed service so it starts **before** any user logs
+//! in and catches malware that activates during boot (rootkits, dropper
+//! callbacks, persistence mechanisms). This module implements the install /
+//! uninstall commands for supported OSs:
 //!
 //! | OS      | Mechanism                     | Location                                      |
 //! | ------- | ----------------------------- | --------------------------------------------- |
 //! | Windows | Task Scheduler                | `schtasks /Create ...`                        |
-//! | macOS   | launchd system daemon         | `/Library/LaunchDaemons/com.vigil.monitor.plist` |
 //! | Linux   | systemd system unit           | `/etc/systemd/system/vigil.service`           |
 //!
-//! All three require elevation; this module does **not** elevate itself —
-//! the user must invoke Vigil from an elevated shell.  On failure we print
-//! a helpful, OS-specific hint and return a non-zero exit code to `main`.
+//! Both require elevation; this module does **not** elevate itself — the user
+//! must invoke Vigil from an elevated shell. On failure we print a helpful,
+//! OS-specific hint and return a non-zero exit code to `main`.
 //!
-//! The installed service runs the **monitor only** — no GUI, no tray
-//! (those require a desktop session).  When the user logs in, the normal
-//! user-mode Vigil process starts via autostart and reads the same log
-//! file, so pre-login events remain visible via the log.
+//! The installed service runs the **monitor only** — no GUI, no tray (those
+//! require a desktop session). When the user logs in, the normal user-mode Vigil
+//! process starts via autostart and reads the same log file, so pre-login events
+//! remain visible via the log.
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -439,153 +438,9 @@ mod platform {
     }
 }
 
-// ── macOS ─────────────────────────────────────────────────────────────────────
-
-#[cfg(target_os = "macos")]
-mod platform {
-    use super::*;
-    use crate::platform::command_paths;
-    use std::path::Path;
-    use std::process::{Command, Output};
-
-    const LABEL: &str = "com.vigil.monitor";
-
-    fn plist_path() -> std::path::PathBuf {
-        std::path::PathBuf::from(format!("/Library/LaunchDaemons/{LABEL}.plist"))
-    }
-
-    pub fn install(exe: &Path) -> CmdResult {
-        if !is_root() {
-            return Err("launchd daemons must be installed as root.  Re-run with:\n\
-                 \n\
-                 \u{00a0}\u{00a0}sudo vigil --install-service"
-                .into());
-        }
-
-        let shared_data_dir = exe
-            .parent()
-            .map(|d| d.join("vigil-data"))
-            .ok_or_else(|| format!("could not determine parent directory for {}", exe.display()))?;
-        let exe = xml_escape(&exe.display().to_string());
-        let plist = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>             <string>{LABEL}</string>
-    <key>ProgramArguments</key>  <array><string>{exe}</string><string>{service_flag}</string><string>{data_dir_flag}</string><string>{shared_data_dir}</string></array>
-    <key>RunAtLoad</key>         <true/>
-    <key>KeepAlive</key>         <true/>
-    <key>StandardOutPath</key>   <string>/var/log/vigil.log</string>
-    <key>StandardErrorPath</key> <string>/var/log/vigil.log</string>
-</dict>
-</plist>
-"#,
-            exe = exe,
-            service_flag = SERVICE_MODE_FLAG,
-            data_dir_flag = DATA_DIR_FLAG,
-            shared_data_dir = xml_escape(&shared_data_dir.display().to_string()),
-        );
-        let path = plist_path();
-        std::fs::write(&path, plist.as_bytes())
-            .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-        // Permissions: root:wheel 0644
-        let _ = Command::new(command_paths::resolve("chown")?)
-            .args(["root:wheel", &path.display().to_string()])
-            .status();
-        let _ = Command::new(command_paths::resolve("chmod")?)
-            .args(["644", &path.display().to_string()])
-            .status();
-
-        let status = Command::new(command_paths::resolve("launchctl")?)
-            .args(["load", "-w", &path.display().to_string()])
-            .status()
-            .map_err(|e| format!("failed to spawn `launchctl`: {e}"))?;
-        if !status.success() {
-            return Err("`launchctl load` failed (see /var/log/system.log)".into());
-        }
-        Ok(format!(
-            "Installed launchd daemon `{LABEL}` at {}.\n\
-             It will auto-start at boot (even before login).\n\
-             To remove:  sudo vigil --uninstall-service",
-            path.display()
-        ))
-    }
-
-    pub fn uninstall() -> CmdResult {
-        let path = plist_path();
-        if !path.exists() {
-            return Ok(format!("launchd daemon `{LABEL}` was not installed."));
-        }
-        if !is_root() {
-            return Err("Re-run with:  sudo vigil --uninstall-service".into());
-        }
-        let _ = Command::new(command_paths::resolve("launchctl")?)
-            .args(["unload", "-w", &path.display().to_string()])
-            .status();
-        std::fs::remove_file(&path)
-            .map_err(|e| format!("could not remove {}: {e}", path.display()))?;
-        Ok(format!("Removed launchd daemon `{LABEL}`."))
-    }
-
-    pub fn disable_boot_start() -> Result<(), String> {
-        let path = plist_path();
-        if !path.exists() {
-            return Ok(());
-        }
-        if !is_root() {
-            return Err("launchd daemon disable requires root".into());
-        }
-        let output = Command::new(command_paths::resolve("launchctl")?)
-            .args(["unload", "-w", &path.display().to_string()])
-            .output()
-            .map_err(|e| format!("failed to spawn `launchctl`: {e}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(format!(
-                "failed to disable launchd daemon `{LABEL}`: {}",
-                command_output_summary(&output)
-            ))
-        }
-    }
-
-    fn is_root() -> bool {
-        // Declare getuid() directly to avoid pulling in a `libc` dependency
-        // just for a single uid comparison.  It's an infallible C ABI call.
-        extern "C" {
-            fn getuid() -> u32;
-        }
-        unsafe { getuid() == 0 }
-    }
-
-    fn xml_escape(text: &str) -> String {
-        text.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-            .replace('"', "&quot;")
-            .replace('\'', "&apos;")
-    }
-
-    fn command_output_summary(output: &Output) -> String {
-        let text = command_output_text(output);
-        if text.trim().is_empty() {
-            format!("exit status {}", output.status)
-        } else {
-            format!("exit status {}; {}", output.status, text.trim())
-        }
-    }
-
-    fn command_output_text(output: &Output) -> String {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        format!("{stdout}{stderr}")
-    }
-}
-
 // ── Linux ─────────────────────────────────────────────────────────────────────
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
 mod platform {
     use super::*;
     use crate::platform::command_paths;
@@ -722,6 +577,24 @@ mod platform {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         format!("{stdout}{stderr}")
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+mod platform {
+    use super::*;
+    use std::path::Path;
+
+    pub fn install(_exe: &Path) -> CmdResult {
+        Err("boot-time service installation is supported on Windows and Linux only".into())
+    }
+
+    pub fn uninstall() -> CmdResult {
+        Ok("boot-time service was not installed on this unsupported platform".into())
+    }
+
+    pub fn disable_boot_start() -> Result<(), String> {
+        Ok(())
     }
 }
 
