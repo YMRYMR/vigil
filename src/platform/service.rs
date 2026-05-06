@@ -73,10 +73,9 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
     let path = prelogin_guard_path();
     let mut state = load_prelogin_guard_state(&path)?;
     if state.armed {
-        state.failure_streak = state.failure_streak.saturating_add(1);
-        if state.failure_streak >= 1 {
-            disable_boot_start()?
-                ;
+        state.failure_streak = next_failure_streak(&state);
+        if should_disable_boot_start(&state) {
+            disable_boot_start()?;
             state.armed = false;
             state.disabled_boot_start = true;
             save_prelogin_guard_state(&path, &state)?;
@@ -95,6 +94,14 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
         active: true,
         disarmed: false,
     })
+}
+
+fn next_failure_streak(state: &PreLoginGuardState) -> u32 {
+    state.failure_streak.saturating_add(1)
+}
+
+fn should_disable_boot_start(state: &PreLoginGuardState) -> bool {
+    state.failure_streak >= 1
 }
 
 fn disarm_prelogin_guard() -> Result<(), String> {
@@ -554,5 +561,29 @@ pub fn run_cmd(cmd: &str) -> i32 {
             eprintln!("vigil: {msg}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{next_failure_streak, should_disable_boot_start, PreLoginGuardState};
+
+    #[test]
+    fn next_unclean_prelogin_run_increments_failure_streak() {
+        let state = PreLoginGuardState {
+            armed: true,
+            failure_streak: 0,
+            ..Default::default()
+        };
+        assert_eq!(next_failure_streak(&state), 1);
+    }
+
+    #[test]
+    fn first_unclean_prelogin_run_disables_boot_start() {
+        let state = PreLoginGuardState {
+            failure_streak: 1,
+            ..Default::default()
+        };
+        assert!(should_disable_boot_start(&state));
     }
 }
