@@ -145,11 +145,9 @@ fn normalize_identity(input: &str) -> Option<String> {
 }
 
 fn tokenize_identity(input: &str) -> Vec<String> {
-    input
-        .trim()
-        .to_lowercase()
-        .strip_suffix(".exe")
-        .unwrap_or(&input.trim().to_lowercase())
+    let lower = input.trim().to_lowercase();
+    let no_ext = lower.strip_suffix(".exe").unwrap_or(&lower);
+    no_ext
         .chars()
         .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
         .collect::<String>()
@@ -376,10 +374,10 @@ fn parse_apk_installed(installed: &str) -> Vec<InventoryEntry> {
         }
         let Some((key, value)) = line.split_once(':') else {
             continue;
-        };
+        }
         let Some(field) = key.chars().next() else {
             continue;
-        };
+        }
         fields.insert(field, value.trim().to_string());
     }
     entries
