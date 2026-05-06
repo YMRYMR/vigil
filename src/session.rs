@@ -2,9 +2,8 @@
 //!
 //! `is_pre_login()` returns `true` when the host currently has **no
 //! interactive user session** — i.e. Vigil is running as a boot-time
-//! service / launchd daemon / systemd unit and no one has logged in yet
-//! (or the screen is at the lock / login prompt before any user has
-//! authenticated for the first time).
+//! service / systemd unit and no one has logged in yet (or the screen is at
+//! the lock / login prompt before any user has authenticated for the first time).
 //!
 //! Events observed while this is true are tagged with `pre_login: true`
 //! on `ConnInfo`, which:
@@ -42,16 +41,13 @@ mod platform {
     }
 }
 
-// ── Unix (macOS + Linux) ──────────────────────────────────────────────────────
+// ── Linux / other Unix fallback ───────────────────────────────────────────────
 
 #[cfg(not(windows))]
 mod platform {
-    /// On macOS + Linux we approximate by checking the environment Vigil
-    /// inherited at launch:
+    /// On supported Unix service-mode builds we approximate by checking the
+    /// environment Vigil inherited at launch:
     ///
-    /// * A `launchd` daemon launched at boot (before `loginwindow` hands
-    ///   off to a user) inherits *no* `USER` / `HOME` / `DISPLAY` /
-    ///   `WAYLAND_DISPLAY` — its context is whatever the plist declared.
     /// * A `systemd` system unit has `USER=root` (or the `User=` directive
     ///   value) and never gets `DISPLAY` or `WAYLAND_DISPLAY`.
     /// * An interactive session always has at least one of

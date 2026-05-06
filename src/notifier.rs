@@ -15,8 +15,8 @@
 //!            build), we fall back to `notify-rust` so the user still sees the
 //!            notification (without the click-to-navigate behaviour).
 //!
-//! macOS / Linux — `notify-rust` for a lightweight toast. We keep the call
-//!                 fire-and-forget so the caller is never blocked.
+//! Linux / other Unix fallback — `notify-rust` for a lightweight toast. We keep
+//!                               the call fire-and-forget so the caller is never blocked.
 
 use crate::types::ConnInfo;
 use std::sync::atomic::AtomicBool;
@@ -82,9 +82,9 @@ mod platform {
     }
 
     /// Basic `notify-rust` fallback used when WinRT refuses to show the toast.
-    /// Unlike macOS/Linux, the Windows backend of `notify-rust` does not
-    /// support `wait_for_action`, so we only surface the alert text — the
-    /// click-to-navigate wiring is lost for that one notification.
+    /// The Windows backend of `notify-rust` does not support `wait_for_action`,
+    /// so we only surface the alert text — the click-to-navigate wiring is lost
+    /// for that one notification.
     fn fallback_notify_rust(info: &ConnInfo) {
         let body = format!(
             "{} \u{2192} {}   score: {}\n{}",
@@ -123,7 +123,7 @@ mod platform {
     }
 }
 
-// ── macOS / Linux ─────────────────────────────────────────────────────────────
+// ── Linux / other Unix fallback ───────────────────────────────────────────────
 
 #[cfg(not(windows))]
 mod platform {

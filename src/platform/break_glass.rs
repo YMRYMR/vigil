@@ -511,63 +511,7 @@ mod platform {
                 .ok_or_else(|| "could not locate crontab in trusted paths".to_string())
         }
     }
-    #[cfg(target_os = "macos")]
-    mod imp {
-        use std::path::PathBuf;
-        use std::process::Command;
-        const PLIST_LABEL: &str = "com.vigil.break-glass-recovery";
-        pub fn task_exists() -> bool {
-            plist_path().exists()
-        }
-        pub fn create_recovery_task() -> Result<(), String> {
-            let exe = std::env::current_exe()
-                .map_err(|e| format!("failed to resolve current exe: {e}"))?;
-            let plist = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">\n<dict>\n  <key>Label</key>\n  <string>{PLIST_LABEL}</string>\n  <key>ProgramArguments</key>\n  <array>\n    <string>{}</string>\n    <string>--break-glass-recover</string>\n  </array>\n  <key>RunAtLoad</key>\n  <true/>\n  <key>StartInterval</key>\n  <integer>60</integer>\n</dict>\n</plist>\n", xml_escape(&exe.display().to_string()));
-            std::fs::write(plist_path(), plist)
-                .map_err(|e| format!("failed to write launchd plist: {e}"))?;
-            let launchctl = launchctl_path();
-            let _ = Command::new(launchctl)
-                .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
-                .status();
-            let status = Command::new(launchctl)
-                .args([
-                    "bootstrap",
-                    "system",
-                    plist_path().to_string_lossy().as_ref(),
-                ])
-                .status()
-                .map_err(|e| format!("failed to spawn launchctl bootstrap: {e}"))?;
-            if status.success() {
-                Ok(())
-            } else {
-                Err(format!("launchctl bootstrap failed with status {status}"))
-            }
-        }
-        pub fn delete_recovery_task() -> Result<(), String> {
-            let _ = Command::new(launchctl_path())
-                .args(["bootout", "system", plist_path().to_string_lossy().as_ref()])
-                .status();
-            if plist_path().exists() {
-                std::fs::remove_file(plist_path())
-                    .map_err(|e| format!("failed to remove launchd plist: {e}"))?;
-            }
-            Ok(())
-        }
-        fn launchctl_path() -> &'static str {
-            "/bin/launchctl"
-        }
-        fn plist_path() -> PathBuf {
-            PathBuf::from(format!("/Library/LaunchDaemons/{PLIST_LABEL}.plist"))
-        }
-        fn xml_escape(text: &str) -> String {
-            text.replace('&', "&amp;")
-                .replace('<', "&lt;")
-                .replace('>', "&gt;")
-                .replace('"', "&quot;")
-                .replace('\'', "&apos;")
-        }
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(target_os = "linux"))]
     mod imp {
         pub fn task_exists() -> bool {
             false

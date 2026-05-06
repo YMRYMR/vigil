@@ -9,14 +9,10 @@ pub fn resolve(program: &str) -> Result<PathBuf, String> {
     {
         resolve_linux(program)
     }
-    #[cfg(target_os = "macos")]
-    {
-        resolve_macos(program)
-    }
-    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(windows, target_os = "linux")))]
     {
         let _ = program;
-        Err("trusted command resolution is not implemented on this platform".into())
+        Err("trusted command resolution is supported on Windows and Linux only".into())
     }
 }
 
@@ -48,20 +44,6 @@ fn resolve_linux(program: &str) -> Result<PathBuf, String> {
         "resolvectl" => &["/usr/bin/resolvectl", "/bin/resolvectl"],
         "systemd-resolve" => &["/usr/bin/systemd-resolve", "/bin/systemd-resolve"],
         "systemctl" => &["/bin/systemctl", "/usr/bin/systemctl"],
-        "crontab" => &["/usr/bin/crontab", "/bin/crontab"],
-        _ => &[],
-    };
-    resolve_from_candidates(program, candidates)
-}
-
-#[cfg(target_os = "macos")]
-fn resolve_macos(program: &str) -> Result<PathBuf, String> {
-    let candidates: &[&str] = match program {
-        "ifconfig" => &["/sbin/ifconfig"],
-        "netstat" => &["/usr/sbin/netstat", "/usr/bin/netstat", "/bin/netstat"],
-        "launchctl" => &["/bin/launchctl"],
-        "chown" => &["/usr/sbin/chown", "/bin/chown"],
-        "chmod" => &["/bin/chmod"],
         "crontab" => &["/usr/bin/crontab", "/bin/crontab"],
         _ => &[],
     };

@@ -80,19 +80,17 @@ winres = "0.1"
 
 # Strip the gtk3 / glib 0.18 chain from Cargo.lock.
 #
-# `tray-icon` declares `libappindicator` as a hard `cfg(linux)` dependency in
-# its own Cargo.toml (not behind a feature flag). Cargo's resolver records
-# target-specific transitive deps in Cargo.lock regardless of the build target,
-# so even though we never use tray-icon on Linux (we use ksni), libappindicator
-# and its glib/gtk 0.18 subtree would still appear in the lockfile and trip
-# Dependabot on GHSA-wrw7-89jp-8q8g (unsound glib::VariantStrIter).
+# `tray-icon` declares `libappindicator` as a hard Linux dependency in its own
+# Cargo.toml. Cargo's resolver records target-specific transitive deps in
+# Cargo.lock regardless of the build target, so even though we use `ksni` on
+# Linux, libappindicator and its glib/gtk 0.18 subtree would still appear in the
+# lockfile and trip Dependabot on GHSA-wrw7-89jp-8q8g (unsound
+# glib::VariantStrIter).
 #
-# The stub below is an empty crate with zero dependencies. tray-icon only
-# references `libappindicator` from `#[cfg(all(unix, not(target_os = "macos")))]`
-# blocks, which don't compile on Windows or macOS, so the stub's body is never
-# referenced. On Linux `tray-icon` isn't pulled in at all. Net effect:
-# glib/gtk/libappindicator disappear from Cargo.lock without changing any
-# compiled behavior.
+# The stubs below are empty crates with zero dependencies. The active Linux tray
+# implementation uses `ksni`, and the Windows build does not compile these stub
+# bodies. Net effect: glib/gtk/libappindicator disappear from Cargo.lock without
+# changing compiled Windows/Linux behavior.
 [patch.crates-io]
 libappindicator = { path = "stubs/libappindicator" }
 gtk             = { path = "stubs/gtk" }
@@ -103,7 +101,6 @@ ci                 = "github"
 installers         = ["shell", "powershell", "msi"]
 targets            = [
     "x86_64-pc-windows-msvc",
-    "aarch64-apple-darwin",
     "x86_64-unknown-linux-gnu",
 ]
 pr-run-mode        = "skip"
