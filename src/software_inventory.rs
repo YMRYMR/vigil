@@ -173,19 +173,19 @@ fn collect_windows_uninstall_inventory(limit: usize) -> Vec<InstalledSoftware> {
     const UNINSTALL_PATHS: [(winreg::enums::HKEY, &str); 4] = [
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
         ),
         (
             HKEY_CURRENT_USER,
-            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
         ),
         (
             HKEY_CURRENT_USER,
-            r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall",
+            "SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
         ),
     ];
 
@@ -367,8 +367,8 @@ mod tests {
             InstalledSoftware {
                 product_key: "google-chrome".into(),
                 display_name: "chrome.exe".into(),
-                executable_path: r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-                    .into(),
+                executable_path:
+                    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe".into(),
                 version_hint: None,
                 publisher_hint: None,
                 source: InventorySource::RunningProcess,
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(merged.display_name, "Google Chrome");
         assert_eq!(
             merged.executable_path,
-            r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+            "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"
         );
         assert_eq!(merged.version_hint.as_deref(), Some("124.0.6367.60"));
         assert_eq!(merged.publisher_hint.as_deref(), Some("Google LLC"));
@@ -400,12 +400,12 @@ mod tests {
     #[test]
     fn parse_display_icon_path_strips_resource_suffix() {
         assert_eq!(
-            parse_display_icon_path(r#"C:\Program Files\App\app.exe",0"#),
-            r"C:\Program Files\App\app.exe"
+            parse_display_icon_path("\"C:\\Program Files\\App\\app.exe\",0"),
+            "C:\\Program Files\\App\\app.exe"
         );
         assert_eq!(
-            parse_display_icon_path(r"C:\Program Files\App\app.exe,-42"),
-            r"C:\Program Files\App\app.exe"
+            parse_display_icon_path("C:\\Program Files\\App\\app.exe,-42"),
+            "C:\\Program Files\\App\\app.exe"
         );
     }
 
