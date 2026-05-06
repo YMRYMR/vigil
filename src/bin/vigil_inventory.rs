@@ -87,7 +87,10 @@ fn enrich_inventory_identity(entry: &mut InventoryEntry) {
         &entry.display_name,
         entry.executable_path.as_deref(),
     );
-    entry.product_key = primary_product_key(&entry.display_name, entry.executable_path.as_deref());
+    entry.product_key = primary_product_key(
+        &entry.display_name,
+        entry.executable_path.as_deref(),
+    );
     entry.vendor_key = entry
         .publisher_hint
         .as_deref()
@@ -167,22 +170,22 @@ fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
     let uninstall_roots = [
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
     ];
@@ -374,10 +377,10 @@ fn parse_apk_installed(installed: &str) -> Vec<InventoryEntry> {
         }
         let Some((key, value)) = line.split_once(':') else {
             continue;
-        }
+        };
         let Some(field) = key.chars().next() else {
             continue;
-        }
+        };
         fields.insert(field, value.trim().to_string());
     }
     entries
@@ -511,22 +514,22 @@ mod tests {
     #[test]
     fn clean_display_icon_path_handles_quoted_and_comma_suffixes() {
         assert_eq!(
-            clean_display_icon_path(r#"C:\Program Files\App\app.exe",0"#),
-            r#"C:\Program Files\App\app.exe"#
+            clean_display_icon_path(r#""C:\\Program Files\\App\\app.exe",0"#),
+            r#"C:\\Program Files\\App\\app.exe"#
         );
         assert_eq!(
-            clean_display_icon_path(r#"C:\Program Files\App\app.exe,1"#),
-            r#"C:\Program Files\App\app.exe"#
+            clean_display_icon_path(r#""C:\\Program Files\\App\\app.exe,1""#),
+            r#"C:\\Program Files\\App\\app.exe"#
         );
     }
 
     #[test]
     fn preferred_registry_path_accepts_executable_install_location() {
         assert_eq!(
-            preferred_registry_path("", r#"C:\Tools\agent.exe"#),
-            r#"C:\Tools\agent.exe"#
+            preferred_registry_path("", r#""C:\\Tools\\agent.exe""#),
+            r#"C:\\Tools\\agent.exe"#
         );
-        assert_eq!(preferred_registry_path("", r#"C:\Tools"#), "");
+        assert_eq!(preferred_registry_path("", r#""C:\\Tools""#), "");
     }
 
     #[test]
