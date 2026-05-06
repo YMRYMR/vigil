@@ -100,9 +100,7 @@ fn spawn_deferred_disarm_worker() -> Result<(), String> {
                 PRELOGIN_GUARD_POLL_INTERVAL,
                 crate::session::is_pre_login,
                 || {
-                    tracing::info!(
-                        "interactive login detected; disarming pre-login boot guard"
-                    );
+                    tracing::info!("interactive login detected; disarming pre-login boot guard");
                     if let Err(err) = disarm_prelogin_guard() {
                         tracing::warn!(
                             %err,
@@ -678,8 +676,8 @@ pub fn run_cmd(cmd: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        drive_prelogin_guard_until_login, format_fail_open_disable_message,
-        next_failure_streak, should_disable_boot_start, PreLoginGuardState,
+        drive_prelogin_guard_until_login, format_fail_open_disable_message, next_failure_streak,
+        should_disable_boot_start, PreLoginGuardState,
     };
     use std::cell::Cell;
     use std::time::Duration;
