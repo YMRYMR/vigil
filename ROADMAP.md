@@ -25,7 +25,7 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 
 ### Endpoint relevance and matching
 
-- [ ] **Local software inventory and version discovery** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
+- [x] **Local software inventory and version discovery** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Product normalization + vendor aliasing** — reconcile executable names, publishers, package names, services, and installer metadata into stable vendor/product identities.
 - [ ] **Version comparison engine** — compare installed versions against advisory ranges conservatively across semver, vendor-specific, and OS package version formats.
 - [ ] **CPE / product matching pipeline** — map local software identities to CPEs or equivalent source-native product identifiers with confidence scoring and operator-visible explainability.
@@ -77,7 +77,7 @@ Windows and Linux are the active support targets. This phase is about making tho
 - [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
 - [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
 - [ ] **Windows/Linux active-response parity audit** — verify that every active response either works on both supported OSs or clearly says why it is platform-limited.
-- [ ] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
+- [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 
 ---
