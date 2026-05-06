@@ -2,8 +2,8 @@
 //!
 //! Phase 16 starts with conservative, low-risk inventory sources:
 //! currently-running processes, Windows uninstall-registry entries, the
-//! Debian dpkg status database on Linux, and Homebrew Cellar formula inventory
-//! on macOS. This keeps inventory collection offline and low-risk while still
+//! Debian dpkg status database on Linux, and Homebrew formula/cask inventory on
+//! macOS. This keeps inventory collection offline and low-risk while still
 //! giving the advisory pipeline stable product candidates plus lightweight
 //! publisher/version hints for later matching.
 
@@ -193,7 +193,17 @@ fn collect_macos_homebrew_entries() -> Vec<InventorySeed> {
         ),
     ]
     .into_iter()
-    .flat_map(|(cellar_root, opt_root)| collect_homebrew_entries_from_roots(cellar_root, opt_root))
+    .flat_map(|(cellar_root, opt_root)| {
+        collect_homebrew_formula_entries_from_roots(cellar_root, opt_root)
+    })
+    .chain(
+        [
+            std::path::Path::new("/opt/homebrew/Caskroom"),
+            std::path::Path::new("/usr/local/Caskroom"),
+        ]
+        .into_iter()
+        .flat_map(collect_homebrew_cask_entries_from_root),
+    )
     .collect()
 }
 
@@ -202,7 +212,7 @@ fn collect_macos_homebrew_entries() -> Vec<InventorySeed> {
     Vec::new()
 }
 
-fn collect_homebrew_entries_from_roots(
+fn collect_homebrew_formula_entries_from_roots(
     cellar_root: &std::path::Path,
     opt_root: &std::path::Path,
 ) -> Vec<InventorySeed> {
@@ -236,6 +246,57 @@ fn collect_homebrew_entries_from_roots(
     entries
 }
 
+fn collect_homebrew_cask_entries_from_root(caskroom_root: &std::path::Path) -> Vec<InventorySeed> {
+    let Ok(casks) = std::fs::read_dir(caskroom_root) else {
+        return Vec::new();
+    };
+
+    let mut entries = Vec::new();
+    for cask in casks.flatten() {
+        let Ok(file_type) = cask.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+
+        if let Some(entry) = inventory_seed_from_homebrew_cask_dir(&cask.path()) {
+            entries.push(entry);
+        }
+    }
+    entries
+}
+
+fn inventory_seed_from_homebrew_cask_dir(cask_dir: &std::path::Path) -> Option<InventorySeed> {
+    let version_dir = sole_child_directory_path(cask_dir)?;
+    let version_hint = version_dir
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .and_then(inventory_hint);
+    let app_bundle = sole_app_bundle_path(&version_dir);
+    let executable_path = app_bundle
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let display_name = app_bundle
+        .as_ref()
+        .and_then(|path| display_name_from_app_bundle(path))
+        .or_else(|| {
+            cask_dir
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .and_then(inventory_hint)
+        })?;
+
+    Some(InventorySeed {
+        display_name,
+        executable_path,
+        publisher_hint: None,
+        version_hint,
+        source: InventorySource::MacosHomebrew,
+    })
+}
+
 fn homebrew_version_hint_for_package(
     package_name: &str,
     package_root: &std::path::Path,
@@ -266,21 +327,59 @@ fn active_homebrew_version_from_opt(
 }
 
 fn sole_child_directory_name(dir: &std::path::Path) -> Option<String> {
+    sole_child_directory_path(dir).and_then(|path| {
+        path.file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .and_then(inventory_hint)
+    })
+}
+
+fn sole_child_directory_path(dir: &std::path::Path) -> Option<std::path::PathBuf> {
     let mut only = None;
     for child in std::fs::read_dir(dir).ok()? {
         let child = child.ok()?;
         if !child.file_type().ok()?.is_dir() {
             continue;
         }
-        let Some(name) = inventory_hint(child.file_name().to_string_lossy().to_string()) else {
+        if inventory_hint(child.file_name().to_string_lossy().to_string()).is_none() {
             continue;
-        };
+        }
         if only.is_some() {
             return None;
         }
-        only = Some(name);
+        only = Some(child.path());
     }
     only
+}
+
+fn sole_app_bundle_path(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let mut only = None;
+    for child in std::fs::read_dir(dir).ok()? {
+        let child = child.ok()?;
+        if !child.file_type().ok()?.is_dir() {
+            continue;
+        }
+        if !child
+            .path()
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.eq_ignore_ascii_case("app"))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        if only.is_some() {
+            return None;
+        }
+        only = Some(child.path());
+    }
+    only
+}
+
+fn display_name_from_app_bundle(path: &std::path::Path) -> Option<String> {
+    path.file_stem()
+        .map(|name| name.to_string_lossy().to_string())
+        .and_then(inventory_hint)
 }
 
 fn parse_dpkg_status(status: &str) -> Vec<InventorySeed> {
@@ -577,13 +676,20 @@ mod tests {
         dir
     }
 
-    fn make_homebrew_roots(label: &str) -> (PathBuf, PathBuf, PathBuf) {
+    fn make_homebrew_formula_roots(label: &str) -> (PathBuf, PathBuf, PathBuf) {
         let base = temp_test_dir(label);
         let cellar = base.join("Cellar");
         let opt = base.join("opt");
         std::fs::create_dir_all(&cellar).unwrap();
         std::fs::create_dir_all(&opt).unwrap();
         (base, cellar, opt)
+    }
+
+    fn make_homebrew_cask_root(label: &str) -> (PathBuf, PathBuf) {
+        let base = temp_test_dir(label);
+        let caskroom = base.join("Caskroom");
+        std::fs::create_dir_all(&caskroom).unwrap();
+        (base, caskroom)
     }
 
     #[test]
@@ -659,10 +765,10 @@ mod tests {
 
     #[test]
     fn collect_homebrew_entries_from_roots_uses_sole_version_without_opt_link() {
-        let (base, cellar, opt) = make_homebrew_roots("sole-version");
+        let (base, cellar, opt) = make_homebrew_formula_roots("sole-version");
         std::fs::create_dir_all(cellar.join("ripgrep/14.1.0")).unwrap();
 
-        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+        let parsed = collect_homebrew_formula_entries_from_roots(&cellar, &opt);
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].display_name, "ripgrep");
@@ -674,11 +780,11 @@ mod tests {
 
     #[test]
     fn collect_homebrew_entries_from_roots_leaves_ambiguous_versions_unset() {
-        let (base, cellar, opt) = make_homebrew_roots("ambiguous-version");
+        let (base, cellar, opt) = make_homebrew_formula_roots("ambiguous-version");
         std::fs::create_dir_all(cellar.join("wget/1.0.0")).unwrap();
         std::fs::create_dir_all(cellar.join("wget/1.2.0")).unwrap();
 
-        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+        let parsed = collect_homebrew_formula_entries_from_roots(&cellar, &opt);
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].display_name, "wget");
@@ -690,18 +796,67 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn collect_homebrew_entries_from_roots_prefers_opt_link_version() {
-        let (base, cellar, opt) = make_homebrew_roots("opt-version");
+        let (base, cellar, opt) = make_homebrew_formula_roots("opt-version");
         let old_version = cellar.join("wget/1.0.0");
         let active_version = cellar.join("wget/1.2.0");
         std::fs::create_dir_all(&old_version).unwrap();
         std::fs::create_dir_all(&active_version).unwrap();
         std::os::unix::fs::symlink(&active_version, opt.join("wget")).unwrap();
 
-        let parsed = collect_homebrew_entries_from_roots(&cellar, &opt);
+        let parsed = collect_homebrew_formula_entries_from_roots(&cellar, &opt);
 
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].display_name, "wget");
         assert_eq!(parsed[0].version_hint.as_deref(), Some("1.2.0"));
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn collect_homebrew_cask_entries_from_root_uses_app_bundle_name_and_version() {
+        let (base, caskroom) = make_homebrew_cask_root("cask-app");
+        std::fs::create_dir_all(caskroom.join("google-chrome/136.0.7103.93/Google Chrome.app"))
+            .unwrap();
+
+        let parsed = collect_homebrew_cask_entries_from_root(&caskroom);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "Google Chrome");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("136.0.7103.93"));
+        assert_eq!(
+            parsed[0].executable_path,
+            caskroom
+                .join("google-chrome/136.0.7103.93/Google Chrome.app")
+                .to_string_lossy()
+        );
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn collect_homebrew_cask_entries_from_root_falls_back_to_token_without_app_bundle() {
+        let (base, caskroom) = make_homebrew_cask_root("cask-token");
+        std::fs::create_dir_all(caskroom.join("cursor/latest")).unwrap();
+
+        let parsed = collect_homebrew_cask_entries_from_root(&caskroom);
+
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].display_name, "cursor");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("latest"));
+        assert!(parsed[0].executable_path.is_empty());
+
+        std::fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn collect_homebrew_cask_entries_from_root_skips_ambiguous_versions() {
+        let (base, caskroom) = make_homebrew_cask_root("cask-ambiguous");
+        std::fs::create_dir_all(caskroom.join("firefox/136.0/Firefox.app")).unwrap();
+        std::fs::create_dir_all(caskroom.join("firefox/137.0/Firefox.app")).unwrap();
+
+        let parsed = collect_homebrew_cask_entries_from_root(&caskroom);
+
+        assert!(parsed.is_empty());
 
         std::fs::remove_dir_all(base).unwrap();
     }
@@ -912,6 +1067,34 @@ mod tests {
         assert_eq!(inventory[0].source, InventorySource::MacosHomebrew);
         assert_eq!(inventory[0].version_hint.as_deref(), Some("1.25.0"));
         assert_eq!(inventory[0].executable_path, "/opt/homebrew/bin/wget");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_homebrew_cask_metadata_wins() {
+        let entries = vec![
+            seed(
+                "Google Chrome",
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "Google Chrome",
+                "",
+                None,
+                Some("136.0.7103.93"),
+                InventorySource::MacosHomebrew,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::MacosHomebrew);
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("136.0.7103.93"));
+        assert_eq!(
+            inventory[0].executable_path,
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        );
     }
 
     #[test]
