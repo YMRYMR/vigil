@@ -38,7 +38,6 @@ Suggested required status checks:
 
 - CI / Format & lint
 - CI / Build & test (x86_64-pc-windows-msvc)
-- CI / Build & test (aarch64-apple-darwin)
 - CI / Build & test (x86_64-unknown-linux-gnu)
 - Artifact hygiene / Check for generated executables and large binaries
 - Secret scan / Scan for common plaintext secret patterns
@@ -113,7 +112,7 @@ If additional repositories are added, list them here and in the README.
 
 Repository policy:
 
-- do not commit generated installers, release archives, compiled executables, DMGs, AppImages, object files, or build output
+- do not commit generated installers, release archives, compiled executables, AppImages, object files, or build output
 - avoid unreviewable binary blobs unless they are small source assets required for the UI and documented
 - generated release artifacts must be produced by CI and attached to GitHub Releases, not committed to the repository
 
