@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn parse_display_icon_path_strips_resource_suffix() {
         assert_eq!(
-            parse_display_icon_path(r#""C:\Program Files\App\app.exe",0"#),
+            parse_display_icon_path(r#"C:\Program Files\App\app.exe",0"#),
             r"C:\Program Files\App\app.exe"
         );
         assert_eq!(
