@@ -380,26 +380,29 @@ pub fn refresh_nvd_in_background_if_due() {
         return;
     }
 
-    match sync_nvd_change_history(false) {
-        Ok(SyncOutcome::Updated(summary)) => {
-            tracing::info!(
-                requested_pages = summary.requested_pages,
-                imported_changes = summary.imported_changes,
-                total_changes = summary.total_changes,
-                total_sources = summary.total_sources,
-                "refreshed NVD change-history cache"
-            );
-        }
-        Ok(SyncOutcome::SkippedRateLimit { remaining_secs }) => {
-            tracing::debug!(
-                remaining_secs,
-                "skipped NVD change-history refresh because the rate-limit interval is still active"
-            );
-        }
-        Err(err) => {
-            tracing::warn!(%err, "failed to refresh NVD change-history cache");
-        }
-    }
+    std::thread::Builder::new()
+        .name("vigil-nvd-history-refresh".into())
+        .spawn(|| match sync_nvd_change_history(false) {
+            Ok(SyncOutcome::Updated(summary)) => {
+                tracing::info!(
+                    requested_pages = summary.requested_pages,
+                    imported_changes = summary.imported_changes,
+                    total_changes = summary.total_changes,
+                    total_sources = summary.total_sources,
+                    "refreshed NVD change-history cache"
+                );
+            }
+            Ok(SyncOutcome::SkippedRateLimit { remaining_secs }) => {
+                tracing::debug!(
+                    remaining_secs,
+                    "skipped NVD change-history refresh because the rate-limit interval is still active"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(%err, "failed to refresh NVD change-history cache");
+            }
+        })
+        .ok();
 }
 
 pub fn import_nvd_change_history_snapshot(path: &Path) -> Result<ImportSummary, String> {
@@ -690,184 +693,84 @@ fn sync_windows(
     windows
 }
 
-fn stamp_sync_success(cache: &mut ChangeHistoryCache, requested_pages: usize, now: u64) {
-    cache.generated_unix = now;
-    let fetched_unix = now;
-    let expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
-    let source = cache
-        .sources
-        .iter_mut()
-        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY);
-    match source {
-        Some(source) => {
-            source.fetched_unix = fetched_unix;
-            source.expires_unix = expires_unix;
-            source.total_results = source.total_results.max(cache.changes.len());
-            source.status = SourceHealth::Fresh;
-            source.last_attempt_unix = now;
-            source.last_error = None;
-            if requested_pages > 0 && source.snapshot_sha256.trim().is_empty() {
-                source.snapshot_sha256 = format!("live-sync-pages:{requested_pages}");
-            }
-        }
-        None => {
-            cache.sources.push(AdvisorySourceCache {
-                source_key: NVD_SOURCE_KEY.into(),
-                source_kind: NVD_SOURCE_KIND.into(),
-                source_url: NVD_API_URL.into(),
-                imported_from: None,
-                imported_from_batch: vec![],
-                fetched_unix,
-                expires_unix,
-                snapshot_sha256: if requested_pages > 0 {
-                    format!("live-sync-pages:{requested_pages}")
-                } else {
-                    String::new()
-                },
-                total_results: cache.changes.len(),
-                status: SourceHealth::Fresh,
-                last_attempt_unix: now,
-                last_error: None,
-            });
-        }
-    }
-}
-
-fn stamp_sync_failure(mut cache: ChangeHistoryCache, error: &str, now: u64) -> ChangeHistoryCache {
-    cache.generated_unix = now;
-    let source = cache
-        .sources
-        .iter_mut()
-        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY);
-    match source {
-        Some(source) => {
-            source.last_attempt_unix = now;
-            source.last_error = Some(error.to_string());
-            source.status = SourceHealth::Error;
-        }
-        None => {
-            cache.sources.push(AdvisorySourceCache {
-                source_key: NVD_SOURCE_KEY.into(),
-                source_kind: NVD_SOURCE_KIND.into(),
-                source_url: NVD_API_URL.into(),
-                imported_from: None,
-                imported_from_batch: vec![],
-                fetched_unix: 0,
-                expires_unix: 0,
-                snapshot_sha256: String::new(),
-                total_results: 0,
-                status: SourceHealth::Error,
-                last_attempt_unix: now,
-                last_error: Some(error.to_string()),
-            });
-        }
-    }
-    cache
+fn is_source_stale(expires_unix: u64, now: u64) -> bool {
+    expires_unix > 0 && expires_unix < now
 }
 
 fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
     if matches!(source.status, SourceHealth::Error) {
         return "error";
     }
-    if is_source_stale(source.expires_unix, now) || matches!(source.status, SourceHealth::Stale) {
+    if matches!(source.status, SourceHealth::Stale) || is_source_stale(source.expires_unix, now) {
         return "stale";
     }
     "fresh"
 }
 
-fn is_source_stale(expires_unix: u64, now: u64) -> bool {
-    expires_unix <= now
-}
-
-fn parse_snapshot(bytes: &[u8], source_path: Option<&Path>) -> Result<ChangeHistoryCache, String> {
-    let value: Value = serde_json::from_slice(bytes)
-        .map_err(|err| format!("failed to parse NVD change-history JSON: {err}"))?;
-    let timestamp = string_field(&value, "timestamp")
-        .as_deref()
-        .and_then(parse_timestamp)
-        .map(timestamp_to_unix_secs)
-        .unwrap_or_else(unix_now);
-    let total_results = value
-        .get("totalResults")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
-    let results_per_page = value
-        .get("resultsPerPage")
-        .and_then(Value::as_u64)
-        .unwrap_or(0) as usize;
-    let start_index = value.get("startIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
-    let source_identifier = source_path.map(|path| path.display().to_string());
-    let changes = value
-        .get("cveChanges")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|entry| parse_change_event(entry, timestamp))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let source = AdvisorySourceCache {
-        source_key: NVD_SOURCE_KEY.into(),
-        source_kind: NVD_SOURCE_KIND.into(),
-        source_url: NVD_API_URL.into(),
-        imported_from: source_identifier.clone(),
-        imported_from_batch: source_identifier.into_iter().collect(),
-        fetched_unix: timestamp,
-        expires_unix: timestamp.saturating_add(DEFAULT_SOURCE_TTL_SECS),
-        snapshot_sha256: sha256_hex(bytes),
-        total_results: total_results.max(start_index.saturating_add(results_per_page)),
-        status: SourceHealth::Fresh,
-        last_attempt_unix: timestamp,
-        last_error: None,
-    };
-
-    Ok(ChangeHistoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
-        generated_unix: timestamp,
-        sources: vec![source],
-        changes,
-    })
-}
-
-fn parse_change_event(value: &Value, imported_unix: u64) -> Result<CveChangeEvent, String> {
-    let change = value.get("change").unwrap_or(value);
-    let cve_id = string_field(change, "cveId")
-        .ok_or_else(|| "NVD change-history entry missing change.cveId".to_string())?;
-    let event_name = string_field(change, "eventName").unwrap_or_else(|| "Unknown".into());
-    let change_id = string_field(change, "cveChangeId")
-        .unwrap_or_else(|| format!("{cve_id}:{event_name}:{imported_unix}"));
-    let source_identifier = string_field(change, "sourceIdentifier").unwrap_or_default();
-    let created = string_field(change, "created");
-    let details = change
-        .get("details")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(parse_change_detail)
-        .collect::<Vec<_>>();
-
-    Ok(CveChangeEvent {
-        cve_id,
-        event_name,
-        change_id,
-        source_identifier,
-        created,
-        details,
-        provenance: ChangeHistoryProvenance {
-            source_kind: NVD_SOURCE_KIND.into(),
+fn stamp_sync_success(cache: &mut ChangeHistoryCache, requested_pages: usize, now: u64) {
+    if let Some(source) = cache
+        .sources
+        .iter_mut()
+        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
+    {
+        source.fetched_unix = now;
+        source.last_attempt_unix = now;
+        source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
+        source.status = SourceHealth::Fresh;
+        source.last_error = None;
+        if requested_pages > 1 {
+            source.imported_from = None;
+        }
+    } else {
+        cache.sources.push(AdvisorySourceCache {
             source_key: NVD_SOURCE_KEY.into(),
+            source_kind: NVD_SOURCE_KIND.into(),
             source_url: NVD_API_URL.into(),
-            imported_unix,
-        },
-    })
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: now,
+            expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
+            snapshot_sha256: String::new(),
+            total_results: 0,
+            status: SourceHealth::Fresh,
+            last_attempt_unix: now,
+            last_error: None,
+        });
+    }
+    cache.generated_unix = now;
 }
 
-fn parse_change_detail(value: &Value) -> CveChangeDetail {
-    CveChangeDetail {
-        action: string_field(value, "action").unwrap_or_default(),
-        kind: string_field(value, "type").unwrap_or_default(),
-        old_value: string_field(value, "oldValue"),
-        new_value: string_field(value, "newValue"),
+fn stamp_sync_failure(mut cache: ChangeHistoryCache, err: &str, now: u64) -> ChangeHistoryCache {
+    if let Some(source) = cache
+        .sources
+        .iter_mut()
+        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
+    {
+        source.last_attempt_unix = now;
+        source.last_error = Some(err.to_string());
+        source.status = if source.fetched_unix == 0 {
+            SourceHealth::Error
+        } else {
+            SourceHealth::Stale
+        };
+    } else {
+        cache.sources.push(AdvisorySourceCache {
+            source_key: NVD_SOURCE_KEY.into(),
+            source_kind: NVD_SOURCE_KIND.into(),
+            source_url: NVD_API_URL.into(),
+            imported_from: None,
+            imported_from_batch: vec![],
+            fetched_unix: 0,
+            expires_unix: 0,
+            snapshot_sha256: String::new(),
+            total_results: 0,
+            status: SourceHealth::Error,
+            last_attempt_unix: now,
+            last_error: Some(err.to_string()),
+        });
     }
+    cache.generated_unix = now;
+    cache
 }
 
 fn merge_import_batch_cache(
@@ -890,55 +793,45 @@ fn finalize_import_batch_metadata(cache: &mut ChangeHistoryCache, page_hashes: &
         .iter_mut()
         .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
     {
-        source.snapshot_sha256 = if page_hashes.len() <= 1 {
-            page_hashes.first().cloned().unwrap_or_default()
-        } else {
-            page_hashes.join(",")
-        };
-        if source.imported_from_batch.len() > 1 {
-            source.imported_from = None;
+        if page_hashes.len() == 1 {
+            source.snapshot_sha256 = page_hashes[0].clone();
+        } else if !page_hashes.is_empty() {
+            let combined = page_hashes.join(":");
+            source.snapshot_sha256 = sha256_hex(combined.as_bytes());
         }
-        source.total_results = source.total_results.max(cache.changes.len());
     }
 }
 
-fn merge_cache(
-    existing: Option<ChangeHistoryCache>,
-    imported: ChangeHistoryCache,
-) -> ChangeHistoryCache {
-    let mut merged = existing.unwrap_or_else(|| empty_cache(imported.generated_unix));
+fn merge_cache(existing: Option<ChangeHistoryCache>, imported: ChangeHistoryCache) -> ChangeHistoryCache {
+    let mut merged = existing.unwrap_or_else(|| ChangeHistoryCache {
+        schema_version: CACHE_SCHEMA_VERSION,
+        generated_unix: imported.generated_unix,
+        sources: vec![],
+        changes: vec![],
+    });
+    merged.schema_version = CACHE_SCHEMA_VERSION;
     merged.generated_unix = merged.generated_unix.max(imported.generated_unix);
-
     for source in imported.sources {
         merge_source(&mut merged.sources, source);
     }
     for change in imported.changes {
         merge_change(&mut merged.changes, change);
     }
-
     merged
 }
 
 fn merge_source(sources: &mut Vec<AdvisorySourceCache>, imported: AdvisorySourceCache) {
-    if let Some(existing) = sources.iter_mut().find(|source| {
-        source.source_kind == imported.source_kind && source.source_key == imported.source_key
-    }) {
+    if let Some(existing) = sources
+        .iter_mut()
+        .find(|source| source.source_kind == imported.source_kind && source.source_key == imported.source_key)
+    {
         existing.source_url = imported.source_url;
+        existing.imported_from = imported.imported_from.clone();
         existing.fetched_unix = existing.fetched_unix.max(imported.fetched_unix);
         existing.expires_unix = existing.expires_unix.max(imported.expires_unix);
-        existing.total_results = existing.total_results.max(imported.total_results);
+        existing.snapshot_sha256 = imported.snapshot_sha256;
+        existing.total_results = imported.total_results;
         existing.status = imported.status;
-        if !imported.snapshot_sha256.trim().is_empty() {
-            existing.snapshot_sha256 = imported.snapshot_sha256;
-        }
-        if let Some(imported_from) = imported.imported_from {
-            push_unique(&mut existing.imported_from_batch, imported_from.clone());
-            if existing.imported_from_batch.len() == 1 {
-                existing.imported_from = Some(imported_from);
-            } else {
-                existing.imported_from = None;
-            }
-        }
         for path in imported.imported_from_batch {
             push_unique(&mut existing.imported_from_batch, path);
         }
