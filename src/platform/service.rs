@@ -20,6 +20,10 @@
 //! user-mode Vigil process starts via autostart and reads the same log
 //! file, so pre-login events remain visible via the log.
 
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::Duration;
+
 /// Result of an install / uninstall command.  `Ok(msg)` is printed verbatim
 /// to stdout; `Err(msg)` is printed to stderr and the process exits 1.
 pub type CmdResult = Result<String, String>;
@@ -27,6 +31,222 @@ pub type CmdResult = Result<String, String>;
 /// Internal headless entrypoint used by OS services / daemons.
 pub const SERVICE_MODE_FLAG: &str = "--service-mode";
 pub const DATA_DIR_FLAG: &str = "--data-dir";
+const PRELOGIN_GUARD_FILE: &str = "vigil-prelogin-guard.json";
+const PRELOGIN_GUARD_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct PreLoginGuardState {
+    armed: bool,
+    last_start_unix: u64,
+    last_success_unix: u64,
+    failure_streak: u32,
+    disabled_boot_start: bool,
+}
+
+pub struct PreLoginBootGuard {
+    active: bool,
+    disarmed: bool,
+    handoff_started: bool,
+}
+
+impl PreLoginBootGuard {
+    pub fn disarm(&mut self) {
+        if !self.active || self.disarmed {
+            return;
+        }
+        if crate::session::is_pre_login() {
+            if self.handoff_started {
+                return;
+            }
+            if let Err(err) = spawn_deferred_disarm_worker() {
+                tracing::warn!(%err, "failed to defer pre-login boot guard disarm until login");
+                return;
+            }
+            self.handoff_started = true;
+            return;
+        }
+        if let Err(err) = disarm_prelogin_guard() {
+            tracing::warn!(%err, "failed to disarm pre-login boot guard");
+            return;
+        }
+        self.disarmed = true;
+    }
+}
+
+impl Drop for PreLoginBootGuard {
+    fn drop(&mut self) {
+        if !self.active || self.disarmed {
+            return;
+        }
+        if crate::session::is_pre_login() {
+            tracing::warn!(
+                "pre-login Vigil service exited before boot guard disarm; the next boot will trip the circuit breaker"
+            );
+            return;
+        }
+        if let Err(err) = disarm_prelogin_guard() {
+            tracing::warn!(%err, "failed to disarm pre-login boot guard during shutdown handoff");
+            return;
+        }
+        self.disarmed = true;
+    }
+}
+
+fn spawn_deferred_disarm_worker() -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("vigil-prelogin-guard".into())
+        .spawn(|| {
+            drive_prelogin_guard_until_login(
+                PRELOGIN_GUARD_POLL_INTERVAL,
+                crate::session::is_pre_login,
+                || {
+                    tracing::info!(
+                        "interactive login detected; disarming pre-login boot guard"
+                    );
+                    if let Err(err) = disarm_prelogin_guard() {
+                        tracing::warn!(
+                            %err,
+                            "failed to disarm pre-login boot guard after login transition"
+                        );
+                    }
+                },
+            );
+        })
+        .map(|_| ())
+        .map_err(|err| format!("failed to spawn pre-login guard handoff thread: {err}"))
+}
+
+fn drive_prelogin_guard_until_login<FCheck, FDisarm>(
+    poll_interval: Duration,
+    mut still_pre_login: FCheck,
+    mut disarm: FDisarm,
+) where
+    FCheck: FnMut() -> bool,
+    FDisarm: FnMut(),
+{
+    while still_pre_login() {
+        std::thread::sleep(poll_interval);
+    }
+    disarm();
+}
+
+pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
+    let path = prelogin_guard_path();
+    let mut state = load_prelogin_guard_state(&path).map_err(|err| {
+        fail_open_disable_boot_start(
+            &format!(
+                "Vigil could not read its pre-login boot guard state at {}",
+                path.display()
+            ),
+            err,
+        )
+    })?;
+    if state.armed {
+        state.failure_streak = next_failure_streak(&state);
+        if should_disable_boot_start(&state) {
+            disable_boot_start()?;
+            state.armed = false;
+            state.disabled_boot_start = true;
+            save_prelogin_guard_state(&path, &state).map_err(|err| {
+                fail_open_disable_boot_start(
+                    &format!(
+                        "Vigil disabled its boot-time startup after an unclean pre-login run, but could not persist that guard state at {}",
+                        path.display()
+                    ),
+                    err,
+                )
+            })?;
+            return Err(
+                "Vigil disabled its boot-time startup after an unclean pre-login run so Windows can finish booting safely. Re-enable only after reviewing the failure."
+                    .into(),
+            );
+        }
+    }
+
+    state.armed = true;
+    state.disabled_boot_start = false;
+    state.last_start_unix = unix_now();
+    save_prelogin_guard_state(&path, &state).map_err(|err| {
+        fail_open_disable_boot_start(
+            &format!(
+                "Vigil could not arm its pre-login boot guard at {}",
+                path.display()
+            ),
+            err,
+        )
+    })?;
+    Ok(PreLoginBootGuard {
+        active: true,
+        disarmed: false,
+        handoff_started: false,
+    })
+}
+
+fn fail_open_disable_boot_start(context: &str, cause: String) -> String {
+    let disable_result = disable_boot_start().err();
+    format_fail_open_disable_message(context, &cause, disable_result.as_deref())
+}
+
+fn format_fail_open_disable_message(
+    context: &str,
+    cause: &str,
+    disable_err: Option<&str>,
+) -> String {
+    match disable_err {
+        None => format!(
+            "{context}: {cause}. Vigil disabled its own boot-time startup so one bad boot cannot repeat on the next restart."
+        ),
+        Some(disable_err) => format!(
+            "{context}: {cause}. Vigil then tried to disable its own boot-time startup but failed: {disable_err}"
+        ),
+    }
+}
+
+fn next_failure_streak(state: &PreLoginGuardState) -> u32 {
+    state.failure_streak.saturating_add(1)
+}
+
+fn should_disable_boot_start(state: &PreLoginGuardState) -> bool {
+    state.failure_streak >= 1
+}
+
+fn disarm_prelogin_guard() -> Result<(), String> {
+    let path = prelogin_guard_path();
+    let mut state = load_prelogin_guard_state(&path)?;
+    state.armed = false;
+    state.failure_streak = 0;
+    state.disabled_boot_start = false;
+    state.last_success_unix = unix_now();
+    save_prelogin_guard_state(&path, &state)
+}
+
+fn prelogin_guard_path() -> PathBuf {
+    crate::config::data_dir().join(PRELOGIN_GUARD_FILE)
+}
+
+fn load_prelogin_guard_state(path: &std::path::Path) -> Result<PreLoginGuardState, String> {
+    if !path.exists() {
+        return Ok(PreLoginGuardState::default());
+    }
+    let loaded = crate::security::policy::load_struct_with_integrity(path)
+        .map_err(|e| format!("failed to load pre-login guard {}: {e}", path.display()))?;
+    Ok(loaded.unwrap_or_default())
+}
+
+fn save_prelogin_guard_state(
+    path: &std::path::Path,
+    state: &PreLoginGuardState,
+) -> Result<(), String> {
+    crate::security::policy::save_struct_with_integrity(path, state)
+        .map_err(|e| format!("failed to save pre-login guard {}: {e}", path.display()))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
 
 pub fn install() -> CmdResult {
     let exe =
@@ -36,6 +256,10 @@ pub fn install() -> CmdResult {
 
 pub fn uninstall() -> CmdResult {
     platform::uninstall()
+}
+
+fn disable_boot_start() -> Result<(), String> {
+    platform::disable_boot_start()
 }
 
 // ── Windows ─────────────────────────────────────────────────────────────────
@@ -164,6 +388,21 @@ mod platform {
         }
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        let output = Command::new(command_paths::resolve("schtasks")?)
+            .args(["/Change", "/TN", TASK_NAME, "/DISABLE"])
+            .output()
+            .map_err(|e| format!("failed to spawn `schtasks`: {e}"))?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to disable Windows boot-time monitor task `{TASK_NAME}`: {}",
+                command_output_summary(&output)
+            ))
+        }
+    }
+
     fn task_path() -> PathBuf {
         let mut path = std::env::var_os("SystemRoot")
             .map(PathBuf::from)
@@ -286,6 +525,10 @@ mod platform {
         Ok(format!("Removed launchd daemon `{LABEL}`."))
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_root() -> bool {
         // Declare getuid() directly to avoid pulling in a `libc` dependency
         // just for a single uid comparison.  It's an infallible C ABI call.
@@ -396,6 +639,10 @@ mod platform {
         Ok(format!("Removed systemd unit `{UNIT_NAME}`."))
     }
 
+    pub fn disable_boot_start() -> Result<(), String> {
+        Ok(())
+    }
+
     fn is_root() -> bool {
         extern "C" {
             fn getuid() -> u32;
@@ -425,5 +672,79 @@ pub fn run_cmd(cmd: &str) -> i32 {
             eprintln!("vigil: {msg}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        drive_prelogin_guard_until_login, format_fail_open_disable_message,
+        next_failure_streak, should_disable_boot_start, PreLoginGuardState,
+    };
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    #[test]
+    fn next_unclean_prelogin_run_increments_failure_streak() {
+        let state = PreLoginGuardState {
+            armed: true,
+            failure_streak: 0,
+            ..Default::default()
+        };
+        assert_eq!(next_failure_streak(&state), 1);
+    }
+
+    #[test]
+    fn first_unclean_prelogin_run_disables_boot_start() {
+        let state = PreLoginGuardState {
+            failure_streak: 1,
+            ..Default::default()
+        };
+        assert!(should_disable_boot_start(&state));
+    }
+
+    #[test]
+    fn deferred_guard_handoff_waits_for_login_transition() {
+        let mut states = vec![true, true, false].into_iter();
+        let polls = Cell::new(0);
+        let disarmed = Cell::new(false);
+
+        drive_prelogin_guard_until_login(
+            Duration::ZERO,
+            || {
+                polls.set(polls.get() + 1);
+                states.next().unwrap_or(false)
+            },
+            || disarmed.set(true),
+        );
+
+        assert!(disarmed.get());
+        assert_eq!(polls.get(), 3);
+    }
+
+    #[test]
+    fn deferred_guard_handoff_disarms_immediately_after_login() {
+        let polls = Cell::new(0);
+        let disarmed = Cell::new(false);
+
+        drive_prelogin_guard_until_login(
+            Duration::ZERO,
+            || {
+                polls.set(polls.get() + 1);
+                false
+            },
+            || disarmed.set(true),
+        );
+
+        assert!(disarmed.get());
+        assert_eq!(polls.get(), 1);
+    }
+
+    #[test]
+    fn fail_open_message_mentions_boot_disable_attempt() {
+        let message = format_fail_open_disable_message("guard write failed", "disk full", None);
+        assert!(message.contains("guard write failed"));
+        assert!(message.contains("disk full"));
+        assert!(message.contains("boot-time startup"));
     }
 }
