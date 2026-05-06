@@ -183,11 +183,20 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
 }
 
 fn fail_open_disable_boot_start(context: &str, cause: String) -> String {
-    match disable_boot_start() {
-        Ok(()) => format!(
+    let disable_result = disable_boot_start().err();
+    format_fail_open_disable_message(context, &cause, disable_result.as_deref())
+}
+
+fn format_fail_open_disable_message(
+    context: &str,
+    cause: &str,
+    disable_err: Option<&str>,
+) -> String {
+    match disable_err {
+        None => format!(
             "{context}: {cause}. Vigil disabled its own boot-time startup so one bad boot cannot repeat on the next restart."
         ),
-        Err(disable_err) => format!(
+        Some(disable_err) => format!(
             "{context}: {cause}. Vigil then tried to disable its own boot-time startup but failed: {disable_err}"
         ),
     }
@@ -664,8 +673,8 @@ pub fn run_cmd(cmd: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        drive_prelogin_guard_until_login, fail_open_disable_boot_start, next_failure_streak,
-        should_disable_boot_start, PreLoginGuardState,
+        drive_prelogin_guard_until_login, format_fail_open_disable_message,
+        next_failure_streak, should_disable_boot_start, PreLoginGuardState,
     };
     use std::cell::Cell;
     use std::time::Duration;
@@ -728,7 +737,7 @@ mod tests {
 
     #[test]
     fn fail_open_message_mentions_boot_disable_attempt() {
-        let message = fail_open_disable_boot_start("guard write failed", "disk full".into());
+        let message = format_fail_open_disable_message("guard write failed", "disk full", None);
         assert!(message.contains("guard write failed"));
         assert!(message.contains("disk full"));
         assert!(message.contains("boot-time startup"));
