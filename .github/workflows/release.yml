@@ -1,19 +1,17 @@
 name: Release
 
 # Fires on every v* tag push (e.g. v1.0.0, v1.2.3-beta.1).
-# Produces native double-click installers for each platform, then creates a
-# GitHub Release with all artefacts attached.
+# Produces native installers/packages for the supported platforms, then creates
+# a GitHub Release with all artefacts attached.
 #
 # Artefacts per platform:
 #   Windows  →  Vigil-Setup-<ver>-x86_64.exe   (Inno Setup wizard)
-#   macOS    →  Vigil-<ver>-aarch64.dmg         (drag-to-Applications DMG)
 #   Linux    →  Vigil-<ver>-x86_64.AppImage     (portable, double-click to run)
-#   Bundle   →  Vigil-<ver>-all-supported-os.zip (all three installers together)
+#   Bundle   →  Vigil-<ver>-all-supported-os.zip (supported installers together)
 #
 # Stable aliases are also published so the README can point directly to the
 # latest assets without knowing the version string:
 #   Vigil-latest-windows-x86_64.exe
-#   Vigil-latest-macos-aarch64.dmg
 #   Vigil-latest-linux-x86_64.AppImage
 #   Vigil-latest-all-supported-os.zip
 on:
@@ -161,79 +159,6 @@ jobs:
           name: installer-windows
           path: dist/
 
-  # ── macOS — DMG with .app bundle ──────────────────────────────────────────
-  build-macos:
-    name: Build macOS DMG
-    needs: validate-release-metadata
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          ref: ${{ needs.validate-release-metadata.outputs.checkout_ref }}
-
-      - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
-        with:
-          targets: aarch64-apple-darwin
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-        with:
-          key: aarch64-apple-darwin
-
-      - name: Build release binary
-        run: cargo build --release --target aarch64-apple-darwin
-
-      - name: Build macOS DMG
-        env:
-          VERSION: ${{ needs.validate-release-metadata.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?(\+[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
-            echo "Invalid release version: $VERSION" >&2
-            exit 1
-          fi
-          ICON_PNG="assets/vigil_icon.png"
-          if [ ! -f "$ICON_PNG" ]; then
-            ICON_PNG="assets/vigil.png"
-          fi
-
-          # ── .app bundle structure ──────────────────────────────────────────
-          APP="Vigil.app"
-          mkdir -p "$APP/Contents/MacOS"
-          mkdir -p "$APP/Contents/Resources"
-
-          cp target/aarch64-apple-darwin/release/vigil "$APP/Contents/MacOS/vigil"
-          chmod +x "$APP/Contents/MacOS/vigil"
-
-          # Info.plist — substitute the version placeholder
-          sed "s/VIGIL_VERSION/$VERSION/g" installer/macos/Info.plist \
-            > "$APP/Contents/Info.plist"
-
-          # Convert PNG icon → ICNS (sips is built into macOS)
-          sips -s format icns "$ICON_PNG" \
-            --out "$APP/Contents/Resources/vigil.icns" \
-            2>/dev/null || true   # non-fatal if sips doesn't support this format
-
-          # ── DMG ───────────────────────────────────────────────────────────
-          # Create a temp folder with the app + Applications symlink (standard layout)
-          DMG_STAGING="dmg-staging"
-          mkdir -p "$DMG_STAGING"
-          cp -r "$APP" "$DMG_STAGING/"
-          ln -s /Applications "$DMG_STAGING/Applications"
-
-          mkdir -p dist
-          hdiutil create \
-            -volname "Vigil $VERSION" \
-            -srcfolder "$DMG_STAGING" \
-            -ov \
-            -format UDZO \
-            "dist/Vigil-${VERSION}-aarch64.dmg"
-
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: installer-macos
-          path: dist/
-
   # ── Linux — AppImage ──────────────────────────────────────────────────────
   build-linux:
     name: Build Linux AppImage
@@ -316,7 +241,7 @@ jobs:
   # ── Publish GitHub Release ────────────────────────────────────────────────
   publish:
     name: Publish release
-    needs: [validate-release-metadata, build-windows, build-macos, build-linux]
+    needs: [validate-release-metadata, build-windows, build-linux]
     runs-on: ubuntu-latest
     outputs:
       hashes: ${{ steps.hash.outputs.hashes }}
@@ -337,7 +262,7 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Build all-platforms bundle and stable aliases
+      - name: Build supported-platform bundle and stable aliases
         env:
           VERSION: ${{ needs.validate-release-metadata.outputs.version }}
         run: |
@@ -348,10 +273,9 @@ jobs:
           fi
 
           zip -j "dist/Vigil-${VERSION}-all-supported-os.zip" \
-            dist/*.exe dist/*.dmg dist/*.AppImage
+            dist/*.exe dist/*.AppImage
 
           cp dist/Vigil-Setup-${VERSION}-x86_64.exe dist/Vigil-latest-windows-x86_64.exe
-          cp dist/Vigil-${VERSION}-aarch64.dmg dist/Vigil-latest-macos-aarch64.dmg
           cp dist/Vigil-${VERSION}-x86_64.AppImage dist/Vigil-latest-linux-x86_64.AppImage
           cp dist/Vigil-${VERSION}-all-supported-os.zip dist/Vigil-latest-all-supported-os.zip
 

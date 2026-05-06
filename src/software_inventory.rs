@@ -1,11 +1,11 @@
 //! Minimal local software inventory foundations for advisory relevance.
 //!
 //! Phase 16 starts with conservative, low-risk inventory sources:
-//! currently-running processes, Windows uninstall-registry entries, the
-//! Debian dpkg status database on Linux, and Homebrew formula/cask inventory on
-//! macOS. This keeps inventory collection offline and low-risk while still
-//! giving the advisory pipeline stable product candidates plus lightweight
-//! publisher/version hints for later matching.
+//! currently-running processes, Windows uninstall-registry entries, Linux
+//! package-manager metadata (dpkg, RPM, and apk), and Homebrew formula/cask
+//! inventory on macOS. This keeps inventory collection offline and low-risk
+//! while still giving the advisory pipeline stable product candidates plus
+//! lightweight publisher/version hints for later matching.
 
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -31,6 +31,8 @@ pub struct InstalledSoftware {
 pub enum InventorySource {
     RunningProcess,
     LinuxDpkgStatus,
+    LinuxRpmDatabase,
+    LinuxApkInstalled,
     MacosHomebrew,
     WindowsUninstallRegistry,
     RunningService,
@@ -109,6 +111,14 @@ fn collect_installed_software_limited(max_entries: usize) -> Vec<InstalledSoftwa
     if entries.len() < max_entries {
         let remaining = max_entries - entries.len();
         append_limited_entries(&mut entries, collect_linux_dpkg_entries(), remaining);
+    }
+    if entries.len() < max_entries {
+        let remaining = max_entries - entries.len();
+        append_limited_entries(&mut entries, collect_linux_rpm_entries(), remaining);
+    }
+    if entries.len() < max_entries {
+        let remaining = max_entries - entries.len();
+        append_limited_entries(&mut entries, collect_linux_apk_entries(), remaining);
     }
     if entries.len() < max_entries {
         let remaining = max_entries - entries.len();
@@ -223,6 +233,41 @@ fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
 
 #[cfg(not(target_os = "linux"))]
 fn collect_linux_dpkg_entries() -> Vec<InventorySeed> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_rpm_entries() -> Vec<InventorySeed> {
+    let Some(rpm) = first_existing_file(&["/usr/bin/rpm", "/bin/rpm"]) else {
+        return Vec::new();
+    };
+    let Ok(output) = std::process::Command::new(rpm)
+        .args(["-qa", "--qf", "%{NAME}\t%{EVR}\t%{VENDOR}\n"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    parse_rpm_query_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn collect_linux_rpm_entries() -> Vec<InventorySeed> {
+    Vec::new()
+}
+
+#[cfg(target_os = "linux")]
+fn collect_linux_apk_entries() -> Vec<InventorySeed> {
+    let Ok(installed) = std::fs::read_to_string("/lib/apk/db/installed") else {
+        return Vec::new();
+    };
+    parse_apk_installed(&installed)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn collect_linux_apk_entries() -> Vec<InventorySeed> {
     Vec::new()
 }
 
@@ -489,6 +534,75 @@ fn inventory_seed_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option<
     })
 }
 
+fn parse_rpm_query_output(output: &str) -> Vec<InventorySeed> {
+    output
+        .lines()
+        .filter_map(inventory_seed_from_rpm_line)
+        .collect()
+}
+
+fn inventory_seed_from_rpm_line(line: &str) -> Option<InventorySeed> {
+    let mut fields = line.splitn(3, '\t');
+    let display_name = fields.next()?.trim();
+    if display_name.is_empty() {
+        return None;
+    }
+    Some(InventorySeed {
+        display_name: display_name.to_string(),
+        executable_path: String::new(),
+        version_hint: fields.next().map(str::to_string).and_then(inventory_hint),
+        publisher_hint: fields.next().map(str::to_string).and_then(inventory_hint),
+        source: InventorySource::LinuxRpmDatabase,
+    })
+}
+
+fn parse_apk_installed(installed: &str) -> Vec<InventorySeed> {
+    let mut entries = Vec::new();
+    let mut fields = BTreeMap::<char, String>::new();
+    for line in installed.lines().chain(std::iter::once("")) {
+        if line.trim().is_empty() {
+            if let Some(entry) = inventory_seed_from_apk_fields(&fields) {
+                entries.push(entry);
+            }
+            fields.clear();
+            continue;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        let Some(field) = key.chars().next() else {
+            continue;
+        };
+        fields.insert(field, value.trim().to_string());
+    }
+    entries
+}
+
+fn inventory_seed_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<InventorySeed> {
+    let display_name = fields.get(&'P')?.trim();
+    if display_name.is_empty() {
+        return None;
+    }
+    Some(InventorySeed {
+        display_name: display_name.to_string(),
+        executable_path: String::new(),
+        version_hint: fields.get(&'V').cloned().and_then(inventory_hint),
+        publisher_hint: fields
+            .get(&'m')
+            .cloned()
+            .and_then(inventory_hint)
+            .or_else(|| fields.get(&'o').cloned().and_then(inventory_hint)),
+        source: InventorySource::LinuxApkInstalled,
+    })
+}
+
+fn first_existing_file(paths: &[&'static str]) -> Option<&'static str> {
+    paths
+        .iter()
+        .copied()
+        .find(|path| std::path::Path::new(path).is_file())
+}
+
 fn dpkg_status_is_installed(status: &str) -> bool {
     let mut parts = status.split_whitespace();
     matches!(
@@ -631,9 +745,11 @@ fn source_sort_key(source: InventorySource) -> u8 {
     match source {
         InventorySource::RunningProcess => 0,
         InventorySource::LinuxDpkgStatus => 1,
-        InventorySource::MacosHomebrew => 2,
-        InventorySource::WindowsUninstallRegistry => 3,
-        InventorySource::RunningService => 4,
+        InventorySource::LinuxRpmDatabase => 2,
+        InventorySource::LinuxApkInstalled => 3,
+        InventorySource::MacosHomebrew => 4,
+        InventorySource::WindowsUninstallRegistry => 5,
+        InventorySource::RunningService => 6,
     }
 }
 
@@ -681,7 +797,7 @@ fn normalize_name(input: &str) -> String {
 
 fn inventory_hint(value: String) -> Option<String> {
     let trimmed = value.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("(none)") {
         None
     } else {
         Some(trimmed.to_string())
@@ -934,6 +1050,38 @@ mod tests {
     }
 
     #[test]
+    fn parse_rpm_query_output_ignores_empty_names_and_none_vendor() {
+        let parsed = parse_rpm_query_output(
+            "curl\t8.8.0-1.fc40\tFedora Project\n\tbroken\tVendor\nopenssl\t3.2.2-5.fc40\t(none)\n",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].display_name, "curl");
+        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Fedora Project"));
+        assert_eq!(parsed[1].display_name, "openssl");
+        assert_eq!(parsed[1].publisher_hint, None);
+        assert_eq!(parsed[1].source, InventorySource::LinuxRpmDatabase);
+    }
+
+    #[test]
+    fn parse_apk_installed_collects_maintainer_or_origin() {
+        let parsed = parse_apk_installed(
+            "P:busybox\nV:1.36.1-r7\nm:Natanael Copa <ncopa@alpinelinux.org>\n\nP:musl\nV:1.2.5-r1\no:alpine-baselayout\n\n",
+        );
+
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].display_name, "busybox");
+        assert_eq!(parsed[0].version_hint.as_deref(), Some("1.36.1-r7"));
+        assert_eq!(
+            parsed[0].publisher_hint.as_deref(),
+            Some("Natanael Copa <ncopa@alpinelinux.org>")
+        );
+        assert_eq!(parsed[1].display_name, "musl");
+        assert_eq!(parsed[1].publisher_hint.as_deref(), Some("alpine-baselayout"));
+        assert_eq!(parsed[1].source, InventorySource::LinuxApkInstalled);
+    }
+
+    #[test]
     fn preferred_registry_path_prefers_display_icon_and_strips_resource_suffix() {
         assert_eq!(
             preferred_registry_path(
@@ -954,6 +1102,15 @@ mod tests {
         assert_eq!(
             preferred_registry_path("", "C:\\Program Files\\Vendor\\agent.exe"),
             "C:\\Program Files\\Vendor\\agent.exe"
+        );
+    }
+
+    #[test]
+    fn inventory_hint_drops_none_marker() {
+        assert_eq!(inventory_hint("(none)".to_string()), None);
+        assert_eq!(
+            inventory_hint("  value  ".to_string()).as_deref(),
+            Some("value")
         );
     }
 
@@ -1088,6 +1245,61 @@ mod tests {
         );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_rpm_metadata_wins() {
+        let entries = vec![
+            seed(
+                "curl",
+                "/usr/bin/curl",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "curl",
+                "",
+                Some("Fedora Project"),
+                Some("8.8.0-1.fc40"),
+                InventorySource::LinuxRpmDatabase,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::LinuxRpmDatabase);
+        assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Fedora Project"));
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1.fc40"));
+        assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
+    }
+
+    #[test]
+    fn collect_from_entries_keeps_process_path_when_apk_metadata_wins() {
+        let entries = vec![
+            seed(
+                "busybox",
+                "/bin/busybox",
+                None,
+                None,
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "busybox",
+                "",
+                Some("alpine-baselayout"),
+                Some("1.36.1-r7"),
+                InventorySource::LinuxApkInstalled,
+            ),
+        ];
+        let inventory = collect_from_entries(entries);
+        assert_eq!(inventory.len(), 1);
+        assert_eq!(inventory[0].source, InventorySource::LinuxApkInstalled);
+        assert_eq!(
+            inventory[0].publisher_hint.as_deref(),
+            Some("alpine-baselayout")
+        );
+        assert_eq!(inventory[0].version_hint.as_deref(), Some("1.36.1-r7"));
+        assert_eq!(inventory[0].executable_path, "/bin/busybox");
     }
 
     #[test]

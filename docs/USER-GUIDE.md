@@ -1,6 +1,6 @@
 # Vigil User Guide
 
-This guide covers the basic functionality available in released Vigil builds.
+This guide covers the basic functionality available in released Vigil builds for Windows and Linux.
 
 ## What Vigil is for
 
@@ -11,9 +11,15 @@ It is built to help you:
 - see suspicious network and process activity quickly
 - understand which local process is responsible and why it looks risky
 - contain a process, connection, or machine when you decide the risk is real
-- preserve an audit trail for follow-up investigation and, on Windows today, capture forensic artifacts
+- preserve an audit trail for follow-up investigation and, where supported, capture forensic artifacts
 
 Vigil is intentionally conservative about action. Scores and advisory context are there to help an operator make better decisions, not to pretend every suspicious connection is a confirmed compromise.
+
+## Supported platforms
+
+Vigil's active support targets are Windows and Linux. New feature work should define behavior for both platforms, or clearly state when a feature is platform-limited.
+
+See [Supported platforms](SUPPORTED-PLATFORMS.md) for the support contract and startup safety rule.
 
 ## Install and launch
 
@@ -21,23 +27,16 @@ Vigil is intentionally conservative about action. Scores and advisory context ar
 
 1. Download the Windows installer from the latest GitHub Release.
 2. Run the installer. By default it installs for the current user and enables Vigil to start when you log in.
-3. If you want Vigil to start before login, choose an all-users install during setup. On Windows, that elevated installer path now registers the boot-time monitor service automatically.
-4. Launch Vigil from the Start Menu or the installed shortcut.
+3. If you want Vigil to start before login, choose an all-users install during setup. On Windows, that elevated installer path registers the boot-time monitor service automatically.
+4. Launch Vigil from the Start Menu or installed shortcut.
 5. Use **Run as Admin** in the header when you need ETW visibility or active response actions.
-
-### macOS
-
-1. Download the macOS DMG from the latest GitHub Release.
-2. Drag `Vigil.app` to Applications.
-3. Launch Vigil and approve any operating system prompts that are required for network visibility.
-
-Current macOS builds use a degraded fallback path because the native Endpoint Security backend is not integrated yet. When `dtrace` is available and permitted, Vigil uses DTrace-assisted polling to surface new connections faster; otherwise it falls back to polling-only. Detection remains functional, but coverage is still behind the Windows ETW and Linux eBPF paths, and privileged features currently require launching from an elevated shell.
 
 ### Linux
 
 1. Download the Linux AppImage from the latest GitHub Release.
 2. Run `chmod +x Vigil-*.AppImage`.
 3. Launch it from the desktop or terminal.
+4. Use root or the required Linux capabilities when you need deeper monitoring or active response actions.
 
 ## Main screens
 
@@ -75,15 +74,12 @@ The Settings tab stores changes automatically. Common settings include:
 - user-defined response rules
 - scheduled lockdown
 - break-glass recovery timeout
-- forensic capture options (Windows today)
+- forensic capture options
 - honeypot decoy settings
 - uninstall confirmation flow
 
 Policy-sensitive settings require Admin Mode when protected policy editing is enabled.
-Configured blocklists and response-rule YAML stay operator-managed: Vigil can
-verify optional `.sha256` sidecars when you provide them, and it also records
-first-seen and changed hashes in its protected local provenance registry so
-later edits are visible without treating every intentional update as corruption.
+Configured blocklists and response-rule YAML stay operator-managed: Vigil can verify optional `.sha256` sidecars when you provide them, and it also records first-seen and changed hashes in its protected local provenance registry so later edits are visible without treating every intentional update as corruption.
 
 ### Help
 
@@ -113,7 +109,7 @@ Temporary actions show countdowns and unblock controls. Isolation always arms br
 
 ### Capture evidence on high-confidence alerts
 
-On Windows today, when forensic capture is enabled, Vigil can preserve:
+When forensic capture is enabled and supported, Vigil can preserve:
 
 - process memory dumps
 - short PCAP captures
@@ -128,31 +124,15 @@ Vigil does more with elevated privileges, but it is still usable without them.
 
 - On Windows, elevation enables ETW-backed near-real-time visibility and active response actions.
 - On Linux, elevated privileges or the needed capabilities are required for actions such as firewall-based containment and some deeper monitoring paths.
-- On macOS, the app may rely on OS-granted visibility and falls back where deeper system hooks are unavailable.
 
 The header and controls are meant to make that state visible so you can tell when Vigil is observing only, and when it is able to act.
-
-## Forensics
-
-On Windows today, when enabled, Vigil can capture forensic evidence for high-confidence alerts:
-
-- process memory dumps
-- short PCAP captures
-- TLS sidecar metadata
-- provenance manifests with SHA-256 and alert context
-
-Generated artifacts are stored under the Vigil data directory unless a custom path is configured.
 
 ## Logs and audit trail
 
 Vigil writes rolling logs and an audit stream under the per-user Vigil data directory. The tray menu includes an **Open Logs Folder** shortcut.
 
 Audit events include active response actions, integrity scan summaries, uninstall attempts, and other security-relevant state changes.
-At startup, Vigil also checks configured operator-managed inputs and Vigil-owned
-forensic artifact manifests. Changed blocklists or response-rule files are
-recorded as provenance events, while unreadable or tampered Vigil-owned
-artifacts are logged as integrity failures and may be moved into the integrity
-quarantine under the data directory.
+At startup, Vigil also checks configured operator-managed inputs and Vigil-owned forensic artifact manifests. Changed blocklists or response-rule files are recorded as provenance events, while unreadable or tampered Vigil-owned artifacts are logged as integrity failures and may be moved into the integrity quarantine under the data directory.
 
 At launch, Vigil also verifies protected policy state, operator-managed blocklists and rule files, and forensic artifact manifests. Blocklists and response-rule YAML files must have matching SHA-256 sidecars; Vigil combines that verification with a protected local provenance registry, so an expected local edit shows up as a warning while a missing sidecar, mismatch, or unreadable file is treated as a failure. Corrupted forensic artifact sets are moved under `quarantine/integrity/` in the Vigil data directory so they are no longer mixed with trusted evidence.
 
@@ -163,14 +143,15 @@ To monitor before login, install the OS service from an elevated shell:
 | OS | Install | Remove |
 |---|---|---|
 | Windows | `vigil.exe --install-service` | `vigil.exe --uninstall-service` |
-| macOS | `sudo vigil --install-service` | `sudo vigil --uninstall-service` |
 | Linux | `sudo vigil --install-service` | `sudo vigil --uninstall-service` |
 
-On Windows, the all-users installer path now performs that service registration automatically. Service mode runs the monitor without the desktop UI. The GUI/tray launches normally after login.
+On Windows, the all-users installer path performs service registration automatically. Service mode runs the monitor without the desktop UI. The GUI/tray launches normally after login.
+
+Startup safety rule: Vigil must fail open. A Vigil bug, hang, network failure, advisory-cache failure, package-inventory failure, or service-mode error must not repeatedly prevent the machine from reaching a usable login/session state.
 
 ## Uninstall from Settings
 
-Settings includes **Uninstall Vigil**. It asks for confirmation, disables login/startup registration, removes the OS service or daemon when present, records an audit event, and closes Vigil after successful cleanup.
+Settings includes **Uninstall Vigil**. It asks for confirmation, disables login/startup registration, removes the OS service when present, records an audit event, and closes Vigil after successful cleanup.
 
 If privileged service removal is required and Vigil is not elevated, the app stays open and shows an error so you can relaunch with the required privileges.
 
@@ -186,9 +167,7 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
 
 ## Advisory snapshot imports
 
-Vigil can also extend its protected local advisory cache with operator-supplied
-public-source snapshots. This is useful when you want advisory context to stay
-available offline from the last trusted local cache.
+Vigil can also extend its protected local advisory cache with operator-supplied public-source snapshots. This is useful when you want advisory context to stay available offline from the last trusted local cache.
 
 Use the CLI importer that matches the source material you have:
 
@@ -201,7 +180,19 @@ vigil --import-ncsc ncsc-feed.xml ncsc-mirror.json
 vigil --import-bsi certbund-feed.xml bsi-advisories.json
 ```
 
-The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored
-JSON, then preserve source links, identifiers, timestamps, and other
-provenance fields in the same protected advisory cache as the other Phase 16
-sources.
+The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored JSON, then preserve source links, identifiers, timestamps, and other provenance fields in the same protected advisory cache as the other Phase 16 sources.
+
+## Local software inventory
+
+The standalone `vigil_inventory` helper prints local Windows/Linux software inventory metadata as JSON without touching Vigil's startup path.
+
+```bash
+vigil_inventory
+```
+
+Current inventory sources:
+
+- Windows uninstall registry
+- Linux dpkg status database
+- Linux RPM database
+- Linux Alpine apk installed database
