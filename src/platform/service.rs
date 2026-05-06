@@ -32,6 +32,7 @@ pub type CmdResult = Result<String, String>;
 pub const SERVICE_MODE_FLAG: &str = "--service-mode";
 pub const DATA_DIR_FLAG: &str = "--data-dir";
 const PRELOGIN_GUARD_FILE: &str = "vigil-prelogin-guard.json";
+#[cfg(windows)]
 const PRELOGIN_GUARD_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -46,6 +47,7 @@ struct PreLoginGuardState {
 pub struct PreLoginBootGuard {
     active: bool,
     disarmed: bool,
+    #[cfg(windows)]
     handoff_started: bool,
 }
 
@@ -54,6 +56,7 @@ impl PreLoginBootGuard {
         if !self.active || self.disarmed {
             return;
         }
+        #[cfg(windows)]
         if crate::session::is_pre_login() {
             if self.handoff_started {
                 return;
@@ -92,6 +95,7 @@ impl Drop for PreLoginBootGuard {
     }
 }
 
+#[cfg(windows)]
 fn spawn_deferred_disarm_worker() -> Result<(), String> {
     std::thread::Builder::new()
         .name("vigil-prelogin-guard".into())
@@ -176,6 +180,7 @@ pub fn enter_prelogin_boot_guard() -> Result<PreLoginBootGuard, String> {
     Ok(PreLoginBootGuard {
         active: true,
         disarmed: false,
+        #[cfg(windows)]
         handoff_started: false,
     })
 }
