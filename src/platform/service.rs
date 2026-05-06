@@ -486,6 +486,7 @@ mod platform {
         let path = plist_path();
         std::fs::write(&path, plist.as_bytes())
             .map_err(|e| format!("could not write {}: {e}", path.display()))?;
+        // Permissions: root:wheel 0644
         let _ = Command::new(command_paths::resolve("chown")?)
             .args(["root:wheel", &path.display().to_string()])
             .status();
@@ -529,6 +530,8 @@ mod platform {
     }
 
     fn is_root() -> bool {
+        // Declare getuid() directly to avoid pulling in a `libc` dependency
+        // just for a single uid comparison.  It's an infallible C ABI call.
         extern "C" {
             fn getuid() -> u32;
         }
@@ -651,6 +654,8 @@ mod platform {
         format!("\"{}\"", text.replace('"', "\\\""))
     }
 }
+
+// ── Shared pretty-printer used by main.rs ─────────────────────────────────────
 
 pub fn run_cmd(cmd: &str) -> i32 {
     let res = match cmd {
