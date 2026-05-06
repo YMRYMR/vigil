@@ -120,16 +120,7 @@ pub fn show(ui: &mut egui::Ui) {
                         ui.add_space(6.0);
                         bullet(ui, "Recovery timeout", "How long isolation may persist without a live heartbeat before the watchdog restores connectivity.");
                         bullet(ui, "Heartbeat interval", "How often the running app touches the heartbeat while healthy.");
-                        bullet(ui, "Watchdog task", "Vigil uses an OS scheduler entry to run the same binary with --break-glass-recover (Windows Task Scheduler, Linux cron, macOS launchd).");
-                    });
-
-                    #[cfg(target_os = "macos")]
-                    card(ui, "macOS status", |ui| {
-                        body(ui, "The current macOS build still lacks the native Endpoint Security backend. When DTrace is available, Vigil uses DTrace-assisted polling to surface new connections faster; otherwise it falls back to polling-only. Vigil remains usable, but several active-response features are still behind Windows and Linux.");
-                        ui.add_space(6.0);
-                        bullet(ui, "Monitoring", "DTrace-assisted polling is the preferred macOS fallback; plain polling remains the final degraded path.");
-                        bullet(ui, "Privileges", "Privileged features currently require launching Vigil from an elevated shell; in-app elevation is not available yet.");
-                        bullet(ui, "Response scope", "macOS currently supports network isolation, but not the full per-process, per-domain, and per-connection response surface.");
+                        bullet(ui, "Watchdog task", "Vigil uses an OS scheduler entry to run the same binary with --break-glass-recover on Windows and Linux.");
                     });
 
                     #[cfg(target_os = "linux")]
@@ -167,7 +158,7 @@ pub fn show(ui: &mut egui::Ui) {
                     card(ui, "Secure updates", |ui| {
                         body(ui, "Vigil ships signed update manifests with each release. The manifest lists the release assets and their SHA-256 hashes, and the app can verify that metadata offline before trusting a download.");
                         ui.add_space(6.0);
-                        bullet(ui, "Release assets", "Windows, macOS, Linux, and the all-platform bundle are published together with the manifest and signature.");
+                        bullet(ui, "Release assets", "Windows, Linux, and the supported-platform bundle are published together with the manifest and signature.");
                         bullet(ui, "Offline check", "Use vigil --verify-update-manifest MANIFEST.json MANIFEST.json.sig to validate a downloaded release manifest against the embedded trust anchor.");
                     });
                 });
@@ -186,7 +177,7 @@ pub fn show(ui: &mut egui::Ui) {
             });
             card(ui, "Forensics and honeypots", |ui| { body(ui, "Process dumps, PCAP capture, TLS sidecar extraction, and decoy-file touches are optional and configurable in Settings. Forensic capture support is currently broadest on Windows."); });
             card(ui, "Startup integrity", |ui| { body(ui, "At launch, Vigil verifies protected policy state, operator-managed inputs, and forensic artifact manifests. Warnings and failures show up as in-app notifications, and corrupted artifact sets are moved under quarantine/integrity in the Vigil data directory."); });
-            card(ui, "Secure updates", |ui| { body(ui, "Each release ships a signed update manifest and signature. Vigil can verify the manifest offline against the embedded trust anchor before you trust a downloaded asset."); });
+            card(ui, "Secure updates", |ui| { body(ui, "Each release ships a signed update manifest and signature for Windows and Linux assets. Vigil can verify the manifest offline against the embedded trust anchor before you trust a downloaded asset."); });
             card(ui, "Break-glass recovery", |ui| { body(ui, "Watchdog-based recovery can restore networking after an isolation lockout if Vigil dies and the heartbeat goes stale."); });
         }
 
