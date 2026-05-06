@@ -4,6 +4,8 @@
 //! performs only local/offline discovery and prints JSON so operators and later
 //! advisory-matching code can inspect package-manager coverage without adding
 //! new boot-time risk.
+//!
+//! Current target scope is Windows and Linux only.
 
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -14,6 +16,8 @@ use std::process::Command;
 struct InventoryEntry {
     display_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    executable_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     version_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     publisher_hint: Option<String>,
@@ -22,10 +26,10 @@ struct InventoryEntry {
 
 fn main() {
     let mut entries = Vec::new();
+    entries.extend(collect_windows_uninstall_entries());
     entries.extend(collect_dpkg_entries());
     entries.extend(collect_rpm_entries());
     entries.extend(collect_apk_entries());
-    entries.extend(collect_homebrew_entries());
 
     entries.sort_by(|a, b| {
         a.source
@@ -41,6 +45,90 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(windows)]
+fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
+    use winreg::enums::{
+        HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+    };
+    use winreg::RegKey;
+
+    let mut entries = Vec::new();
+    let uninstall_roots = [
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
+        (
+            HKEY_LOCAL_MACHINE,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_64KEY,
+        ),
+        (
+            HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            KEY_READ | KEY_WOW64_32KEY,
+        ),
+    ];
+
+    for (hive, path, flags) in uninstall_roots {
+        let Ok(root) = RegKey::predef(hive).open_subkey_with_flags(path, flags) else {
+            continue;
+        };
+        for child in root.enum_keys().flatten() {
+            let Ok(entry_key) = root.open_subkey_with_flags(&child, flags) else {
+                continue;
+            };
+            if let Some(entry) = inventory_entry_from_uninstall_key(&entry_key) {
+                entries.push(entry);
+            }
+        }
+    }
+
+    entries
+}
+
+#[cfg(not(windows))]
+fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
+    Vec::new()
+}
+
+#[cfg(windows)]
+fn inventory_entry_from_uninstall_key(key: &winreg::RegKey) -> Option<InventoryEntry> {
+    let display_name = registry_string(key, "DisplayName").unwrap_or_default();
+    let executable_path = preferred_registry_path(
+        registry_string(key, "DisplayIcon")
+            .as_deref()
+            .unwrap_or_default(),
+        registry_string(key, "InstallLocation")
+            .as_deref()
+            .unwrap_or_default(),
+    );
+    if display_name.is_empty() && executable_path.is_empty() {
+        return None;
+    }
+
+    Some(InventoryEntry {
+        display_name,
+        executable_path: inventory_hint(executable_path),
+        version_hint: registry_string(key, "DisplayVersion"),
+        publisher_hint: registry_string(key, "Publisher"),
+        source: "windows-uninstall-registry",
+    })
+}
+
+#[cfg(windows)]
+fn registry_string(key: &winreg::RegKey, name: &str) -> Option<String> {
+    key.get_value::<String, _>(name)
+        .ok()
+        .and_then(inventory_hint)
 }
 
 fn collect_dpkg_entries() -> Vec<InventoryEntry> {
@@ -98,6 +186,7 @@ fn inventory_entry_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option
     }
     Some(InventoryEntry {
         display_name: display_name.to_string(),
+        executable_path: None,
         version_hint: fields.get("Version").cloned().and_then(inventory_hint),
         publisher_hint: fields.get("Maintainer").cloned().and_then(inventory_hint),
         source: "linux-dpkg-status",
@@ -140,6 +229,7 @@ fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
     }
     Some(InventoryEntry {
         display_name: display_name.to_string(),
+        executable_path: None,
         version_hint: fields.next().map(str::to_string).and_then(inventory_hint),
         publisher_hint: fields.next().map(str::to_string).and_then(inventory_hint),
         source: "linux-rpm-database",
@@ -182,6 +272,7 @@ fn inventory_entry_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<In
     }
     Some(InventoryEntry {
         display_name: display_name.to_string(),
+        executable_path: None,
         version_hint: fields.get(&'V').cloned().and_then(inventory_hint),
         publisher_hint: fields
             .get(&'m')
@@ -192,97 +283,56 @@ fn inventory_entry_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<In
     })
 }
 
-fn collect_homebrew_entries() -> Vec<InventoryEntry> {
-    let mut entries = Vec::new();
-    for root in ["/opt/homebrew/Cellar", "/usr/local/Cellar"] {
-        entries.extend(collect_homebrew_formula_entries(Path::new(root)));
-    }
-    for root in ["/opt/homebrew/Caskroom", "/usr/local/Caskroom"] {
-        entries.extend(collect_homebrew_cask_entries(Path::new(root)));
-    }
-    entries
-}
-
-fn collect_homebrew_formula_entries(cellar_root: &Path) -> Vec<InventoryEntry> {
-    let Ok(packages) = std::fs::read_dir(cellar_root) else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-    for package in packages.flatten() {
-        let Ok(file_type) = package.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let Some(display_name) = package
-            .file_name()
-            .to_str()
-            .map(str::to_string)
-            .and_then(inventory_hint)
-        else {
-            continue;
-        };
-        let version_hint = sole_child_directory_name(&package.path());
-        entries.push(InventoryEntry {
-            display_name,
-            version_hint,
-            publisher_hint: None,
-            source: "macos-homebrew-formula",
-        });
-    }
-    entries
-}
-
-fn collect_homebrew_cask_entries(caskroom_root: &Path) -> Vec<InventoryEntry> {
-    let Ok(casks) = std::fs::read_dir(caskroom_root) else {
-        return Vec::new();
-    };
-    let mut entries = Vec::new();
-    for cask in casks.flatten() {
-        let Ok(file_type) = cask.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let Some(display_name) = cask
-            .file_name()
-            .to_str()
-            .map(str::to_string)
-            .and_then(inventory_hint)
-        else {
-            continue;
-        };
-        let version_hint = sole_child_directory_name(&cask.path());
-        entries.push(InventoryEntry {
-            display_name,
-            version_hint,
-            publisher_hint: None,
-            source: "macos-homebrew-cask",
-        });
-    }
-    entries
-}
-
-fn sole_child_directory_name(dir: &Path) -> Option<String> {
-    let mut only = None;
-    for child in std::fs::read_dir(dir).ok()? {
-        let child = child.ok()?;
-        if !child.file_type().ok()?.is_dir() {
-            continue;
-        }
-        let candidate = child.file_name().to_str().map(str::to_string).and_then(inventory_hint)?;
-        if only.is_some() {
-            return None;
-        }
-        only = Some(candidate);
-    }
-    only
-}
-
 fn first_existing_file(paths: &[&'static str]) -> Option<&'static str> {
     paths.iter().copied().find(|path| Path::new(path).is_file())
+}
+
+fn preferred_registry_path(display_icon: &str, install_location: &str) -> String {
+    let display_icon = clean_display_icon_path(display_icon);
+    if !display_icon.is_empty() {
+        return display_icon;
+    }
+
+    let install_location = install_location.trim();
+    if registry_install_location_looks_executable(install_location) {
+        return install_location.trim_matches('"').to_string();
+    }
+
+    String::new()
+}
+
+fn registry_install_location_looks_executable(value: &str) -> bool {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    let Some(extension) = Path::new(trimmed).extension().and_then(|ext| ext.to_str()) else {
+        return false;
+    };
+
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "exe" | "com" | "bat" | "cmd" | "scr" | "pif"
+    )
+}
+
+fn clean_display_icon_path(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let candidate = if let Some(rest) = trimmed.strip_prefix('"') {
+        rest.split_once('"').map(|(path, _)| path).unwrap_or(rest)
+    } else {
+        trimmed
+            .split_once(',')
+            .map(|(path, _)| path)
+            .unwrap_or(trimmed)
+    };
+
+    candidate.trim().trim_matches('"').to_string()
 }
 
 fn inventory_hint(value: String) -> Option<String> {
@@ -335,6 +385,27 @@ mod tests {
         );
         assert_eq!(parsed[1].display_name, "musl");
         assert_eq!(parsed[1].publisher_hint.as_deref(), Some("alpine-baselayout"));
+    }
+
+    #[test]
+    fn clean_display_icon_path_handles_quoted_and_comma_suffixes() {
+        assert_eq!(
+            clean_display_icon_path(r#"C:\Program Files\App\app.exe",0"#),
+            r#"C:\Program Files\App\app.exe"#
+        );
+        assert_eq!(
+            clean_display_icon_path(r#"C:\Program Files\App\app.exe,1"#),
+            r#"C:\Program Files\App\app.exe"#
+        );
+    }
+
+    #[test]
+    fn preferred_registry_path_accepts_executable_install_location() {
+        assert_eq!(
+            preferred_registry_path("", r#"C:\Tools\agent.exe"#),
+            r#"C:\Tools\agent.exe"#
+        );
+        assert_eq!(preferred_registry_path("", r#"C:\Tools"#), "");
     }
 
     #[test]
