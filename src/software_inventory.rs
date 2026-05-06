@@ -6,7 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::time::Duration;
 use sysinfo::System;
+
+const STARTUP_INVENTORY_DELAY: Duration = Duration::from_secs(15);
+const STARTUP_INVENTORY_MAX_ENTRIES: usize = 512;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstalledSoftware {
@@ -22,13 +26,29 @@ pub enum InventorySource {
     RunningProcess,
 }
 
+pub fn startup_inventory_delay() -> Duration {
+    STARTUP_INVENTORY_DELAY
+}
+
+pub fn collect_startup_inventory() -> Vec<InstalledSoftware> {
+    collect_installed_software_limited(STARTUP_INVENTORY_MAX_ENTRIES)
+}
+
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
+    collect_installed_software_limited(usize::MAX)
+}
+
+fn collect_installed_software_limited(max_entries: usize) -> Vec<InstalledSoftware> {
     let mut sys = System::new_all();
     sys.refresh_all();
 
     let mut by_key: BTreeMap<String, InstalledSoftware> = BTreeMap::new();
 
     for process in sys.processes().values() {
+        if by_key.len() >= max_entries {
+            break;
+        }
+
         let display_name = process.name().to_string_lossy().trim().to_string();
         if display_name.is_empty() {
             continue;
@@ -90,7 +110,6 @@ mod tests {
         assert_eq!(normalize_name("PowerShell.EXE"), "powershell");
     }
 
-
     #[test]
     fn normalize_name_preserves_unicode_letters() {
         assert_eq!(normalize_name("Программа.EXE"), "программа");
@@ -107,5 +126,24 @@ mod tests {
     fn derive_product_key_uses_path_when_name_missing() {
         let key = derive_product_key("", "/usr/bin/curl");
         assert_eq!(key, "curl");
+    }
+
+    #[test]
+    fn limited_collection_respects_entry_cap() {
+        let mut by_key: BTreeMap<String, InstalledSoftware> = BTreeMap::new();
+        for i in 0..STARTUP_INVENTORY_MAX_ENTRIES {
+            let key = format!("proc-{i}");
+            by_key.insert(
+                key.clone(),
+                InstalledSoftware {
+                    product_key: key.clone(),
+                    display_name: key,
+                    executable_path: String::new(),
+                    publisher_hint: None,
+                    source: InventorySource::RunningProcess,
+                },
+            );
+        }
+        assert_eq!(by_key.len(), STARTUP_INVENTORY_MAX_ENTRIES);
     }
 }
