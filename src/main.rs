@@ -158,8 +158,21 @@ fn spawn_bootstrap(cfg_bootstrap: Arc<RwLock<Config>>, manage_login_autostart: b
             advisory::refresh_nvd_in_background_if_due();
             advisory_history::refresh_nvd_in_background_if_due();
 
-            let software_count = software_inventory::collect_installed_software().len();
-            tracing::info!(software_count, "software inventory snapshot collected");
+            std::thread::sleep(software_inventory::startup_inventory_delay());
+            match std::panic::catch_unwind(software_inventory::collect_startup_inventory) {
+                Ok(inventory) => {
+                    let software_count = inventory.len();
+                    tracing::info!(
+                        software_count,
+                        "startup-safe software inventory snapshot collected"
+                    );
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        "software inventory refresh panicked; continuing without startup inventory snapshot"
+                    );
+                }
+            }
 
             if manage_login_autostart {
                 {
