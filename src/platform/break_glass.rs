@@ -52,18 +52,20 @@ pub fn recover_if_stale() -> i32 {
         Ok(Some(state)) => state,
         Ok(None) => {
             if active_response::status().isolated {
-                audit::record(
-                    "break_glass_recovery",
-                    "error",
-                    json!({
-                        "reason": "missing protected break-glass state while machine is isolated"
-                    }),
+                return attempt_fail_open_recovery(
+                    "missing protected break-glass state while machine is isolated",
+                    None,
                 );
-                return 1;
             }
             return 0;
         }
         Err(err) => {
+            if active_response::status().isolated {
+                return attempt_fail_open_recovery(
+                    "failed to load protected break-glass state",
+                    Some(err),
+                );
+            }
             audit::record(
                 "break_glass_recovery",
                 "error",
@@ -106,6 +108,38 @@ pub fn recover_if_stale() -> i32 {
                     "error": err,
                     "heartbeat_age_secs": heartbeat_age,
                     "deadline_unix": state.deadline_unix,
+                }),
+            );
+            1
+        }
+    }
+}
+
+fn attempt_fail_open_recovery(reason: &str, error: Option<String>) -> i32 {
+    match active_response::restore_machine() {
+        Ok(message) => {
+            audit::record(
+                "break_glass_recovery",
+                "success",
+                json!({
+                    "message": message,
+                    "reason": reason,
+                    "error": error,
+                    "fail_open_path": true,
+                }),
+            );
+            let _ = disarm();
+            0
+        }
+        Err(restore_err) => {
+            audit::record(
+                "break_glass_recovery",
+                "error",
+                json!({
+                    "reason": reason,
+                    "error": error,
+                    "restore_error": restore_err,
+                    "fail_open_path": true,
                 }),
             );
             1
