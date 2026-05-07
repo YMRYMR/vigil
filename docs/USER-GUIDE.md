@@ -190,6 +190,13 @@ The standalone `vigil_inventory` helper prints local Windows/Linux software inve
 vigil_inventory
 ```
 
+Each row includes conservative normalized identity hints so later matching can stay explainable:
+
+- `product_key` for the primary normalized product identity
+- `product_aliases` for alternate normalized product forms derived from names and executable stems
+- `vendor_key` for the primary normalized publisher or vendor identity
+- `vendor_aliases` for alternate normalized vendor forms, including suffix-stripped aliases
+
 Current inventory sources:
 
 - Windows uninstall registry
