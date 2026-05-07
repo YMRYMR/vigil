@@ -14,6 +14,30 @@ use sysinfo::System;
 
 const STARTUP_INVENTORY_DELAY: Duration = Duration::from_secs(15);
 const STARTUP_INVENTORY_MAX_ENTRIES: usize = 512;
+const VENDOR_SUFFIXES: &[&str] = &[
+    "ab",
+    "ag",
+    "bv",
+    "co",
+    "company",
+    "corp",
+    "corporation",
+    "gmbh",
+    "inc",
+    "incorporated",
+    "kg",
+    "kgaa",
+    "limited",
+    "llc",
+    "ltd",
+    "oy",
+    "oyj",
+    "plc",
+    "pte",
+    "sa",
+    "sarl",
+    "spa",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstalledSoftware {
@@ -24,6 +48,10 @@ pub struct InstalledSoftware {
     pub publisher_hint: Option<String>,
     #[serde(default)]
     pub version_hint: Option<String>,
+    #[serde(default)]
+    pub product_aliases: Vec<String>,
+    #[serde(default)]
+    pub vendor_key: Option<String>,
     pub source: InventorySource,
 }
 
@@ -502,6 +530,11 @@ where
             executable_path: entry.executable_path,
             publisher_hint: entry.publisher_hint,
             version_hint: entry.version_hint,
+            product_aliases: collect_product_aliases(&entry.display_name, &entry.executable_path),
+            vendor_key: entry
+                .publisher_hint
+                .as_deref()
+                .and_then(normalize_vendor_key),
             source: entry.source,
         };
         by_key
@@ -558,6 +591,34 @@ fn merge_missing_inventory_fields(target: &mut InstalledSoftware, source: &Insta
     if target.version_hint.is_none() {
         target.version_hint = source.version_hint.clone();
     }
+    if target.vendor_key.is_none() {
+        target.vendor_key = source.vendor_key.clone();
+    }
+    merge_product_aliases(&mut target.product_aliases, &source.product_aliases);
+}
+
+fn merge_product_aliases(target: &mut Vec<String>, source: &[String]) {
+    let mut aliases = target.iter().cloned().collect::<BTreeSet<_>>();
+    aliases.extend(source.iter().cloned());
+    *target = aliases.into_iter().collect();
+}
+
+fn collect_product_aliases(display_name: &str, executable_path: &str) -> Vec<String> {
+    let mut aliases = BTreeSet::new();
+
+    let normalized_name = normalize_name(display_name);
+    if !normalized_name.is_empty() {
+        aliases.insert(normalized_name);
+    }
+
+    if let Some(file_name) = std::path::Path::new(executable_path).file_stem() {
+        let candidate = normalize_name(&file_name.to_string_lossy());
+        if !candidate.is_empty() {
+            aliases.insert(candidate);
+        }
+    }
+
+    aliases.into_iter().collect()
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -576,15 +637,42 @@ fn derive_product_key(display_name: &str, executable_path: &str) -> String {
     "unknown-product".to_string()
 }
 
+fn normalize_vendor_key(publisher: &str) -> Option<String> {
+    let publisher = publisher.split('<').next().unwrap_or(publisher).trim();
+    let mut tokens = tokenize_identity(publisher);
+    while tokens
+        .last()
+        .is_some_and(|token| VENDOR_SUFFIXES.contains(&token.as_str()))
+    {
+        tokens.pop();
+    }
+
+    if tokens.is_empty() {
+        let normalized = normalize_name(publisher);
+        if normalized.is_empty() {
+            None
+        } else {
+            Some(normalized)
+        }
+    } else {
+        Some(tokens.join("-"))
+    }
+}
+
 fn normalize_name(input: &str) -> String {
+    tokenize_identity(input).join("-")
+}
+
+fn tokenize_identity(input: &str) -> Vec<String> {
     let lower = input.trim().to_lowercase();
     let no_ext = lower.strip_suffix(".exe").unwrap_or(&lower);
     no_ext
         .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { '-' })
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
         .collect::<String>()
-        .trim_matches('-')
-        .to_string()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
 }
 
 fn inventory_hint(value: String) -> Option<String> {
@@ -625,6 +713,30 @@ mod tests {
     fn normalize_name_preserves_unicode_letters() {
         assert_eq!(normalize_name("Программа.EXE"), "программа");
         assert_eq!(normalize_name("監視ツール.exe"), "監視ツール");
+    }
+
+    #[test]
+    fn normalize_vendor_key_strips_suffixes_and_contact_details() {
+        assert_eq!(
+            normalize_vendor_key("Example Corporation <sec@example.com>"),
+            Some("example".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Microsoft Corporation"),
+            Some("microsoft".to_string())
+        );
+    }
+
+    #[test]
+    fn collect_product_aliases_uses_display_name_and_executable_stem() {
+        let aliases = collect_product_aliases(
+            "Google Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+        );
+        assert_eq!(
+            aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
     }
 
     #[test]
@@ -790,6 +902,7 @@ mod tests {
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 1);
         assert_eq!(inventory[0].product_key, "agentd");
+        assert_eq!(inventory[0].product_aliases, vec!["agentd".to_string()]);
     }
 
     #[test]
@@ -825,6 +938,10 @@ mod tests {
             inventory[0].executable_path,
             "/Applications/Google Chrome.app"
         );
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
     }
 
     #[test]
@@ -850,6 +967,11 @@ mod tests {
         assert_eq!(inventory[0].product_key, "example-agent");
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("example"));
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["agent".to_string(), "example-agent".to_string()]
+        );
         assert_eq!(
             inventory[0].executable_path,
             "/Applications/Example Agent.app"
@@ -879,6 +1001,11 @@ mod tests {
         assert_eq!(inventory[0].product_key, "example-agent");
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("example"));
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["agent".to_string(), "example-agent".to_string()]
+        );
         assert_eq!(inventory[0].executable_path, "/opt/example/agent");
     }
 
@@ -907,6 +1034,7 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Debian curl maintainers")
         );
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("debian-curl-maintainers"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -936,6 +1064,7 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Fedora Project")
         );
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("fedora-project"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1.fc40"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -965,6 +1094,7 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("alpine-baselayout")
         );
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("alpine-baselayout"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("1.36.1-r7"));
         assert_eq!(inventory[0].executable_path, "/bin/busybox");
     }
@@ -994,7 +1124,12 @@ mod tests {
             InventorySource::WindowsUninstallRegistry
         );
         assert_eq!(inventory[0].publisher_hint.as_deref(), Some("Example Corp"));
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("example"));
         assert_eq!(inventory[0].version_hint.as_deref(), Some("2.4.1"));
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["agent".to_string(), "example-agent".to_string()]
+        );
         assert_eq!(
             inventory[0].executable_path,
             "C:/Program Files/Example/agent.exe"
@@ -1022,10 +1157,15 @@ mod tests {
         let inventory = collect_from_entries(entries);
         assert_eq!(inventory.len(), 2);
         assert!(inventory.iter().any(|row| {
-            row.product_key == "svchost" && row.source == InventorySource::RunningProcess
+            row.product_key == "svchost"
+                && row.product_aliases == vec!["svchost".to_string()]
+                && row.source == InventorySource::RunningProcess
         }));
         assert!(inventory.iter().any(|row| {
-            row.product_key == "dnscache" && row.source == InventorySource::RunningService
+            row.product_key == "dnscache"
+                && row.product_aliases
+                    == vec!["dnscache".to_string(), "svchost".to_string()]
+                && row.source == InventorySource::RunningService
         }));
     }
 
