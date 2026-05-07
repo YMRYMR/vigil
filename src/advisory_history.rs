@@ -683,10 +683,7 @@ fn sync_windows(
     let mut windows = Vec::new();
     while start < now {
         let end = std::cmp::min(start + max_span, now);
-        windows.push((
-            Some(format_datetime(start)),
-            Some(format_datetime(end)),
-        ));
+        windows.push((Some(format_datetime(start)), Some(format_datetime(end))));
         start = end;
     }
     windows
@@ -706,7 +703,10 @@ fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
     "fresh"
 }
 
-fn parse_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<ChangeHistoryCache, String> {
+fn parse_snapshot(
+    bytes: &[u8],
+    imported_from: Option<&Path>,
+) -> Result<ChangeHistoryCache, String> {
     let payload: Value = serde_json::from_slice(bytes)
         .map_err(|err| format!("failed to parse NVD change-history JSON: {err}"))?;
     let total_results = payload
@@ -877,7 +877,10 @@ fn stamp_sync_failure(mut cache: ChangeHistoryCache, error: &str, now: u64) -> C
     cache
 }
 
-fn merge_cache(existing: Option<ChangeHistoryCache>, imported: ChangeHistoryCache) -> ChangeHistoryCache {
+fn merge_cache(
+    existing: Option<ChangeHistoryCache>,
+    imported: ChangeHistoryCache,
+) -> ChangeHistoryCache {
     let mut cache = existing.unwrap_or_else(|| empty_cache(imported.generated_unix));
     cache.schema_version = CACHE_SCHEMA_VERSION;
     cache.generated_unix = cache.generated_unix.max(imported.generated_unix);
@@ -974,8 +977,7 @@ fn timestamp_to_unix_secs(timestamp: chrono::DateTime<chrono::Utc>) -> u64 {
 }
 
 fn unix_timestamp(unix: u64) -> chrono::DateTime<chrono::Utc> {
-    chrono::DateTime::<chrono::Utc>::from_timestamp(unix as i64, 0)
-        .unwrap_or_else(chrono::Utc::now)
+    chrono::DateTime::<chrono::Utc>::from_timestamp(unix as i64, 0).unwrap_or_else(chrono::Utc::now)
 }
 
 fn format_datetime(timestamp: chrono::DateTime<chrono::Utc>) -> String {
