@@ -729,10 +729,8 @@ mod tests {
 
     #[test]
     fn collect_product_aliases_uses_display_name_and_executable_stem() {
-        let aliases = collect_product_aliases(
-            "Google Chrome",
-            "C:/Program Files/Google/Chrome/chrome.exe",
-        );
+        let aliases =
+            collect_product_aliases("Google Chrome", "C:/Program Files/Google/Chrome/chrome.exe");
         assert_eq!(
             aliases,
             vec!["chrome".to_string(), "google-chrome".to_string()]
@@ -1034,7 +1032,10 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Debian curl maintainers")
         );
-        assert_eq!(inventory[0].vendor_key.as_deref(), Some("debian-curl-maintainers"));
+        assert_eq!(
+            inventory[0].vendor_key.as_deref(),
+            Some("debian-curl-maintainers")
+        );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -1094,7 +1095,10 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("alpine-baselayout")
         );
-        assert_eq!(inventory[0].vendor_key.as_deref(), Some("alpine-baselayout"));
+        assert_eq!(
+            inventory[0].vendor_key.as_deref(),
+            Some("alpine-baselayout")
+        );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("1.36.1-r7"));
         assert_eq!(inventory[0].executable_path, "/bin/busybox");
     }
@@ -1163,8 +1167,7 @@ mod tests {
         }));
         assert!(inventory.iter().any(|row| {
             row.product_key == "dnscache"
-                && row.product_aliases
-                    == vec!["dnscache".to_string(), "svchost".to_string()]
+                && row.product_aliases == vec!["dnscache".to_string(), "svchost".to_string()]
                 && row.source == InventorySource::RunningService
         }));
     }
