@@ -506,6 +506,7 @@ fn first_existing_file(paths: &[&'static str]) -> Option<&'static str> {
     paths.iter().copied().find(|path| Path::new(path).is_file())
 }
 
+#[cfg(any(windows, test))]
 fn preferred_registry_path(display_icon: &str, install_location: &str) -> String {
     let display_icon = clean_display_icon_path(display_icon);
     if !display_icon.is_empty() {
@@ -520,6 +521,7 @@ fn preferred_registry_path(display_icon: &str, install_location: &str) -> String
     String::new()
 }
 
+#[cfg(any(windows, test))]
 fn registry_install_location_looks_executable(value: &str) -> bool {
     let trimmed = value.trim().trim_matches('"');
     if trimmed.is_empty() {
@@ -536,6 +538,7 @@ fn registry_install_location_looks_executable(value: &str) -> bool {
     )
 }
 
+#[cfg(any(windows, test))]
 fn clean_display_icon_path(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
