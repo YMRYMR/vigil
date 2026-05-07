@@ -525,7 +525,10 @@ where
         }
         let product_key = derive_product_key(&entry.display_name, &entry.executable_path);
         let product_aliases = collect_product_aliases(&entry.display_name, &entry.executable_path);
-        let vendor_key = entry.publisher_hint.as_deref().and_then(normalize_vendor_key);
+        let vendor_key = entry
+            .publisher_hint
+            .as_deref()
+            .and_then(normalize_vendor_key);
         let candidate = InstalledSoftware {
             product_key: product_key.clone(),
             display_name: entry.display_name,
