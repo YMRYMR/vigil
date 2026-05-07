@@ -316,7 +316,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             );
         });
     });
-    ui.label(RichText::new("Watchdog implementation uses the local OS scheduler (Windows Task Scheduler, Linux cron, macOS launchd) and runs the same Vigil binary with --break-glass-recover.").color(theme::TEXT3).size(10.8));
+    ui.label(RichText::new("Watchdog implementation uses the local OS scheduler (Windows Task Scheduler, Linux cron) and runs the same Vigil binary with --break-glass-recover.").color(theme::TEXT3).size(10.8));
 
     ui.add_space(16.0);
     section_header(ui, "Forensics on alert");

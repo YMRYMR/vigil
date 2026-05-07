@@ -499,20 +499,17 @@ mod tests {
     #[test]
     fn parse_apk_installed_collects_maintainer_or_origin() {
         let parsed = parse_apk_installed(
-            "P:busybox\nV:1.36.1-r7\nm:Natanael Copa <ncopa@alpinelinux.org>\n\nP:musl\nV:1.2.5-r1\no:alpine-baselayout\n\n",
+            "P:busybox\nV:1.36.1-r7\nm:Example Maintainer\n\nP:musl\nV:1.2.5-r1\no:example-origin\n\n",
         );
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].display_name, "busybox");
         assert_eq!(parsed[0].version_hint.as_deref(), Some("1.36.1-r7"));
         assert_eq!(
             parsed[0].publisher_hint.as_deref(),
-            Some("Natanael Copa <ncopa@alpinelinux.org>")
+            Some("Example Maintainer")
         );
         assert_eq!(parsed[1].display_name, "musl");
-        assert_eq!(
-            parsed[1].publisher_hint.as_deref(),
-            Some("alpine-baselayout")
-        );
+        assert_eq!(parsed[1].publisher_hint.as_deref(), Some("example-origin"));
     }
 
     #[test]
