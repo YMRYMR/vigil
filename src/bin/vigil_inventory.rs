@@ -730,7 +730,10 @@ mod tests {
 
         assert_eq!(entry.product_key.as_deref(), Some("example-agent"));
         assert_eq!(entry.vendor_key.as_deref(), Some("example"));
-        assert_eq!(entry.normalized_version.as_ref().map(|value| value.scheme), Some("generic"));
+        assert_eq!(
+            entry.normalized_version.as_ref().map(|value| value.scheme),
+            Some("generic")
+        );
         assert_eq!(
             entry.product_aliases,
             vec!["agent".to_string(), "example-agent".to_string()]
