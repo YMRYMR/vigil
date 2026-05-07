@@ -165,22 +165,22 @@ fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
     let uninstall_roots = [
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
+            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
     ];
@@ -522,7 +522,7 @@ mod tests {
             r#"C:\\Program Files\\App\\app.exe"#
         );
         assert_eq!(
-            clean_display_icon_path(r#""C:\\Program Files\\App\\app.exe,1""#),
+            clean_display_icon_path(r#"C:\\Program Files\\App\\app.exe,1"#),
             r#"C:\\Program Files\\App\\app.exe"#
         );
     }
