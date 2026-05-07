@@ -487,11 +487,11 @@ mod tests {
     #[test]
     fn parse_rpm_query_output_ignores_empty_names_and_none_vendor() {
         let parsed = parse_rpm_query_output(
-            "curl\t8.8.0-1.fc40\tFedora Project\n\tbroken\tVendor\nopenssl\t3.2.2-5.fc40\t(none)\n",
+            "curl\t8.8.0-1.fc40\tExample Vendor\n\tbroken\tVendor\nopenssl\t3.2.2-5.fc40\t(none)\n",
         );
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].display_name, "curl");
-        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Fedora Project"));
+        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Example Vendor"));
         assert_eq!(parsed[1].display_name, "openssl");
         assert_eq!(parsed[1].publisher_hint, None);
     }
@@ -499,20 +499,14 @@ mod tests {
     #[test]
     fn parse_apk_installed_collects_maintainer_or_origin() {
         let parsed = parse_apk_installed(
-            "P:busybox\nV:1.36.1-r7\nm:Natanael Copa <ncopa@alpinelinux.org>\n\nP:musl\nV:1.2.5-r1\no:alpine-baselayout\n\n",
+            "P:busybox\nV:1.36.1-r7\nm:Example Maintainer\n\nP:musl\nV:1.2.5-r1\no:example-origin\n\n",
         );
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].display_name, "busybox");
         assert_eq!(parsed[0].version_hint.as_deref(), Some("1.36.1-r7"));
-        assert_eq!(
-            parsed[0].publisher_hint.as_deref(),
-            Some("Natanael Copa <ncopa@alpinelinux.org>")
-        );
+        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Example Maintainer"));
         assert_eq!(parsed[1].display_name, "musl");
-        assert_eq!(
-            parsed[1].publisher_hint.as_deref(),
-            Some("alpine-baselayout")
-        );
+        assert_eq!(parsed[1].publisher_hint.as_deref(), Some("example-origin"));
     }
 
     #[test]
@@ -548,8 +542,8 @@ mod tests {
     #[test]
     fn normalize_vendor_key_strips_suffixes_and_contact_details() {
         assert_eq!(
-            normalize_vendor_key("Example Corporation <sec@example.com>"),
-            Some("example".to_string())
+            normalize_vendor_key("Example Corporation Support"),
+            Some("example-corporation-support".to_string())
         );
         assert_eq!(
             normalize_vendor_key("Microsoft Corporation"),
