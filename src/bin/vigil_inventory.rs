@@ -45,6 +45,8 @@ struct InventoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     version_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    normalized_version: Option<NormalizedVersionHint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     publisher_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     product_key: Option<String>,
@@ -53,6 +55,18 @@ struct InventoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     vendor_key: Option<String>,
     source: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct NormalizedVersionHint {
+    scheme: &'static str,
+    canonical: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    epoch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    release: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tokens: Vec<String>,
 }
 
 fn main() {
@@ -90,6 +104,10 @@ fn enrich_inventory_identity(entry: &mut InventoryEntry) {
         .publisher_hint
         .as_deref()
         .and_then(normalize_vendor_key);
+    entry.normalized_version = entry
+        .version_hint
+        .as_deref()
+        .and_then(|version| parse_normalized_version_hint(entry.source, version));
 }
 
 fn primary_product_key(display_name: &str, executable_path: Option<&str>) -> Option<String> {
@@ -131,6 +149,81 @@ fn normalize_vendor_key(publisher: &str) -> Option<String> {
     } else {
         Some(tokens.join("-"))
     }
+}
+
+fn parse_normalized_version_hint(source: &str, version: &str) -> Option<NormalizedVersionHint> {
+    let canonical = normalize_version_canonical(version)?;
+    let (scheme, epoch, release) = match source {
+        "linux-dpkg-status" => {
+            let (epoch, remainder) = split_version_epoch(&canonical);
+            ("deb", epoch, split_last_hyphen_segment(remainder))
+        }
+        "linux-rpm-database" => {
+            let (epoch, remainder) = split_version_epoch(&canonical);
+            ("rpm", epoch, split_last_hyphen_segment(remainder))
+        }
+        "linux-apk-installed" => ("apk", None, split_apk_release(&canonical)),
+        _ => ("generic", None, None),
+    };
+
+    Some(NormalizedVersionHint {
+        scheme,
+        tokens: tokenize_version(&canonical),
+        canonical,
+        epoch,
+        release,
+    })
+}
+
+fn normalize_version_canonical(version: &str) -> Option<String> {
+    let canonical = version.split_whitespace().collect::<Vec<_>>().join(" ");
+    if canonical.is_empty() {
+        None
+    } else {
+        Some(canonical.to_ascii_lowercase())
+    }
+}
+
+fn split_version_epoch(version: &str) -> (Option<String>, &str) {
+    let Some((epoch, remainder)) = version.split_once(':') else {
+        return (None, version);
+    };
+    if epoch.is_empty() || remainder.is_empty() || !epoch.chars().all(|ch| ch.is_ascii_digit()) {
+        return (None, version);
+    }
+    (Some(epoch.to_string()), remainder)
+}
+
+fn split_last_hyphen_segment(version: &str) -> Option<String> {
+    version
+        .rsplit_once('-')
+        .map(|(_, segment)| segment.trim())
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+}
+
+fn split_apk_release(version: &str) -> Option<String> {
+    let (base, release) = version.rsplit_once("-r")?;
+    if base.is_empty() || release.is_empty() || !release.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("r{release}"))
+}
+
+fn tokenize_version(version: &str) -> Vec<String> {
+    version
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
 }
 
 fn normalize_identity(input: &str) -> Option<String> {
@@ -226,6 +319,7 @@ fn inventory_entry_from_uninstall_key(key: &winreg::RegKey) -> Option<InventoryE
         display_name,
         executable_path: inventory_hint(executable_path),
         version_hint: registry_string(key, "DisplayVersion"),
+        normalized_version: None,
         publisher_hint: registry_string(key, "Publisher"),
         product_key: None,
         product_aliases: Vec::new(),
@@ -298,6 +392,7 @@ fn inventory_entry_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option
         display_name: display_name.to_string(),
         executable_path: None,
         version_hint: fields.get("Version").cloned().and_then(inventory_hint),
+        normalized_version: None,
         publisher_hint: fields.get("Maintainer").cloned().and_then(inventory_hint),
         product_key: None,
         product_aliases: Vec::new(),
@@ -347,6 +442,7 @@ fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
         display_name: display_name.to_string(),
         executable_path: None,
         version_hint: fields.next().map(str::to_string).and_then(inventory_hint),
+        normalized_version: None,
         publisher_hint: fields.next().map(str::to_string).and_then(inventory_hint),
         product_key: None,
         product_aliases: Vec::new(),
@@ -393,6 +489,7 @@ fn inventory_entry_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<In
         display_name: display_name.to_string(),
         executable_path: None,
         version_hint: fields.get(&'V').cloned().and_then(inventory_hint),
+        normalized_version: None,
         publisher_hint: fields
             .get(&'m')
             .cloned()
@@ -555,6 +652,55 @@ mod tests {
     }
 
     #[test]
+    fn parse_normalized_version_hint_tracks_dpkg_epoch_and_revision() {
+        let parsed =
+            parse_normalized_version_hint("linux-dpkg-status", "1:2.39.2-1ubuntu1").unwrap();
+        assert_eq!(parsed.scheme, "deb");
+        assert_eq!(parsed.canonical, "1:2.39.2-1ubuntu1");
+        assert_eq!(parsed.epoch.as_deref(), Some("1"));
+        assert_eq!(parsed.release.as_deref(), Some("1ubuntu1"));
+        assert_eq!(
+            parsed.tokens,
+            vec![
+                "1".to_string(),
+                "2".to_string(),
+                "39".to_string(),
+                "2".to_string(),
+                "1ubuntu1".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_normalized_version_hint_tracks_rpm_and_apk_release_segments() {
+        let rpm = parse_normalized_version_hint("linux-rpm-database", "3.2.2-5.fc40").unwrap();
+        assert_eq!(rpm.scheme, "rpm");
+        assert_eq!(rpm.release.as_deref(), Some("5.fc40"));
+
+        let apk = parse_normalized_version_hint("linux-apk-installed", "1.36.1-r7").unwrap();
+        assert_eq!(apk.scheme, "apk");
+        assert_eq!(apk.release.as_deref(), Some("r7"));
+    }
+
+    #[test]
+    fn parse_normalized_version_hint_normalizes_generic_versions() {
+        let parsed =
+            parse_normalized_version_hint("windows-uninstall-registry", " 2024.1 Build 7 ")
+                .unwrap();
+        assert_eq!(parsed.scheme, "generic");
+        assert_eq!(parsed.canonical, "2024.1 build 7");
+        assert_eq!(
+            parsed.tokens,
+            vec![
+                "2024".to_string(),
+                "1".to_string(),
+                "build".to_string(),
+                "7".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn collect_product_aliases_uses_display_name_and_executable_stem() {
         let aliases = collect_product_aliases(
             "Google Chrome",
@@ -572,6 +718,7 @@ mod tests {
             display_name: "Example Agent".to_string(),
             executable_path: Some("C:/Program Files/Example/agent.exe".to_string()),
             version_hint: Some("2.4.1".to_string()),
+            normalized_version: None,
             publisher_hint: Some("Example Corp".to_string()),
             product_key: None,
             product_aliases: Vec::new(),
@@ -583,6 +730,10 @@ mod tests {
 
         assert_eq!(entry.product_key.as_deref(), Some("example-agent"));
         assert_eq!(entry.vendor_key.as_deref(), Some("example"));
+        assert_eq!(
+            entry.normalized_version.as_ref().map(|value| value.scheme),
+            Some("generic")
+        );
         assert_eq!(
             entry.product_aliases,
             vec!["agent".to_string(), "example-agent".to_string()]
