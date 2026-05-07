@@ -137,6 +137,10 @@ metadata without touching Vigil's startup path:
 vigil_inventory
 ```
 
+Its JSON output includes normalized product and vendor hints such as
+`product_key`, `product_aliases`, `vendor_key`, and `vendor_aliases` so later
+matching stays explainable and conservative.
+
 ---
 
 ## Installation
