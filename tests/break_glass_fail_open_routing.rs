@@ -15,7 +15,8 @@ fn missing_protected_break_glass_state_routes_to_fail_open_recovery() {
         "missing protected state while isolated should try fail-open recovery"
     );
     assert!(
-        missing_state_block.contains("missing protected break-glass state while machine is isolated"),
+        missing_state_block
+            .contains("missing protected break-glass state while machine is isolated"),
         "missing-state fail-open path should keep a clear audit reason"
     );
 }
