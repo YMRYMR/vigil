@@ -524,17 +524,16 @@ where
             continue;
         }
         let product_key = derive_product_key(&entry.display_name, &entry.executable_path);
+        let product_aliases = collect_product_aliases(&entry.display_name, &entry.executable_path);
+        let vendor_key = entry.publisher_hint.as_deref().and_then(normalize_vendor_key);
         let candidate = InstalledSoftware {
             product_key: product_key.clone(),
             display_name: entry.display_name,
             executable_path: entry.executable_path,
             publisher_hint: entry.publisher_hint,
             version_hint: entry.version_hint,
-            product_aliases: collect_product_aliases(&entry.display_name, &entry.executable_path),
-            vendor_key: entry
-                .publisher_hint
-                .as_deref()
-                .and_then(normalize_vendor_key),
+            product_aliases,
+            vendor_key,
             source: entry.source,
         };
         by_key
