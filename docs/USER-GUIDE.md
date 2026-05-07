@@ -126,3 +126,20 @@ To verify an update manifest offline:
 ```bash
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
+
+## Local software inventory helper
+
+The standalone `vigil_inventory` helper prints local software inventory as JSON
+without touching Vigil's startup path.
+
+```bash
+vigil_inventory
+```
+
+Each row includes conservative normalization hints that can be reused by later
+advisory-matching work:
+
+- `product_key` for the primary normalized product identity
+- `product_aliases` for alternate normalized product forms derived from names and executable stems
+- `vendor_key` for the primary normalized publisher or vendor identity
+- `vendor_aliases` for alternate normalized vendor forms, including suffix-stripped aliases
