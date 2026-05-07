@@ -8,9 +8,34 @@
 //! Current target scope is Windows and Linux only.
 
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
+
+const VENDOR_SUFFIXES: &[&str] = &[
+    "ab",
+    "ag",
+    "bv",
+    "co",
+    "company",
+    "corp",
+    "corporation",
+    "gmbh",
+    "inc",
+    "incorporated",
+    "kg",
+    "kgaa",
+    "limited",
+    "llc",
+    "ltd",
+    "oy",
+    "oyj",
+    "plc",
+    "pte",
+    "sa",
+    "sarl",
+    "spa",
+];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct InventoryEntry {
@@ -21,6 +46,12 @@ struct InventoryEntry {
     version_hint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     publisher_hint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    product_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    product_aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vendor_key: Option<String>,
     source: &'static str,
 }
 
@@ -30,6 +61,10 @@ fn main() {
     entries.extend(collect_dpkg_entries());
     entries.extend(collect_rpm_entries());
     entries.extend(collect_apk_entries());
+
+    for entry in &mut entries {
+        enrich_inventory_identity(entry);
+    }
 
     entries.sort_by(|a, b| {
         a.source
@@ -47,6 +82,78 @@ fn main() {
     }
 }
 
+fn enrich_inventory_identity(entry: &mut InventoryEntry) {
+    entry.product_aliases =
+        collect_product_aliases(&entry.display_name, entry.executable_path.as_deref());
+    entry.product_key = primary_product_key(&entry.display_name, entry.executable_path.as_deref());
+    entry.vendor_key = entry
+        .publisher_hint
+        .as_deref()
+        .and_then(normalize_vendor_key);
+}
+
+fn primary_product_key(display_name: &str, executable_path: Option<&str>) -> Option<String> {
+    normalize_identity(display_name).or_else(|| {
+        executable_path.and_then(|path| {
+            Path::new(path)
+                .file_stem()
+                .and_then(|stem| normalize_identity(&stem.to_string_lossy()))
+        })
+    })
+}
+
+fn collect_product_aliases(display_name: &str, executable_path: Option<&str>) -> Vec<String> {
+    let mut aliases = BTreeSet::new();
+    if let Some(alias) = normalize_identity(display_name) {
+        aliases.insert(alias);
+    }
+    if let Some(path) = executable_path {
+        if let Some(stem) = Path::new(path).file_stem() {
+            if let Some(alias) = normalize_identity(&stem.to_string_lossy()) {
+                aliases.insert(alias);
+            }
+        }
+    }
+    aliases.into_iter().collect()
+}
+
+fn normalize_vendor_key(publisher: &str) -> Option<String> {
+    let publisher = publisher.split('<').next().unwrap_or(publisher).trim();
+    let mut tokens = tokenize_identity(publisher);
+    while tokens
+        .last()
+        .is_some_and(|token| VENDOR_SUFFIXES.contains(&token.as_str()))
+    {
+        tokens.pop();
+    }
+    if tokens.is_empty() {
+        normalize_identity(publisher)
+    } else {
+        Some(tokens.join("-"))
+    }
+}
+
+fn normalize_identity(input: &str) -> Option<String> {
+    let normalized = tokenize_identity(input).join("-");
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn tokenize_identity(input: &str) -> Vec<String> {
+    let lower = input.trim().to_lowercase();
+    let no_ext = lower.strip_suffix(".exe").unwrap_or(&lower);
+    no_ext
+        .chars()
+        .map(|ch| if ch.is_alphanumeric() { ch } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(windows)]
 fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
     use winreg::enums::{
@@ -58,22 +165,22 @@ fn collect_windows_uninstall_entries() -> Vec<InventoryEntry> {
     let uninstall_roots = [
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_LOCAL_MACHINE,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_64KEY,
         ),
         (
             HKEY_CURRENT_USER,
-            r"Software\Microsoft\Windows\CurrentVersion\Uninstall",
+            r"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall",
             KEY_READ | KEY_WOW64_32KEY,
         ),
     ];
@@ -120,6 +227,9 @@ fn inventory_entry_from_uninstall_key(key: &winreg::RegKey) -> Option<InventoryE
         executable_path: inventory_hint(executable_path),
         version_hint: registry_string(key, "DisplayVersion"),
         publisher_hint: registry_string(key, "Publisher"),
+        product_key: None,
+        product_aliases: Vec::new(),
+        vendor_key: None,
         source: "windows-uninstall-registry",
     })
 }
@@ -189,6 +299,9 @@ fn inventory_entry_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option
         executable_path: None,
         version_hint: fields.get("Version").cloned().and_then(inventory_hint),
         publisher_hint: fields.get("Maintainer").cloned().and_then(inventory_hint),
+        product_key: None,
+        product_aliases: Vec::new(),
+        vendor_key: None,
         source: "linux-dpkg-status",
     })
 }
@@ -218,7 +331,10 @@ fn collect_rpm_entries() -> Vec<InventoryEntry> {
 }
 
 fn parse_rpm_query_output(output: &str) -> Vec<InventoryEntry> {
-    output.lines().filter_map(inventory_entry_from_rpm_line).collect()
+    output
+        .lines()
+        .filter_map(inventory_entry_from_rpm_line)
+        .collect()
 }
 
 fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
@@ -232,6 +348,9 @@ fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
         executable_path: None,
         version_hint: fields.next().map(str::to_string).and_then(inventory_hint),
         publisher_hint: fields.next().map(str::to_string).and_then(inventory_hint),
+        product_key: None,
+        product_aliases: Vec::new(),
+        vendor_key: None,
         source: "linux-rpm-database",
     })
 }
@@ -279,6 +398,9 @@ fn inventory_entry_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<In
             .cloned()
             .and_then(inventory_hint)
             .or_else(|| fields.get(&'o').cloned().and_then(inventory_hint)),
+        product_key: None,
+        product_aliases: Vec::new(),
+        vendor_key: None,
         source: "linux-apk-installed",
     })
 }
@@ -356,7 +478,10 @@ mod tests {
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].display_name, "curl");
         assert_eq!(parsed[0].version_hint.as_deref(), Some("8.8.0-1"));
-        assert_eq!(parsed[0].publisher_hint.as_deref(), Some("Example Maintainer"));
+        assert_eq!(
+            parsed[0].publisher_hint.as_deref(),
+            Some("Example Maintainer")
+        );
     }
 
     #[test]
@@ -384,33 +509,86 @@ mod tests {
             Some("Natanael Copa <ncopa@alpinelinux.org>")
         );
         assert_eq!(parsed[1].display_name, "musl");
-        assert_eq!(parsed[1].publisher_hint.as_deref(), Some("alpine-baselayout"));
+        assert_eq!(
+            parsed[1].publisher_hint.as_deref(),
+            Some("alpine-baselayout")
+        );
     }
 
     #[test]
     fn clean_display_icon_path_handles_quoted_and_comma_suffixes() {
         assert_eq!(
-            clean_display_icon_path(r#"C:\Program Files\App\app.exe",0"#),
-            r#"C:\Program Files\App\app.exe"#
+            clean_display_icon_path(r#""C:\\Program Files\\App\\app.exe",0"#),
+            r#"C:\\Program Files\\App\\app.exe"#
         );
         assert_eq!(
-            clean_display_icon_path(r#"C:\Program Files\App\app.exe,1"#),
-            r#"C:\Program Files\App\app.exe"#
+            clean_display_icon_path(r#""C:\\Program Files\\App\\app.exe,1""#),
+            r#"C:\\Program Files\\App\\app.exe"#
         );
     }
 
     #[test]
     fn preferred_registry_path_accepts_executable_install_location() {
         assert_eq!(
-            preferred_registry_path("", r#"C:\Tools\agent.exe"#),
-            r#"C:\Tools\agent.exe"#
+            preferred_registry_path("", r#""C:\\Tools\\agent.exe""#),
+            r#"C:\\Tools\\agent.exe"#
         );
-        assert_eq!(preferred_registry_path("", r#"C:\Tools"#), "");
+        assert_eq!(preferred_registry_path("", r#""C:\\Tools""#), "");
     }
 
     #[test]
     fn inventory_hint_drops_none_marker() {
         assert_eq!(inventory_hint("(none)".to_string()), None);
-        assert_eq!(inventory_hint("  value  ".to_string()).as_deref(), Some("value"));
+        assert_eq!(
+            inventory_hint("  value  ".to_string()).as_deref(),
+            Some("value")
+        );
+    }
+
+    #[test]
+    fn normalize_vendor_key_strips_suffixes_and_contact_details() {
+        assert_eq!(
+            normalize_vendor_key("Example Corporation <sec@example.com>"),
+            Some("example".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Microsoft Corporation"),
+            Some("microsoft".to_string())
+        );
+    }
+
+    #[test]
+    fn collect_product_aliases_uses_display_name_and_executable_stem() {
+        let aliases = collect_product_aliases(
+            "Google Chrome",
+            Some("C:/Program Files/Google/Chrome/chrome.exe"),
+        );
+        assert_eq!(
+            aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
+    }
+
+    #[test]
+    fn enrich_inventory_identity_populates_normalized_hints() {
+        let mut entry = InventoryEntry {
+            display_name: "Example Agent".to_string(),
+            executable_path: Some("C:/Program Files/Example/agent.exe".to_string()),
+            version_hint: Some("2.4.1".to_string()),
+            publisher_hint: Some("Example Corp".to_string()),
+            product_key: None,
+            product_aliases: Vec::new(),
+            vendor_key: None,
+            source: "windows-uninstall-registry",
+        };
+
+        enrich_inventory_identity(&mut entry);
+
+        assert_eq!(entry.product_key.as_deref(), Some("example-agent"));
+        assert_eq!(entry.vendor_key.as_deref(), Some("example"));
+        assert_eq!(
+            entry.product_aliases,
+            vec!["agent".to_string(), "example-agent".to_string()]
+        );
     }
 }
