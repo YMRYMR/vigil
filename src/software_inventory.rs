@@ -1208,7 +1208,7 @@ mod tests {
                 InventorySource::RunningProcess,
             ),
             seed(
-                "",
+                "Example Agent",
                 "",
                 Some("Example Corp"),
                 Some("2.4.1"),
