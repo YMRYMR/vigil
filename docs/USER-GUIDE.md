@@ -21,6 +21,16 @@ Vigil's active support targets are Windows and Linux. New feature work should de
 
 See [Supported platforms](SUPPORTED-PLATFORMS.md) for the support contract and startup safety rule.
 
+## First-use checklist
+
+If you are new to Vigil, start with a calm observe-first setup instead of enabling every protection at once.
+
+1. Open Activity and Alerts first. Learn what normal traffic looks like on your machine before changing policy.
+2. Use Admin Mode only when you need deeper visibility or active response actions. Vigil is still useful without it.
+3. Leave auto response, allowlist-only mode, scheduled lockdown, and decoy-triggered auto-isolation off until you trust the scores and your trusted-process list.
+4. Prefer reversible actions first. Suspend process, temporary IP blocks, and restore-network workflows are safer than permanent blocking or immediate full isolation.
+5. Treat machine isolation as a last resort for suspected active compromise, not as a normal cleanup button.
+
 ## Install and launch
 
 ### Windows
