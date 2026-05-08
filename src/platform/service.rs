@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+#[cfg(any(windows, test))]
 use std::time::Duration;
 
 /// Result of an install / uninstall command.  `Ok(msg)` is printed verbatim
