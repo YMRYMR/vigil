@@ -7,6 +7,7 @@ const SOFTWARE_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 pub trait InventoryStore {
     fn replace_inventory(&self, entries: &[InstalledSoftware]) -> Result<(), String>;
+    #[cfg_attr(not(test), allow(dead_code))]
     fn load_inventory(&self) -> Result<Vec<InstalledSoftware>, String>;
 }
 
@@ -102,6 +103,8 @@ mod tests {
             executable_path: "/usr/bin/curl".into(),
             publisher_hint: Some("curl project".into()),
             version_hint: Some("8.8.0".into()),
+            product_aliases: vec!["curl".into()],
+            vendor_key: Some("curl-project".into()),
             source: crate::software_inventory::InventorySource::RunningProcess,
         }];
         store.replace_inventory(&rows).unwrap();
@@ -109,6 +112,8 @@ mod tests {
         assert!(loaded.iter().any(|r| r.product_key == "curl"));
         assert_eq!(loaded[0].publisher_hint.as_deref(), Some("curl project"));
         assert_eq!(loaded[0].version_hint.as_deref(), Some("8.8.0"));
+        assert_eq!(loaded[0].product_aliases, vec!["curl".to_string()]);
+        assert_eq!(loaded[0].vendor_key.as_deref(), Some("curl-project"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
