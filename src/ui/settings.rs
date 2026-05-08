@@ -11,6 +11,7 @@ mod uninstall;
 
 pub use draft::SettingsDraft;
 
+use self::draft::RiskyEnableTarget;
 use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
@@ -110,18 +111,37 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     });
 
     ui.add_space(16.0);
-    section_header(ui, "Auto response");
-    ui.label(RichText::new("Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.").color(theme::TEXT2).size(12.0));
-    ui.add_space(8.0);
-    setting_row(ui, label_w, "Enable auto response", |ui| {
+    section_header(ui, "Safety rails");
+    setting_row(ui, label_w, "Extra confirmations", |ui| {
         *changed |= ui
             .checkbox(
-                &mut draft.auto_response_enabled,
-                RichText::new("allow Vigil to take automated containment actions")
+                &mut draft.extra_safe_prompts,
+                RichText::new("require typing ENABLE before turning on disruptive protections")
                     .color(theme::TEXT2)
                     .size(11.5),
             )
             .changed();
+    });
+    ui.label(
+        RichText::new(
+            "Enabled by default so non-expert users do not accidentally arm automation or network lockdown features.",
+        )
+        .color(theme::TEXT3)
+        .size(10.8),
+    );
+
+    ui.add_space(16.0);
+    section_header(ui, "Auto response");
+    ui.label(RichText::new("Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable auto response", |ui| {
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::AutoResponse,
+            "allow Vigil to take automated containment actions",
+        );
     });
     setting_row(ui, label_w, "Dry run", |ui| {
         *changed |= ui
@@ -170,14 +190,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional restrictive policy. When enabled, Vigil treats traffic from processes outside the trusted list, the custom allowlist, and Microsoft-signed system processes as containment candidates.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable allowlist mode", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.allowlist_mode_enabled,
-                RichText::new("enforce network allowlisting for processes")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::AllowlistMode,
+            "enforce network allowlisting for processes",
+        );
     });
     setting_row(ui, label_w, "Allowlist dry run", |ui| {
         *changed |= ui
@@ -239,14 +258,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible network-isolation controls as the panic button and only runs when that capability is available on the current OS.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable schedule", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.scheduled_lockdown_enabled,
-                RichText::new("automatically isolate the network during the selected hours")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::ScheduledLockdown,
+            "automatically isolate the network during the selected hours",
+        );
     });
     ui.add_enabled_ui(draft.scheduled_lockdown_enabled, |ui| {
         setting_row(ui, label_w, "Start time", |ui| {
@@ -430,14 +448,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             .changed();
     });
     setting_row(ui, label_w, "Auto isolate on touch", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.honeypot_auto_isolate,
-                RichText::new("automatically isolate the machine when a decoy is touched")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::HoneypotAutoIsolate,
+            "automatically isolate the machine when a decoy is touched",
+        );
     });
     setting_row(ui, label_w, "Poll interval", |ui| {
         ui.horizontal(|ui| {
@@ -470,6 +487,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         .color(theme::TEXT3)
         .size(10.8),
     );
+
+    render_risky_enable_confirm(ui, draft, changed);
 
     ui.add_space(16.0);
     section_header(ui, "Startup");
@@ -542,10 +561,20 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.add_space(6.0);
     ui.label(RichText::new("Trusted processes are exempt from routine penalties and automatic response. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.").color(theme::TEXT2).size(12.0));
     ui.add_space(10.0);
+    render_trusted_onboarding(ui, draft);
+    ui.add_space(10.0);
+    ui.label(
+        RichText::new(
+            "Best path: use Trust in the Inspector after you have reviewed the executable path, publisher, and normal network behavior. Manual entry is for software you already know well.",
+        )
+        .color(theme::TEXT3)
+        .size(10.8),
+    );
+    ui.add_space(8.0);
 
     ui.horizontal(|ui| {
         let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
-            .hint_text("process name…")
+            .hint_text("known process name…")
             .desired_width(280.0);
         let resp = ui.add(te);
         let add_clicked = ui
@@ -556,19 +585,32 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                     .corner_radius(4.0),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Add this process name to the trusted list.")
+            .on_hover_text("Add a process only if you already recognize it and expect its network behavior.")
             .clicked();
         let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
             let key = normalise_name(draft.new_trusted_input.trim());
-            if !key.is_empty()
-                && !draft
-                    .trusted_processes
-                    .iter()
-                    .any(|t| t.eq_ignore_ascii_case(&key))
+            if key.is_empty() {
+                draft.status_msg = Some((
+                    "Enter a process name first.".into(),
+                    std::time::Instant::now(),
+                ));
+            } else if draft
+                .trusted_processes
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case(&key))
             {
-                draft.trusted_processes.push(key);
+                draft.status_msg = Some((
+                    format!("{key} is already trusted."),
+                    std::time::Instant::now(),
+                ));
+            } else {
+                draft.trusted_processes.push(key.clone());
                 draft.trusted_processes.sort_unstable();
+                draft.status_msg = Some((
+                    format!("Added {key}. Trust only software you recognize and expect to be chatty."),
+                    std::time::Instant::now(),
+                ));
                 *changed = true;
             }
             draft.new_trusted_input.clear();
@@ -577,7 +619,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         if ui
             .add(
                 egui::Button::new(
-                    RichText::new("Reset shipped defaults")
+                    RichText::new("Restore shipped baseline")
                         .color(theme::TEXT2)
                         .size(11.0),
                 )
@@ -593,7 +635,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             draft.trusted_filter.clear();
             draft.new_trusted_input.clear();
             draft.status_msg = Some((
-                "Restored shipped trusted defaults.".into(),
+                "Restored the shipped trusted baseline. Add your own apps gradually after observing them.".into(),
                 std::time::Instant::now(),
             ));
             *changed = true;
@@ -613,9 +655,11 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let mut remove_idx: Option<usize> = None;
     if draft.trusted_processes.is_empty() {
         ui.label(
-            RichText::new("No trusted processes yet.")
-                .color(theme::TEXT3)
-                .size(11.5),
+            RichText::new(
+                "No trusted processes yet. Start with the shipped baseline, then add only software you recognize from Activity or the Inspector.",
+            )
+            .color(theme::TEXT3)
+            .size(11.5),
         );
     } else {
         let total = draft.trusted_processes.len();
@@ -715,6 +759,243 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         draft.trusted_processes.remove(idx);
         *changed = true;
     }
+}
+
+fn render_trusted_onboarding(ui: &mut egui::Ui, draft: &SettingsDraft) {
+    let shipped_trusted = Config::default().trusted_processes;
+    let shipped_count = shipped_trusted.len();
+    let missing_shipped = shipped_trusted
+        .iter()
+        .filter(|name| !contains_name_case_insensitive(&draft.trusted_processes, name))
+        .count();
+    let custom_count = draft
+        .trusted_processes
+        .iter()
+        .filter(|name| !contains_name_case_insensitive(&shipped_trusted, name))
+        .count();
+
+    egui::Frame::NONE
+        .fill(theme::SURFACE2)
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT_BG))
+        .corner_radius(12.0)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Trusted-list tutorial")
+                    .color(theme::TEXT)
+                    .size(12.4)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Treat trust as a learned baseline, not a quick way to make alerts quieter. A trusted process skips routine penalties and can suppress automatic response, so each entry should be boring, familiar, and expected.",
+                )
+                .color(theme::TEXT2)
+                .size(11.1),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        " Baseline {}/{} ",
+                        shipped_count.saturating_sub(missing_shipped),
+                        shipped_count
+                    ))
+                    .color(theme::ACCENT)
+                    .background_color(theme::ACCENT_BG)
+                    .size(10.2)
+                    .strong(),
+                );
+                ui.label(
+                    RichText::new(format!(" Learned apps {} ", custom_count))
+                        .color(theme::TEXT2)
+                        .background_color(theme::SURFACE3)
+                        .size(10.2)
+                        .strong(),
+                );
+                let baseline_note = if missing_shipped == 0 {
+                    " Shipped baseline intact ".to_string()
+                } else {
+                    format!(" {missing_shipped} shipped entries removed ")
+                };
+                ui.label(
+                    RichText::new(baseline_note)
+                        .color(theme::WARN)
+                        .background_color(theme::WARN_BG)
+                        .size(10.2)
+                        .strong(),
+                );
+            });
+            ui.add_space(8.0);
+            tutorial_step(
+                ui,
+                "1. Start with the shipped baseline",
+                "Keep the defaults unless you have a concrete reason to remove one. They cover common system and browser processes that would otherwise create noise on many machines.",
+            );
+            tutorial_step(
+                ui,
+                "2. Learn from Activity and Inspector",
+                "Watch the app behave normally first. Then use Trust from the Inspector so you can see the process name, path, publisher, parent, and live connections before adding it.",
+            );
+            tutorial_step(
+                ui,
+                "3. Add only stable software you recognize",
+                "Good candidates are daily drivers like your browser, chat client, VPN, or terminal tools that regularly talk on the network and consistently look healthy.",
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "Avoid trusting installers, updaters running from Downloads or Temp, script hosts like powershell/cmd/mshta, one-off troubleshooting tools, or anything you do not immediately recognize.",
+                )
+                .color(theme::WARN)
+                .size(10.6),
+            );
+            ui.add_space(6.0);
+            let progress_text = if custom_count == 0 {
+                "You have not added any learned apps yet. That is fine: leave the baseline alone, then add entries gradually as you observe familiar software."
+            } else {
+                "You already have learned additions. Revisit them if the software moves to a new path, changes ownership, or starts generating new kinds of alerts."
+            };
+            ui.label(RichText::new(progress_text).color(theme::TEXT3).size(10.6));
+        });
+}
+
+fn tutorial_step(ui: &mut egui::Ui, title: &str, body: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("> ").color(theme::ACCENT).size(10.5));
+        ui.add_space(2.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(title).color(theme::TEXT).size(10.9).strong());
+            ui.add(egui::Label::new(RichText::new(body).color(theme::TEXT2).size(10.8)).wrap());
+        });
+    });
+    ui.add_space(4.0);
+}
+
+fn contains_name_case_insensitive(names: &[String], target: &str) -> bool {
+    names.iter().any(|name| name.eq_ignore_ascii_case(target))
+}
+
+fn risky_enable_checkbox(
+    ui: &mut egui::Ui,
+    draft: &mut SettingsDraft,
+    changed: &mut bool,
+    target: RiskyEnableTarget,
+    label: &str,
+) {
+    let before = risky_enable_value(draft, target);
+    let mut next = before;
+    let response = ui.checkbox(
+        &mut next,
+        RichText::new(label).color(theme::TEXT2).size(11.5),
+    );
+    if !response.changed() {
+        return;
+    }
+
+    if !before && next && draft.extra_safe_prompts {
+        draft.pending_risky_enable = Some(target);
+        draft.risky_enable_confirm_text.clear();
+        return;
+    }
+
+    set_risky_enable_value(draft, target, next);
+    *changed = true;
+}
+
+fn risky_enable_value(draft: &SettingsDraft, target: RiskyEnableTarget) -> bool {
+    match target {
+        RiskyEnableTarget::AutoResponse => draft.auto_response_enabled,
+        RiskyEnableTarget::AllowlistMode => draft.allowlist_mode_enabled,
+        RiskyEnableTarget::ScheduledLockdown => draft.scheduled_lockdown_enabled,
+        RiskyEnableTarget::HoneypotAutoIsolate => draft.honeypot_auto_isolate,
+    }
+}
+
+fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, value: bool) {
+    match target {
+        RiskyEnableTarget::AutoResponse => draft.auto_response_enabled = value,
+        RiskyEnableTarget::AllowlistMode => draft.allowlist_mode_enabled = value,
+        RiskyEnableTarget::ScheduledLockdown => draft.scheduled_lockdown_enabled = value,
+        RiskyEnableTarget::HoneypotAutoIsolate => draft.honeypot_auto_isolate = value,
+    }
+}
+
+fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
+    let Some(target) = draft.pending_risky_enable else {
+        return;
+    };
+    ui.add_space(14.0);
+    egui::Frame::NONE
+        .fill(theme::WARN_BG)
+        .stroke(egui::Stroke::new(1.0, theme::WARN))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(target.title())
+                    .color(theme::WARN)
+                    .size(11.8)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(RichText::new(target.body()).color(theme::TEXT).size(11.2));
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Type ENABLE to continue.")
+                    .color(theme::TEXT2)
+                    .size(10.8),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.risky_enable_confirm_text)
+                    .hint_text("ENABLE")
+                    .desired_width(140.0),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let confirmed = draft
+                    .risky_enable_confirm_text
+                    .trim()
+                    .eq_ignore_ascii_case("ENABLE");
+                if ui
+                    .add_enabled(
+                        confirmed,
+                        egui::Button::new(
+                            RichText::new("Enable protection")
+                                .color(theme::WARN)
+                                .size(11.0),
+                        )
+                        .fill(theme::SURFACE2)
+                        .stroke(egui::Stroke::new(1.0, theme::WARN))
+                        .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    set_risky_enable_value(draft, target, true);
+                    draft.pending_risky_enable = None;
+                    draft.risky_enable_confirm_text.clear();
+                    draft.status_msg =
+                        Some((target.success_message().into(), std::time::Instant::now()));
+                    *changed = true;
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Cancel").color(theme::TEXT2).size(11.0))
+                            .fill(theme::SURFACE3)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    draft.pending_risky_enable = None;
+                    draft.risky_enable_confirm_text.clear();
+                }
+            });
+        });
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str) {

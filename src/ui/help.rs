@@ -12,6 +12,23 @@ pub fn show(ui: &mut egui::Ui) {
         if ui.available_width() > 700.0 {
             ui.columns(2, |cols| {
                 cols[0].vertical(|ui| {
+                    card(ui, "Start here safely", |ui| {
+                        body(ui, "If this is your first serious look at Vigil, begin in observe-first mode. You do not need to turn on automation to benefit from the app.");
+                        ui.add_space(6.0);
+                        bullet(ui, "1. Watch first", "Use Activity and Alerts to learn what normal traffic looks like on this machine before changing policy.");
+                        bullet(ui, "2. Elevate only when needed", "Admin Mode improves visibility and unlocks containment controls, but the app is still useful without it.");
+                        bullet(ui, "3. Keep automation off", "Leave auto response and allowlist-only mode disabled until you trust the scores and your trusted-process list.");
+                        bullet(ui, "4. Prefer reversible actions", "Suspend, temporary IP blocks, and restore-network workflows are safer first steps than permanent blocks or broad isolation.");
+                        bullet(ui, "5. Treat isolation as a last resort", "Use machine isolation when you think the endpoint may already be actively compromised or beaconing.");
+                    });
+                    card(ui, "Trusted-list tutorial", |ui| {
+                        body(ui, "Build the trusted list slowly. Trust should mean 'this software is familiar and consistently boring,' not 'I want this alert to go away.'");
+                        ui.add_space(6.0);
+                        bullet(ui, "1. Keep the baseline", "Start from Vigil's shipped trusted defaults unless you have a clear reason to remove one.");
+                        bullet(ui, "2. Learn from Inspector", "After you see an app behaving normally in Activity, use Trust from the Inspector so you can review the path, publisher, and live connections first.");
+                        bullet(ui, "3. Add stable daily drivers", "Browsers, chat clients, VPN tools, terminals, and other routine apps are better candidates than one-off tools.");
+                        bullet(ui, "Avoid these", "Do not trust installers, updaters in Temp or Downloads, script hosts like powershell/cmd/mshta, or anything you do not immediately recognize.");
+                    });
                     card(ui, "Operator workflow", |ui| {
                         field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
                         field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
@@ -164,6 +181,12 @@ pub fn show(ui: &mut egui::Ui) {
                 });
             });
         } else {
+            card(ui, "Start here safely", |ui| {
+                body(ui, "Start in observe-first mode. Watch Activity and Alerts, keep automation off, and only use isolation once you understand what normal traffic looks like on this machine.");
+            });
+            card(ui, "Trusted-list tutorial", |ui| {
+                body(ui, "Keep the shipped trusted baseline, then add only software you recognize after reviewing it in the Inspector. Avoid trusting installers, Temp-path tools, script hosts, and unfamiliar one-off utilities.");
+            });
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
             card(ui, "Active response", |ui| { body(ui, "Active response includes machine isolation on supported platforms, with broader per-connection and per-process controls where the current OS backend supports them. Isolation is strict and reversible across supported platforms."); });
             card(ui, "Detection depth", |ui| { body(ui, "Phase 12 adds behavioural baselines, script-host inspection, TLS ClientHello enrichment, parent/token anomaly heuristics, and ATT&CK-style mappings while keeping the output explainable in the inspector."); });
@@ -201,6 +224,8 @@ fn hero(ui: &mut egui::Ui) {
         });
         ui.add_space(10.0);
         ui.label(RichText::new("A quick operational guide: what Vigil watches, how the score is built, where the important controls live, and what gets recorded when you respond.").color(theme::TEXT2).size(12.0));
+        ui.add_space(8.0);
+        ui.label(RichText::new("New to Vigil? Start with the safety checklist below before enabling automation or network lockdown features.").color(theme::WARN).size(11.0).strong());
     });
 }
 

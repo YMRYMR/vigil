@@ -32,6 +32,7 @@ pub(super) fn show_section(ui: &mut egui::Ui, draft: &mut SettingsDraft, label_w
                 );
             if uninstall.clicked() {
                 draft.uninstall_confirm_requested = true;
+                draft.uninstall_confirm_text.clear();
             }
             ui.add_space(2.0);
             ui.label(
@@ -52,17 +53,34 @@ pub(super) fn show_section(ui: &mut egui::Ui, draft: &mut SettingsDraft, label_w
             .show(ui, |ui| {
                 ui.label(
                     RichText::new(
-                        "Confirm uninstall? Vigil will disable its login/startup registration, remove the OS service/daemon when present, and then close.",
+                        "Type UNINSTALL to confirm. Vigil will disable its login/startup registration, remove the OS service or daemon when present, and then close.",
                     )
                     .color(theme::TEXT)
                     .size(11.5),
                 );
                 ui.add_space(8.0);
+                ui.label(
+                    RichText::new("This is a local teardown action for the current machine only.")
+                        .color(theme::TEXT2)
+                        .size(10.8),
+                );
+                ui.add_space(4.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut draft.uninstall_confirm_text)
+                        .hint_text("UNINSTALL")
+                        .desired_width(160.0),
+                );
+                ui.add_space(8.0);
                 ui.horizontal(|ui| {
+                    let confirmed = draft
+                        .uninstall_confirm_text
+                        .trim()
+                        .eq_ignore_ascii_case("UNINSTALL");
                     if ui
-                        .add(
+                        .add_enabled(
+                            confirmed,
                             egui::Button::new(
-                                RichText::new("Yes, uninstall and close")
+                                RichText::new("Uninstall and close")
                                     .color(theme::DANGER)
                                     .size(11.0),
                             )
@@ -75,6 +93,7 @@ pub(super) fn show_section(ui: &mut egui::Ui, draft: &mut SettingsDraft, label_w
                     {
                         draft.uninstall_requested = true;
                         draft.uninstall_confirm_requested = false;
+                        draft.uninstall_confirm_text.clear();
                     }
                     if ui
                         .add(
@@ -91,6 +110,7 @@ pub(super) fn show_section(ui: &mut egui::Ui, draft: &mut SettingsDraft, label_w
                         .clicked()
                     {
                         draft.uninstall_confirm_requested = false;
+                        draft.uninstall_confirm_text.clear();
                     }
                 });
             });
