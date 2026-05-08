@@ -31,6 +31,18 @@ If you are new to Vigil, start with a calm observe-first setup instead of enabli
 4. Prefer reversible actions first. Suspend process, temporary IP blocks, and restore-network workflows are safer than permanent blocking or immediate full isolation.
 5. Treat machine isolation as a last resort for suspected active compromise, not as a normal cleanup button.
 
+## Building a sane trusted list
+
+Treat the trusted-process list as a learned baseline, not as a fast way to silence alerts. Trusted entries skip routine penalties and can suppress automatic response, so each one should be familiar, stable, and expected.
+
+1. Start with Vigil's shipped trusted baseline. It covers common system and browser processes that would otherwise generate noise on many machines.
+2. Observe first. Watch Activity and Alerts until you know what normal looks like for your browser, chat tools, VPN, terminal, package manager, and other routine software.
+3. Prefer trusting from the Inspector. The Inspector lets you review the process name, executable path, publisher, parent, and live connections before you add it.
+4. Add only software you recognize and expect to use the network regularly.
+5. Revisit your learned additions if the software moves to a new path, changes ownership, or starts triggering new kinds of alerts.
+
+Avoid trusting installers, updaters running from Downloads or Temp, script hosts such as `powershell`, `cmd`, or `mshta`, one-off troubleshooting tools, and anything you do not immediately recognize.
+
 ## Install and launch
 
 ### Windows
@@ -92,6 +104,8 @@ Policy-sensitive settings require Admin Mode when protected policy editing is en
 Configured blocklists and response-rule YAML stay operator-managed: Vigil can verify optional `.sha256` sidecars when you provide them, and it also records first-seen and changed hashes in its protected local provenance registry so later edits are visible without treating every intentional update as corruption.
 
 By default, Vigil also requires an extra typed confirmation before turning on disruptive protections such as auto response, allowlist-only mode, scheduled lockdown, or decoy-triggered auto-isolation. That guardrail is there so a non-expert user does not enable a feature that can cut off normal software or network access without pausing to review the consequences.
+
+The Trusted Processes section now includes a short onboarding tutorial. It explains how to keep the shipped baseline, learn from Activity and the Inspector, and add only stable apps you already recognize.
 
 ### Help
 
