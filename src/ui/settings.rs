@@ -16,6 +16,39 @@ use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
 
+const HIGH_RISK_TRUST_NAMES: &[&str] = &[
+    "cmd",
+    "powershell",
+    "pwsh",
+    "wscript",
+    "cscript",
+    "mshta",
+    "regsvr32",
+    "rundll32",
+    "certutil",
+    "bitsadmin",
+    "wmic",
+    "msiexec",
+    "installutil",
+    "regasm",
+    "regsvcs",
+    "forfiles",
+    "msbuild",
+    "odbcconf",
+    "control",
+    "ieexec",
+];
+
+const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
+    "\\temp\\",
+    "\\downloads\\",
+    "\\appdata\\local\\temp\\",
+    "\\appdata\\roaming\\",
+    "/tmp/",
+    "/var/tmp/",
+    "/downloads/",
+];
+
 pub fn show(ui: &mut egui::Ui, draft: &mut SettingsDraft, elevated: bool) -> bool {
     let mut changed = false;
     egui::ScrollArea::vertical()
@@ -604,14 +637,15 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
                     format!("{key} is already trusted."),
                     std::time::Instant::now(),
                 ));
+            } else if draft.extra_safe_prompts {
+                if risky_trusted_candidate_reason(&key).is_some() {
+                    draft.pending_trusted_addition = Some(key.clone());
+                    draft.trusted_add_confirm_text.clear();
+                } else {
+                    commit_trusted_addition(draft, &key, changed, false);
+                }
             } else {
-                draft.trusted_processes.push(key.clone());
-                draft.trusted_processes.sort_unstable();
-                draft.status_msg = Some((
-                    format!("Added {key}. Trust only software you recognize and expect to be chatty."),
-                    std::time::Instant::now(),
-                ));
-                *changed = true;
+                commit_trusted_addition(draft, &key, changed, false);
             }
             draft.new_trusted_input.clear();
         }
@@ -634,6 +668,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             draft.trusted_processes = Config::default().trusted_processes;
             draft.trusted_filter.clear();
             draft.new_trusted_input.clear();
+            draft.pending_trusted_addition = None;
+            draft.trusted_add_confirm_text.clear();
             draft.status_msg = Some((
                 "Restored the shipped trusted baseline. Add your own apps gradually after observing them.".into(),
                 std::time::Instant::now(),
@@ -641,6 +677,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             *changed = true;
         }
     });
+
+    render_trusted_add_confirm(ui, draft, changed);
 
     ui.add_space(10.0);
     if let Some((msg, at)) = &draft.status_msg {
@@ -852,6 +890,14 @@ fn render_trusted_onboarding(ui: &mut egui::Ui, draft: &SettingsDraft) {
                 .size(10.6),
             );
             ui.add_space(6.0);
+            ui.label(
+                RichText::new(
+                    "If you manually enter one of those high-risk names while extra confirmations are enabled, Vigil now requires typing TRUST before it will accept the entry.",
+                )
+                .color(theme::TEXT3)
+                .size(10.6),
+            );
+            ui.add_space(6.0);
             let progress_text = if custom_count == 0 {
                 "You have not added any learned apps yet. That is fine: leave the baseline alone, then add entries gradually as you observe familiar software."
             } else {
@@ -875,6 +921,124 @@ fn tutorial_step(ui: &mut egui::Ui, title: &str, body: &str) {
 
 fn contains_name_case_insensitive(names: &[String], target: &str) -> bool {
     names.iter().any(|name| name.eq_ignore_ascii_case(target))
+}
+
+fn commit_trusted_addition(
+    draft: &mut SettingsDraft,
+    key: &str,
+    changed: &mut bool,
+    high_risk: bool,
+) {
+    draft.trusted_processes.push(key.to_string());
+    draft.trusted_processes.sort_unstable();
+    draft.pending_trusted_addition = None;
+    draft.trusted_add_confirm_text.clear();
+    draft.status_msg = Some((
+        if high_risk {
+            format!("Added {key}. Review this risky trust entry again if its behavior changes.")
+        } else {
+            format!("Added {key}. Trust only software you recognize and expect to be chatty.")
+        },
+        std::time::Instant::now(),
+    ));
+    *changed = true;
+}
+
+fn risky_trusted_candidate_reason(name: &str) -> Option<&'static str> {
+    if HIGH_RISK_TRUST_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+    {
+        return Some("script-capable or frequently abused system tool");
+    }
+
+    let lower = name.to_ascii_lowercase();
+    if HIGH_RISK_TRUST_PATH_FRAGMENTS
+        .iter()
+        .any(|fragment| lower.contains(fragment))
+    {
+        return Some("path under Temp, Downloads, or another unstable user-writeable location");
+    }
+
+    None
+}
+
+fn render_trusted_add_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
+    let Some(candidate) = draft.pending_trusted_addition.clone() else {
+        return;
+    };
+    let reason = risky_trusted_candidate_reason(&candidate).unwrap_or("high-risk trust candidate");
+    ui.add_space(10.0);
+    egui::Frame::NONE
+        .fill(theme::WARN_BG)
+        .stroke(egui::Stroke::new(1.0, theme::WARN))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Confirm risky trust entry")
+                    .color(theme::WARN)
+                    .size(11.8)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "{candidate} looks risky to trust because it matches a {reason}. Trusting it can hide routine suspicion and suppress some automated containment decisions."
+                ))
+                .color(theme::TEXT)
+                .size(11.1),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Type TRUST to add it anyway.")
+                    .color(theme::TEXT2)
+                    .size(10.8),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.trusted_add_confirm_text)
+                    .hint_text("TRUST")
+                    .desired_width(140.0),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let confirmed = draft
+                    .trusted_add_confirm_text
+                    .trim()
+                    .eq_ignore_ascii_case("TRUST");
+                if ui
+                    .add_enabled(
+                        confirmed,
+                        egui::Button::new(
+                            RichText::new("Add risky trust entry")
+                                .color(theme::WARN)
+                                .size(11.0),
+                        )
+                        .fill(theme::SURFACE2)
+                        .stroke(egui::Stroke::new(1.0, theme::WARN))
+                        .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    commit_trusted_addition(draft, &candidate, changed, true);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("Cancel").color(theme::TEXT2).size(11.0))
+                            .fill(theme::SURFACE3)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    draft.pending_trusted_addition = None;
+                    draft.trusted_add_confirm_text.clear();
+                }
+            });
+        });
 }
 
 fn risky_enable_checkbox(
@@ -925,7 +1089,7 @@ fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, 
 fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let Some(target) = draft.pending_risky_enable else {
         return;
-    };
+    }
     ui.add_space(14.0);
     egui::Frame::NONE
         .fill(theme::WARN_BG)
@@ -1018,4 +1182,23 @@ fn setting_row(ui: &mut egui::Ui, label_w: f32, label: &str, ctrl: impl FnOnce(&
         ctrl(ui);
     });
     ui.add_space(8.0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::risky_trusted_candidate_reason;
+
+    #[test]
+    fn flags_lolbin_like_names_for_trust_confirmation() {
+        assert!(risky_trusted_candidate_reason("powershell").is_some());
+        assert!(risky_trusted_candidate_reason("mshta.exe").is_none());
+        assert!(risky_trusted_candidate_reason("mshta").is_some());
+    }
+
+    #[test]
+    fn flags_temp_and_download_paths_for_trust_confirmation() {
+        assert!(risky_trusted_candidate_reason(r"C:\Users\me\Downloads\tool.exe").is_some());
+        assert!(risky_trusted_candidate_reason("/tmp/tool").is_some());
+        assert!(risky_trusted_candidate_reason("firefox").is_none());
+    }
 }
