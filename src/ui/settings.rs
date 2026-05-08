@@ -781,11 +781,7 @@ fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, 
     }
 }
 
-fn render_risky_enable_confirm(
-    ui: &mut egui::Ui,
-    draft: &mut SettingsDraft,
-    changed: &mut bool,
-) {
+fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let Some(target) = draft.pending_risky_enable else {
         return;
     };
@@ -803,11 +799,7 @@ fn render_risky_enable_confirm(
                     .strong(),
             );
             ui.add_space(6.0);
-            ui.label(
-                RichText::new(target.body())
-                    .color(theme::TEXT)
-                    .size(11.2),
-            );
+            ui.label(RichText::new(target.body()).color(theme::TEXT).size(11.2));
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Type ENABLE to continue.")
@@ -844,22 +836,16 @@ fn render_risky_enable_confirm(
                     set_risky_enable_value(draft, target, true);
                     draft.pending_risky_enable = None;
                     draft.risky_enable_confirm_text.clear();
-                    draft.status_msg = Some((
-                        target.success_message().into(),
-                        std::time::Instant::now(),
-                    ));
+                    draft.status_msg =
+                        Some((target.success_message().into(), std::time::Instant::now()));
                     *changed = true;
                 }
                 if ui
                     .add(
-                        egui::Button::new(
-                            RichText::new("Cancel")
-                                .color(theme::TEXT2)
-                                .size(11.0),
-                        )
-                        .fill(theme::SURFACE3)
-                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
-                        .corner_radius(6.0),
+                        egui::Button::new(RichText::new("Cancel").color(theme::TEXT2).size(11.0))
+                            .fill(theme::SURFACE3)
+                            .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                            .corner_radius(6.0),
                     )
                     .on_hover_cursor(egui::CursorIcon::PointingHand)
                     .clicked()
