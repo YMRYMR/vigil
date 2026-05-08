@@ -22,6 +22,7 @@ const VENDOR_SUFFIXES: &[&str] = &[
     "company",
     "corp",
     "corporation",
+    "foundation",
     "gmbh",
     "inc",
     "incorporated",
@@ -30,13 +31,17 @@ const VENDOR_SUFFIXES: &[&str] = &[
     "limited",
     "llc",
     "ltd",
+    "maintainer",
+    "maintainers",
     "oy",
     "oyj",
     "plc",
+    "project",
     "pte",
     "sa",
     "sarl",
     "spa",
+    "team",
 ];
 const PRODUCT_NOISE_SUFFIXES: &[&[&str]] = &[
     &["64", "bit"],
@@ -541,11 +546,15 @@ where
             continue;
         }
         let product_key = derive_product_key(&entry.display_name, &entry.executable_path);
-        let product_aliases = collect_product_aliases(&entry.display_name, &entry.executable_path);
         let vendor_key = entry
             .publisher_hint
             .as_deref()
             .and_then(normalize_vendor_key);
+        let product_aliases = collect_product_aliases(
+            &entry.display_name,
+            &entry.executable_path,
+            vendor_key.as_deref(),
+        );
         let candidate = InstalledSoftware {
             product_key: product_key.clone(),
             display_name: entry.display_name,
@@ -622,13 +631,25 @@ fn merge_product_aliases(target: &mut Vec<String>, source: &[String]) {
     *target = aliases.into_iter().collect();
 }
 
-fn collect_product_aliases(display_name: &str, executable_path: &str) -> Vec<String> {
+fn collect_product_aliases(
+    display_name: &str,
+    executable_path: &str,
+    vendor_key: Option<&str>,
+) -> Vec<String> {
     let mut aliases = BTreeSet::new();
 
     add_product_aliases(&mut aliases, display_name);
 
+    let executable_alias = std::path::Path::new(executable_path)
+        .file_stem()
+        .and_then(|file_name| canonical_product_key(&file_name.to_string_lossy()));
     if let Some(file_name) = std::path::Path::new(executable_path).file_stem() {
         add_product_aliases(&mut aliases, &file_name.to_string_lossy());
+    }
+
+    let primary_alias = canonical_product_key(display_name).or(executable_alias);
+    if let (Some(vendor_key), Some(primary_alias)) = (vendor_key, primary_alias.as_deref()) {
+        add_vendor_qualified_alias(&mut aliases, vendor_key, primary_alias);
     }
 
     aliases.into_iter().collect()
@@ -644,6 +665,31 @@ fn add_product_aliases(aliases: &mut BTreeSet<String>, input: &str) {
     if let Some(canonical) = canonical_product_tokens(&tokens) {
         aliases.insert(canonical);
     }
+}
+
+fn add_vendor_qualified_alias(
+    aliases: &mut BTreeSet<String>,
+    vendor_key: &str,
+    primary_alias: &str,
+) {
+    let vendor_tokens = tokenize_identity(vendor_key);
+    let product_tokens = tokenize_identity(primary_alias);
+    if vendor_tokens.is_empty()
+        || product_tokens.is_empty()
+        || product_tokens.len() != 1
+        || product_tokens.starts_with(&vendor_tokens)
+        || product_tokens
+            .iter()
+            .all(|token| vendor_tokens.iter().any(|vendor| vendor == token))
+    {
+        return;
+    }
+
+    aliases.insert(format!(
+        "{}-{}",
+        vendor_tokens.join("-"),
+        product_tokens.join("-")
+    ));
 }
 
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
@@ -797,12 +843,27 @@ mod tests {
             normalize_vendor_key("Microsoft Corporation"),
             Some("microsoft".to_string())
         );
+        assert_eq!(
+            normalize_vendor_key("Fedora Project"),
+            Some("fedora".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Mozilla Foundation"),
+            Some("mozilla".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Debian Curl Maintainers"),
+            Some("debian-curl".to_string())
+        );
     }
 
     #[test]
     fn collect_product_aliases_uses_display_name_and_executable_stem() {
-        let aliases =
-            collect_product_aliases("Google Chrome", "C:/Program Files/Google/Chrome/chrome.exe");
+        let aliases = collect_product_aliases(
+            "Google Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            None,
+        );
         assert_eq!(
             aliases,
             vec!["chrome".to_string(), "google-chrome".to_string()]
@@ -814,6 +875,7 @@ mod tests {
         let aliases = collect_product_aliases(
             "Google Chrome (64-bit)",
             "C:/Program Files/Google/Chrome/chrome.exe",
+            None,
         );
         assert_eq!(
             aliases,
@@ -823,6 +885,25 @@ mod tests {
                 "google-chrome-64-bit".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn collect_product_aliases_adds_vendor_qualified_alias_for_generic_product_name() {
+        let aliases = collect_product_aliases(
+            "Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            Some("google"),
+        );
+        assert_eq!(
+            aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_product_aliases_skips_redundant_vendor_qualification() {
+        let aliases = collect_product_aliases("curl", "/usr/bin/curl", Some("debian-curl"));
+        assert_eq!(aliases, vec!["curl".to_string()]);
     }
 
     #[test]
@@ -1128,7 +1209,11 @@ mod tests {
         );
         assert_eq!(
             inventory[0].vendor_key.as_deref(),
-            Some("debian-curl-maintainers")
+            Some("debian-curl")
+        );
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["curl".to_string()]
         );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
@@ -1159,7 +1244,11 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Fedora Project")
         );
-        assert_eq!(inventory[0].vendor_key.as_deref(), Some("fedora-project"));
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("fedora"));
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["curl".to_string(), "fedora-curl".to_string()]
+        );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1.fc40"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -1256,12 +1345,18 @@ mod tests {
         assert_eq!(inventory.len(), 2);
         assert!(inventory.iter().any(|row| {
             row.product_key == "svchost"
-                && row.product_aliases == vec!["svchost".to_string()]
+                && row.product_aliases
+                    == vec!["microsoft-svchost".to_string(), "svchost".to_string()]
                 && row.source == InventorySource::RunningProcess
         }));
         assert!(inventory.iter().any(|row| {
             row.product_key == "dnscache"
-                && row.product_aliases == vec!["dnscache".to_string(), "svchost".to_string()]
+                && row.product_aliases
+                    == vec![
+                        "dnscache".to_string(),
+                        "microsoft-dnscache".to_string(),
+                        "svchost".to_string(),
+                    ]
                 && row.source == InventorySource::RunningService
         }));
     }
