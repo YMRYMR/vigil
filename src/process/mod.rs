@@ -162,6 +162,7 @@ fn primary_service_name_map(
         .collect()
 }
 
+#[cfg(any(windows, test))]
 fn remember_service_name(
     map: &mut std::collections::HashMap<u32, Vec<String>>,
     pid: u32,
