@@ -81,6 +81,8 @@ The Settings tab stores changes automatically. Common settings include:
 Policy-sensitive settings require Admin Mode when protected policy editing is enabled.
 Configured blocklists and response-rule YAML stay operator-managed: Vigil can verify optional `.sha256` sidecars when you provide them, and it also records first-seen and changed hashes in its protected local provenance registry so later edits are visible without treating every intentional update as corruption.
 
+By default, Vigil also requires an extra typed confirmation before turning on disruptive protections such as auto response, allowlist-only mode, scheduled lockdown, or decoy-triggered auto-isolation. That guardrail is there so a non-expert user does not enable a feature that can cut off normal software or network access without pausing to review the consequences.
+
 ### Help
 
 The Help tab summarizes scoring, controls, and safe operating guidance inside the app.
