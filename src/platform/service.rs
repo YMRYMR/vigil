@@ -21,6 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+#[cfg(any(windows, test))]
 use std::time::Duration;
 
 /// Result of an install / uninstall command.  `Ok(msg)` is printed verbatim
@@ -117,6 +118,7 @@ fn spawn_deferred_disarm_worker() -> Result<(), String> {
         .map_err(|err| format!("failed to spawn pre-login guard handoff thread: {err}"))
 }
 
+#[cfg(any(windows, test))]
 fn drive_prelogin_guard_until_login<FCheck, FDisarm>(
     poll_interval: Duration,
     mut still_pre_login: FCheck,
