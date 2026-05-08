@@ -807,7 +807,9 @@ mod tests {
     fn dpkg_status_requires_ok_installed_state() {
         assert!(dpkg_status_is_installed("install ok installed"));
         assert!(dpkg_status_is_installed("hold ok installed"));
-        assert!(!dpkg_status_is_installed("deinstall ok config-files"));
+        assert!(!dpkg_status_is_installed(
+            "deinstall ok config-files"
+        ));
         assert!(!dpkg_status_is_installed(
             "install reinstreq half-installed"
         ));
@@ -914,7 +916,7 @@ mod tests {
         let entries = vec![
             seed(
                 "",
-                "/opt/vendor/chrome",
+                "/opt/vendor/google-chrome",
                 None,
                 None,
                 InventorySource::RunningProcess,
