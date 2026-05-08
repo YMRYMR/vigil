@@ -7,6 +7,8 @@
 //!
 //! Current target scope is Windows and Linux only.
 
+#![allow(dead_code)]
+
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
