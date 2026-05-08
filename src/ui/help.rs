@@ -21,6 +21,14 @@ pub fn show(ui: &mut egui::Ui) {
                         bullet(ui, "4. Prefer reversible actions", "Suspend, temporary IP blocks, and restore-network workflows are safer first steps than permanent blocks or broad isolation.");
                         bullet(ui, "5. Treat isolation as a last resort", "Use machine isolation when you think the endpoint may already be actively compromised or beaconing.");
                     });
+                    card(ui, "Trusted-list tutorial", |ui| {
+                        body(ui, "Build the trusted list slowly. Trust should mean 'this software is familiar and consistently boring,' not 'I want this alert to go away.'");
+                        ui.add_space(6.0);
+                        bullet(ui, "1. Keep the baseline", "Start from Vigil's shipped trusted defaults unless you have a clear reason to remove one.");
+                        bullet(ui, "2. Learn from Inspector", "After you see an app behaving normally in Activity, use Trust from the Inspector so you can review the path, publisher, and live connections first.");
+                        bullet(ui, "3. Add stable daily drivers", "Browsers, chat clients, VPN tools, terminals, and other routine apps are better candidates than one-off tools.");
+                        bullet(ui, "Avoid these", "Do not trust installers, updaters in Temp or Downloads, script hosts like powershell/cmd/mshta, or anything you do not immediately recognize.");
+                    });
                     card(ui, "Operator workflow", |ui| {
                         field_row(ui, "Inspect", "Select a process card to see the full score and process reasons; click a child row only if you want one connection.");
                         field_row(ui, "Trust", "Add the process to the trusted list. Disabled when Vigil does not know the executable location.");
@@ -175,6 +183,9 @@ pub fn show(ui: &mut egui::Ui) {
         } else {
             card(ui, "Start here safely", |ui| {
                 body(ui, "Start in observe-first mode. Watch Activity and Alerts, keep automation off, and only use isolation once you understand what normal traffic looks like on this machine.");
+            });
+            card(ui, "Trusted-list tutorial", |ui| {
+                body(ui, "Keep the shipped trusted baseline, then add only software you recognize after reviewing it in the Inspector. Avoid trusting installers, Temp-path tools, script hosts, and unfamiliar one-off utilities.");
             });
             card(ui, "What Vigil does", |ui| { body(ui, "Vigil watches TCP/UDP connections in real time, enriches each row with process context, and raises an alert when the score crosses the configured threshold."); });
             card(ui, "Active response", |ui| { body(ui, "Active response includes machine isolation on supported platforms, with broader per-connection and per-process controls where the current OS backend supports them. Isolation is strict and reversible across supported platforms."); });
