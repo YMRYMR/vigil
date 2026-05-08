@@ -38,6 +38,19 @@ const VENDOR_SUFFIXES: &[&str] = &[
     "sarl",
     "spa",
 ];
+const PRODUCT_NOISE_SUFFIXES: &[&[&str]] = &[
+    &["64", "bit"],
+    &["32", "bit"],
+    &["amd64"],
+    &["arm64"],
+    &["beta"],
+    &["canary"],
+    &["nightly"],
+    &["preview"],
+    &["stable"],
+    &["x64"],
+    &["x86"],
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct InstalledSoftware {
@@ -612,35 +625,88 @@ fn merge_product_aliases(target: &mut Vec<String>, source: &[String]) {
 fn collect_product_aliases(display_name: &str, executable_path: &str) -> Vec<String> {
     let mut aliases = BTreeSet::new();
 
-    let normalized_name = normalize_name(display_name);
-    if !normalized_name.is_empty() {
-        aliases.insert(normalized_name);
-    }
+    add_product_aliases(&mut aliases, display_name);
 
     if let Some(file_name) = std::path::Path::new(executable_path).file_stem() {
-        let candidate = normalize_name(&file_name.to_string_lossy());
-        if !candidate.is_empty() {
-            aliases.insert(candidate);
-        }
+        add_product_aliases(&mut aliases, &file_name.to_string_lossy());
     }
 
     aliases.into_iter().collect()
 }
 
+fn add_product_aliases(aliases: &mut BTreeSet<String>, input: &str) {
+    let tokens = tokenize_identity(input);
+    if tokens.is_empty() {
+        return;
+    }
+
+    aliases.insert(tokens.join("-"));
+    if let Some(canonical) = canonical_product_tokens(&tokens) {
+        aliases.insert(canonical);
+    }
+}
+
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
-    let normalized_name = normalize_name(display_name);
-    if !normalized_name.is_empty() {
-        return normalized_name;
+    if let Some(product_key) = canonical_product_key(display_name) {
+        return product_key;
     }
 
     if let Some(file_name) = std::path::Path::new(executable_path).file_name() {
-        let candidate = normalize_name(&file_name.to_string_lossy());
-        if !candidate.is_empty() {
-            return candidate;
+        if let Some(product_key) = canonical_product_key(&file_name.to_string_lossy()) {
+            return product_key;
         }
     }
 
     "unknown-product".to_string()
+}
+
+fn canonical_product_key(input: &str) -> Option<String> {
+    let tokens = tokenize_identity(input);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    canonical_product_tokens(&tokens).or_else(|| Some(tokens.join("-")))
+}
+
+fn canonical_product_tokens(tokens: &[String]) -> Option<String> {
+    let trimmed = trim_product_noise_suffixes(tokens);
+    if trimmed.len() == tokens.len() {
+        return None;
+    }
+
+    let canonical = trimmed.join("-");
+    if canonical.is_empty() {
+        None
+    } else {
+        Some(canonical)
+    }
+}
+
+fn trim_product_noise_suffixes(tokens: &[String]) -> Vec<String> {
+    let mut end = tokens.len();
+    loop {
+        let mut removed = false;
+        for suffix in PRODUCT_NOISE_SUFFIXES {
+            if end > suffix.len() && ends_with_token_suffix(&tokens[..end], suffix) {
+                end -= suffix.len();
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    tokens[..end].to_vec()
+}
+
+fn ends_with_token_suffix(tokens: &[String], suffix: &[&str]) -> bool {
+    tokens.len() >= suffix.len()
+        && tokens[tokens.len() - suffix.len()..]
+            .iter()
+            .map(String::as_str)
+            .eq(suffix.iter().copied())
 }
 
 fn normalize_vendor_key(publisher: &str) -> Option<String> {
@@ -744,9 +810,31 @@ mod tests {
     }
 
     #[test]
+    fn collect_product_aliases_adds_canonical_variant_for_arch_suffixes() {
+        let aliases = collect_product_aliases(
+            "Google Chrome (64-bit)",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+        );
+        assert_eq!(
+            aliases,
+            vec![
+                "chrome".to_string(),
+                "google-chrome".to_string(),
+                "google-chrome-64-bit".to_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn derive_product_key_prefers_display_name() {
         let key = derive_product_key("Google Chrome", "/opt/chrome/chrome");
         assert_eq!(key, "google-chrome");
+    }
+
+    #[test]
+    fn derive_product_key_strips_channel_suffixes() {
+        let key = derive_product_key("microsoft-edge-stable", "");
+        assert_eq!(key, "microsoft-edge");
     }
 
     #[test]
