@@ -7,6 +7,7 @@ const SOFTWARE_INVENTORY_SCHEMA_VERSION: u32 = 1;
 
 pub trait InventoryStore {
     fn replace_inventory(&self, entries: &[InstalledSoftware]) -> Result<(), String>;
+    #[cfg_attr(not(test), allow(dead_code))]
     fn load_inventory(&self) -> Result<Vec<InstalledSoftware>, String>;
 }
 
