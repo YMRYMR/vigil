@@ -67,6 +67,7 @@ pub struct Config {
     pub allowlist_mode_enabled: bool,
     #[serde(default)]
     pub allowlist_mode_dry_run: bool,
+    #[serde(default)]
     pub allowlist_processes: Vec<String>,
 
     #[serde(default)]
@@ -559,5 +560,16 @@ mod tests {
         };
         assert_eq!(cfg.sanitised_activity_history_cap(), 128);
         assert_eq!(cfg.sanitised_alerts_history_cap(), 4_096);
+    }
+    #[test]
+    fn config_backfills_missing_policy_defaults() {
+        let mut value = serde_json::to_value(Config::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("allowlist_processes");
+        object.remove("extra_safe_prompts");
+
+        let cfg: Config = serde_json::from_value(value).unwrap();
+        assert!(cfg.allowlist_processes.is_empty());
+        assert!(cfg.extra_safe_prompts);
     }
 }
