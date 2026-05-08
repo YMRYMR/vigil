@@ -6,6 +6,7 @@
 
 use crate::{
     active_response,
+    config::Config,
     ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
 };
 use egui::{RichText, Ui};
@@ -15,6 +16,15 @@ const MAX_REASON_SCAN: usize = 1_200;
 const MAX_REASON_PLAIN_ROWS: usize = 40;
 const MAX_REASON_PORT_ROWS: usize = 24;
 const MAX_INSPECTOR_VALUE_CHARS: usize = 600;
+const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
+    "\\temp\\",
+    "\\downloads\\",
+    "\\appdata\\local\\temp\\",
+    "\\appdata\\roaming\\",
+    "/tmp/",
+    "/var/tmp/",
+    "/downloads/",
+];
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -76,7 +86,8 @@ fn show_detail(
     let mut action: Option<Action> = None;
     let ghost = is_ghost_process_name(&sel.proc_name);
     let known_location = has_known_location(sel);
-    let trust_enabled = known_location;
+    let trust_risk_reason = risky_trust_reason_for_selection(sel);
+    let trust_enabled = known_location && trust_risk_reason.is_none();
     let open_location_enabled = known_location;
     let kill_enabled = !ghost;
     let suspend_enabled = inspector_state.suspend_enabled && !ghost;
@@ -425,13 +436,20 @@ fn show_detail(
             });
         } else {
             ui.horizontal_wrapped(|ui| {
-                if trust_enabled {
-                    let trust_resp = ui
-                        .add(accent_btn("Trust"))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand)
-                        .on_hover_text("Add this process name to the trusted list.");
-                    if trust_resp.clicked() {
-                        action = Some(Action::Trust);
+                if known_location {
+                    if trust_enabled {
+                        let trust_resp = ui
+                            .add(accent_btn("Trust"))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                            .on_hover_text("Add this process name to the trusted list.");
+                        if trust_resp.clicked() {
+                            action = Some(Action::Trust);
+                        }
+                    } else if let Some(reason) = trust_risk_reason {
+                        ui.add_enabled(false, muted_btn("Trust"))
+                            .on_hover_text(format!(
+                                "This process cannot be trusted from Inspector because it looks risky: {reason}. Add it manually from Settings only if you fully understand the risk."
+                            ));
                     }
                 }
                 if open_location_enabled {
@@ -516,6 +534,33 @@ fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
                 }
             });
         });
+}
+
+fn risky_trust_reason_for_selection(sel: &ProcessSelection) -> Option<&'static str> {
+    let lower_path = sel.proc_path.to_ascii_lowercase();
+    if !lower_path.is_empty()
+        && HIGH_RISK_TRUST_PATH_FRAGMENTS
+            .iter()
+            .any(|fragment| lower_path.contains(fragment))
+    {
+        return Some("path under Temp, Downloads, or another unstable user-writeable location");
+    }
+
+    let normalized_name = sel
+        .proc_name
+        .trim()
+        .to_ascii_lowercase()
+        .trim_end_matches(".exe")
+        .to_string();
+    if Config::default()
+        .lolbins
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(&normalized_name))
+    {
+        return Some("script-capable or frequently abused system tool");
+    }
+
+    None
 }
 
 fn separator(ui: &mut Ui) {
