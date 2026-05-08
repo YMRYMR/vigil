@@ -16,7 +16,7 @@ egui        = "0.34"
 eframe      = { version = "0.34", default-features = false, features = ["default_fonts", "glow", "persistence"] }
 notify-rust = "4"
 image = { version = "0.25", default-features = false, features = ["bmp", "ico", "png"] }
-sysinfo = "0.38"
+sysinfo = "0.39"
 serde      = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
