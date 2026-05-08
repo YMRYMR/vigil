@@ -97,6 +97,8 @@ pub struct SettingsDraft {
     pub uninstall_requested: bool,
     pub pending_risky_enable: Option<RiskyEnableTarget>,
     pub risky_enable_confirm_text: String,
+    pub pending_trusted_addition: Option<String>,
+    pub trusted_add_confirm_text: String,
 }
 
 impl SettingsDraft {
@@ -153,6 +155,8 @@ impl SettingsDraft {
             uninstall_requested: false,
             pending_risky_enable: None,
             risky_enable_confirm_text: String::new(),
+            pending_trusted_addition: None,
+            trusted_add_confirm_text: String::new(),
         }
     }
 
