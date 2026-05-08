@@ -7,6 +7,7 @@
 //! context.  We therefore build the tokio runtime manually on background
 //! threads, spawn all async tasks into it, then hand the main thread to eframe.
 
+#![allow(dead_code)]
 #![cfg_attr(
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
