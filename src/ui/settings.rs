@@ -11,6 +11,7 @@ mod uninstall;
 
 pub use draft::SettingsDraft;
 
+use self::draft::RiskyEnableTarget;
 use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
@@ -110,18 +111,37 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     });
 
     ui.add_space(16.0);
-    section_header(ui, "Auto response");
-    ui.label(RichText::new("Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.").color(theme::TEXT2).size(12.0));
-    ui.add_space(8.0);
-    setting_row(ui, label_w, "Enable auto response", |ui| {
+    section_header(ui, "Safety rails");
+    setting_row(ui, label_w, "Extra confirmations", |ui| {
         *changed |= ui
             .checkbox(
-                &mut draft.auto_response_enabled,
-                RichText::new("allow Vigil to take automated containment actions")
+                &mut draft.extra_safe_prompts,
+                RichText::new("require typing ENABLE before turning on disruptive protections")
                     .color(theme::TEXT2)
                     .size(11.5),
             )
             .changed();
+    });
+    ui.label(
+        RichText::new(
+            "Enabled by default so non-expert users do not accidentally arm automation or network lockdown features.",
+        )
+        .color(theme::TEXT3)
+        .size(10.8),
+    );
+
+    ui.add_space(16.0);
+    section_header(ui, "Auto response");
+    ui.label(RichText::new("Optional and disabled by default. Vigil only auto-acts when this is enabled, the selected action type is enabled, the process is not trusted, and strong corroborating signals are present.").color(theme::TEXT2).size(12.0));
+    ui.add_space(8.0);
+    setting_row(ui, label_w, "Enable auto response", |ui| {
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::AutoResponse,
+            "allow Vigil to take automated containment actions",
+        );
     });
     setting_row(ui, label_w, "Dry run", |ui| {
         *changed |= ui
@@ -170,14 +190,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optional restrictive policy. When enabled, Vigil treats traffic from processes outside the trusted list, the custom allowlist, and Microsoft-signed system processes as containment candidates.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable allowlist mode", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.allowlist_mode_enabled,
-                RichText::new("enforce network allowlisting for processes")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::AllowlistMode,
+            "enforce network allowlisting for processes",
+        );
     });
     setting_row(ui, label_w, "Allowlist dry run", |ui| {
         *changed |= ui
@@ -239,14 +258,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     ui.label(RichText::new("Optionally isolate the machine automatically during a fixed time window. This reuses the same reversible network-isolation controls as the panic button and only runs when that capability is available on the current OS.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
     setting_row(ui, label_w, "Enable schedule", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.scheduled_lockdown_enabled,
-                RichText::new("automatically isolate the network during the selected hours")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::ScheduledLockdown,
+            "automatically isolate the network during the selected hours",
+        );
     });
     ui.add_enabled_ui(draft.scheduled_lockdown_enabled, |ui| {
         setting_row(ui, label_w, "Start time", |ui| {
@@ -430,14 +448,13 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             .changed();
     });
     setting_row(ui, label_w, "Auto isolate on touch", |ui| {
-        *changed |= ui
-            .checkbox(
-                &mut draft.honeypot_auto_isolate,
-                RichText::new("automatically isolate the machine when a decoy is touched")
-                    .color(theme::TEXT2)
-                    .size(11.5),
-            )
-            .changed();
+        risky_enable_checkbox(
+            ui,
+            draft,
+            changed,
+            RiskyEnableTarget::HoneypotAutoIsolate,
+            "automatically isolate the machine when a decoy is touched",
+        );
     });
     setting_row(ui, label_w, "Poll interval", |ui| {
         ui.horizontal(|ui| {
@@ -470,6 +487,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         .color(theme::TEXT3)
         .size(10.8),
     );
+
+    render_risky_enable_confirm(ui, draft, changed);
 
     ui.add_space(16.0);
     section_header(ui, "Startup");
@@ -715,6 +734,141 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         draft.trusted_processes.remove(idx);
         *changed = true;
     }
+}
+
+fn risky_enable_checkbox(
+    ui: &mut egui::Ui,
+    draft: &mut SettingsDraft,
+    changed: &mut bool,
+    target: RiskyEnableTarget,
+    label: &str,
+) {
+    let before = risky_enable_value(draft, target);
+    let mut next = before;
+    let response = ui.checkbox(
+        &mut next,
+        RichText::new(label).color(theme::TEXT2).size(11.5),
+    );
+    if !response.changed() {
+        return;
+    }
+
+    if !before && next && draft.extra_safe_prompts {
+        draft.pending_risky_enable = Some(target);
+        draft.risky_enable_confirm_text.clear();
+        return;
+    }
+
+    set_risky_enable_value(draft, target, next);
+    *changed = true;
+}
+
+fn risky_enable_value(draft: &SettingsDraft, target: RiskyEnableTarget) -> bool {
+    match target {
+        RiskyEnableTarget::AutoResponse => draft.auto_response_enabled,
+        RiskyEnableTarget::AllowlistMode => draft.allowlist_mode_enabled,
+        RiskyEnableTarget::ScheduledLockdown => draft.scheduled_lockdown_enabled,
+        RiskyEnableTarget::HoneypotAutoIsolate => draft.honeypot_auto_isolate,
+    }
+}
+
+fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, value: bool) {
+    match target {
+        RiskyEnableTarget::AutoResponse => draft.auto_response_enabled = value,
+        RiskyEnableTarget::AllowlistMode => draft.allowlist_mode_enabled = value,
+        RiskyEnableTarget::ScheduledLockdown => draft.scheduled_lockdown_enabled = value,
+        RiskyEnableTarget::HoneypotAutoIsolate => draft.honeypot_auto_isolate = value,
+    }
+}
+
+fn render_risky_enable_confirm(
+    ui: &mut egui::Ui,
+    draft: &mut SettingsDraft,
+    changed: &mut bool,
+) {
+    let Some(target) = draft.pending_risky_enable else {
+        return;
+    };
+    ui.add_space(14.0);
+    egui::Frame::NONE
+        .fill(theme::WARN_BG)
+        .stroke(egui::Stroke::new(1.0, theme::WARN))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(target.title())
+                    .color(theme::WARN)
+                    .size(11.8)
+                    .strong(),
+            );
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(target.body())
+                    .color(theme::TEXT)
+                    .size(11.2),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                RichText::new("Type ENABLE to continue.")
+                    .color(theme::TEXT2)
+                    .size(10.8),
+            );
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::singleline(&mut draft.risky_enable_confirm_text)
+                    .hint_text("ENABLE")
+                    .desired_width(140.0),
+            );
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                let confirmed = draft
+                    .risky_enable_confirm_text
+                    .trim()
+                    .eq_ignore_ascii_case("ENABLE");
+                if ui
+                    .add_enabled(
+                        confirmed,
+                        egui::Button::new(
+                            RichText::new("Enable protection")
+                                .color(theme::WARN)
+                                .size(11.0),
+                        )
+                        .fill(theme::SURFACE2)
+                        .stroke(egui::Stroke::new(1.0, theme::WARN))
+                        .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    set_risky_enable_value(draft, target, true);
+                    draft.pending_risky_enable = None;
+                    draft.risky_enable_confirm_text.clear();
+                    draft.status_msg = Some((
+                        target.success_message().into(),
+                        std::time::Instant::now(),
+                    ));
+                    *changed = true;
+                }
+                if ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("Cancel")
+                                .color(theme::TEXT2)
+                                .size(11.0),
+                        )
+                        .fill(theme::SURFACE3)
+                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                        .corner_radius(6.0),
+                    )
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
+                    draft.pending_risky_enable = None;
+                    draft.risky_enable_confirm_text.clear();
+                }
+            });
+        });
 }
 
 fn section_header(ui: &mut egui::Ui, title: &str) {
