@@ -523,116 +523,46 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
 
     render_risky_enable_confirm(ui, draft, changed);
 
-    ui.add_space(16.0);
-    section_header(ui, "Startup");
-    setting_row(ui, label_w, "Run at login", |ui| {
-        ui.vertical(|ui| {
-            *changed |= ui
-                .checkbox(
-                    &mut draft.autostart,
-                    RichText::new("start Vigil automatically when you log in")
-                        .color(theme::TEXT2)
-                        .size(11.5),
-                )
-                .changed();
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("This controls the desktop app after login. Before-login monitoring uses the separate boot-time service.")
-                    .color(theme::TEXT3)
-                    .size(10.2),
-            );
-            ui.label(
-                RichText::new("On Windows, all-users installs register that boot-time service during setup; you can also install it manually with vigil.exe --install-service.")
-                    .color(theme::TEXT3)
-                    .size(10.2),
-            );
-        });
-    });
-
-    uninstall::show_section(ui, draft, label_w);
-    #[cfg(target_os = "linux")]
-    {
-        ui.add_space(16.0);
-        section_header(ui, "Privileges");
-        let elevated = crate::autostart::is_elevated();
-        let (status_text, status_color) = if elevated {
-            ("Elevated privileges: active", theme::ACCENT)
-        } else {
-            ("Elevated privileges: not active", theme::DANGER)
-        };
-        setting_row(ui, label_w, "Status", |ui| {
-            ui.label(RichText::new(status_text).color(status_color).size(11.5));
-        });
-        if !elevated {
-            setting_row(ui, label_w, "", |ui| {
-                ui.vertical(|ui| {
-                    if ui
-                        .button(
-                            RichText::new("Run as Admin")
-                                .color(theme::ACCENT)
-                                .size(11.5),
-                        )
-                        .clicked()
-                    {
-                        draft.grant_capabilities_requested = true;
-                    }
-                    ui.add_space(2.0);
-                    ui.label(
-                        RichText::new(
-                            "Uses pkexec (polkit) to relaunch Vigil with elevated privileges.",
-                        )
-                        .color(theme::TEXT3)
-                        .size(10.2),
-                    );
-                });
-            });
-        }
-    }
-
-    ui.add_space(16.0);
-    section_header(ui, "Trusted Processes");
-    ui.add_space(6.0);
-    ui.label(RichText::new("Trusted processes are exempt from routine penalties and automatic response. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.").color(theme::TEXT2).size(12.0));
-    ui.add_space(10.0);
+    ui.add_space(20.0);
+    separator(ui);
+    ui.add_space(18.0);
+    section_header(ui, "Trusted processes");
     render_trusted_onboarding(ui, draft);
     ui.add_space(10.0);
     ui.label(
         RichText::new(
-            "Best path: use Trust in the Inspector after you have reviewed the executable path, publisher, and normal network behavior. Manual entry is for software you already know well.",
+            "Trusted processes skip routine alert penalties and are excluded from auto-response and allowlist-only enforcement. Add only software you know and expect to make routine network connections.",
         )
-        .color(theme::TEXT3)
-        .size(10.8),
+        .color(theme::TEXT2)
+        .size(11.5),
     );
     ui.add_space(8.0);
-
     ui.horizontal(|ui| {
-        let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
-            .hint_text("known process name…")
-            .desired_width(280.0);
-        let resp = ui.add(te);
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut draft.new_trusted_input)
+                .hint_text("process name or full executable path")
+                .desired_width(320.0),
+        );
+        let trigger_add = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         let add_clicked = ui
             .add(
-                egui::Button::new(RichText::new("  Add  ").color(theme::TEXT).size(12.0))
+                egui::Button::new(RichText::new("Add trusted process").size(11.2))
                     .fill(theme::ACCENT)
-                    .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-                    .corner_radius(4.0),
+                    .corner_radius(6.0),
             )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Add a process only if you already recognize it and expect its network behavior.")
+            .on_hover_text(
+                "Add a process name or full path to the trusted list (case-insensitive).",
+            )
             .clicked();
-        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
-            let key = normalise_name(draft.new_trusted_input.trim());
+        if trigger_add || add_clicked {
+            let raw = draft.new_trusted_input.trim();
+            let key = normalise_name(raw);
             if key.is_empty() {
                 draft.status_msg = Some((
-                    "Enter a process name first.".into(),
+                    "Enter a process name or executable path before adding trust.".into(),
                     std::time::Instant::now(),
                 ));
-            } else if draft
-                .trusted_processes
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(&key))
-            {
+            } else if contains_name_case_insensitive(&draft.trusted_processes, &key) {
                 draft.status_msg = Some((
                     format!("{key} is already trusted."),
                     std::time::Instant::now(),
@@ -971,8 +901,7 @@ fn render_trusted_add_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, chan
     let Some(candidate) = draft.pending_trusted_addition.clone() else {
         return;
     };
-    let reason = risky_trusted_candidate_reason(&candidate)
-        .unwrap_or("high-risk trust candidate");
+    let reason = risky_trusted_candidate_reason(&candidate).unwrap_or("high-risk trust candidate");
     ui.add_space(10.0);
     egui::Frame::NONE
         .fill(theme::WARN_BG)
