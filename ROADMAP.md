@@ -26,7 +26,7 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 ### Endpoint relevance and matching
 
 - [x] **Local software inventory and version discovery** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
-- [ ] **Product normalization + vendor aliasing** — reconcile executable names, publishers, package names, services, and installer metadata into stable vendor/product identities.
+- [x] **Product normalization + vendor aliasing** — reconcile executable names, publishers, package names, services, and installer metadata into stable vendor/product identities.
 - [ ] **Version comparison engine** — compare installed versions against advisory ranges conservatively across semver, vendor-specific, and OS package version formats.
 - [ ] **CPE / product matching pipeline** — map local software identities to CPEs or equivalent source-native product identifiers with confidence scoring and operator-visible explainability.
 - [ ] **Connection-to-software correlation** — tie a live process or service back to the relevant installed product record so advisory matches can appear in the existing Inspector and Alerts workflows.
