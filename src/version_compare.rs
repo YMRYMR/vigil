@@ -200,14 +200,8 @@ fn split_semver_parts(value: &str) -> (&str, Option<&str>) {
 }
 
 fn compare_semver_prerelease(left: &str, right: &str) -> Ordering {
-    let left_parts: Vec<&str> = left
-        .split(['.', '-', '_'])
-        .filter(|part| !part.is_empty())
-        .collect();
-    let right_parts: Vec<&str> = right
-        .split(['.', '-', '_'])
-        .filter(|part| !part.is_empty())
-        .collect();
+    let left_parts: Vec<&str> = left.split('.').filter(|part| !part.is_empty()).collect();
+    let right_parts: Vec<&str> = right.split('.').filter(|part| !part.is_empty()).collect();
     let len = left_parts.len().max(right_parts.len());
     for idx in 0..len {
         match (left_parts.get(idx), right_parts.get(idx)) {
@@ -373,6 +367,29 @@ fn compare_rpm_part(left: &str, right: &str) -> Ordering {
             (None, None) => {}
         }
 
+        match (left.strip_prefix('^'), right.strip_prefix('^')) {
+            (Some(rest), Some(other_rest)) => {
+                left = rest;
+                right = other_rest;
+                continue;
+            }
+            (Some(_), None) => {
+                return if right.is_empty() {
+                    Ordering::Greater
+                } else {
+                    Ordering::Less
+                }
+            }
+            (None, Some(_)) => {
+                return if left.is_empty() {
+                    Ordering::Less
+                } else {
+                    Ordering::Greater
+                }
+            }
+            (None, None) => {}
+        }
+
         if left.is_empty() || right.is_empty() {
             return left.is_empty().cmp(&right.is_empty()).reverse();
         }
@@ -402,7 +419,7 @@ fn compare_rpm_part(left: &str, right: &str) -> Ordering {
 }
 
 fn skip_rpm_separators(value: &str) -> &str {
-    value.trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '~')
+    value.trim_start_matches(|ch: char| !ch.is_ascii_alphanumeric() && ch != '~' && ch != '^')
 }
 
 fn next_rpm_segment(value: &str) -> Option<(bool, &str, &str)> {
@@ -598,6 +615,18 @@ mod tests {
     }
 
     #[test]
+    fn semver_prerelease_hyphen_stays_inside_identifier() {
+        assert_eq!(
+            compare_versions("1.0.0-a-b", "1.0.0-a.b", VersionScheme::SemverLike),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("1.0.0-alpha-beta", "1.0.0-alpha-beta", VersionScheme::SemverLike),
+            Some(Ordering::Equal)
+        );
+    }
+
+    #[test]
     fn debian_versions_handle_epoch_and_tilde() {
         assert_eq!(
             compare_versions("1.0~beta1", "1.0", VersionScheme::Debian),
@@ -617,6 +646,18 @@ mod tests {
         );
         assert_eq!(
             compare_versions("0:1.0a-1", "0:1.0b-1", VersionScheme::Rpm),
+            Some(Ordering::Less)
+        );
+    }
+
+    #[test]
+    fn rpm_versions_place_caret_snapshots_between_base_and_next_release() {
+        assert_eq!(
+            compare_versions("2.0^20250611", "2.0", VersionScheme::Rpm),
+            Some(Ordering::Greater)
+        );
+        assert_eq!(
+            compare_versions("2.0^20250611", "2.0.1", VersionScheme::Rpm),
             Some(Ordering::Less)
         );
     }
