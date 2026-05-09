@@ -628,11 +628,7 @@ mod tests {
     #[test]
     fn semver_prerelease_hyphen_stays_inside_identifier() {
         assert_eq!(
-            compare_versions(
-                "1.0.0-a-b",
-                "1.0.0-a.b",
-                VersionScheme::SemverLike,
-            ),
+            compare_versions("1.0.0-a-b", "1.0.0-a.b", VersionScheme::SemverLike,),
             Some(Ordering::Greater)
         );
         assert_eq!(
