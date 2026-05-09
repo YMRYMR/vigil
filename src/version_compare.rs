@@ -69,12 +69,18 @@ pub fn version_in_range(
         return None;
     }
 
-    if let Some(start_including) = range.start_including.filter(|value| !value.trim().is_empty()) {
+    if let Some(start_including) = range
+        .start_including
+        .filter(|value| !value.trim().is_empty())
+    {
         if compare_versions(installed_version, start_including, scheme)? == Ordering::Less {
             return Some(false);
         }
     }
-    if let Some(start_excluding) = range.start_excluding.filter(|value| !value.trim().is_empty()) {
+    if let Some(start_excluding) = range
+        .start_excluding
+        .filter(|value| !value.trim().is_empty())
+    {
         let ordering = compare_versions(installed_version, start_excluding, scheme)?;
         if matches!(ordering, Ordering::Less | Ordering::Equal) {
             return Some(false);
@@ -156,7 +162,10 @@ fn detect_default_scheme(installed_version: &str) -> VersionScheme {
 
 fn looks_like_semver(value: &str) -> bool {
     let trimmed = value.trim_start_matches(['v', 'V']);
-    let core = trimmed.split_once('+').map(|(core, _)| core).unwrap_or(trimmed);
+    let core = trimmed
+        .split_once('+')
+        .map(|(core, _)| core)
+        .unwrap_or(trimmed);
     let core = core.split_once('-').map(|(core, _)| core).unwrap_or(core);
     let mut saw_digit = false;
     let mut saw_dot = false;
