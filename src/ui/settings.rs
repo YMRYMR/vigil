@@ -16,29 +16,6 @@ use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
 
-const HIGH_RISK_TRUST_NAMES: &[&str] = &[
-    "cmd",
-    "powershell",
-    "pwsh",
-    "wscript",
-    "cscript",
-    "mshta",
-    "regsvr32",
-    "rundll32",
-    "certutil",
-    "bitsadmin",
-    "wmic",
-    "msiexec",
-    "installutil",
-    "regasm",
-    "regsvcs",
-    "forfiles",
-    "msbuild",
-    "odbcconf",
-    "control",
-    "ieexec",
-];
-
 const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
     "\\temp\\",
     "\\downloads\\",
@@ -523,131 +500,82 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
 
     render_risky_enable_confirm(ui, draft, changed);
 
-    ui.add_space(16.0);
-    section_header(ui, "Startup");
-    setting_row(ui, label_w, "Run at login", |ui| {
-        ui.vertical(|ui| {
-            *changed |= ui
-                .checkbox(
-                    &mut draft.autostart,
-                    RichText::new("start Vigil automatically when you log in")
-                        .color(theme::TEXT2)
-                        .size(11.5),
-                )
-                .changed();
-            ui.add_space(2.0);
-            ui.label(
-                RichText::new("This controls the desktop app after login. Before-login monitoring uses the separate boot-time service.")
-                    .color(theme::TEXT3)
-                    .size(10.2),
-            );
-            ui.label(
-                RichText::new("On Windows, all-users installs register that boot-time service during setup; you can also install it manually with vigil.exe --install-service.")
-                    .color(theme::TEXT3)
-                    .size(10.2),
-            );
-        });
-    });
-
-    uninstall::show_section(ui, draft, label_w);
-    #[cfg(target_os = "linux")]
-    {
-        ui.add_space(16.0);
-        section_header(ui, "Privileges");
-        let elevated = crate::autostart::is_elevated();
-        let (status_text, status_color) = if elevated {
-            ("Elevated privileges: active", theme::ACCENT)
-        } else {
-            ("Elevated privileges: not active", theme::DANGER)
-        };
-        setting_row(ui, label_w, "Status", |ui| {
-            ui.label(RichText::new(status_text).color(status_color).size(11.5));
-        });
-        if !elevated {
-            setting_row(ui, label_w, "", |ui| {
-                ui.vertical(|ui| {
-                    if ui
-                        .button(
-                            RichText::new("Run as Admin")
-                                .color(theme::ACCENT)
-                                .size(11.5),
-                        )
-                        .clicked()
-                    {
-                        draft.grant_capabilities_requested = true;
-                    }
-                    ui.add_space(2.0);
-                    ui.label(
-                        RichText::new(
-                            "Uses pkexec (polkit) to relaunch Vigil with elevated privileges.",
-                        )
-                        .color(theme::TEXT3)
-                        .size(10.2),
-                    );
-                });
-            });
-        }
-    }
-
-    ui.add_space(16.0);
-    section_header(ui, "Trusted Processes");
-    ui.add_space(6.0);
-    ui.label(RichText::new("Trusted processes are exempt from routine penalties and automatic response. They still alert on severe signals such as malware ports or suspicious ancestry. Matching is case-insensitive and ignores .exe.").color(theme::TEXT2).size(12.0));
-    ui.add_space(10.0);
+    ui.add_space(18.0);
+    section_header(ui, "Trusted processes");
     render_trusted_onboarding(ui, draft);
     ui.add_space(10.0);
-    ui.label(
-        RichText::new(
-            "Best path: use Trust in the Inspector after you have reviewed the executable path, publisher, and normal network behavior. Manual entry is for software you already know well.",
-        )
-        .color(theme::TEXT3)
-        .size(10.8),
-    );
+    ui.label(RichText::new("Vigil ships with a conservative trusted baseline for core system and well-known desktop apps. Leave that baseline intact, then add your own software only after you have watched it behave normally in Activity or the Inspector.").color(theme::TEXT2).size(12.0));
     ui.add_space(8.0);
-
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Examples").color(theme::TEXT3).size(10.8).strong());
+        ui.label(RichText::new("Browsers, chat clients, VPNs, cloud sync tools, and terminal apps you use every day are common good candidates once you recognize them.").color(theme::TEXT3).size(10.6));
+    });
+    ui.add_space(10.0);
     ui.horizontal(|ui| {
-        let te = egui::TextEdit::singleline(&mut draft.new_trusted_input)
-            .hint_text("known process name…")
-            .desired_width(280.0);
-        let resp = ui.add(te);
-        let add_clicked = ui
-            .add(
-                egui::Button::new(RichText::new("  Add  ").color(theme::TEXT).size(12.0))
-                    .fill(theme::ACCENT)
-                    .stroke(egui::Stroke::new(1.0, theme::ACCENT))
-                    .corner_radius(4.0),
-            )
-            .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .on_hover_text("Add a process only if you already recognize it and expect its network behavior.")
-            .clicked();
-        let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (add_clicked || enter) && !draft.new_trusted_input.trim().is_empty() {
-            let key = normalise_name(draft.new_trusted_input.trim());
-            if key.is_empty() {
-                draft.status_msg = Some((
-                    "Enter a process name first.".into(),
-                    std::time::Instant::now(),
-                ));
-            } else if draft
-                .trusted_processes
-                .iter()
-                .any(|t| t.eq_ignore_ascii_case(&key))
-            {
-                draft.status_msg = Some((
-                    format!("{key} is already trusted."),
-                    std::time::Instant::now(),
-                ));
-            } else if draft.extra_safe_prompts {
-                if risky_trusted_candidate_reason(&key).is_some() {
-                    draft.pending_trusted_addition = Some(key.clone());
-                    draft.trusted_add_confirm_text.clear();
+        let add_resp = ui.add(
+            egui::TextEdit::singleline(&mut draft.new_trusted_input)
+                .hint_text("process name or full executable path")
+                .desired_width(320.0),
+        );
+        if add_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+            let key = normalise_name(&draft.new_trusted_input);
+            if !key.is_empty() {
+                if draft
+                    .trusted_processes
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&key))
+                {
+                    draft.status_msg = Some((
+                        format!("{key} is already trusted."),
+                        std::time::Instant::now(),
+                    ));
+                } else if draft.extra_safe_prompts {
+                    if risky_trusted_candidate_reason(&key).is_some() {
+                        draft.pending_trusted_addition = Some(key.clone());
+                        draft.trusted_add_confirm_text.clear();
+                    } else {
+                        commit_trusted_addition(draft, &key, changed, false);
+                    }
                 } else {
                     commit_trusted_addition(draft, &key, changed, false);
                 }
-            } else {
-                commit_trusted_addition(draft, &key, changed, false);
+                draft.new_trusted_input.clear();
             }
-            draft.new_trusted_input.clear();
+        }
+        if ui
+            .add(
+                egui::Button::new(RichText::new("Trust").color(theme::TEXT2).size(11.0))
+                    .fill(theme::SURFACE2)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(4.0),
+            )
+            .on_hover_text("Add this process to the trusted baseline")
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+            .clicked()
+        {
+            let key = normalise_name(&draft.new_trusted_input);
+            if !key.is_empty() {
+                if draft
+                    .trusted_processes
+                    .iter()
+                    .any(|existing| existing.eq_ignore_ascii_case(&key))
+                {
+                    draft.status_msg = Some((
+                        format!("{key} is already trusted."),
+                        std::time::Instant::now(),
+                    ));
+                } else if draft.extra_safe_prompts {
+                    if risky_trusted_candidate_reason(&key).is_some() {
+                        draft.pending_trusted_addition = Some(key.clone());
+                        draft.trusted_add_confirm_text.clear();
+                    } else {
+                        commit_trusted_addition(draft, &key, changed, false);
+                    }
+                } else {
+                    commit_trusted_addition(draft, &key, changed, false);
+                }
+                draft.new_trusted_input.clear();
+            }
         }
         ui.add_space(10.0);
         if ui
@@ -945,9 +873,11 @@ fn commit_trusted_addition(
 }
 
 fn risky_trusted_candidate_reason(name: &str) -> Option<&'static str> {
-    if HIGH_RISK_TRUST_NAMES
+    let normalized = normalise_name(name);
+    if Config::default()
+        .lolbins
         .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        .any(|candidate| normalized.eq_ignore_ascii_case(candidate))
     {
         return Some("script-capable or frequently abused system tool");
     }
@@ -1089,7 +1019,7 @@ fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, 
 fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let Some(target) = draft.pending_risky_enable else {
         return;
-    }
+    };
     ui.add_space(14.0);
     egui::Frame::NONE
         .fill(theme::WARN_BG)
@@ -1191,8 +1121,9 @@ mod tests {
     #[test]
     fn flags_lolbin_like_names_for_trust_confirmation() {
         assert!(risky_trusted_candidate_reason("powershell").is_some());
-        assert!(risky_trusted_candidate_reason("mshta.exe").is_none());
+        assert!(risky_trusted_candidate_reason("mshta.exe").is_some());
         assert!(risky_trusted_candidate_reason("mshta").is_some());
+        assert!(risky_trusted_candidate_reason("desktopimgdownldr").is_some());
     }
 
     #[test]
