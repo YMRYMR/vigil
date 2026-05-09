@@ -16,29 +16,6 @@ use crate::config::{normalise_name, Config};
 use crate::ui::theme;
 use egui::RichText;
 
-const HIGH_RISK_TRUST_NAMES: &[&str] = &[
-    "cmd",
-    "powershell",
-    "pwsh",
-    "wscript",
-    "cscript",
-    "mshta",
-    "regsvr32",
-    "rundll32",
-    "certutil",
-    "bitsadmin",
-    "wmic",
-    "msiexec",
-    "installutil",
-    "regasm",
-    "regsvcs",
-    "forfiles",
-    "msbuild",
-    "odbcconf",
-    "control",
-    "ieexec",
-];
-
 const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
     "\\temp\\",
     "\\downloads\\",
@@ -945,9 +922,11 @@ fn commit_trusted_addition(
 }
 
 fn risky_trusted_candidate_reason(name: &str) -> Option<&'static str> {
-    if HIGH_RISK_TRUST_NAMES
+    let normalized_name = normalise_name(name);
+    if Config::default()
+        .lolbins
         .iter()
-        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+        .any(|candidate| normalized_name.eq_ignore_ascii_case(&normalise_name(candidate)))
     {
         return Some("script-capable or frequently abused system tool");
     }
@@ -1089,7 +1068,7 @@ fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, 
 fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
     let Some(target) = draft.pending_risky_enable else {
         return;
-    }
+    };
     ui.add_space(14.0);
     egui::Frame::NONE
         .fill(theme::WARN_BG)
@@ -1191,8 +1170,9 @@ mod tests {
     #[test]
     fn flags_lolbin_like_names_for_trust_confirmation() {
         assert!(risky_trusted_candidate_reason("powershell").is_some());
-        assert!(risky_trusted_candidate_reason("mshta.exe").is_none());
+        assert!(risky_trusted_candidate_reason("mshta.exe").is_some());
         assert!(risky_trusted_candidate_reason("mshta").is_some());
+        assert!(risky_trusted_candidate_reason("desktopimgdownldr").is_some());
     }
 
     #[test]
