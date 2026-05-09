@@ -267,7 +267,8 @@ fn compare_debian_part(left: &str, right: &str) -> Ordering {
     let right_bytes = right.as_bytes();
 
     while left_idx < left_bytes.len() || right_idx < right_bytes.len() {
-        let left_non_digits_end = advance_while(left_bytes, left_idx, |byte| !byte.is_ascii_digit());
+        let left_non_digits_end =
+            advance_while(left_bytes, left_idx, |byte| !byte.is_ascii_digit());
         let right_non_digits_end =
             advance_while(right_bytes, right_idx, |byte| !byte.is_ascii_digit());
         let ordering = compare_debian_non_digit_part(
@@ -300,7 +301,8 @@ fn compare_debian_non_digit_part(left: &str, right: &str) -> Ordering {
     let mut left_chars = left.chars();
     let mut right_chars = right.chars();
     loop {
-        let ordering = debian_char_order(left_chars.next()).cmp(&debian_char_order(right_chars.next()));
+        let ordering =
+            debian_char_order(left_chars.next()).cmp(&debian_char_order(right_chars.next()));
         if ordering != Ordering::Equal {
             return ordering;
         }
@@ -617,11 +619,19 @@ mod tests {
     #[test]
     fn semver_prerelease_hyphen_stays_inside_identifier() {
         assert_eq!(
-            compare_versions("1.0.0-a-b", "1.0.0-a.b", VersionScheme::SemverLike),
+            compare_versions(
+                "1.0.0-a-b",
+                "1.0.0-a.b",
+                VersionScheme::SemverLike,
+            ),
             Some(Ordering::Greater)
         );
         assert_eq!(
-            compare_versions("1.0.0-alpha-beta", "1.0.0-alpha-beta", VersionScheme::SemverLike),
+            compare_versions(
+                "1.0.0-alpha-beta",
+                "1.0.0-alpha-beta",
+                VersionScheme::SemverLike,
+            ),
             Some(Ordering::Equal)
         );
     }
