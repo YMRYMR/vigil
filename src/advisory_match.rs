@@ -100,9 +100,7 @@ pub fn evaluate_cpe23_product_match(
     let version_status = evaluate_version_status(installed, affected);
     let applies = matches!(
         version_status,
-        VersionMatchStatus::Exact
-            | VersionMatchStatus::InRange
-            | VersionMatchStatus::NoConstraint
+        VersionMatchStatus::Exact | VersionMatchStatus::InRange | VersionMatchStatus::NoConstraint
     );
 
     Some(CpeProductMatch {
@@ -141,7 +139,11 @@ fn evaluate_version_status(
         return VersionMatchStatus::NoConstraint;
     }
 
-    let Some(installed_version) = installed.version_hint.map(str::trim).filter(|v| !v.is_empty()) else {
+    let Some(installed_version) = installed
+        .version_hint
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    else {
         return VersionMatchStatus::MissingInstalledVersion;
     };
 
@@ -366,7 +368,10 @@ mod tests {
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
-        assert_eq!(matched.version_status, VersionMatchStatus::MissingInstalledVersion);
+        assert_eq!(
+            matched.version_status,
+            VersionMatchStatus::MissingInstalledVersion
+        );
         assert!(!matched.applies);
     }
 
