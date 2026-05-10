@@ -24,6 +24,10 @@ struct RecordAdvisoryMatch {
     source_kind: String,
     known_exploited: bool,
     cpe_uri: String,
+    match_criteria_id: Option<String>,
+    part: String,
+    vendor: String,
+    product: String,
     matched_alias: String,
     confidence: MatchConfidence,
     version_status: VersionMatchStatus,
@@ -102,6 +106,15 @@ pub fn run_cli() -> Result<(), String> {
                 println!("    known_exploited=yes");
             }
             println!("    cpe={}", record.cpe_uri);
+            println!(
+                "    source_product={}:{}:{}",
+                part_label(&record.part),
+                record.vendor,
+                record.product
+            );
+            if let Some(match_criteria_id) = &record.match_criteria_id {
+                println!("    match_criteria_id={match_criteria_id}");
+            }
             println!("    summary={}", condense_summary(&record.summary));
         }
     }
@@ -191,6 +204,10 @@ fn best_record_match(
         source_kind: record.provenance.source_kind.clone(),
         known_exploited: record.known_exploited,
         cpe_uri: best.cpe_uri,
+        match_criteria_id: best.match_criteria_id,
+        part: best.part,
+        vendor: best.vendor,
+        product: best.product,
         matched_alias: best.matched_alias,
         confidence: best.confidence,
         version_status: best.version_status,
@@ -201,6 +218,7 @@ fn best_record_match(
 fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef<'a> {
     AffectedProductRef {
         criteria: &affected.criteria,
+        match_criteria_id: affected.match_criteria_id.as_deref(),
         cpe_name: affected.cpe_name.as_deref(),
         vulnerable: affected.vulnerable,
         version_start_including: affected.version_start_including.as_deref(),
@@ -311,6 +329,15 @@ fn version_status_label(status: VersionMatchStatus) -> &'static str {
     }
 }
 
+fn part_label(part: &str) -> &'static str {
+    match part {
+        "a" => "application",
+        "o" => "operating-system",
+        "h" => "hardware",
+        _ => "unknown",
+    }
+}
+
 fn yes_no(value: bool) -> &'static str {
     if value {
         "yes"
@@ -398,10 +425,15 @@ mod tests {
                 false,
                 vec![
                     affected("cpe:2.3:a:haxx:chrome:*:*:*:*:*:*:*:*", None),
-                    affected(
-                        "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
-                        Some("cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*"),
-                    ),
+                    AffectedProduct {
+                        criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*".into(),
+                        match_criteria_id: Some("nvd-match-1".into()),
+                        cpe_name: Some(
+                            "cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*".into(),
+                        ),
+                        vulnerable: true,
+                        ..AffectedProduct::default()
+                    },
                 ],
             )],
         };
@@ -410,6 +442,13 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches.len(), 1);
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
+        assert_eq!(
+            matches[0].matches[0].match_criteria_id.as_deref(),
+            Some("nvd-match-1")
+        );
+        assert_eq!(matches[0].matches[0].part, "a");
+        assert_eq!(matches[0].matches[0].vendor, "google");
+        assert_eq!(matches[0].matches[0].product, "chrome");
         assert_eq!(matches[0].matches[0].confidence, MatchConfidence::High);
         assert_eq!(
             matches[0].matches[0].version_status,
@@ -454,6 +493,14 @@ mod tests {
             VersionMatchStatus::OutOfRange
         );
         assert!(!matches[0].matches[0].applies);
+    }
+
+    #[test]
+    fn part_label_maps_known_cpe_parts() {
+        assert_eq!(part_label("a"), "application");
+        assert_eq!(part_label("o"), "operating-system");
+        assert_eq!(part_label("h"), "hardware");
+        assert_eq!(part_label("?"), "unknown");
     }
 
     #[test]
