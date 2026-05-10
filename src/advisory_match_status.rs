@@ -326,7 +326,7 @@ fn match_basis_label(match_basis: MatchBasis) -> &'static str {
         MatchBasis::VendorQualifiedAlias => "vendor_qualified_alias",
         MatchBasis::ProductAliasWithVendorConfirmation => {
             "product_alias_with_vendor_confirmation"
-        },
+        }
         MatchBasis::ProductAliasOnly => "product_alias_only",
     }
 }
@@ -455,7 +455,10 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches.len(), 1);
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
-        assert_eq!(matches[0].matches[0].match_basis, MatchBasis::VendorQualifiedAlias);
+        assert_eq!(
+            matches[0].matches[0].match_basis,
+            MatchBasis::VendorQualifiedAlias
+        );
         assert_eq!(
             matches[0].matches[0].match_criteria_id.as_deref(),
             Some("nvd-match-1")
@@ -502,7 +505,10 @@ mod tests {
         let matches = collect_product_matches(&inventory, &cache);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches[0].primary_id, "CVE-2026-9999");
-        assert_eq!(matches[0].matches[0].match_basis, MatchBasis::ProductAliasOnly);
+        assert_eq!(
+            matches[0].matches[0].match_basis,
+            MatchBasis::ProductAliasOnly
+        );
         assert_eq!(
             matches[0].matches[0].version_status,
             VersionMatchStatus::OutOfRange
