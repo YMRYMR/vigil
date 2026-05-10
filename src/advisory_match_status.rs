@@ -326,7 +326,7 @@ fn match_basis_label(match_basis: MatchBasis) -> &'static str {
         MatchBasis::VendorQualifiedAlias => "vendor_qualified_alias",
         MatchBasis::ProductAliasWithVendorConfirmation => {
             "product_alias_with_vendor_confirmation"
-        }
+        },
         MatchBasis::ProductAliasOnly => "product_alias_only",
     }
 }
