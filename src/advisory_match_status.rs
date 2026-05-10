@@ -65,7 +65,11 @@ pub fn run_cli() -> Result<(), String> {
     );
 
     for product in &product_matches {
-        let applicable = product.matches.iter().filter(|record| record.applies).count();
+        let applicable = product
+            .matches
+            .iter()
+            .filter(|record| record.applies)
+            .count();
         let version = product
             .installed
             .version_hint
@@ -136,7 +140,11 @@ fn collect_product_matches(
             .count()
             .cmp(&left.matches.iter().filter(|record| record.applies).count())
             .then_with(|| right.matches.len().cmp(&left.matches.len()))
-            .then_with(|| left.installed.display_name.cmp(&right.installed.display_name))
+            .then_with(|| {
+                left.installed
+                    .display_name
+                    .cmp(&right.installed.display_name)
+            })
             .then_with(|| left.installed.product_key.cmp(&right.installed.product_key))
     });
     product_matches
@@ -403,7 +411,10 @@ mod tests {
         assert_eq!(matches[0].matches.len(), 1);
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
         assert_eq!(matches[0].matches[0].confidence, MatchConfidence::High);
-        assert_eq!(matches[0].matches[0].version_status, VersionMatchStatus::Exact);
+        assert_eq!(
+            matches[0].matches[0].version_status,
+            VersionMatchStatus::Exact
+        );
         assert!(matches[0].matches[0].applies);
     }
 
