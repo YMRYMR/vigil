@@ -15,6 +15,7 @@ pub struct InstalledProductRef<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct AffectedProductRef<'a> {
     pub criteria: &'a str,
+    pub match_criteria_id: Option<&'a str>,
     pub cpe_name: Option<&'a str>,
     pub vulnerable: bool,
     pub version_start_including: Option<&'a str>,
@@ -26,6 +27,7 @@ pub struct AffectedProductRef<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpeProductMatch {
     pub cpe_uri: String,
+    pub match_criteria_id: Option<String>,
     pub part: String,
     pub vendor: String,
     pub product: String,
@@ -105,6 +107,7 @@ pub fn evaluate_cpe23_product_match(
 
     Some(CpeProductMatch {
         cpe_uri: cpe.uri,
+        match_criteria_id: affected.match_criteria_id.map(str::to_string),
         part: cpe.part,
         vendor: vendor.clone(),
         product,
@@ -252,6 +255,7 @@ mod tests {
         };
         let affected = AffectedProductRef {
             criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+            match_criteria_id: Some("nvd-match-1"),
             cpe_name: Some("cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*"),
             vulnerable: true,
             ..AffectedProductRef::default()
@@ -261,6 +265,7 @@ mod tests {
         assert_eq!(matched.vendor, "google");
         assert_eq!(matched.product, "chrome");
         assert_eq!(matched.matched_alias, "google-chrome");
+        assert_eq!(matched.match_criteria_id.as_deref(), Some("nvd-match-1"));
         assert_eq!(matched.confidence, MatchConfidence::High);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
@@ -284,6 +289,7 @@ mod tests {
             version_start_excluding: None,
             version_end_including: None,
             version_end_excluding: Some("8.8.0-1.fc41"),
+            ..AffectedProductRef::default()
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
@@ -311,6 +317,7 @@ mod tests {
             version_start_excluding: None,
             version_end_including: None,
             version_end_excluding: Some("125.0.0"),
+            ..AffectedProductRef::default()
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
@@ -365,6 +372,7 @@ mod tests {
             version_start_excluding: None,
             version_end_including: Some("2.4.9"),
             version_end_excluding: None,
+            ..AffectedProductRef::default()
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
