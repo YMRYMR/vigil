@@ -1,7 +1,7 @@
 use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord};
 use crate::advisory_match::{
-    evaluate_cpe23_product_match, AffectedProductRef, CpeProductMatch, InstalledProductRef,
-    MatchConfidence, VersionMatchStatus,
+    evaluate_cpe23_product_match, AffectedProductRef, InstalledProductRef, MatchConfidence,
+    VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
 use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
@@ -148,7 +148,10 @@ fn sort_record_matches(mut matches: Vec<RecordAdvisoryMatch>) -> Vec<RecordAdvis
             .known_exploited
             .cmp(&left.known_exploited)
             .then_with(|| right.applies.cmp(&left.applies))
-            .then_with(|| match_rank(&right.confidence, right.version_status).cmp(&match_rank(&left.confidence, left.version_status)))
+            .then_with(|| {
+                match_rank(right.confidence, right.version_status)
+                    .cmp(&match_rank(left.confidence, left.version_status))
+            })
             .then_with(|| left.primary_id.cmp(&right.primary_id))
     });
     matches
@@ -172,7 +175,7 @@ fn best_record_match(
         .filter_map(|affected| {
             evaluate_cpe23_product_match(&installed_ref, &affected_product_ref(affected))
         })
-        .max_by_key(|matched| match_rank(&matched.confidence, matched.version_status))?;
+        .max_by_key(|matched| match_rank(matched.confidence, matched.version_status))?;
 
     Some(RecordAdvisoryMatch {
         primary_id: record.primary_id.clone(),
@@ -199,13 +202,15 @@ fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef
     }
 }
 
-fn match_rank(confidence: &MatchConfidence, version_status: VersionMatchStatus) -> (u8, u8, u8) {
+fn match_rank(confidence: MatchConfidence, version_status: VersionMatchStatus) -> (u8, u8, u8) {
     (
         u8::from(matches!(
             version_status,
-            VersionMatchStatus::Exact | VersionMatchStatus::InRange | VersionMatchStatus::NoConstraint
+            VersionMatchStatus::Exact
+                | VersionMatchStatus::InRange
+                | VersionMatchStatus::NoConstraint
         )),
-        confidence_rank(*confidence),
+        confidence_rank(confidence),
         version_status_rank(version_status),
     )
 }
@@ -433,7 +438,10 @@ mod tests {
         let matches = collect_product_matches(&inventory, &cache);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches[0].primary_id, "CVE-2026-9999");
-        assert_eq!(matches[0].matches[0].version_status, VersionMatchStatus::OutOfRange);
+        assert_eq!(
+            matches[0].matches[0].version_status,
+            VersionMatchStatus::OutOfRange
+        );
         assert!(!matches[0].matches[0].applies);
     }
 
