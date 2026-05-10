@@ -152,7 +152,12 @@ fn parse_affected_product_identifier(
 ) -> Option<ParsedAffectedProduct> {
     parse_cpe23_uri(affected.criteria)
         .and_then(parsed_from_cpe)
-        .or_else(|| affected.cpe_name.and_then(parse_cpe23_uri).and_then(parsed_from_cpe))
+        .or_else(|| {
+            affected
+                .cpe_name
+                .and_then(parse_cpe23_uri)
+                .and_then(parsed_from_cpe)
+        })
         .or_else(|| parse_source_native_identifier(affected.criteria))
 }
 
