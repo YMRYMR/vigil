@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
         assert_eq!(
             matched.match_basis,
-            MatchBasis::ProductAliasWithVendorConfirmation
+            MatchBasis::ProductAliasWithVendorConfirmation,
         );
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
