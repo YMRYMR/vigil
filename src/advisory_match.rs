@@ -32,6 +32,7 @@ pub struct CpeProductMatch {
     pub vendor: String,
     pub product: String,
     pub matched_alias: String,
+    pub match_basis: MatchBasis,
     pub confidence: MatchConfidence,
     pub version_status: VersionMatchStatus,
     pub applies: bool,
@@ -41,6 +42,13 @@ pub struct CpeProductMatch {
 pub enum MatchConfidence {
     High,
     Medium,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchBasis {
+    VendorQualifiedAlias,
+    ProductAliasWithVendorConfirmation,
+    ProductAliasOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,12 +97,24 @@ pub fn evaluate_cpe23_product_match(
         .as_deref()
         .is_some_and(|installed_vendor| installed_vendor == vendor);
 
-    let (matched_alias, confidence) = if aliases.contains(&vendor_qualified) {
-        (vendor_qualified, MatchConfidence::High)
+    let (matched_alias, match_basis, confidence) = if aliases.contains(&vendor_qualified) {
+        (
+            vendor_qualified,
+            MatchBasis::VendorQualifiedAlias,
+            MatchConfidence::High,
+        )
     } else if vendor_matches && aliases.contains(&product) {
-        (product.clone(), MatchConfidence::High)
+        (
+            product.clone(),
+            MatchBasis::ProductAliasWithVendorConfirmation,
+            MatchConfidence::High,
+        )
     } else if aliases.contains(&product) {
-        (product.clone(), MatchConfidence::Medium)
+        (
+            product.clone(),
+            MatchBasis::ProductAliasOnly,
+            MatchConfidence::Medium,
+        )
     } else {
         return None;
     };
@@ -112,6 +132,7 @@ pub fn evaluate_cpe23_product_match(
         vendor: vendor.clone(),
         product,
         matched_alias,
+        match_basis,
         confidence,
         version_status,
         applies,
@@ -265,6 +286,7 @@ mod tests {
         assert_eq!(matched.vendor, "google");
         assert_eq!(matched.product, "chrome");
         assert_eq!(matched.matched_alias, "google-chrome");
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.match_criteria_id.as_deref(), Some("nvd-match-1"));
         assert_eq!(matched.confidence, MatchConfidence::High);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
@@ -294,6 +316,7 @@ mod tests {
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "curl");
+        assert_eq!(matched.match_basis, MatchBasis::ProductAliasOnly);
         assert_eq!(matched.confidence, MatchConfidence::Medium);
         assert_eq!(matched.version_status, VersionMatchStatus::InRange);
         assert!(matched.applies);
@@ -321,6 +344,7 @@ mod tests {
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.confidence, MatchConfidence::High);
         assert_eq!(matched.version_status, VersionMatchStatus::OutOfRange);
         assert!(!matched.applies);
@@ -376,6 +400,7 @@ mod tests {
         };
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(
             matched.version_status,
             VersionMatchStatus::MissingInstalledVersion
@@ -402,6 +427,7 @@ mod tests {
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
     }
