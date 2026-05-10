@@ -1207,14 +1207,8 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Debian curl maintainers")
         );
-        assert_eq!(
-            inventory[0].vendor_key.as_deref(),
-            Some("debian-curl")
-        );
-        assert_eq!(
-            inventory[0].product_aliases,
-            vec!["curl".to_string()]
-        );
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("debian-curl"));
+        assert_eq!(inventory[0].product_aliases, vec!["curl".to_string()]);
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
