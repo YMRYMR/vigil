@@ -324,9 +324,7 @@ fn confidence_label(confidence: MatchConfidence) -> &'static str {
 fn match_basis_label(match_basis: MatchBasis) -> &'static str {
     match match_basis {
         MatchBasis::VendorQualifiedAlias => "vendor_qualified_alias",
-        MatchBasis::ProductAliasWithVendorConfirmation => {
-            "product_alias_with_vendor_confirmation"
-        }
+        MatchBasis::ProductAliasWithVendorConfirmation => "product_alias_with_vendor_confirmation",
         MatchBasis::ProductAliasOnly => "product_alias_only",
     }
 }
