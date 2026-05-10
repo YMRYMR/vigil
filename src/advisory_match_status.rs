@@ -1,7 +1,7 @@
 use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord};
 use crate::advisory_match::{
-    evaluate_cpe23_product_match, AffectedProductRef, InstalledProductRef, MatchConfidence,
-    VersionMatchStatus,
+    evaluate_cpe23_product_match, AffectedProductRef, InstalledProductRef, MatchBasis,
+    MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
 use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
@@ -29,6 +29,7 @@ struct RecordAdvisoryMatch {
     vendor: String,
     product: String,
     matched_alias: String,
+    match_basis: MatchBasis,
     confidence: MatchConfidence,
     version_status: VersionMatchStatus,
     applies: bool,
@@ -112,6 +113,7 @@ pub fn run_cli() -> Result<(), String> {
                 record.vendor,
                 record.product
             );
+            println!("    match_basis={}", match_basis_label(record.match_basis));
             if let Some(match_criteria_id) = &record.match_criteria_id {
                 println!("    match_criteria_id={match_criteria_id}");
             }
@@ -209,6 +211,7 @@ fn best_record_match(
         vendor: best.vendor,
         product: best.product,
         matched_alias: best.matched_alias,
+        match_basis: best.match_basis,
         confidence: best.confidence,
         version_status: best.version_status,
         applies: best.applies,
@@ -315,6 +318,16 @@ fn confidence_label(confidence: MatchConfidence) -> &'static str {
     match confidence {
         MatchConfidence::High => "high",
         MatchConfidence::Medium => "medium",
+    }
+}
+
+fn match_basis_label(match_basis: MatchBasis) -> &'static str {
+    match match_basis {
+        MatchBasis::VendorQualifiedAlias => "vendor_qualified_alias",
+        MatchBasis::ProductAliasWithVendorConfirmation => {
+            "product_alias_with_vendor_confirmation"
+        }
+        MatchBasis::ProductAliasOnly => "product_alias_only",
     }
 }
 
@@ -442,6 +455,7 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches.len(), 1);
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
+        assert_eq!(matches[0].matches[0].match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(
             matches[0].matches[0].match_criteria_id.as_deref(),
             Some("nvd-match-1")
@@ -488,11 +502,28 @@ mod tests {
         let matches = collect_product_matches(&inventory, &cache);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches[0].primary_id, "CVE-2026-9999");
+        assert_eq!(matches[0].matches[0].match_basis, MatchBasis::ProductAliasOnly);
         assert_eq!(
             matches[0].matches[0].version_status,
             VersionMatchStatus::OutOfRange
         );
         assert!(!matches[0].matches[0].applies);
+    }
+
+    #[test]
+    fn match_basis_label_maps_known_match_bases() {
+        assert_eq!(
+            match_basis_label(MatchBasis::VendorQualifiedAlias),
+            "vendor_qualified_alias"
+        );
+        assert_eq!(
+            match_basis_label(MatchBasis::ProductAliasWithVendorConfirmation),
+            "product_alias_with_vendor_confirmation"
+        );
+        assert_eq!(
+            match_basis_label(MatchBasis::ProductAliasOnly),
+            "product_alias_only"
+        );
     }
 
     #[test]
