@@ -460,7 +460,10 @@ mod tests {
         let matches = collect_product_matches(&inventory, &cache);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches.len(), 1);
-        assert_eq!(matches[0].matches[0].source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
+        assert_eq!(
+            matches[0].matches[0].source_id,
+            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
+        );
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
         assert_eq!(
             matches[0].matches[0].match_basis,
