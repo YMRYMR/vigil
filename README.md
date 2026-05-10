@@ -126,6 +126,13 @@ vigil --advisory-cache-status
 vigil --advisory-change-history-status
 ```
 
+After the protected software inventory snapshot and protected advisory cache both
+exist locally, print explainable product-to-advisory matches with:
+
+```bash
+vigil --advisory-match-status
+```
+
 Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if the deployment
 needs higher NVD API headroom.
