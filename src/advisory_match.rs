@@ -427,10 +427,7 @@ mod tests {
 
         let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
-        assert_eq!(
-            matched.match_basis,
-            MatchBasis::ProductAliasWithVendorConfirmation,
-        );
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
     }
