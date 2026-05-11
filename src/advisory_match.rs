@@ -419,7 +419,10 @@ mod tests {
         };
 
         let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
-        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
+        assert_eq!(
+            matched.source_id,
+            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
+        );
         assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
     }
 
@@ -604,8 +607,8 @@ mod tests {
             version_source: VersionSource::Default,
         };
         let affected = AffectedProductRef {
-            criteria: r"cpe:2.3:a:microsoft:edge\_update:*:*:*:*:*:*:*:*",
-            cpe_name: Some(r"cpe:2.3:a:microsoft:edge\_update:1.3.191.37:*:*:*:*:*:*:*"),
+            criteria: r"cpe:2.3:a:microsoft:edge\\_update:*:*:*:*:*:*:*:*",
+            cpe_name: Some(r"cpe:2.3:a:microsoft:edge\\_update:1.3.191.37:*:*:*:*:*:*:*"),
             vulnerable: true,
             ..AffectedProductRef::default()
         };
@@ -614,7 +617,7 @@ mod tests {
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
         assert_eq!(
             matched.source_id,
-            r"cpe:2.3:a:microsoft:edge\_update:1.3.191.37:*:*:*:*:*:*:*"
+            r"cpe:2.3:a:microsoft:edge\\_update:1.3.191.37:*:*:*:*:*:*:*"
         );
         assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
