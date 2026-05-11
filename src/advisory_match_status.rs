@@ -462,7 +462,7 @@ mod tests {
         assert_eq!(matches[0].matches.len(), 1);
         assert_eq!(
             matches[0].matches[0].source_id,
-            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
+            "cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*"
         );
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
         assert_eq!(

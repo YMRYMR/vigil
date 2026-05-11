@@ -150,15 +150,45 @@ pub fn evaluate_affected_product_match(
 fn parse_affected_product_identifier(
     affected: &AffectedProductRef<'_>,
 ) -> Option<ParsedAffectedProduct> {
-    parse_cpe23_uri(affected.criteria)
+    if let Some(criteria) = parse_cpe23_uri(affected.criteria).and_then(parsed_from_cpe) {
+        return Some(prefer_cpe_name_source_id(criteria, affected.cpe_name));
+    }
+
+    affected
+        .cpe_name
+        .and_then(parse_cpe23_uri)
         .and_then(parsed_from_cpe)
-        .or_else(|| {
-            affected
-                .cpe_name
-                .and_then(parse_cpe23_uri)
-                .and_then(parsed_from_cpe)
-        })
         .or_else(|| parse_source_native_identifier(affected.criteria))
+}
+
+fn prefer_cpe_name_source_id(
+    criteria: ParsedAffectedProduct,
+    cpe_name: Option<&str>,
+) -> ParsedAffectedProduct {
+    let Some(parsed_name) = matching_cpe_name_identity(&criteria, cpe_name) else {
+        return criteria;
+    };
+
+    ParsedAffectedProduct {
+        source_id: parsed_name.source_id,
+        ..criteria
+    }
+}
+
+fn matching_cpe_name_identity(
+    criteria: &ParsedAffectedProduct,
+    cpe_name: Option<&str>,
+) -> Option<ParsedAffectedProduct> {
+    let cpe_name = cpe_name?;
+    let _ = extract_cpe23_version(cpe_name)?;
+    let parsed_name = parse_cpe23_uri(cpe_name).and_then(parsed_from_cpe)?;
+    if parsed_name.part != criteria.part
+        || parsed_name.vendor != criteria.vendor
+        || parsed_name.product != criteria.product
+    {
+        return None;
+    }
+    Some(parsed_name)
 }
 
 fn parsed_from_cpe(cpe: ParsedCpe23) -> Option<ParsedAffectedProduct> {
@@ -208,10 +238,7 @@ fn evaluate_version_status(
     let exact_version = if has_range_constraints(affected) {
         None
     } else {
-        affected
-            .cpe_name
-            .and_then(extract_cpe23_version)
-            .or_else(|| extract_cpe23_version(affected.criteria))
+        exact_version_for_identity(affected)
     };
     let range = VersionRange {
         exact: exact_version,
@@ -238,6 +265,21 @@ fn evaluate_version_status(
         Some(true) => VersionMatchStatus::InRange,
         Some(false) => VersionMatchStatus::OutOfRange,
         None => VersionMatchStatus::Unknown,
+    }
+}
+
+fn exact_version_for_identity<'a>(affected: &'a AffectedProductRef<'a>) -> Option<&'a str> {
+    let criteria_version = extract_cpe23_version(affected.criteria);
+    let cpe_name_version = affected.cpe_name.and_then(extract_cpe23_version);
+    let criteria = parse_cpe23_uri(affected.criteria).and_then(parsed_from_cpe);
+
+    match (criteria.as_ref(), cpe_name_version) {
+        (Some(criteria), Some(cpe_name_version)) => {
+            matching_cpe_name_identity(criteria, affected.cpe_name)
+                .map(|_| cpe_name_version)
+                .or(criteria_version)
+        }
+        _ => cpe_name_version.or(criteria_version),
     }
 }
 
@@ -345,7 +387,10 @@ mod tests {
         };
 
         let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
-        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
+        assert_eq!(
+            matched.source_id,
+            "cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*"
+        );
         assert_eq!(matched.vendor, "google");
         assert_eq!(matched.product, "chrome");
         assert_eq!(matched.matched_alias, "google-chrome");
@@ -354,6 +399,28 @@ mod tests {
         assert_eq!(matched.confidence, MatchConfidence::High);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
+    }
+
+    #[test]
+    fn keeps_match_criteria_source_when_cpe_name_identity_differs() {
+        let aliases = vec!["chrome".to_string(), "google-chrome".to_string()];
+        let installed = InstalledProductRef {
+            product_key: "google-chrome",
+            product_aliases: &aliases,
+            vendor_key: Some("google"),
+            version_hint: Some("124.0.6367.91"),
+            version_source: VersionSource::Default,
+        };
+        let affected = AffectedProductRef {
+            criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+            cpe_name: Some("cpe:2.3:a:other:browser:124.0.6367.91:*:*:*:*:*:*:*"),
+            vulnerable: true,
+            ..AffectedProductRef::default()
+        };
+
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
+        assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
     }
 
     #[test]
@@ -537,14 +604,18 @@ mod tests {
             version_source: VersionSource::Default,
         };
         let affected = AffectedProductRef {
-            criteria: r"cpe:2.3:a:microsoft:edge\_update:*:*:*:*:*:*:*:*",
-            cpe_name: Some(r"cpe:2.3:a:microsoft:edge\_update:1.3.191.37:*:*:*:*:*:*:*"),
+            criteria: r"cpe:2.3:a:microsoft:edge\\_update:*:*:*:*:*:*:*:*",
+            cpe_name: Some(r"cpe:2.3:a:microsoft:edge\\_update:1.3.191.37:*:*:*:*:*:*:*"),
             vulnerable: true,
             ..AffectedProductRef::default()
         };
 
         let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
+        assert_eq!(
+            matched.source_id,
+            r"cpe:2.3:a:microsoft:edge\\_update:1.3.191.37:*:*:*:*:*:*:*"
+        );
         assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
         assert!(matched.applies);
