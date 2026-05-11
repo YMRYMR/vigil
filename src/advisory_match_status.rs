@@ -1,6 +1,6 @@
 use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord};
 use crate::advisory_match::{
-    evaluate_cpe23_product_match, AffectedProductRef, InstalledProductRef, MatchBasis,
+    evaluate_affected_product_match, AffectedProductRef, InstalledProductRef, MatchBasis,
     MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
@@ -23,7 +23,7 @@ struct RecordAdvisoryMatch {
     summary: String,
     source_kind: String,
     known_exploited: bool,
-    cpe_uri: String,
+    source_id: String,
     match_criteria_id: Option<String>,
     part: String,
     vendor: String,
@@ -106,12 +106,10 @@ pub fn run_cli() -> Result<(), String> {
             if record.known_exploited {
                 println!("    known_exploited=yes");
             }
-            println!("    cpe={}", record.cpe_uri);
+            println!("    source_id={}", record.source_id);
             println!(
-                "    source_product={}:{}:{}",
-                part_label(&record.part),
-                record.vendor,
-                record.product
+                "    source_product={}",
+                format_source_product(&record.part, &record.vendor, &record.product)
             );
             println!("    match_basis={}", match_basis_label(record.match_basis));
             if let Some(match_criteria_id) = &record.match_criteria_id {
@@ -196,7 +194,7 @@ fn best_record_match(
         .affected_products
         .iter()
         .filter_map(|affected| {
-            evaluate_cpe23_product_match(&installed_ref, &affected_product_ref(affected))
+            evaluate_affected_product_match(&installed_ref, &affected_product_ref(affected))
         })
         .max_by_key(|matched| match_rank(matched.confidence, matched.version_status))?;
 
@@ -205,7 +203,7 @@ fn best_record_match(
         summary: record.summary.clone(),
         source_kind: record.provenance.source_kind.clone(),
         known_exploited: record.known_exploited,
-        cpe_uri: best.cpe_uri,
+        source_id: best.source_id,
         match_criteria_id: best.match_criteria_id,
         part: best.part,
         vendor: best.vendor,
@@ -345,7 +343,17 @@ fn part_label(part: &str) -> &'static str {
         "a" => "application",
         "o" => "operating-system",
         "h" => "hardware",
+        "source-native" => "source-native",
         _ => "unknown",
+    }
+}
+
+fn format_source_product(part: &str, vendor: &str, product: &str) -> String {
+    let part = part_label(part);
+    if vendor.is_empty() {
+        format!("{part}:{product}")
+    } else {
+        format!("{part}:{vendor}:{product}")
     }
 }
 
@@ -452,6 +460,10 @@ mod tests {
         let matches = collect_product_matches(&inventory, &cache);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].matches.len(), 1);
+        assert_eq!(
+            matches[0].matches[0].source_id,
+            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
+        );
         assert_eq!(matches[0].matches[0].matched_alias, "google-chrome");
         assert_eq!(
             matches[0].matches[0].match_basis,
@@ -515,6 +527,43 @@ mod tests {
     }
 
     #[test]
+    fn collect_product_matches_supports_source_native_identifier_rows() {
+        let inventory = vec![installed(
+            "example-agent",
+            "Example Agent",
+            Some("example"),
+            Some("2.4.1"),
+            &["agent", "example-agent"],
+            InventorySource::RunningProcess,
+        )];
+        let cache = AdvisoryCache {
+            schema_version: 1,
+            generated_unix: 0,
+            sources: vec![],
+            records: vec![record(
+                "EUVD-2026-0001",
+                "Source-native product match",
+                false,
+                vec![affected("Example:Agent", None)],
+            )],
+        };
+
+        let matches = collect_product_matches(&inventory, &cache);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].matches.len(), 1);
+        assert_eq!(matches[0].matches[0].source_id, "Example:Agent");
+        assert_eq!(matches[0].matches[0].part, "source-native");
+        assert_eq!(matches[0].matches[0].vendor, "example");
+        assert_eq!(matches[0].matches[0].product, "agent");
+        assert_eq!(
+            matches[0].matches[0].match_basis,
+            MatchBasis::VendorQualifiedAlias
+        );
+        assert_eq!(matches[0].matches[0].confidence, MatchConfidence::High);
+        assert!(matches[0].matches[0].applies);
+    }
+
+    #[test]
     fn match_basis_label_maps_known_match_bases() {
         assert_eq!(
             match_basis_label(MatchBasis::VendorQualifiedAlias),
@@ -535,7 +584,20 @@ mod tests {
         assert_eq!(part_label("a"), "application");
         assert_eq!(part_label("o"), "operating-system");
         assert_eq!(part_label("h"), "hardware");
+        assert_eq!(part_label("source-native"), "source-native");
         assert_eq!(part_label("?"), "unknown");
+    }
+
+    #[test]
+    fn format_source_product_omits_blank_vendor() {
+        assert_eq!(
+            format_source_product("source-native", "", "curl"),
+            "source-native:curl"
+        );
+        assert_eq!(
+            format_source_product("a", "google", "chrome"),
+            "application:google:chrome"
+        );
     }
 
     #[test]

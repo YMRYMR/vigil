@@ -25,8 +25,8 @@ pub struct AffectedProductRef<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpeProductMatch {
-    pub cpe_uri: String,
+pub struct AffectedProductMatch {
+    pub source_id: String,
     pub match_criteria_id: Option<String>,
     pub part: String,
     pub vendor: String,
@@ -69,49 +69,57 @@ struct ParsedCpe23 {
     product: String,
 }
 
-pub fn evaluate_cpe23_product_match(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedAffectedProduct {
+    source_id: String,
+    part: String,
+    vendor: String,
+    product: String,
+}
+
+pub fn evaluate_affected_product_match(
     installed: &InstalledProductRef<'_>,
     affected: &AffectedProductRef<'_>,
-) -> Option<CpeProductMatch> {
+) -> Option<AffectedProductMatch> {
     if !affected.vulnerable {
         return None;
     }
 
-    let cpe = parse_cpe23_uri(affected.criteria)
-        .or_else(|| affected.cpe_name.and_then(parse_cpe23_uri))?;
-    if matches!(cpe.part.as_str(), "h" | "") {
-        return None;
-    }
-
-    let product = normalize_identity(&cpe.product);
-    let vendor = normalize_identity(&cpe.vendor);
-    if product.is_empty() || vendor.is_empty() {
-        return None;
-    }
-
+    let parsed = parse_affected_product_identifier(affected)?;
     let aliases = installed_identity_aliases(installed);
-    let vendor_qualified = format!("{vendor}-{product}");
-    let vendor_matches = installed
-        .vendor_key
-        .map(normalize_identity)
-        .as_deref()
-        .is_some_and(|installed_vendor| installed_vendor == vendor);
+    let vendor_matches = !parsed.vendor.is_empty()
+        && installed
+            .vendor_key
+            .map(normalize_identity)
+            .as_deref()
+            .is_some_and(|installed_vendor| installed_vendor == parsed.vendor);
 
-    let (matched_alias, match_basis, confidence) = if aliases.contains(&vendor_qualified) {
+    let (matched_alias, match_basis, confidence) = if !parsed.vendor.is_empty() {
+        let vendor_qualified = format!("{}-{}", parsed.vendor, parsed.product);
+        if aliases.contains(&vendor_qualified) {
+            (
+                vendor_qualified,
+                MatchBasis::VendorQualifiedAlias,
+                MatchConfidence::High,
+            )
+        } else if vendor_matches && aliases.contains(&parsed.product) {
+            (
+                parsed.product.clone(),
+                MatchBasis::ProductAliasWithVendorConfirmation,
+                MatchConfidence::High,
+            )
+        } else if aliases.contains(&parsed.product) {
+            (
+                parsed.product.clone(),
+                MatchBasis::ProductAliasOnly,
+                MatchConfidence::Medium,
+            )
+        } else {
+            return None;
+        }
+    } else if aliases.contains(&parsed.product) {
         (
-            vendor_qualified,
-            MatchBasis::VendorQualifiedAlias,
-            MatchConfidence::High,
-        )
-    } else if vendor_matches && aliases.contains(&product) {
-        (
-            product.clone(),
-            MatchBasis::ProductAliasWithVendorConfirmation,
-            MatchConfidence::High,
-        )
-    } else if aliases.contains(&product) {
-        (
-            product.clone(),
+            parsed.product.clone(),
             MatchBasis::ProductAliasOnly,
             MatchConfidence::Medium,
         )
@@ -125,17 +133,71 @@ pub fn evaluate_cpe23_product_match(
         VersionMatchStatus::Exact | VersionMatchStatus::InRange | VersionMatchStatus::NoConstraint
     );
 
-    Some(CpeProductMatch {
-        cpe_uri: cpe.uri,
+    Some(AffectedProductMatch {
+        source_id: parsed.source_id,
         match_criteria_id: affected.match_criteria_id.map(str::to_string),
-        part: cpe.part,
-        vendor: vendor.clone(),
-        product,
+        part: parsed.part,
+        vendor: parsed.vendor,
+        product: parsed.product,
         matched_alias,
         match_basis,
         confidence,
         version_status,
         applies,
+    })
+}
+
+fn parse_affected_product_identifier(
+    affected: &AffectedProductRef<'_>,
+) -> Option<ParsedAffectedProduct> {
+    parse_cpe23_uri(affected.criteria)
+        .and_then(parsed_from_cpe)
+        .or_else(|| {
+            affected
+                .cpe_name
+                .and_then(parse_cpe23_uri)
+                .and_then(parsed_from_cpe)
+        })
+        .or_else(|| parse_source_native_identifier(affected.criteria))
+}
+
+fn parsed_from_cpe(cpe: ParsedCpe23) -> Option<ParsedAffectedProduct> {
+    if matches!(cpe.part.as_str(), "h" | "") {
+        return None;
+    }
+
+    let vendor = normalize_identity(&cpe.vendor);
+    let product = normalize_identity(&cpe.product);
+    if product.is_empty() || vendor.is_empty() {
+        return None;
+    }
+
+    Some(ParsedAffectedProduct {
+        source_id: cpe.uri,
+        part: cpe.part,
+        vendor,
+        product,
+    })
+}
+
+fn parse_source_native_identifier(input: &str) -> Option<ParsedAffectedProduct> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with("cpe:") {
+        return None;
+    }
+
+    let (vendor, product) = trimmed.split_once(':').unwrap_or(("", trimmed));
+    let vendor = normalize_identity(vendor);
+    let product = normalize_identity(product);
+    if product.is_empty() {
+        return None;
+    }
+
+    Some(ParsedAffectedProduct {
+        source_id: trimmed.to_string(),
+        part: "source-native".to_string(),
+        vendor,
+        product,
     })
 }
 
@@ -282,7 +344,8 @@ mod tests {
             ..AffectedProductRef::default()
         };
 
-        let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
         assert_eq!(matched.vendor, "google");
         assert_eq!(matched.product, "chrome");
         assert_eq!(matched.matched_alias, "google-chrome");
@@ -314,11 +377,66 @@ mod tests {
             ..AffectedProductRef::default()
         };
 
-        let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "curl");
         assert_eq!(matched.match_basis, MatchBasis::ProductAliasOnly);
         assert_eq!(matched.confidence, MatchConfidence::Medium);
         assert_eq!(matched.version_status, VersionMatchStatus::InRange);
+        assert!(matched.applies);
+    }
+
+    #[test]
+    fn matches_source_native_vendor_product_identifier() {
+        let aliases = vec!["agent".to_string(), "example-agent".to_string()];
+        let installed = InstalledProductRef {
+            product_key: "example-agent",
+            product_aliases: &aliases,
+            vendor_key: Some("example"),
+            version_hint: Some("2.4.1"),
+            version_source: VersionSource::Default,
+        };
+        let affected = AffectedProductRef {
+            criteria: "Example:Agent",
+            vulnerable: true,
+            ..AffectedProductRef::default()
+        };
+
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.source_id, "Example:Agent");
+        assert_eq!(matched.part, "source-native");
+        assert_eq!(matched.vendor, "example");
+        assert_eq!(matched.product, "agent");
+        assert_eq!(matched.matched_alias, "example-agent");
+        assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
+        assert_eq!(matched.confidence, MatchConfidence::High);
+        assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
+        assert!(matched.applies);
+    }
+
+    #[test]
+    fn matches_product_only_source_identifier_at_medium_confidence() {
+        let aliases = vec!["curl".to_string()];
+        let installed = InstalledProductRef {
+            product_key: "curl",
+            product_aliases: &aliases,
+            vendor_key: Some("fedora"),
+            version_hint: Some("8.8.0-1.fc40"),
+            version_source: VersionSource::RpmPackage,
+        };
+        let affected = AffectedProductRef {
+            criteria: "curl",
+            vulnerable: true,
+            ..AffectedProductRef::default()
+        };
+
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
+        assert_eq!(matched.source_id, "curl");
+        assert_eq!(matched.part, "source-native");
+        assert_eq!(matched.vendor, "");
+        assert_eq!(matched.product, "curl");
+        assert_eq!(matched.match_basis, MatchBasis::ProductAliasOnly);
+        assert_eq!(matched.confidence, MatchConfidence::Medium);
+        assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
         assert!(matched.applies);
     }
 
@@ -343,7 +461,7 @@ mod tests {
             ..AffectedProductRef::default()
         };
 
-        let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.confidence, MatchConfidence::High);
         assert_eq!(matched.version_status, VersionMatchStatus::OutOfRange);
@@ -367,7 +485,7 @@ mod tests {
             vulnerable: false,
             ..AffectedProductRef::default()
         };
-        assert!(evaluate_cpe23_product_match(&installed, &non_vulnerable).is_none());
+        assert!(evaluate_affected_product_match(&installed, &non_vulnerable).is_none());
 
         let hardware = AffectedProductRef {
             criteria: "cpe:2.3:h:example:appliance:*:*:*:*:*:*:*:*",
@@ -375,7 +493,7 @@ mod tests {
             vulnerable: true,
             ..AffectedProductRef::default()
         };
-        assert!(evaluate_cpe23_product_match(&installed, &hardware).is_none());
+        assert!(evaluate_affected_product_match(&installed, &hardware).is_none());
     }
 
     #[test]
@@ -399,7 +517,7 @@ mod tests {
             ..AffectedProductRef::default()
         };
 
-        let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(
             matched.version_status,
@@ -425,7 +543,7 @@ mod tests {
             ..AffectedProductRef::default()
         };
 
-        let matched = evaluate_cpe23_product_match(&installed, &affected).unwrap();
+        let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
         assert_eq!(matched.matched_alias, "microsoft-edge-update");
         assert_eq!(matched.match_basis, MatchBasis::VendorQualifiedAlias);
         assert_eq!(matched.version_status, VersionMatchStatus::Exact);
