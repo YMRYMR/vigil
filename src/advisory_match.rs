@@ -274,9 +274,11 @@ fn exact_version_for_identity<'a>(affected: &'a AffectedProductRef<'a>) -> Optio
     let criteria = parse_cpe23_uri(affected.criteria).and_then(parsed_from_cpe);
 
     match (criteria.as_ref(), cpe_name_version) {
-        (Some(criteria), Some(cpe_name_version)) => matching_cpe_name_identity(criteria, affected.cpe_name)
-            .map(|_| cpe_name_version)
-            .or(criteria_version),
+        (Some(criteria), Some(cpe_name_version)) => {
+            matching_cpe_name_identity(criteria, affected.cpe_name)
+                .map(|_| cpe_name_version)
+                .or(criteria_version)
+        }
         _ => cpe_name_version.or(criteria_version),
     }
 }
@@ -417,10 +419,7 @@ mod tests {
         };
 
         let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
-        assert_eq!(
-            matched.source_id,
-            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
-        );
+        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
         assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
     }
 
