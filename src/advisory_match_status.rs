@@ -1,7 +1,7 @@
 use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord};
 use crate::advisory_match::{
-    evaluate_affected_product_match, AffectedProductRef, InstalledProductRef, MatchBasis,
-    MatchConfidence, VersionMatchStatus,
+    evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef,
+    InstalledProductRef, MatchBasis, MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
 use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
@@ -196,7 +196,12 @@ fn best_record_match(
         .filter_map(|affected| {
             evaluate_affected_product_match(&installed_ref, &affected_product_ref(affected))
         })
-        .max_by_key(|matched| match_rank(matched.confidence, matched.version_status))?;
+        .max_by_key(|matched| {
+            (
+                match_rank(matched.confidence, matched.version_status),
+                source_explainability_rank(matched),
+            )
+        })?;
 
     Some(RecordAdvisoryMatch {
         primary_id: record.primary_id.clone(),
@@ -214,6 +219,30 @@ fn best_record_match(
         version_status: best.version_status,
         applies: best.applies,
     })
+}
+
+fn source_explainability_rank(matched: &AffectedProductMatch) -> (u8, usize, usize) {
+    (
+        u8::from(matched.match_criteria_id.is_some()),
+        source_id_specificity(&matched.source_id),
+        usize::from(!matched.vendor.is_empty()),
+    )
+}
+
+fn source_id_specificity(source_id: &str) -> usize {
+    if source_id.starts_with("cpe:2.3:") {
+        source_id
+            .split(':')
+            .skip(2)
+            .filter(|component| !matches!(component.trim(), "" | "*" | "-"))
+            .count()
+    } else if source_id.trim().is_empty() {
+        0
+    } else if source_id.contains(':') {
+        2
+    } else {
+        1
+    }
 }
 
 fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef<'a> {
@@ -485,6 +514,50 @@ mod tests {
     }
 
     #[test]
+    fn collect_product_matches_prefers_source_identifier_metadata_when_rank_ties() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::RunningProcess,
+        )];
+        let cache = AdvisoryCache {
+            schema_version: 1,
+            generated_unix: 0,
+            sources: vec![],
+            records: vec![record(
+                "CVE-2026-31337",
+                "Equivalent advisory rows",
+                false,
+                vec![
+                    affected("cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*", None),
+                    AffectedProduct {
+                        criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*".into(),
+                        match_criteria_id: Some("nvd-match-2".into()),
+                        cpe_name: None,
+                        vulnerable: true,
+                        ..AffectedProduct::default()
+                    },
+                ],
+            )],
+        };
+
+        let matches = collect_product_matches(&inventory, &cache);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].matches.len(), 1);
+        assert_eq!(
+            matches[0].matches[0].match_criteria_id.as_deref(),
+            Some("nvd-match-2")
+        );
+        assert_eq!(
+            matches[0].matches[0].source_id,
+            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
+        );
+    }
+
+    #[test]
     fn collect_product_matches_keeps_non_applicable_matches_explainable() {
         let inventory = vec![installed(
             "curl",
@@ -561,6 +634,17 @@ mod tests {
         );
         assert_eq!(matches[0].matches[0].confidence, MatchConfidence::High);
         assert!(matches[0].matches[0].applies);
+    }
+
+    #[test]
+    fn source_id_specificity_prefers_exact_cpes_over_broad_or_source_native_ids() {
+        assert!(
+            source_id_specificity("cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*")
+                > source_id_specificity("cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*")
+        );
+        assert!(
+            source_id_specificity("Example:Agent") > source_id_specificity("Agent")
+        );
     }
 
     #[test]
