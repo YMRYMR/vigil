@@ -165,30 +165,30 @@ fn prefer_cpe_name_source_id(
     criteria: ParsedAffectedProduct,
     cpe_name: Option<&str>,
 ) -> ParsedAffectedProduct {
-    let Some(cpe_name) = cpe_name else {
+    let Some(parsed_name) = matching_cpe_name_identity(&criteria, cpe_name) else {
         return criteria;
     };
-    let Some(exact_version) = extract_cpe23_version(cpe_name) else {
-        return criteria;
-    };
-    if exact_version.trim().is_empty() {
-        return criteria;
-    }
-
-    let Some(parsed_name) = parse_cpe23_uri(cpe_name).and_then(parsed_from_cpe) else {
-        return criteria;
-    };
-    if parsed_name.part != criteria.part
-        || parsed_name.vendor != criteria.vendor
-        || parsed_name.product != criteria.product
-    {
-        return criteria;
-    }
 
     ParsedAffectedProduct {
         source_id: parsed_name.source_id,
         ..criteria
     }
+}
+
+fn matching_cpe_name_identity(
+    criteria: &ParsedAffectedProduct,
+    cpe_name: Option<&str>,
+) -> Option<ParsedAffectedProduct> {
+    let cpe_name = cpe_name?;
+    let _ = extract_cpe23_version(cpe_name)?;
+    let parsed_name = parse_cpe23_uri(cpe_name).and_then(parsed_from_cpe)?;
+    if parsed_name.part != criteria.part
+        || parsed_name.vendor != criteria.vendor
+        || parsed_name.product != criteria.product
+    {
+        return None;
+    }
+    Some(parsed_name)
 }
 
 fn parsed_from_cpe(cpe: ParsedCpe23) -> Option<ParsedAffectedProduct> {
@@ -238,10 +238,7 @@ fn evaluate_version_status(
     let exact_version = if has_range_constraints(affected) {
         None
     } else {
-        affected
-            .cpe_name
-            .and_then(extract_cpe23_version)
-            .or_else(|| extract_cpe23_version(affected.criteria))
+        exact_version_for_identity(affected)
     };
     let range = VersionRange {
         exact: exact_version,
@@ -268,6 +265,19 @@ fn evaluate_version_status(
         Some(true) => VersionMatchStatus::InRange,
         Some(false) => VersionMatchStatus::OutOfRange,
         None => VersionMatchStatus::Unknown,
+    }
+}
+
+fn exact_version_for_identity<'a>(affected: &'a AffectedProductRef<'a>) -> Option<&'a str> {
+    let criteria_version = extract_cpe23_version(affected.criteria);
+    let cpe_name_version = affected.cpe_name.and_then(extract_cpe23_version);
+    let criteria = parse_cpe23_uri(affected.criteria).and_then(parsed_from_cpe);
+
+    match (criteria.as_ref(), cpe_name_version) {
+        (Some(criteria), Some(cpe_name_version)) => matching_cpe_name_identity(criteria, affected.cpe_name)
+            .map(|_| cpe_name_version)
+            .or(criteria_version),
+        _ => cpe_name_version.or(criteria_version),
     }
 }
 
@@ -411,7 +421,7 @@ mod tests {
             matched.source_id,
             "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
         );
-        assert_eq!(matched.version_status, VersionMatchStatus::Unknown);
+        assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
     }
 
     #[test]
