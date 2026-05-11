@@ -419,10 +419,7 @@ mod tests {
         };
 
         let matched = evaluate_affected_product_match(&installed, &affected).unwrap();
-        assert_eq!(
-            matched.source_id,
-            "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*"
-        );
+        assert_eq!(matched.source_id, "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*");
         assert_eq!(matched.version_status, VersionMatchStatus::NoConstraint);
     }
 
