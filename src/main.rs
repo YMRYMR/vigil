@@ -42,6 +42,8 @@ mod revdns;
 mod score;
 mod security;
 mod session;
+#[cfg_attr(not(test), allow(dead_code))]
+#[allow(clippy::type_complexity)]
 mod software_inventory;
 mod startup_integrity;
 mod storage;
