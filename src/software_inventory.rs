@@ -200,11 +200,12 @@ fn runtime_match_candidate(
         return None;
     }
 
-    let reason = if publisher_vendor.is_some() && installed.vendor_key.as_deref() == publisher_vendor {
-        RuntimeCorrelationReason::PublisherQualifiedAlias
-    } else {
-        RuntimeCorrelationReason::ProcessAlias
-    };
+    let reason =
+        if publisher_vendor.is_some() && installed.vendor_key.as_deref() == publisher_vendor {
+            RuntimeCorrelationReason::PublisherQualifiedAlias
+        } else {
+            RuntimeCorrelationReason::ProcessAlias
+        };
     let confidence = match reason {
         RuntimeCorrelationReason::PublisherQualifiedAlias => RuntimeCorrelationConfidence::High,
         RuntimeCorrelationReason::ProcessAlias => RuntimeCorrelationConfidence::Medium,
