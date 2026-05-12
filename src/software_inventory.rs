@@ -180,9 +180,10 @@ fn runtime_match_candidate(
         }
     }
 
-    if normalized_process_path.is_some()
-        && normalize_inventory_path(&installed.executable_path).as_deref() == normalized_process_path
-    {
+    let path_match = normalized_process_path
+        .zip(normalize_inventory_path(&installed.executable_path).as_deref())
+        .is_some_and(|(target_path, installed_path)| target_path == installed_path);
+    if path_match {
         return Some((
             runtime_match_rank(RuntimeCorrelationReason::ExecutablePath, installed),
             RuntimeInventoryMatch {
