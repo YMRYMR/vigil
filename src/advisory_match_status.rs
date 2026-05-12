@@ -1,7 +1,7 @@
 use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord};
 use crate::advisory_match::{
-    evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef,
-    InstalledProductRef, MatchBasis, MatchConfidence, VersionMatchStatus,
+    evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef, InstalledProductRef,
+    MatchBasis, MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
 use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
@@ -642,9 +642,7 @@ mod tests {
             source_id_specificity("cpe:2.3:a:google:chrome:124.0.6367.91:*:*:*:*:*:*:*")
                 > source_id_specificity("cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*")
         );
-        assert!(
-            source_id_specificity("Example:Agent") > source_id_specificity("Agent")
-        );
+        assert!(source_id_specificity("Example:Agent") > source_id_specificity("Agent"));
     }
 
     #[test]
