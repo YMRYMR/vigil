@@ -1025,6 +1025,10 @@ fn runtime_confidence_label(confidence: RuntimeCorrelationConfidence) -> &'stati
     }
 }
 
+fn condense_summary(summary: &str) -> String {
+    summary.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
     let ghost = is_ghost_process_name(&sel.proc_name);
     egui::Frame::NONE
