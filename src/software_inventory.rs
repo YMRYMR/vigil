@@ -83,6 +83,35 @@ pub enum InventorySource {
     RunningService,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCorrelationConfidence {
+    High,
+    Medium,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCorrelationReason {
+    ServiceName,
+    ExecutablePath,
+    PublisherQualifiedAlias,
+    ProcessAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInventoryTarget<'a> {
+    pub process_name: &'a str,
+    pub process_path: &'a str,
+    pub service_name: &'a str,
+    pub publisher: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInventoryMatch {
+    pub installed: InstalledSoftware,
+    pub reason: RuntimeCorrelationReason,
+    pub confidence: RuntimeCorrelationConfidence,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InventorySeed {
     display_name: String,
@@ -90,6 +119,30 @@ struct InventorySeed {
     publisher_hint: Option<String>,
     version_hint: Option<String>,
     source: InventorySource,
+}
+
+pub fn correlate_runtime_inventory(
+    target: &RuntimeInventoryTarget<'_>,
+    inventory: &[InstalledSoftware],
+) -> Option<RuntimeInventoryMatch> {
+    let process_aliases = runtime_process_aliases(target);
+    let service_alias = canonical_product_key(target.service_name);
+    let publisher_vendor = normalize_vendor_key(target.publisher);
+    let normalized_process_path = normalize_inventory_path(target.process_path);
+
+    inventory
+        .iter()
+        .filter_map(|installed| {
+            runtime_match_candidate(
+                installed,
+                &process_aliases,
+                service_alias.as_deref(),
+                publisher_vendor.as_deref(),
+                normalized_process_path.as_deref(),
+            )
+        })
+        .max_by_key(|(rank, _)| rank.clone())
+        .map(|(_, matched)| matched)
 }
 
 pub fn startup_inventory_delay() -> Duration {
@@ -103,6 +156,157 @@ pub fn collect_startup_inventory() -> Vec<InstalledSoftware> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     collect_installed_software_limited(usize::MAX)
+}
+
+fn runtime_match_candidate(
+    installed: &InstalledSoftware,
+    process_aliases: &BTreeSet<String>,
+    service_alias: Option<&str>,
+    publisher_vendor: Option<&str>,
+    normalized_process_path: Option<&str>,
+) -> Option<((u8, u8, u8, u8, String), RuntimeInventoryMatch)> {
+    let installed_aliases = installed_identity_aliases(installed);
+
+    if let Some(service_alias) = service_alias {
+        if installed_aliases.contains(service_alias) {
+            return Some((
+                runtime_match_rank(RuntimeCorrelationReason::ServiceName, installed),
+                RuntimeInventoryMatch {
+                    installed: installed.clone(),
+                    reason: RuntimeCorrelationReason::ServiceName,
+                    confidence: RuntimeCorrelationConfidence::High,
+                },
+            ));
+        }
+    }
+
+    let path_match = normalized_process_path
+        .zip(normalize_inventory_path(&installed.executable_path).as_deref())
+        .is_some_and(|(target_path, installed_path)| target_path == installed_path);
+    if path_match {
+        return Some((
+            runtime_match_rank(RuntimeCorrelationReason::ExecutablePath, installed),
+            RuntimeInventoryMatch {
+                installed: installed.clone(),
+                reason: RuntimeCorrelationReason::ExecutablePath,
+                confidence: RuntimeCorrelationConfidence::High,
+            },
+        ));
+    }
+
+    if !process_aliases
+        .iter()
+        .any(|alias| installed_aliases.contains(alias))
+    {
+        return None;
+    }
+
+    let reason =
+        if publisher_vendor.is_some() && installed.vendor_key.as_deref() == publisher_vendor {
+            RuntimeCorrelationReason::PublisherQualifiedAlias
+        } else {
+            RuntimeCorrelationReason::ProcessAlias
+        };
+    let confidence = match reason {
+        RuntimeCorrelationReason::PublisherQualifiedAlias => RuntimeCorrelationConfidence::High,
+        RuntimeCorrelationReason::ProcessAlias => RuntimeCorrelationConfidence::Medium,
+        RuntimeCorrelationReason::ServiceName | RuntimeCorrelationReason::ExecutablePath => {
+            RuntimeCorrelationConfidence::High
+        }
+    };
+
+    Some((
+        runtime_match_rank(reason, installed),
+        RuntimeInventoryMatch {
+            installed: installed.clone(),
+            reason,
+            confidence,
+        },
+    ))
+}
+
+fn runtime_match_rank(
+    reason: RuntimeCorrelationReason,
+    installed: &InstalledSoftware,
+) -> (u8, u8, u8, u8, String) {
+    (
+        runtime_reason_rank(reason),
+        runtime_source_rank(reason, installed.source),
+        u8::from(installed.version_hint.is_some()),
+        u8::from(installed.publisher_hint.is_some()),
+        installed.product_key.clone(),
+    )
+}
+
+fn runtime_reason_rank(reason: RuntimeCorrelationReason) -> u8 {
+    match reason {
+        RuntimeCorrelationReason::ServiceName => 4,
+        RuntimeCorrelationReason::ExecutablePath => 3,
+        RuntimeCorrelationReason::PublisherQualifiedAlias => 2,
+        RuntimeCorrelationReason::ProcessAlias => 1,
+    }
+}
+
+fn runtime_source_rank(reason: RuntimeCorrelationReason, source: InventorySource) -> u8 {
+    match reason {
+        RuntimeCorrelationReason::ServiceName => match source {
+            InventorySource::RunningService => 4,
+            InventorySource::WindowsUninstallRegistry => 3,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 2,
+            InventorySource::RunningProcess => 1,
+        },
+        RuntimeCorrelationReason::ExecutablePath => match source {
+            InventorySource::WindowsUninstallRegistry => 4,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 3,
+            InventorySource::RunningService => 2,
+            InventorySource::RunningProcess => 1,
+        },
+        RuntimeCorrelationReason::PublisherQualifiedAlias
+        | RuntimeCorrelationReason::ProcessAlias => match source {
+            InventorySource::WindowsUninstallRegistry => 4,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 3,
+            InventorySource::RunningProcess => 2,
+            InventorySource::RunningService => 1,
+        },
+    }
+}
+
+fn installed_identity_aliases(installed: &InstalledSoftware) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    if let Some(alias) = canonical_product_key(&installed.product_key) {
+        aliases.insert(alias);
+    }
+    for alias in &installed.product_aliases {
+        if let Some(normalized) = canonical_product_key(alias) {
+            aliases.insert(normalized);
+        }
+    }
+    aliases
+}
+
+fn runtime_process_aliases(target: &RuntimeInventoryTarget<'_>) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    add_product_aliases(&mut aliases, target.process_name);
+    if let Some(file_name) = std::path::Path::new(target.process_path).file_stem() {
+        add_product_aliases(&mut aliases, &file_name.to_string_lossy());
+    }
+    aliases
+}
+
+fn normalize_inventory_path(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.replace('\\', "/").to_lowercase();
+    Some(normalized)
 }
 
 fn collect_installed_software_limited(max_entries: usize) -> Vec<InstalledSoftware> {
@@ -970,6 +1174,118 @@ mod tests {
                 "Dhcp".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_prefers_service_name_for_shared_host_processes() {
+        let inventory = collect_from_entries(vec![
+            seed(
+                "svchost.exe",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "Dnscache",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningService,
+            ),
+        ]);
+        let target = RuntimeInventoryTarget {
+            process_name: "svchost.exe",
+            process_path: "C:/Windows/System32/svchost.exe",
+            service_name: "Dnscache",
+            publisher: "Microsoft Corporation",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "dnscache");
+        assert_eq!(matched.reason, RuntimeCorrelationReason::ServiceName);
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_uses_case_insensitive_executable_paths() {
+        let inventory = collect_from_entries(vec![seed(
+            "Google Chrome",
+            "C:\\Program Files\\Google\\Chrome\\chrome.exe",
+            Some("Google LLC"),
+            Some("124.0.6367.91"),
+            InventorySource::WindowsUninstallRegistry,
+        )]);
+        let target = RuntimeInventoryTarget {
+            process_name: "chrome.exe",
+            process_path: "c:/program files/google/chrome/CHROME.EXE",
+            service_name: "",
+            publisher: "Google LLC",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "google-chrome");
+        assert_eq!(matched.reason, RuntimeCorrelationReason::ExecutablePath);
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_prefers_vendor_confirmed_aliases() {
+        let inventory = vec![
+            InstalledSoftware {
+                product_key: "fedora-curl".into(),
+                display_name: "curl".into(),
+                executable_path: String::new(),
+                publisher_hint: Some("Fedora Project".into()),
+                version_hint: Some("8.8.0-1.fc40".into()),
+                product_aliases: vec!["curl".into(), "fedora-curl".into()],
+                vendor_key: Some("fedora".into()),
+                source: InventorySource::LinuxRpmDatabase,
+            },
+            InstalledSoftware {
+                product_key: "example-curl".into(),
+                display_name: "curl".into(),
+                executable_path: String::new(),
+                publisher_hint: Some("Example Maintainer".into()),
+                version_hint: Some("8.8.0".into()),
+                product_aliases: vec!["curl".into(), "example-curl".into()],
+                vendor_key: Some("example".into()),
+                source: InventorySource::LinuxDpkgStatus,
+            },
+        ];
+        let target = RuntimeInventoryTarget {
+            process_name: "curl",
+            process_path: "/usr/bin/curl",
+            service_name: "",
+            publisher: "Fedora Project",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "fedora-curl");
+        assert_eq!(
+            matched.reason,
+            RuntimeCorrelationReason::PublisherQualifiedAlias
+        );
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_returns_none_without_path_or_alias_overlap() {
+        let inventory = collect_from_entries(vec![seed(
+            "Google Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            Some("Google LLC"),
+            Some("124.0.6367.91"),
+            InventorySource::WindowsUninstallRegistry,
+        )]);
+        let target = RuntimeInventoryTarget {
+            process_name: "powershell.exe",
+            process_path: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            service_name: "",
+            publisher: "Microsoft Corporation",
+        };
+
+        assert!(correlate_runtime_inventory(&target, &inventory).is_none());
     }
 
     #[test]
