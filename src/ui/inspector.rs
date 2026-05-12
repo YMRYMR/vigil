@@ -12,12 +12,12 @@ use crate::{
         InstalledProductRef, MatchConfidence, VersionMatchStatus,
     },
     config::Config,
-    storage::{InventoryStore, ProtectedJsonInventoryStore},
     software_inventory::{
         correlate_runtime_inventory, InstalledSoftware, InventorySource,
         RuntimeCorrelationConfidence, RuntimeCorrelationReason, RuntimeInventoryMatch,
         RuntimeInventoryTarget,
     },
+    storage::{InventoryStore, ProtectedJsonInventoryStore},
     ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
     version_compare::VersionSource,
 };
@@ -613,10 +613,7 @@ fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
                 if snapshot.known_exploited_matches > 0 {
                     chip(
                         ui,
-                        &format!(
-                            "{} known exploited",
-                            snapshot.known_exploited_matches
-                        ),
+                        &format!("{} known exploited", snapshot.known_exploited_matches),
                     );
                 }
             });
@@ -729,7 +726,8 @@ fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspe
     let cache = match load_advisory_cache_for_inspector() {
         Ok(cache) => cache,
         Err(_) => {
-            return build_advisory_snapshot_for_target(&target, &inventory, None).with_unavailable();
+            return build_advisory_snapshot_for_target(&target, &inventory, None)
+                .with_unavailable();
         }
     };
     build_advisory_snapshot_for_target(&target, &inventory, cache.as_ref())
@@ -761,7 +759,10 @@ fn build_advisory_snapshot_for_target(
         availability: AdvisoryAvailability::Matched,
         correlated_product,
         total_matches: advisories.len(),
-        applicable_matches: advisories.iter().filter(|advisory| advisory.applies).count(),
+        applicable_matches: advisories
+            .iter()
+            .filter(|advisory| advisory.applies)
+            .count(),
         known_exploited_matches: advisories
             .iter()
             .filter(|advisory| advisory.known_exploited)
@@ -821,7 +822,10 @@ fn collect_advisory_summaries(
                 advisory_match_rank(right.confidence, right.version_status)
                     .cmp(&advisory_match_rank(left.confidence, left.version_status))
             })
-            .then_with(|| severity_label_rank(right.severity_label.as_deref()).cmp(&severity_label_rank(left.severity_label.as_deref())))
+            .then_with(|| {
+                severity_label_rank(right.severity_label.as_deref())
+                    .cmp(&severity_label_rank(left.severity_label.as_deref()))
+            })
             .then_with(|| left.primary_id.cmp(&right.primary_id))
     });
     advisories
@@ -978,8 +982,8 @@ fn load_advisory_cache_for_inspector() -> Result<Option<AdvisoryCache>, String> 
         return Ok(None);
     }
 
-    let loaded: Option<AdvisoryCache> =
-        crate::security::policy::load_struct_with_integrity(&path).map_err(|err| {
+    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
+        .map_err(|err| {
             format!(
                 "failed to load protected advisory cache {}: {err}",
                 path.display()
