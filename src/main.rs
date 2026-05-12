@@ -18,6 +18,7 @@ mod advisory_match;
 mod advisory_match_status;
 mod advisory_ncsc_bsi;
 mod advisory_public_sources;
+mod advisory_runtime_score;
 mod advisory_status;
 mod artifact_provenance;
 mod audit;
