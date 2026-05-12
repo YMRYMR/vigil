@@ -6,11 +6,25 @@
 
 use crate::{
     active_response,
+    advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord, VulnerabilitySeverity},
+    advisory_match::{
+        evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef,
+        InstalledProductRef, MatchConfidence, VersionMatchStatus,
+    },
     config::Config,
+    storage::{InventoryStore, ProtectedJsonInventoryStore},
+    software_inventory::{
+        correlate_runtime_inventory, InstalledSoftware, InventorySource,
+        RuntimeCorrelationConfidence, RuntimeCorrelationReason, RuntimeInventoryMatch,
+        RuntimeInventoryTarget,
+    },
     ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
+    version_compare::VersionSource,
 };
 use egui::{RichText, Ui};
 use std::collections::BTreeSet;
+use std::sync::{OnceLock, RwLock};
+use std::time::{Duration, Instant};
 
 const MAX_REASON_SCAN: usize = 1_200;
 const MAX_REASON_PLAIN_ROWS: usize = 40;
@@ -25,6 +39,10 @@ const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
     "/var/tmp/",
     "/downloads/",
 ];
+const ADVISORY_CACHE_FILE: &str = "vigil-advisory-cache.json";
+const ADVISORY_CACHE_SCHEMA_VERSION: u32 = 1;
+const ADVISORY_LOOKUP_CACHE_TTL: Duration = Duration::from_secs(2);
+const MAX_INSPECTOR_ADVISORIES: usize = 3;
 
 #[derive(Debug, Clone)]
 pub enum Action {
@@ -50,6 +68,64 @@ pub enum Action {
     KillConfirmed,
     KillCancelled,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum AdvisoryAvailability {
+    Matched,
+    #[default]
+    NoRuntimeMatch,
+    InventoryUnavailable,
+    CacheUnavailable,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct AdvisoryInspectorSnapshot {
+    availability: AdvisoryAvailability,
+    correlated_product: Option<CorrelatedProductSummary>,
+    advisories: Vec<AdvisorySummary>,
+    total_matches: usize,
+    applicable_matches: usize,
+    known_exploited_matches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CorrelatedProductSummary {
+    display_name: String,
+    version_hint: Option<String>,
+    source_label: &'static str,
+    reason_label: &'static str,
+    confidence_label: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdvisorySummary {
+    primary_id: String,
+    summary: String,
+    severity_label: Option<String>,
+    source_kind: String,
+    known_exploited: bool,
+    applies: bool,
+    confidence: MatchConfidence,
+    version_status: VersionMatchStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AdvisoryLookupKey {
+    process_name: String,
+    process_path: String,
+    service_name: String,
+    publisher: String,
+}
+
+#[derive(Debug, Clone)]
+struct CachedAdvisoryLookup {
+    key: AdvisoryLookupKey,
+    loaded_at: Instant,
+    snapshot: AdvisoryInspectorSnapshot,
+}
+
+static ADVISORY_LOOKUP_CACHE: OnceLock<RwLock<Option<CachedAdvisoryLookup>>> = OnceLock::new();
 
 pub fn show(
     ui: &mut Ui,
@@ -108,6 +184,7 @@ fn show_detail(
     let quarantine_ready = inspector_state.quarantine_ready && !ghost;
     let quarantine_active = isolated || process_blocked || process_suspended;
     let autoruns_frozen = response_status.frozen_autoruns;
+    let advisory_snapshot = advisory_snapshot_for_selection(sel);
 
     egui::ScrollArea::vertical().id_salt("help_scroll").show(ui, |ui| {
         ui.add_space(8.0);
@@ -126,6 +203,13 @@ fn show_detail(
         if !sel.command_line.is_empty() {
             kv(ui, "Cmdline", &sel.command_line);
         }
+
+        ui.add_space(8.0);
+        separator(ui);
+        ui.add_space(8.0);
+
+        section_header(ui, "Advisories");
+        render_advisory_block(ui, &advisory_snapshot);
 
         ui.add_space(8.0);
         separator(ui);
@@ -468,6 +552,477 @@ fn show_detail(
     });
 
     action
+}
+
+fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
+    if let Some(product) = snapshot.correlated_product.as_ref() {
+        kv(ui, "Product", &product.display_name);
+        if let Some(version) = product.version_hint.as_deref() {
+            kv(ui, "Version", version);
+        }
+        kv(
+            ui,
+            "Correlation",
+            &format!("{} via {}", product.confidence_label, product.reason_label),
+        );
+        kv(ui, "Inventory", product.source_label);
+        ui.add_space(4.0);
+    }
+
+    match snapshot.availability {
+        AdvisoryAvailability::InventoryUnavailable => {
+            ui.label(
+                RichText::new(
+                    "No protected software inventory snapshot is available yet, so Vigil cannot correlate this process to an installed product.",
+                )
+                .color(theme::TEXT3)
+                .size(10.6),
+            );
+        }
+        AdvisoryAvailability::NoRuntimeMatch => {
+            ui.label(
+                RichText::new(
+                    "No installed-product correlation is available for this process yet. Vigil keeps advisory context hidden until it has a conservative product match.",
+                )
+                .color(theme::TEXT3)
+                .size(10.6),
+            );
+        }
+        AdvisoryAvailability::CacheUnavailable => {
+            ui.label(
+                RichText::new(
+                    "The local advisory cache is not available yet. Import or sync advisory data to see matched CVEs here.",
+                )
+                .color(theme::TEXT3)
+                .size(10.6),
+            );
+        }
+        AdvisoryAvailability::Unavailable => {
+            ui.label(
+                RichText::new(
+                    "Protected advisory data could not be loaded for this refresh. Vigil left the inspector usable and skipped advisory correlation.",
+                )
+                .color(theme::TEXT3)
+                .size(10.6),
+            );
+        }
+        AdvisoryAvailability::Matched => {
+            ui.horizontal_wrapped(|ui| {
+                chip(ui, &format!("{} applicable", snapshot.applicable_matches));
+                chip(ui, &format!("{} matched", snapshot.total_matches));
+                if snapshot.known_exploited_matches > 0 {
+                    chip(
+                        ui,
+                        &format!(
+                            "{} known exploited",
+                            snapshot.known_exploited_matches
+                        ),
+                    );
+                }
+            });
+            if snapshot.advisories.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(
+                        "This product correlated cleanly, but the current local advisory cache has no matching records for it.",
+                    )
+                    .color(theme::TEXT3)
+                    .size(10.6),
+                );
+                return;
+            }
+
+            ui.add_space(6.0);
+            for advisory in &snapshot.advisories {
+                egui::Frame::NONE
+                    .fill(theme::SURFACE2)
+                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .corner_radius(8.0)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(
+                                RichText::new(&advisory.primary_id)
+                                    .color(theme::ACCENT)
+                                    .size(10.8)
+                                    .strong(),
+                            );
+                            if let Some(severity) = advisory.severity_label.as_deref() {
+                                chip(ui, severity);
+                            }
+                            chip(ui, advisory.source_kind.as_str());
+                            if advisory.applies {
+                                chip(ui, "applicable");
+                            }
+                            if advisory.known_exploited {
+                                chip(ui, "known exploited");
+                            }
+                        });
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(&advisory.summary)
+                                .color(theme::TEXT2)
+                                .size(10.6),
+                        );
+                    });
+                ui.add_space(6.0);
+            }
+        }
+    }
+}
+
+fn advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspectorSnapshot {
+    let key = advisory_lookup_key(sel);
+    let cache_lock = ADVISORY_LOOKUP_CACHE.get_or_init(|| RwLock::new(None));
+
+    {
+        let cache = cache_lock.read().unwrap();
+        if let Some(cached) = cache.as_ref() {
+            if cached.key == key && cached.loaded_at.elapsed() <= ADVISORY_LOOKUP_CACHE_TTL {
+                return cached.snapshot.clone();
+            }
+        }
+    }
+
+    let snapshot = load_advisory_snapshot_for_selection(sel);
+    let mut cache = cache_lock.write().unwrap();
+    *cache = Some(CachedAdvisoryLookup {
+        key,
+        loaded_at: Instant::now(),
+        snapshot: snapshot.clone(),
+    });
+    snapshot
+}
+
+fn advisory_lookup_key(sel: &ProcessSelection) -> AdvisoryLookupKey {
+    AdvisoryLookupKey {
+        process_name: sel.proc_name.clone(),
+        process_path: sel.proc_path.clone(),
+        service_name: sel.service_name.clone(),
+        publisher: sel.publisher.clone(),
+    }
+}
+
+fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspectorSnapshot {
+    let inventory = match ProtectedJsonInventoryStore::new_default().load_inventory() {
+        Ok(inventory) => inventory,
+        Err(_) => {
+            return AdvisoryInspectorSnapshot {
+                availability: AdvisoryAvailability::Unavailable,
+                ..AdvisoryInspectorSnapshot::default()
+            };
+        }
+    };
+    if inventory.is_empty() {
+        return AdvisoryInspectorSnapshot {
+            availability: AdvisoryAvailability::InventoryUnavailable,
+            ..AdvisoryInspectorSnapshot::default()
+        };
+    }
+
+    let target = RuntimeInventoryTarget {
+        process_name: &sel.proc_name,
+        process_path: &sel.proc_path,
+        service_name: &sel.service_name,
+        publisher: &sel.publisher,
+    };
+    let cache = match load_advisory_cache_for_inspector() {
+        Ok(cache) => cache,
+        Err(_) => {
+            return build_advisory_snapshot_for_target(&target, &inventory, None).with_unavailable();
+        }
+    };
+    build_advisory_snapshot_for_target(&target, &inventory, cache.as_ref())
+}
+
+fn build_advisory_snapshot_for_target(
+    target: &RuntimeInventoryTarget<'_>,
+    inventory: &[InstalledSoftware],
+    cache: Option<&AdvisoryCache>,
+) -> AdvisoryInspectorSnapshot {
+    let Some(runtime_match) = correlate_runtime_inventory(target, inventory) else {
+        return AdvisoryInspectorSnapshot {
+            availability: AdvisoryAvailability::NoRuntimeMatch,
+            ..AdvisoryInspectorSnapshot::default()
+        };
+    };
+
+    let correlated_product = Some(correlated_product_summary(&runtime_match));
+    let Some(cache) = cache else {
+        return AdvisoryInspectorSnapshot {
+            availability: AdvisoryAvailability::CacheUnavailable,
+            correlated_product,
+            ..AdvisoryInspectorSnapshot::default()
+        };
+    };
+
+    let advisories = collect_advisory_summaries(&runtime_match.installed, cache);
+    AdvisoryInspectorSnapshot {
+        availability: AdvisoryAvailability::Matched,
+        correlated_product,
+        total_matches: advisories.len(),
+        applicable_matches: advisories.iter().filter(|advisory| advisory.applies).count(),
+        known_exploited_matches: advisories
+            .iter()
+            .filter(|advisory| advisory.known_exploited)
+            .count(),
+        advisories: advisories
+            .into_iter()
+            .take(MAX_INSPECTOR_ADVISORIES)
+            .collect(),
+    }
+}
+
+impl AdvisoryInspectorSnapshot {
+    fn with_unavailable(mut self) -> Self {
+        self.availability = AdvisoryAvailability::Unavailable;
+        self
+    }
+}
+
+fn correlated_product_summary(runtime_match: &RuntimeInventoryMatch) -> CorrelatedProductSummary {
+    CorrelatedProductSummary {
+        display_name: runtime_match.installed.display_name.clone(),
+        version_hint: runtime_match.installed.version_hint.clone(),
+        source_label: inventory_source_label(runtime_match.installed.source),
+        reason_label: runtime_reason_label(runtime_match.reason),
+        confidence_label: runtime_confidence_label(runtime_match.confidence),
+    }
+}
+
+fn collect_advisory_summaries(
+    installed: &InstalledSoftware,
+    cache: &AdvisoryCache,
+) -> Vec<AdvisorySummary> {
+    let mut advisories = cache
+        .records
+        .iter()
+        .filter_map(|record| {
+            let matched = best_record_match(installed, record)?;
+            Some(AdvisorySummary {
+                primary_id: record.primary_id.clone(),
+                summary: condense_summary(&record.summary),
+                severity_label: advisory_severity_label(&record.severities),
+                source_kind: record.provenance.source_kind.clone(),
+                known_exploited: record.known_exploited,
+                applies: matched.applies,
+                confidence: matched.confidence,
+                version_status: matched.version_status,
+            })
+        })
+        .collect::<Vec<_>>();
+
+    advisories.sort_by(|left, right| {
+        right
+            .known_exploited
+            .cmp(&left.known_exploited)
+            .then_with(|| right.applies.cmp(&left.applies))
+            .then_with(|| {
+                advisory_match_rank(right.confidence, right.version_status)
+                    .cmp(&advisory_match_rank(left.confidence, left.version_status))
+            })
+            .then_with(|| severity_label_rank(right.severity_label.as_deref()).cmp(&severity_label_rank(left.severity_label.as_deref())))
+            .then_with(|| left.primary_id.cmp(&right.primary_id))
+    });
+    advisories
+}
+
+fn best_record_match(
+    installed: &InstalledSoftware,
+    record: &VulnerabilityRecord,
+) -> Option<AffectedProductMatch> {
+    let installed_ref = InstalledProductRef {
+        product_key: &installed.product_key,
+        product_aliases: &installed.product_aliases,
+        vendor_key: installed.vendor_key.as_deref(),
+        version_hint: installed.version_hint.as_deref(),
+        version_source: version_source_for_inventory(installed.source),
+    };
+
+    record
+        .affected_products
+        .iter()
+        .filter_map(|affected| {
+            evaluate_affected_product_match(&installed_ref, &affected_product_ref(affected))
+        })
+        .max_by_key(|matched| {
+            (
+                advisory_match_rank(matched.confidence, matched.version_status),
+                source_explainability_rank(matched),
+            )
+        })
+}
+
+fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef<'a> {
+    AffectedProductRef {
+        criteria: &affected.criteria,
+        match_criteria_id: affected.match_criteria_id.as_deref(),
+        cpe_name: affected.cpe_name.as_deref(),
+        vulnerable: affected.vulnerable,
+        version_start_including: affected.version_start_including.as_deref(),
+        version_start_excluding: affected.version_start_excluding.as_deref(),
+        version_end_including: affected.version_end_including.as_deref(),
+        version_end_excluding: affected.version_end_excluding.as_deref(),
+    }
+}
+
+fn advisory_match_rank(
+    confidence: MatchConfidence,
+    version_status: VersionMatchStatus,
+) -> (u8, u8, u8) {
+    (
+        u8::from(matches!(
+            version_status,
+            VersionMatchStatus::Exact
+                | VersionMatchStatus::InRange
+                | VersionMatchStatus::NoConstraint
+        )),
+        confidence_rank(confidence),
+        version_status_rank(version_status),
+    )
+}
+
+fn confidence_rank(confidence: MatchConfidence) -> u8 {
+    match confidence {
+        MatchConfidence::High => 2,
+        MatchConfidence::Medium => 1,
+    }
+}
+
+fn version_status_rank(status: VersionMatchStatus) -> u8 {
+    match status {
+        VersionMatchStatus::Exact => 6,
+        VersionMatchStatus::InRange => 5,
+        VersionMatchStatus::NoConstraint => 4,
+        VersionMatchStatus::MissingInstalledVersion => 3,
+        VersionMatchStatus::Unknown => 2,
+        VersionMatchStatus::OutOfRange => 1,
+    }
+}
+
+fn source_explainability_rank(matched: &AffectedProductMatch) -> (u8, usize, usize) {
+    (
+        u8::from(matched.match_criteria_id.is_some()),
+        source_id_specificity(&matched.source_id),
+        usize::from(!matched.vendor.is_empty()),
+    )
+}
+
+fn source_id_specificity(source_id: &str) -> usize {
+    if source_id.starts_with("cpe:2.3:") {
+        source_id
+            .split(':')
+            .skip(2)
+            .filter(|component| !matches!(component.trim(), "" | "*" | "-"))
+            .count()
+    } else if source_id.trim().is_empty() {
+        0
+    } else if source_id.contains(':') {
+        2
+    } else {
+        1
+    }
+}
+
+fn advisory_severity_label(severities: &[VulnerabilitySeverity]) -> Option<String> {
+    let best = severities.iter().max_by_key(|severity| {
+        (
+            severity_label_rank(normalize_severity_label(&severity.severity).as_deref()),
+            u8::from(severity.score.is_some()),
+        )
+    })?;
+    let label = normalize_severity_label(&best.severity)
+        .unwrap_or_else(|| best.severity.trim().to_ascii_lowercase());
+    if label.is_empty() {
+        None
+    } else if let Some(score) = best.score {
+        Some(format!("{label} {score:.1}"))
+    } else {
+        Some(label)
+    }
+}
+
+fn normalize_severity_label(value: &str) -> Option<String> {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn severity_label_rank(label: Option<&str>) -> u8 {
+    match label.unwrap_or_default() {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn version_source_for_inventory(source: InventorySource) -> VersionSource {
+    match source {
+        InventorySource::LinuxDpkgStatus => VersionSource::DebianPackage,
+        InventorySource::LinuxRpmDatabase => VersionSource::RpmPackage,
+        InventorySource::LinuxApkInstalled => VersionSource::AlpinePackage,
+        InventorySource::RunningProcess
+        | InventorySource::WindowsUninstallRegistry
+        | InventorySource::RunningService => VersionSource::Default,
+    }
+}
+
+fn load_advisory_cache_for_inspector() -> Result<Option<AdvisoryCache>, String> {
+    let path = crate::config::data_dir().join(ADVISORY_CACHE_FILE);
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let loaded: Option<AdvisoryCache> =
+        crate::security::policy::load_struct_with_integrity(&path).map_err(|err| {
+            format!(
+                "failed to load protected advisory cache {}: {err}",
+                path.display()
+            )
+        })?;
+    let Some(cache) = loaded else {
+        return Ok(None);
+    };
+    if cache.schema_version != ADVISORY_CACHE_SCHEMA_VERSION {
+        return Err(format!(
+            "protected advisory cache {} used unsupported schema version {}",
+            path.display(),
+            cache.schema_version
+        ));
+    }
+    Ok(Some(cache))
+}
+
+fn inventory_source_label(source: InventorySource) -> &'static str {
+    match source {
+        InventorySource::RunningProcess => "running process",
+        InventorySource::LinuxDpkgStatus => "Linux dpkg status",
+        InventorySource::LinuxRpmDatabase => "Linux RPM database",
+        InventorySource::LinuxApkInstalled => "Linux APK database",
+        InventorySource::WindowsUninstallRegistry => "Windows uninstall registry",
+        InventorySource::RunningService => "running service",
+    }
+}
+
+fn runtime_reason_label(reason: RuntimeCorrelationReason) -> &'static str {
+    match reason {
+        RuntimeCorrelationReason::ServiceName => "service name",
+        RuntimeCorrelationReason::ExecutablePath => "executable path",
+        RuntimeCorrelationReason::PublisherQualifiedAlias => "publisher-qualified alias",
+        RuntimeCorrelationReason::ProcessAlias => "process alias",
+    }
+}
+
+fn runtime_confidence_label(confidence: RuntimeCorrelationConfidence) -> &'static str {
+    match confidence {
+        RuntimeCorrelationConfidence::High => "high confidence",
+        RuntimeCorrelationConfidence::Medium => "medium confidence",
+    }
 }
 
 fn process_hero(ui: &mut Ui, sel: &ProcessSelection) {
