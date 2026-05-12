@@ -4,8 +4,8 @@ use crate::advisory_match::{
     MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{
-    correlate_runtime_inventory, InstalledSoftware, InventorySource, RuntimeInventoryTarget,
-    RuntimeCorrelationConfidence,
+    correlate_runtime_inventory, InstalledSoftware, InventorySource, RuntimeCorrelationConfidence,
+    RuntimeInventoryTarget,
 };
 use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
 use crate::version_compare::VersionSource;
@@ -167,7 +167,10 @@ fn build_candidate(
 }
 
 fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
-    match (candidate.severity_label.as_deref(), candidate.known_exploited) {
+    match (
+        candidate.severity_label.as_deref(),
+        candidate.known_exploited,
+    ) {
         (Some(severity), true) => format!(
             "High-confidence advisory match: {} ({severity}, known exploited) applies to {}",
             candidate.primary_id, candidate.product_name
