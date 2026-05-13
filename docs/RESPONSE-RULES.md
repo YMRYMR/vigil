@@ -26,30 +26,34 @@ Supported advisory predicates:
 
 - `require_advisory_match: true`
 - `require_known_exploited_advisory: true`
+- `require_missing_advisory_fix_version: true`
 - `advisory_id_contains: "CVE-2026-12345"`
 - `advisory_product_contains: "chrome"`
 - `min_advisory_severity: high`
 
 Supported `min_advisory_severity` values are `low`, `medium`, `high`, and `critical`.
 
+`require_missing_advisory_fix_version` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `no fixed-version bound`, which Vigil emits only when the matched affected-product range has a lower version boundary but no upper version boundary. It does not guess from unconstrained rows or exact-version-only rows.
+
 ## Example
 
 ```yaml
 rules:
-  - name: exploited browser advisory
+  - name: exploited browser advisory without fix bound
     require_advisory_match: true
     require_known_exploited_advisory: true
+    require_missing_advisory_fix_version: true
     advisory_product_contains: chrome
     min_advisory_severity: critical
     action: block_process
     duration: 24h
 ```
 
-This example only matches when Vigil already found a high-confidence applicable advisory for a Chrome-family product, marked it as known exploited, and rated it at least critical.
+This example only matches when Vigil already found one high-confidence applicable advisory reason for a Chrome-family product, marked it as known exploited, rated it at least critical, and could not find an upper fixed-version bound on the matched advisory range.
 
 ## Current scope limits
 
-This is an intentionally narrow first slice of mitigation-aware response rules.
+This is still an intentionally narrow slice of mitigation-aware response rules.
 
 Today the rule engine can match only these advisory attributes:
 
@@ -57,8 +61,9 @@ Today the rule engine can match only these advisory attributes:
 - affected product text
 - known exploited flag
 - normalized severity floor
+- missing fixed-version bound on the matched advisory range
 
-The broader roadmap item still remains open for attributes such as vendor guidance, fixed-version absence, and exposure on the public internet.
+The broader roadmap item still remains open for attributes such as vendor guidance and exposure on the public internet.
 
 ## Actions
 

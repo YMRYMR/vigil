@@ -44,6 +44,7 @@ struct RuntimeAdvisoryCandidate {
     severity_label: Option<String>,
     severity_rank: u8,
     known_exploited: bool,
+    missing_fix_version: bool,
     score_delta: u8,
 }
 
@@ -51,6 +52,12 @@ struct RuntimeAdvisoryCandidate {
 struct SeveritySummary {
     label: String,
     rank: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RuntimeAdvisoryMatch {
+    matched: AffectedProductMatch,
+    missing_fix_version: bool,
 }
 
 static ADVISORY_SCORE_CACHE: OnceLock<RwLock<Option<CachedAdvisoryScore>>> = OnceLock::new();
@@ -146,7 +153,7 @@ fn build_candidate(
     record: &VulnerabilityRecord,
 ) -> Option<RuntimeAdvisoryCandidate> {
     let matched = best_record_match(installed, record)?;
-    if matched.confidence != MatchConfidence::High || !matched.applies {
+    if matched.matched.confidence != MatchConfidence::High || !matched.matched.applies {
         return None;
     }
 
@@ -162,31 +169,35 @@ fn build_candidate(
         severity_label: severity.map(|summary| summary.label),
         severity_rank,
         known_exploited: record.known_exploited,
+        missing_fix_version: matched.missing_fix_version,
         score_delta: advisory_score_delta(record.known_exploited, severity_rank),
     })
 }
 
 fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
-    match (
-        candidate.severity_label.as_deref(),
-        candidate.known_exploited,
-    ) {
-        (Some(severity), true) => format!(
-            "High-confidence advisory match: {} ({severity}, known exploited) applies to {}",
-            candidate.primary_id, candidate.product_name
-        ),
-        (Some(severity), false) => format!(
-            "High-confidence advisory match: {} ({severity}) applies to {}",
-            candidate.primary_id, candidate.product_name
-        ),
-        (None, true) => format!(
-            "High-confidence advisory match: {} (known exploited) applies to {}",
-            candidate.primary_id, candidate.product_name
-        ),
-        (None, false) => format!(
+    let mut details = Vec::new();
+    if let Some(severity) = candidate.severity_label.as_deref() {
+        details.push(severity.to_string());
+    }
+    if candidate.known_exploited {
+        details.push("known exploited".to_string());
+    }
+    if candidate.missing_fix_version {
+        details.push("no fixed-version bound".to_string());
+    }
+
+    if details.is_empty() {
+        format!(
             "High-confidence advisory match: {} applies to {}",
             candidate.primary_id, candidate.product_name
-        ),
+        )
+    } else {
+        format!(
+            "High-confidence advisory match: {} ({}) applies to {}",
+            candidate.primary_id,
+            details.join(", "),
+            candidate.product_name
+        )
     }
 }
 
@@ -203,7 +214,7 @@ fn advisory_score_delta(known_exploited: bool, severity_rank: u8) -> u8 {
 fn best_record_match(
     installed: &InstalledSoftware,
     record: &VulnerabilityRecord,
-) -> Option<AffectedProductMatch> {
+) -> Option<RuntimeAdvisoryMatch> {
     let installed_ref = InstalledProductRef {
         product_key: &installed.product_key,
         product_aliases: &installed.product_aliases,
@@ -216,14 +227,34 @@ fn best_record_match(
         .affected_products
         .iter()
         .filter_map(|affected| {
-            evaluate_affected_product_match(&installed_ref, &affected_product_ref(affected))
+            let matched =
+                evaluate_affected_product_match(&installed_ref, &affected_product_ref(affected))?;
+            Some(RuntimeAdvisoryMatch {
+                matched,
+                missing_fix_version: missing_fix_version_bound(affected),
+            })
         })
-        .max_by_key(|matched| {
+        .max_by_key(|candidate| {
             (
-                advisory_match_rank(matched.confidence, matched.version_status),
-                source_explainability_rank(matched),
+                advisory_match_rank(
+                    candidate.matched.confidence,
+                    candidate.matched.version_status,
+                ),
+                source_explainability_rank(&candidate.matched),
             )
         })
+}
+
+fn missing_fix_version_bound(affected: &AffectedProduct) -> bool {
+    has_lower_version_bound(affected) && !has_upper_version_bound(affected)
+}
+
+fn has_lower_version_bound(affected: &AffectedProduct) -> bool {
+    affected.version_start_including.is_some() || affected.version_start_excluding.is_some()
+}
+
+fn has_upper_version_bound(affected: &AffectedProduct) -> bool {
+    affected.version_end_including.is_some() || affected.version_end_excluding.is_some()
 }
 
 fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef<'a> {
@@ -507,6 +538,7 @@ mod tests {
         assert!(outcome.reasons[0].contains("CVE-2026-12345"));
         assert!(outcome.reasons[0].contains("known exploited"));
         assert!(outcome.reasons[0].contains("Google Chrome"));
+        assert!(!outcome.reasons[0].contains("no fixed-version bound"));
     }
 
     #[test]
@@ -610,6 +642,80 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 2);
         assert!(outcome.reasons[0].contains("critical 9.1"));
+    }
+
+    #[test]
+    fn open_ended_range_marks_reason_as_missing_fix_version_bound() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let cache = cache(vec![record(
+            "CVE-2026-44444",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                Some("124.0.0"),
+                None,
+            )],
+        )]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("no fixed-version bound"));
+    }
+
+    #[test]
+    fn bounded_range_does_not_mark_reason_as_missing_fix_version_bound() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let cache = cache(vec![record(
+            "CVE-2026-55555",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                Some("124.0.0"),
+                Some("125.0.0"),
+            )],
+        )]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(!outcome.reasons[0].contains("no fixed-version bound"));
     }
 
     #[test]
