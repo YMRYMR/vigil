@@ -93,7 +93,7 @@ The Settings tab stores changes automatically. Common settings include:
 - autostart at login
 - trusted processes
 - allowlist-only mode
-- user-defined response rules
+- user-defined response rules, including conservative advisory-aware predicates
 - scheduled lockdown
 - break-glass recovery timeout
 - forensic capture options
@@ -106,6 +106,8 @@ Configured blocklists and response-rule YAML stay operator-managed: Vigil can ve
 By default, Vigil also requires an extra typed confirmation before turning on disruptive protections such as auto response, allowlist-only mode, scheduled lockdown, or decoy-triggered auto-isolation. That guardrail is there so a non-expert user does not enable a feature that can cut off normal software or network access without pausing to review the consequences.
 
 The Trusted Processes section now includes a short onboarding tutorial. It explains how to keep the shipped baseline, learn from Activity and the Inspector, and add only stable apps you already recognize.
+
+Response rules can also match high-confidence advisory context conservatively, including known-exploited status, mitigation-guidance availability, missing fixed-version bounds, affected-product text, and obvious public-internet exposure for a globally routable listening socket. See [Response rules](RESPONSE-RULES.md) and `response-rules.example.yaml` for the exact YAML fields and example patterns.
 
 ### Help
 
@@ -207,6 +209,8 @@ vigil --import-bsi certbund-feed.xml bsi-advisories.json
 ```
 
 The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored JSON, then preserve source links, identifiers, timestamps, and other provenance fields in the same protected advisory cache as the other Phase 16 sources.
+
+Once Vigil has both the protected advisory cache and a local software inventory snapshot, you can also use those matches as conservative inputs for operator-managed response rules. The dedicated [Response rules](RESPONSE-RULES.md) guide and `response-rules.example.yaml` show how to keep that automation explainable and fail-open.
 
 ## Local software inventory
 
