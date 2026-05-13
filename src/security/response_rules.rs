@@ -64,6 +64,8 @@ pub struct ResponseRule {
     #[serde(default)]
     pub require_known_exploited_advisory: bool,
     #[serde(default)]
+    pub require_advisory_mitigation_guidance: bool,
+    #[serde(default)]
     pub require_missing_advisory_fix_version: bool,
     #[serde(default)]
     pub advisory_id_contains: Option<String>,
@@ -102,6 +104,7 @@ struct ParsedAdvisoryReason<'a> {
     product_name: &'a str,
     severity: Option<AdvisorySeverity>,
     known_exploited: bool,
+    mitigation_guidance: bool,
     missing_fix_version: bool,
 }
 
@@ -277,6 +280,7 @@ fn matches_advisory_filters(
 ) -> bool {
     let has_advisory_filter = rule.require_advisory_match
         || rule.require_known_exploited_advisory
+        || rule.require_advisory_mitigation_guidance
         || rule.require_missing_advisory_fix_version
         || rule.advisory_id_contains.is_some()
         || rule.advisory_product_contains.is_some()
@@ -308,6 +312,7 @@ fn matches_advisory_filters(
 
     advisory_reasons.iter().any(|reason| {
         (!rule.require_known_exploited_advisory || reason.known_exploited)
+            && (!rule.require_advisory_mitigation_guidance || reason.mitigation_guidance)
             && (!rule.require_missing_advisory_fix_version || reason.missing_fix_version)
             && advisory_id_contains
                 .as_ref()
@@ -350,6 +355,7 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
 
     let mut severity = None;
     let mut known_exploited = false;
+    let mut mitigation_guidance = false;
     let mut missing_fix_version = false;
     if let Some(detail_block) = detail_block {
         for detail in detail_block
@@ -359,6 +365,10 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
         {
             if detail.eq_ignore_ascii_case("known exploited") {
                 known_exploited = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("mitigation guidance available") {
+                mitigation_guidance = true;
                 continue;
             }
             if detail.eq_ignore_ascii_case("no fixed-version bound") {
@@ -376,6 +386,7 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
         product_name,
         severity,
         known_exploited,
+        mitigation_guidance,
         missing_fix_version,
     })
 }
@@ -609,9 +620,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_advisory_reason_with_known_exploited_severity_and_fix_bound_marker() {
+    fn parses_advisory_reason_with_known_exploited_guidance_severity_and_fix_bound_marker() {
         let parsed = parse_advisory_reason(
-            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, no fixed-version bound) applies to Google Chrome",
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, mitigation guidance available, no fixed-version bound) applies to Google Chrome",
         )
         .unwrap();
 
@@ -619,6 +630,7 @@ mod tests {
         assert_eq!(parsed.product_name, "Google Chrome");
         assert_eq!(parsed.severity, Some(AdvisorySeverity::Critical));
         assert!(parsed.known_exploited);
+        assert!(parsed.mitigation_guidance);
         assert!(parsed.missing_fix_version);
     }
 
@@ -626,7 +638,7 @@ mod tests {
     fn advisory_filters_match_high_confidence_reason() {
         let mut conn = sample_conn();
         conn.reasons = vec![
-            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, no fixed-version bound) applies to Google Chrome".into(),
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, mitigation guidance available, no fixed-version bound) applies to Google Chrome".into(),
         ];
 
         let rule = ResponseRule {
@@ -642,6 +654,7 @@ mod tests {
             require_long_lived: false,
             require_advisory_match: true,
             require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
             require_missing_advisory_fix_version: true,
             advisory_id_contains: Some("CVE-2026-12345".into()),
             advisory_product_contains: Some("chrome".into()),
@@ -658,12 +671,13 @@ mod tests {
         let mut conn = sample_conn();
         conn.reasons = vec![
             "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome".into(),
-            "High-confidence advisory match: CVE-2026-99999 (medium 5.4, no fixed-version bound) applies to Example Agent".into(),
+            "High-confidence advisory match: CVE-2026-99999 (medium 5.4, mitigation guidance available, no fixed-version bound) applies to Example Agent".into(),
         ];
 
         let rule = ResponseRule {
             require_advisory_match: true,
             require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
             require_missing_advisory_fix_version: true,
             advisory_id_contains: Some("CVE-2026-12345".into()),
             advisory_product_contains: Some("chrome".into()),
@@ -685,6 +699,7 @@ mod tests {
         let exploited_rule = ResponseRule {
             require_advisory_match: true,
             require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
             require_missing_advisory_fix_version: true,
             min_advisory_severity: Some(AdvisorySeverity::High),
             advisory_product_contains: Some("chrome".into()),
@@ -746,6 +761,7 @@ mod tests {
             require_long_lived: false,
             require_advisory_match: false,
             require_known_exploited_advisory: false,
+            require_advisory_mitigation_guidance: false,
             require_missing_advisory_fix_version: false,
             advisory_id_contains: None,
             advisory_product_contains: None,
