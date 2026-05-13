@@ -48,6 +48,7 @@ struct RuntimeAdvisoryCandidate {
     severity_rank: u8,
     known_exploited: bool,
     mitigation_guidance: bool,
+    vendor_mitigation_guidance: bool,
     missing_fix_version: bool,
     score_delta: u8,
 }
@@ -141,6 +142,11 @@ fn advisory_score_from_data(
             .then_with(|| right.severity_rank.cmp(&left.severity_rank))
             .then_with(|| right.missing_fix_version.cmp(&left.missing_fix_version))
             .then_with(|| right.mitigation_guidance.cmp(&left.mitigation_guidance))
+            .then_with(|| {
+                right
+                    .vendor_mitigation_guidance
+                    .cmp(&left.vendor_mitigation_guidance)
+            })
             .then_with(|| left.primary_id.cmp(&right.primary_id))
     });
 
@@ -183,6 +189,7 @@ fn build_candidate(
         severity_rank,
         known_exploited: record.known_exploited,
         mitigation_guidance: has_mitigation_guidance(record),
+        vendor_mitigation_guidance: has_vendor_mitigation_guidance(record),
         missing_fix_version: matched.missing_fix_version,
         score_delta: advisory_score_delta(record.known_exploited, severity_rank),
     })
@@ -198,6 +205,9 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
     }
     if candidate.mitigation_guidance {
         details.push("mitigation guidance available".to_string());
+    }
+    if candidate.vendor_mitigation_guidance {
+        details.push("vendor guidance available".to_string());
     }
     if candidate.missing_fix_version {
         details.push("no fixed-version bound".to_string());
@@ -235,6 +245,13 @@ fn has_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
             .references
             .iter()
             .any(reference_has_mitigation_guidance)
+}
+
+fn has_vendor_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
+    record
+        .references
+        .iter()
+        .any(reference_has_vendor_mitigation_guidance)
 }
 
 // Bare fixed-version tokens are version metadata, not actionable mitigation guidance.
@@ -291,6 +308,14 @@ fn reference_has_mitigation_guidance(reference: &VulnerabilityReference) -> bool
             .any(|tag| mitigation_reference_tag(tag))
 }
 
+fn reference_has_vendor_mitigation_guidance(reference: &VulnerabilityReference) -> bool {
+    reference_has_mitigation_guidance(reference)
+        && reference
+            .tags
+            .iter()
+            .any(|tag| vendor_advisory_reference_tag(tag))
+}
+
 fn mitigation_reference_tag(tag: &str) -> bool {
     let normalized = tag
         .trim()
@@ -313,6 +338,21 @@ fn mitigation_reference_tag(tag: &str) -> bool {
                 | "patches"
         )
     })
+}
+
+fn vendor_advisory_reference_tag(tag: &str) -> bool {
+    let normalized = tag
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_', '/'], " ");
+    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
+    tokens.contains(&"vendor")
+        && tokens.iter().any(|token| {
+            matches!(
+                *token,
+                "advisory" | "advisories" | "bulletin" | "bulletins" | "notice" | "notices"
+            )
+        })
 }
 
 fn advisory_score_delta(known_exploited: bool, severity_rank: u8) -> u8 {
@@ -653,6 +693,7 @@ mod tests {
         assert!(outcome.reasons[0].contains("known exploited"));
         assert!(outcome.reasons[0].contains("Google Chrome"));
         assert!(!outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
         assert!(!outcome.reasons[0].contains("no fixed-version bound"));
     }
 
@@ -796,6 +837,7 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
     }
 
     #[test]
@@ -835,6 +877,7 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(!outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
     }
 
     #[test]
@@ -874,6 +917,7 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
     }
 
     #[test]
@@ -917,6 +961,7 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
     }
 
     #[test]
@@ -960,6 +1005,51 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(!outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
+    fn vendor_mitigation_guidance_marks_reason_when_reference_has_vendor_and_remediation_tags() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-44446",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/vendor-advisory".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Vendor Advisory".into(), "Mitigation".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(outcome.reasons[0].contains("vendor guidance available"));
     }
 
     #[test]
