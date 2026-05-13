@@ -247,9 +247,7 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
         return false;
     }
     if rule.require_known_exploited_advisory
-        && !advisory_reasons
-            .iter()
-            .any(|reason| reason.known_exploited)
+        && !advisory_reasons.iter().any(|reason| reason.known_exploited)
     {
         return false;
     }
@@ -333,7 +331,11 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
     let mut severity = None;
     let mut known_exploited = false;
     if let Some(detail_block) = detail_block {
-        for detail in detail_block.split(',').map(str::trim).filter(|detail| !detail.is_empty()) {
+        for detail in detail_block
+            .split(',')
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+        {
             if detail.eq_ignore_ascii_case("known exploited") {
                 known_exploited = true;
                 continue;
@@ -627,7 +629,8 @@ mod tests {
     fn advisory_filters_reject_missing_or_weaker_matches() {
         let mut conn = sample_conn();
         conn.reasons = vec![
-            "High-confidence advisory match: CVE-2026-54321 (medium 5.4) applies to Example Agent".into(),
+            "High-confidence advisory match: CVE-2026-54321 (medium 5.4) applies to Example Agent"
+                .into(),
         ];
 
         let exploited_rule = ResponseRule {
