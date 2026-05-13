@@ -230,11 +230,57 @@ fn has_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
     record
         .mitigations
         .iter()
-        .any(|guidance| !guidance.trim().is_empty())
+        .any(|guidance| guidance_text_has_mitigation_guidance(guidance))
         || record
             .references
             .iter()
             .any(reference_has_mitigation_guidance)
+}
+
+// Bare fixed-version tokens are version metadata, not actionable mitigation guidance.
+fn guidance_text_has_mitigation_guidance(text: &str) -> bool {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return true;
+    }
+    !looks_like_bare_version_hint(trimmed)
+}
+
+fn looks_like_bare_version_hint(text: &str) -> bool {
+    let mut saw_token = false;
+    for token in text
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, ',' | ';' | '/'))
+        .filter(|token| !token.is_empty())
+    {
+        saw_token = true;
+        if !version_like_token(token) {
+            return false;
+        }
+    }
+    saw_token
+}
+
+fn version_like_token(token: &str) -> bool {
+    let token = token.trim_matches(|ch: char| matches!(ch, '(' | ')' | '[' | ']'));
+    let token = token
+        .strip_prefix('v')
+        .or_else(|| token.strip_prefix('V'))
+        .unwrap_or(token);
+    let mut saw_digit = false;
+    for ch in token.chars() {
+        if ch.is_ascii_digit() {
+            saw_digit = true;
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_' | '+') {
+            continue;
+        }
+        return false;
+    }
+    saw_digit
 }
 
 fn reference_has_mitigation_guidance(reference: &VulnerabilityReference) -> bool {
@@ -736,6 +782,84 @@ mod tests {
             )],
         );
         advisory.mitigations = vec!["https://example.test/vendor-guidance".into()];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+    }
+
+    #[test]
+    fn mitigation_guidance_ignores_bare_fixed_version_text() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-42223",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.mitigations = vec!["124.0.6367.99".into()];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(!outcome.reasons[0].contains("mitigation guidance available"));
+    }
+
+    #[test]
+    fn mitigation_guidance_keeps_descriptive_fixed_version_text() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-42224",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.mitigations = vec!["Upgrade to 124.0.6367.99 or later".into()];
         let cache = cache(vec![advisory]);
 
         let outcome = advisory_score_from_data(
