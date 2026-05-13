@@ -35,7 +35,7 @@ Supported advisory predicates:
 
 Supported `min_advisory_severity` values are `low`, `medium`, `high`, and `critical`.
 
-`require_advisory_mitigation_guidance` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `mitigation guidance available`, which Vigil emits only when the matched advisory record already carries non-empty mitigation, remediation, workaround, or guidance text/URLs in the protected advisory cache, or a clearly remediation-tagged reference URL such as `Mitigation`, `Patch`, or `Workaround`. It does not classify authorship yet, so this is not a vendor-only guidance predicate.
+`require_advisory_mitigation_guidance` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `mitigation guidance available`, which Vigil emits only when the matched advisory record already carries non-empty mitigation, remediation, workaround, or guidance text/URLs in the protected advisory cache, or a clearly remediation-tagged reference URL such as `Mitigation`, `Patch`, or `Workaround`. Vigil now also ignores bare fixed-version tokens like `124.0.6367.99`, so version-only fields do not get mistaken for operator guidance. It still does not classify authorship yet, so this is not a vendor-only guidance predicate.
 
 `require_advisory_public_internet_exposure` is intentionally narrow. Today it matches only when the same connection event is a `LISTEN` socket bound to an obviously globally routable local IP address. It does not infer exposure through NAT, wildcard binds, reverse proxies, or reachability beyond what Vigil can observe locally.
 
