@@ -136,17 +136,25 @@ fn advisory_score_from_data(
             .cmp(&left.known_exploited)
             .then_with(|| right.score_delta.cmp(&left.score_delta))
             .then_with(|| right.severity_rank.cmp(&left.severity_rank))
+            .then_with(|| right.missing_fix_version.cmp(&left.missing_fix_version))
             .then_with(|| right.mitigation_guidance.cmp(&left.mitigation_guidance))
             .then_with(|| left.primary_id.cmp(&right.primary_id))
     });
 
-    let Some(candidate) = candidates.into_iter().next() else {
+    let Some(best_priority) = candidates.first().map(candidate_priority) else {
         return AdvisoryScoreOutcome::default();
     };
 
+    let score_delta = candidates[0].score_delta;
+    let reasons = candidates
+        .into_iter()
+        .filter(|candidate| candidate_priority(candidate) == best_priority)
+        .map(|candidate| advisory_reason(&candidate))
+        .collect();
+
     AdvisoryScoreOutcome {
-        score_delta: candidate.score_delta,
-        reasons: vec![advisory_reason(&candidate)],
+        score_delta,
+        reasons,
     }
 }
 
@@ -205,6 +213,14 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
             candidate.product_name
         )
     }
+}
+
+fn candidate_priority(candidate: &RuntimeAdvisoryCandidate) -> (bool, u8, u8) {
+    (
+        candidate.known_exploited,
+        candidate.score_delta,
+        candidate.severity_rank,
+    )
 }
 
 fn has_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
@@ -698,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn mitigation_guidance_wins_ties_between_equally_ranked_matches() {
+    fn equally_ranked_matches_keep_multiple_reason_markers_visible() {
         let inventory = vec![installed(
             "google-chrome",
             "Google Chrome",
@@ -707,7 +723,7 @@ mod tests {
             &["chrome", "google-chrome"],
             InventorySource::WindowsUninstallRegistry,
         )];
-        let without_guidance = record(
+        let missing_fix = record(
             "CVE-2026-10000",
             true,
             "CRITICAL",
@@ -715,7 +731,7 @@ mod tests {
             vec![affected(
                 "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
                 None,
-                None,
+                Some("124.0.0"),
                 None,
             )],
         );
@@ -732,7 +748,7 @@ mod tests {
             )],
         );
         with_guidance.mitigations = vec!["https://example.test/vendor-guidance".into()];
-        let cache = cache(vec![without_guidance, with_guidance]);
+        let cache = cache(vec![missing_fix, with_guidance]);
 
         let outcome = advisory_score_from_data(
             &target(
@@ -745,8 +761,13 @@ mod tests {
         );
 
         assert_eq!(outcome.score_delta, 3);
-        assert!(outcome.reasons[0].contains("CVE-2026-99999"));
-        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert_eq!(outcome.reasons.len(), 2);
+        assert!(outcome.reasons.iter().any(|reason| {
+            reason.contains("CVE-2026-10000") && reason.contains("no fixed-version bound")
+        }));
+        assert!(outcome.reasons.iter().any(|reason| {
+            reason.contains("CVE-2026-99999") && reason.contains("mitigation guidance available")
+        }));
     }
 
     #[test]
