@@ -136,6 +136,7 @@ fn advisory_score_from_data(
             .cmp(&left.known_exploited)
             .then_with(|| right.score_delta.cmp(&left.score_delta))
             .then_with(|| right.severity_rank.cmp(&left.severity_rank))
+            .then_with(|| right.mitigation_guidance.cmp(&left.mitigation_guidance))
             .then_with(|| left.primary_id.cmp(&right.primary_id))
     });
 
@@ -693,6 +694,58 @@ mod tests {
         );
 
         assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+    }
+
+    #[test]
+    fn mitigation_guidance_wins_ties_between_equally_ranked_matches() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let without_guidance = record(
+            "CVE-2026-10000",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        let mut with_guidance = record(
+            "CVE-2026-99999",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        with_guidance.mitigations = vec!["https://example.test/vendor-guidance".into()];
+        let cache = cache(vec![without_guidance, with_guidance]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("CVE-2026-99999"));
         assert!(outcome.reasons[0].contains("mitigation guidance available"));
     }
 
