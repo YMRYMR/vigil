@@ -6,6 +6,12 @@
 //! audited in the same way as the built-in controls. `<rules-file>.sha256`
 //! is required beside the YAML file; Vigil verifies the SHA-256 digest before
 //! parsing and refuses missing or tampered rule files.
+//!
+//! Advisory-aware predicates intentionally consume only the normalized,
+//! high-confidence advisory reason strings already attached to a connection.
+//! This keeps the initial Phase 16 slice conservative: no extra live cache
+//! lookups happen in the rule engine, and a missing or unparsable advisory
+//! reason simply leaves the advisory predicates unmatched instead of guessing.
 
 use crate::{
     active_response, audit,
@@ -54,6 +60,16 @@ pub struct ResponseRule {
     #[serde(default)]
     pub require_long_lived: bool,
     #[serde(default)]
+    pub require_advisory_match: bool,
+    #[serde(default)]
+    pub require_known_exploited_advisory: bool,
+    #[serde(default)]
+    pub advisory_id_contains: Option<String>,
+    #[serde(default)]
+    pub advisory_product_contains: Option<String>,
+    #[serde(default)]
+    pub min_advisory_severity: Option<AdvisorySeverity>,
+    #[serde(default)]
     pub action: RuleAction,
     #[serde(default)]
     pub duration: Option<String>,
@@ -67,6 +83,23 @@ pub enum RuleAction {
     BlockRemote,
     BlockProcess,
     Quarantine,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorySeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedAdvisoryReason<'a> {
+    primary_id: &'a str,
+    product_name: &'a str,
+    severity: Option<AdvisorySeverity>,
+    known_exploited: bool,
 }
 
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
@@ -208,6 +241,47 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
     if rule.require_long_lived && !conn.long_lived {
         return false;
     }
+
+    let advisory_reasons = parse_advisory_reasons(&conn.reasons);
+    if rule.require_advisory_match && advisory_reasons.is_empty() {
+        return false;
+    }
+    if rule.require_known_exploited_advisory
+        && !advisory_reasons
+            .iter()
+            .any(|reason| reason.known_exploited)
+    {
+        return false;
+    }
+    if let Some(text) = rule.advisory_id_contains.as_ref() {
+        let text = text.trim().to_ascii_lowercase();
+        if text.is_empty()
+            || !advisory_reasons
+                .iter()
+                .any(|reason| reason.primary_id.to_ascii_lowercase().contains(&text))
+        {
+            return false;
+        }
+    }
+    if let Some(text) = rule.advisory_product_contains.as_ref() {
+        let text = normalise_name(text);
+        if text.is_empty()
+            || !advisory_reasons
+                .iter()
+                .any(|reason| normalise_name(reason.product_name).contains(&text))
+        {
+            return false;
+        }
+    }
+    if let Some(min) = rule.min_advisory_severity {
+        if !advisory_reasons
+            .iter()
+            .any(|reason| reason.severity.is_some_and(|severity| severity >= min))
+        {
+            return false;
+        }
+    }
+
     if let Some(text) = rule.process_name_contains.as_ref() {
         if !normalise_name(&conn.proc_name).contains(&normalise_name(text)) {
             return false;
@@ -227,6 +301,66 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
         }
     }
     true
+}
+
+fn parse_advisory_reasons<'a>(reasons: &'a [String]) -> Vec<ParsedAdvisoryReason<'a>> {
+    reasons
+        .iter()
+        .filter_map(|reason| parse_advisory_reason(reason))
+        .collect()
+}
+
+fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
+    const PREFIX: &str = "High-confidence advisory match: ";
+
+    let body = reason.strip_prefix(PREFIX)?;
+    let (left, product_name) = body.split_once(" applies to ")?;
+    let product_name = product_name.trim();
+    if product_name.is_empty() {
+        return None;
+    }
+
+    let (primary_id, detail_block) = if let Some((primary_id, details)) = left.split_once(" (") {
+        let details = details.strip_suffix(')')?;
+        (primary_id.trim(), Some(details.trim()))
+    } else {
+        (left.trim(), None)
+    };
+    if primary_id.is_empty() {
+        return None;
+    }
+
+    let mut severity = None;
+    let mut known_exploited = false;
+    if let Some(detail_block) = detail_block {
+        for detail in detail_block.split(',').map(str::trim).filter(|detail| !detail.is_empty()) {
+            if detail.eq_ignore_ascii_case("known exploited") {
+                known_exploited = true;
+                continue;
+            }
+            if severity.is_none() {
+                severity = parse_advisory_severity(detail);
+            }
+        }
+    }
+
+    Some(ParsedAdvisoryReason {
+        primary_id,
+        product_name,
+        severity,
+        known_exploited,
+    })
+}
+
+fn parse_advisory_severity(text: &str) -> Option<AdvisorySeverity> {
+    let token = text.split_whitespace().next()?.trim().to_ascii_lowercase();
+    match token.as_str() {
+        "low" => Some(AdvisorySeverity::Low),
+        "medium" => Some(AdvisorySeverity::Medium),
+        "high" => Some(AdvisorySeverity::High),
+        "critical" => Some(AdvisorySeverity::Critical),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +580,74 @@ mod tests {
         assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
     }
 
+    #[test]
+    fn parses_advisory_reason_with_known_exploited_and_severity() {
+        let parsed = parse_advisory_reason(
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome",
+        )
+        .unwrap();
+
+        assert_eq!(parsed.primary_id, "CVE-2026-12345");
+        assert_eq!(parsed.product_name, "Google Chrome");
+        assert_eq!(parsed.severity, Some(AdvisorySeverity::Critical));
+        assert!(parsed.known_exploited);
+    }
+
+    #[test]
+    fn advisory_filters_match_high_confidence_reason() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome".into(),
+        ];
+
+        let rule = ResponseRule {
+            name: "exploited browser advisory".into(),
+            min_score: None,
+            process_name_contains: None,
+            remote_contains: None,
+            require_unsigned: false,
+            require_pre_login: false,
+            require_reputation_hit: false,
+            require_dga: false,
+            require_recently_dropped: false,
+            require_long_lived: false,
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            advisory_id_contains: Some("CVE-2026-12345".into()),
+            advisory_product_contains: Some("chrome".into()),
+            min_advisory_severity: Some(AdvisorySeverity::Critical),
+            action: RuleAction::BlockRemote,
+            duration: None,
+        };
+
+        assert!(matches_rule(&rule, &conn));
+    }
+
+    #[test]
+    fn advisory_filters_reject_missing_or_weaker_matches() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-54321 (medium 5.4) applies to Example Agent".into(),
+        ];
+
+        let exploited_rule = ResponseRule {
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            min_advisory_severity: Some(AdvisorySeverity::High),
+            advisory_product_contains: Some("chrome".into()),
+            ..sample_rule()
+        };
+        assert!(!matches_rule(&exploited_rule, &conn));
+
+        let mut no_advisory_conn = sample_conn();
+        no_advisory_conn.reasons = vec!["Unusual destination port 4444".into()];
+        let advisory_rule = ResponseRule {
+            require_advisory_match: true,
+            ..sample_rule()
+        };
+        assert!(!matches_rule(&advisory_rule, &no_advisory_conn));
+    }
+
     fn write_sidecar(path: &Path, content: &str) {
         let digest = Sha256::digest(content.as_bytes());
         fs::write(
@@ -475,5 +677,63 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("vigil-response-rules-test-{nanos}"))
+    }
+
+    fn sample_rule() -> ResponseRule {
+        ResponseRule {
+            name: "sample".into(),
+            min_score: None,
+            process_name_contains: None,
+            remote_contains: None,
+            require_unsigned: false,
+            require_pre_login: false,
+            require_reputation_hit: false,
+            require_dga: false,
+            require_recently_dropped: false,
+            require_long_lived: false,
+            require_advisory_match: false,
+            require_known_exploited_advisory: false,
+            advisory_id_contains: None,
+            advisory_product_contains: None,
+            min_advisory_severity: None,
+            action: RuleAction::KillConnection,
+            duration: None,
+        }
+    }
+
+    fn sample_conn() -> ConnInfo {
+        ConnInfo {
+            timestamp: "12:00:00".into(),
+            proc_name: "chrome.exe".into(),
+            pid: 4242,
+            proc_path: "C:/Program Files/Google/Chrome/chrome.exe".into(),
+            proc_user: "user".into(),
+            parent_user: "user".into(),
+            parent_name: "explorer.exe".into(),
+            parent_pid: 1337,
+            service_name: String::new(),
+            publisher: "Google LLC".into(),
+            command_line: String::new(),
+            local_addr: "10.0.0.2:51234".into(),
+            remote_addr: "198.51.100.20:443".into(),
+            status: "ESTABLISHED".into(),
+            score: 10,
+            reasons: vec![],
+            attack_tags: vec![],
+            ancestor_chain: vec![],
+            pre_login: false,
+            hostname: Some("example.test".into()),
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            tls_sni: None,
+            tls_ja3: None,
+        }
     }
 }
