@@ -107,7 +107,7 @@ By default, Vigil also requires an extra typed confirmation before turning on di
 
 The Trusted Processes section now includes a short onboarding tutorial. It explains how to keep the shipped baseline, learn from Activity and the Inspector, and add only stable apps you already recognize.
 
-Response rules can also match high-confidence advisory context conservatively, including known-exploited status, mitigation-guidance availability, missing fixed-version bounds, affected-product text, and obvious public-internet exposure for a globally routable listening socket. See [Response rules](RESPONSE-RULES.md) and `response-rules.example.yaml` for the exact YAML fields and example patterns.
+Response rules can also match high-confidence advisory context conservatively, including known-exploited status, mitigation-guidance availability, explicitly vendor-tagged guidance references, missing fixed-version bounds, affected-product text, and obvious public-internet exposure for a globally routable listening socket. See [Response rules](RESPONSE-RULES.md) and `response-rules.example.yaml` for the exact YAML fields and example patterns.
 
 ### Help
 
