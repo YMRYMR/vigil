@@ -9,7 +9,7 @@
 //!
 //! Advisory-aware predicates intentionally consume only the normalized,
 //! high-confidence advisory reason strings already attached to a connection.
-//! This keeps the initial Phase 16 slice conservative: no extra live cache
+//! This keeps the Phase 16 rule slice conservative: no extra live cache
 //! lookups happen in the rule engine, and a missing or unparsable advisory
 //! reason simply leaves the advisory predicates unmatched instead of guessing.
 
@@ -64,6 +64,8 @@ pub struct ResponseRule {
     #[serde(default)]
     pub require_known_exploited_advisory: bool,
     #[serde(default)]
+    pub require_missing_advisory_fix_version: bool,
+    #[serde(default)]
     pub advisory_id_contains: Option<String>,
     #[serde(default)]
     pub advisory_product_contains: Option<String>,
@@ -100,6 +102,7 @@ struct ParsedAdvisoryReason<'a> {
     product_name: &'a str,
     severity: Option<AdvisorySeverity>,
     known_exploited: bool,
+    missing_fix_version: bool,
 }
 
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
@@ -251,6 +254,13 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
     {
         return false;
     }
+    if rule.require_missing_advisory_fix_version
+        && !advisory_reasons
+            .iter()
+            .any(|reason| reason.missing_fix_version)
+    {
+        return false;
+    }
     if let Some(text) = rule.advisory_id_contains.as_ref() {
         let text = text.trim().to_ascii_lowercase();
         if text.is_empty()
@@ -330,6 +340,7 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
 
     let mut severity = None;
     let mut known_exploited = false;
+    let mut missing_fix_version = false;
     if let Some(detail_block) = detail_block {
         for detail in detail_block
             .split(',')
@@ -338,6 +349,10 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
         {
             if detail.eq_ignore_ascii_case("known exploited") {
                 known_exploited = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("no fixed-version bound") {
+                missing_fix_version = true;
                 continue;
             }
             if severity.is_none() {
@@ -351,6 +366,7 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
         product_name,
         severity,
         known_exploited,
+        missing_fix_version,
     })
 }
 
@@ -583,9 +599,9 @@ mod tests {
     }
 
     #[test]
-    fn parses_advisory_reason_with_known_exploited_and_severity() {
+    fn parses_advisory_reason_with_known_exploited_severity_and_fix_bound_marker() {
         let parsed = parse_advisory_reason(
-            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome",
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, no fixed-version bound) applies to Google Chrome",
         )
         .unwrap();
 
@@ -593,13 +609,14 @@ mod tests {
         assert_eq!(parsed.product_name, "Google Chrome");
         assert_eq!(parsed.severity, Some(AdvisorySeverity::Critical));
         assert!(parsed.known_exploited);
+        assert!(parsed.missing_fix_version);
     }
 
     #[test]
     fn advisory_filters_match_high_confidence_reason() {
         let mut conn = sample_conn();
         conn.reasons = vec![
-            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome".into(),
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, no fixed-version bound) applies to Google Chrome".into(),
         ];
 
         let rule = ResponseRule {
@@ -615,6 +632,7 @@ mod tests {
             require_long_lived: false,
             require_advisory_match: true,
             require_known_exploited_advisory: true,
+            require_missing_advisory_fix_version: true,
             advisory_id_contains: Some("CVE-2026-12345".into()),
             advisory_product_contains: Some("chrome".into()),
             min_advisory_severity: Some(AdvisorySeverity::Critical),
@@ -636,6 +654,7 @@ mod tests {
         let exploited_rule = ResponseRule {
             require_advisory_match: true,
             require_known_exploited_advisory: true,
+            require_missing_advisory_fix_version: true,
             min_advisory_severity: Some(AdvisorySeverity::High),
             advisory_product_contains: Some("chrome".into()),
             ..sample_rule()
@@ -696,6 +715,7 @@ mod tests {
             require_long_lived: false,
             require_advisory_match: false,
             require_known_exploited_advisory: false,
+            require_missing_advisory_fix_version: false,
             advisory_id_contains: None,
             advisory_product_contains: None,
             min_advisory_severity: None,
