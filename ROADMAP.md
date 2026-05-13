@@ -35,7 +35,7 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 
 - [x] **Local advisory inspector** — show matched public advisories, CVEs, severity, known-exploitation flags, fixed versions, mitigation links, and source references for the selected process or installed product.
 - [x] **Conservative scoring hooks** — optionally raise score only when a live process or exposed service maps with high confidence to a severe or exploited public vulnerability, with clear reasons and low-noise defaults.
-- [ ] **Mitigation-aware response rules** — let operators build response rules around advisory attributes such as exploited status, vendor guidance, affected product, fixed-version absence, or exposure on the public internet.
+- [x] **Mitigation-aware response rules** — let operators build response rules around advisory attributes such as exploited status, vendor guidance, affected product, fixed-version absence, or exposure on the public internet.
 - [ ] **Public-source-to-blocklist/rule-pack conversion** — derive optional signed local IP, domain, hash, or process rule packs from high-confidence public advisories and NCSC/BSI technical content where indicators are explicitly published.
 - [ ] **Exposure-first prioritization** — prioritize vulnerabilities that are both relevant to the local machine and actually exposed through a running process, listening service, or browser-facing component.
 - [ ] **Offline-first and fail-open behaviour** — keep protection working from the last trusted cache, never weaken existing detection if source refresh fails, and surface stale or partial-source state clearly to the operator.
