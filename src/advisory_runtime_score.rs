@@ -1,4 +1,7 @@
-use crate::advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord, VulnerabilitySeverity};
+use crate::advisory::{
+    AdvisoryCache, AffectedProduct, VulnerabilityRecord, VulnerabilityReference,
+    VulnerabilitySeverity,
+};
 use crate::advisory_match::{
     evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef, InstalledProductRef,
     MatchConfidence, VersionMatchStatus,
@@ -228,6 +231,42 @@ fn has_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
         .mitigations
         .iter()
         .any(|guidance| !guidance.trim().is_empty())
+        || record
+            .references
+            .iter()
+            .any(reference_has_mitigation_guidance)
+}
+
+fn reference_has_mitigation_guidance(reference: &VulnerabilityReference) -> bool {
+    !reference.url.trim().is_empty()
+        && reference
+            .tags
+            .iter()
+            .any(|tag| mitigation_reference_tag(tag))
+}
+
+fn mitigation_reference_tag(tag: &str) -> bool {
+    let normalized = tag
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', '_', '/'], " ");
+    normalized.split_whitespace().any(|token| {
+        matches!(
+            token,
+            "mitigation"
+                | "mitigations"
+                | "remediation"
+                | "remediations"
+                | "workaround"
+                | "workarounds"
+                | "solution"
+                | "solutions"
+                | "fix"
+                | "fixes"
+                | "patch"
+                | "patches"
+        )
+    })
 }
 
 fn advisory_score_delta(known_exploited: bool, severity_rank: u8) -> u8 {
@@ -711,6 +750,92 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 3);
         assert!(outcome.reasons[0].contains("mitigation guidance available"));
+    }
+
+    #[test]
+    fn mitigation_guidance_marks_reason_when_record_has_tagged_reference() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-43333",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/patch".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Patch".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+    }
+
+    #[test]
+    fn vendor_advisory_reference_without_remediation_tag_stays_unmatched() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-44445",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/vendor-advisory".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Vendor Advisory".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(!outcome.reasons[0].contains("mitigation guidance available"));
     }
 
     #[test]
