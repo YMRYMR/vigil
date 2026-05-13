@@ -25,6 +25,7 @@ contract and startup-safety rule.
 ## Documentation
 
 - [User guide](docs/USER-GUIDE.md) — released functionality and operator workflows
+- [Response rules](docs/RESPONSE-RULES.md) — YAML syntax, advisory-aware predicates, and example rule patterns
 - [Supported platforms](docs/SUPPORTED-PLATFORMS.md) — Windows/Linux support contract
 - [Security policy](SECURITY.md) — vulnerability reporting and security contacts
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
@@ -132,6 +133,11 @@ exist locally, print explainable product-to-advisory matches with:
 ```bash
 vigil --advisory-match-status
 ```
+
+Use [`docs/RESPONSE-RULES.md`](docs/RESPONSE-RULES.md) together with
+[`response-rules.example.yaml`](response-rules.example.yaml) when you want to
+turn those high-confidence advisory matches into conservative operator-managed
+response rules.
 
 Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if the deployment
