@@ -33,7 +33,7 @@ Supported advisory predicates:
 
 Supported `min_advisory_severity` values are `low`, `medium`, `high`, and `critical`.
 
-`require_missing_advisory_fix_version` is intentionally narrow. Today it matches only when Vigil's high-confidence advisory reason includes `no fixed-version bound`, which Vigil emits only when the matched affected-product range has a lower version boundary but no upper version boundary. It does not guess from unconstrained rows or exact-version-only rows.
+`require_missing_advisory_fix_version` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `no fixed-version bound`, which Vigil emits only when the matched affected-product range has a lower version boundary but no upper version boundary. It does not guess from unconstrained rows or exact-version-only rows.
 
 ## Example
 
@@ -49,7 +49,7 @@ rules:
     duration: 24h
 ```
 
-This example only matches when Vigil already found a high-confidence applicable advisory for a Chrome-family product, marked it as known exploited, rated it at least critical, and could not find an upper fixed-version bound on the matched advisory range.
+This example only matches when Vigil already found one high-confidence applicable advisory reason for a Chrome-family product, marked it as known exploited, rated it at least critical, and could not find an upper fixed-version bound on the matched advisory range.
 
 ## Current scope limits
 
