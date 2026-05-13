@@ -296,8 +296,7 @@ fn matches_advisory_filters(
     if advisory_reasons.is_empty() {
         return false;
     }
-    if rule.require_advisory_public_internet_exposure
-        && !is_public_internet_exposed_listener(conn)
+    if rule.require_advisory_public_internet_exposure && !is_public_internet_exposed_listener(conn)
     {
         return false;
     }
