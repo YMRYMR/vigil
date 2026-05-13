@@ -27,6 +27,7 @@ Supported advisory predicates:
 - `require_advisory_match: true`
 - `require_known_exploited_advisory: true`
 - `require_advisory_mitigation_guidance: true`
+- `require_advisory_public_internet_exposure: true`
 - `require_missing_advisory_fix_version: true`
 - `advisory_id_contains: "CVE-2026-12345"`
 - `advisory_product_contains: "chrome"`
@@ -35,6 +36,8 @@ Supported advisory predicates:
 Supported `min_advisory_severity` values are `low`, `medium`, `high`, and `critical`.
 
 `require_advisory_mitigation_guidance` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `mitigation guidance available`, which Vigil emits only when the matched advisory record already carries non-empty mitigation, remediation, workaround, or guidance text/URLs in the protected advisory cache. It does not classify authorship yet, so this is not a vendor-only guidance predicate.
+
+`require_advisory_public_internet_exposure` is intentionally narrow. Today it matches only when the same connection event is a `LISTEN` socket bound to an obviously globally routable local IP address. It does not infer exposure through NAT, wildcard binds, reverse proxies, or reachability beyond what Vigil can observe locally.
 
 `require_missing_advisory_fix_version` is intentionally narrow. Today it matches only when the same high-confidence advisory reason includes `no fixed-version bound`, which Vigil emits only when the matched affected-product range has a lower version boundary but no upper version boundary. It does not guess from unconstrained rows or exact-version-only rows.
 
@@ -66,9 +69,10 @@ Today the rule engine can match only these advisory attributes:
 - known exploited flag
 - normalized severity floor
 - mitigation guidance availability in the protected advisory cache
+- obvious public-internet exposure for a current listening socket bound to a globally routable local IP
 - missing fixed-version bound on the matched advisory range
 
-The broader roadmap item still remains open for attributes such as vendor-specific guidance and exposure on the public internet.
+The broader roadmap item still remains open for attributes such as vendor-specific guidance and broader exposure inference beyond an obviously globally routable listener.
 
 ## Actions
 
