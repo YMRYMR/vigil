@@ -350,12 +350,7 @@ fn vendor_advisory_reference_tag(tag: &str) -> bool {
         && tokens.iter().any(|token| {
             matches!(
                 *token,
-                "advisory"
-                    | "advisories"
-                    | "bulletin"
-                    | "bulletins"
-                    | "notice"
-                    | "notices"
+                "advisory" | "advisories" | "bulletin" | "bulletins" | "notice" | "notices"
             )
         })
 }
