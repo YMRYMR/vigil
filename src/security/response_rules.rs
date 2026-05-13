@@ -246,48 +246,8 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
     }
 
     let advisory_reasons = parse_advisory_reasons(&conn.reasons);
-    if rule.require_advisory_match && advisory_reasons.is_empty() {
+    if !matches_advisory_filters(rule, &advisory_reasons) {
         return false;
-    }
-    if rule.require_known_exploited_advisory
-        && !advisory_reasons.iter().any(|reason| reason.known_exploited)
-    {
-        return false;
-    }
-    if rule.require_missing_advisory_fix_version
-        && !advisory_reasons
-            .iter()
-            .any(|reason| reason.missing_fix_version)
-    {
-        return false;
-    }
-    if let Some(text) = rule.advisory_id_contains.as_ref() {
-        let text = text.trim().to_ascii_lowercase();
-        if text.is_empty()
-            || !advisory_reasons
-                .iter()
-                .any(|reason| reason.primary_id.to_ascii_lowercase().contains(&text))
-        {
-            return false;
-        }
-    }
-    if let Some(text) = rule.advisory_product_contains.as_ref() {
-        let text = normalise_name(text);
-        if text.is_empty()
-            || !advisory_reasons
-                .iter()
-                .any(|reason| normalise_name(reason.product_name).contains(&text))
-        {
-            return false;
-        }
-    }
-    if let Some(min) = rule.min_advisory_severity {
-        if !advisory_reasons
-            .iter()
-            .any(|reason| reason.severity.is_some_and(|severity| severity >= min))
-        {
-            return false;
-        }
     }
 
     if let Some(text) = rule.process_name_contains.as_ref() {
@@ -309,6 +269,56 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
         }
     }
     true
+}
+
+fn matches_advisory_filters(
+    rule: &ResponseRule,
+    advisory_reasons: &[ParsedAdvisoryReason<'_>],
+) -> bool {
+    let has_advisory_filter = rule.require_advisory_match
+        || rule.require_known_exploited_advisory
+        || rule.require_missing_advisory_fix_version
+        || rule.advisory_id_contains.is_some()
+        || rule.advisory_product_contains.is_some()
+        || rule.min_advisory_severity.is_some();
+    if !has_advisory_filter {
+        return true;
+    }
+    if advisory_reasons.is_empty() {
+        return false;
+    }
+
+    let advisory_id_contains = rule
+        .advisory_id_contains
+        .as_ref()
+        .map(|text| text.trim().to_ascii_lowercase())
+        .filter(|text| !text.is_empty());
+    if rule.advisory_id_contains.is_some() && advisory_id_contains.is_none() {
+        return false;
+    }
+
+    let advisory_product_contains = rule
+        .advisory_product_contains
+        .as_ref()
+        .map(|text| normalise_name(text))
+        .filter(|text| !text.is_empty());
+    if rule.advisory_product_contains.is_some() && advisory_product_contains.is_none() {
+        return false;
+    }
+
+    advisory_reasons.iter().any(|reason| {
+        (!rule.require_known_exploited_advisory || reason.known_exploited)
+            && (!rule.require_missing_advisory_fix_version || reason.missing_fix_version)
+            && advisory_id_contains
+                .as_ref()
+                .is_none_or(|text| reason.primary_id.to_ascii_lowercase().contains(text))
+            && advisory_product_contains
+                .as_ref()
+                .is_none_or(|text| normalise_name(reason.product_name).contains(text))
+            && rule
+                .min_advisory_severity
+                .is_none_or(|min| reason.severity.is_some_and(|severity| severity >= min))
+    })
 }
 
 fn parse_advisory_reasons<'a>(reasons: &'a [String]) -> Vec<ParsedAdvisoryReason<'a>> {
@@ -641,6 +651,27 @@ mod tests {
         };
 
         assert!(matches_rule(&rule, &conn));
+    }
+
+    #[test]
+    fn advisory_filters_do_not_mix_signals_from_different_reasons() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome".into(),
+            "High-confidence advisory match: CVE-2026-99999 (medium 5.4, no fixed-version bound) applies to Example Agent".into(),
+        ];
+
+        let rule = ResponseRule {
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            require_missing_advisory_fix_version: true,
+            advisory_id_contains: Some("CVE-2026-12345".into()),
+            advisory_product_contains: Some("chrome".into()),
+            min_advisory_severity: Some(AdvisorySeverity::Critical),
+            ..sample_rule()
+        };
+
+        assert!(!matches_rule(&rule, &conn));
     }
 
     #[test]
