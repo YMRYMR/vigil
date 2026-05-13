@@ -766,8 +766,7 @@ mod tests {
             reason.contains("CVE-2026-10000") && reason.contains("no fixed-version bound")
         }));
         assert!(outcome.reasons.iter().any(|reason| {
-            reason.contains("CVE-2026-99999")
-                && reason.contains("mitigation guidance available")
+            reason.contains("CVE-2026-99999") && reason.contains("mitigation guidance available")
         }));
     }
 
