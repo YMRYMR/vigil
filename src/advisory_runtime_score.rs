@@ -44,6 +44,7 @@ struct RuntimeAdvisoryCandidate {
     severity_label: Option<String>,
     severity_rank: u8,
     known_exploited: bool,
+    mitigation_guidance: bool,
     missing_fix_version: bool,
     score_delta: u8,
 }
@@ -169,6 +170,7 @@ fn build_candidate(
         severity_label: severity.map(|summary| summary.label),
         severity_rank,
         known_exploited: record.known_exploited,
+        mitigation_guidance: has_mitigation_guidance(record),
         missing_fix_version: matched.missing_fix_version,
         score_delta: advisory_score_delta(record.known_exploited, severity_rank),
     })
@@ -181,6 +183,9 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
     }
     if candidate.known_exploited {
         details.push("known exploited".to_string());
+    }
+    if candidate.mitigation_guidance {
+        details.push("mitigation guidance available".to_string());
     }
     if candidate.missing_fix_version {
         details.push("no fixed-version bound".to_string());
@@ -199,6 +204,13 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
             candidate.product_name
         )
     }
+}
+
+fn has_mitigation_guidance(record: &VulnerabilityRecord) -> bool {
+    record
+        .mitigations
+        .iter()
+        .any(|guidance| !guidance.trim().is_empty())
 }
 
 fn advisory_score_delta(known_exploited: bool, severity_rank: u8) -> u8 {
@@ -538,6 +550,7 @@ mod tests {
         assert!(outcome.reasons[0].contains("CVE-2026-12345"));
         assert!(outcome.reasons[0].contains("known exploited"));
         assert!(outcome.reasons[0].contains("Google Chrome"));
+        assert!(!outcome.reasons[0].contains("mitigation guidance available"));
         assert!(!outcome.reasons[0].contains("no fixed-version bound"));
     }
 
@@ -642,6 +655,45 @@ mod tests {
 
         assert_eq!(outcome.score_delta, 2);
         assert!(outcome.reasons[0].contains("critical 9.1"));
+    }
+
+    #[test]
+    fn mitigation_guidance_marks_reason_when_record_has_guidance() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-42222",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.mitigations = vec!["https://example.test/vendor-guidance".into()];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
     }
 
     #[test]
