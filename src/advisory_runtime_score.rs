@@ -313,7 +313,7 @@ fn reference_has_vendor_mitigation_guidance(reference: &VulnerabilityReference) 
         && reference
             .tags
             .iter()
-            .any(|tag| vendor_advisory_reference_tag(tag))
+            .any(|tag| vendor_guidance_reference_tag(tag))
 }
 
 fn mitigation_reference_tag(tag: &str) -> bool {
@@ -336,11 +336,13 @@ fn mitigation_reference_tag(tag: &str) -> bool {
                 | "fixes"
                 | "patch"
                 | "patches"
+                | "guidance"
+                | "guidances"
         )
     })
 }
 
-fn vendor_advisory_reference_tag(tag: &str) -> bool {
+fn vendor_guidance_reference_tag(tag: &str) -> bool {
     let normalized = tag
         .trim()
         .to_ascii_lowercase()
@@ -350,7 +352,26 @@ fn vendor_advisory_reference_tag(tag: &str) -> bool {
         && tokens.iter().any(|token| {
             matches!(
                 *token,
-                "advisory" | "advisories" | "bulletin" | "bulletins" | "notice" | "notices"
+                "advisory"
+                    | "advisories"
+                    | "bulletin"
+                    | "bulletins"
+                    | "notice"
+                    | "notices"
+                    | "fix"
+                    | "fixes"
+                    | "patch"
+                    | "patches"
+                    | "update"
+                    | "updates"
+                    | "solution"
+                    | "solutions"
+                    | "remediation"
+                    | "remediations"
+                    | "workaround"
+                    | "workarounds"
+                    | "guidance"
+                    | "guidances"
             )
         })
 }
@@ -965,6 +986,50 @@ mod tests {
     }
 
     #[test]
+    fn guidance_reference_tag_marks_reason_when_reference_uses_guidance_word() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-43334",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/guidance".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Guidance".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
     fn vendor_advisory_reference_without_remediation_tag_stays_unmatched() {
         let inventory = vec![installed(
             "google-chrome",
@@ -1034,6 +1099,50 @@ mod tests {
             url: "https://example.test/vendor-advisory".into(),
             source: Some("nvd".into()),
             tags: vec!["Vendor Advisory".into(), "Mitigation".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
+    fn vendor_fix_reference_tag_marks_vendor_guidance_without_advisory_word() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-44447",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/vendor-fix".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Vendor Fix".into()],
         }];
         let cache = cache(vec![advisory]);
 
