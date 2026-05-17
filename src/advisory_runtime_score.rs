@@ -338,6 +338,8 @@ fn mitigation_reference_tag(tag: &str) -> bool {
                 | "patches"
                 | "update"
                 | "updates"
+                | "upgrade"
+                | "upgrades"
                 | "guidance"
                 | "guidances"
         )
@@ -366,6 +368,8 @@ fn vendor_guidance_reference_tag(tag: &str) -> bool {
                     | "patches"
                     | "update"
                     | "updates"
+                    | "upgrade"
+                    | "upgrades"
                     | "solution"
                     | "solutions"
                     | "remediation"
@@ -1076,6 +1080,50 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_reference_tag_marks_reason_when_reference_uses_upgrade_word() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-43336",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/upgrade".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Upgrade".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
     fn vendor_advisory_reference_without_remediation_tag_stays_unmatched() {
         let inventory = vec![installed(
             "google-chrome",
@@ -1233,6 +1281,50 @@ mod tests {
             url: "https://example.test/vendor-update".into(),
             source: Some("nvd".into()),
             tags: vec!["Vendor Update".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
+    fn vendor_upgrade_reference_tag_marks_vendor_guidance_without_advisory_word() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-44449",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/vendor-upgrade".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Vendor Upgrade".into()],
         }];
         let cache = cache(vec![advisory]);
 
