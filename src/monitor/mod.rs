@@ -9,6 +9,7 @@ pub mod ebpf;
 pub mod etw;
 pub mod poll;
 
+use crate::advisory_runtime_score;
 use crate::baseline;
 use crate::beacon::BeaconTracker;
 use crate::blocklist;
@@ -442,6 +443,18 @@ fn process_conn(
             &cfg,
         )
     };
+    let advisory_score = advisory_runtime_score::advisory_score_for_runtime_target(
+        &crate::software_inventory::RuntimeInventoryTarget {
+            process_name: &proc.name,
+            process_path: &proc.path,
+            service_name: &proc.service_name,
+            publisher: &proc.publisher,
+        },
+    );
+    if advisory_score.score_delta > 0 {
+        score_value = score_value.saturating_add(advisory_score.score_delta);
+        reasons.extend(advisory_score.reasons);
+    }
     let t_scoring = t0.elapsed();
 
     let t0 = std::time::Instant::now();

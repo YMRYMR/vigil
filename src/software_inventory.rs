@@ -22,6 +22,7 @@ const VENDOR_SUFFIXES: &[&str] = &[
     "company",
     "corp",
     "corporation",
+    "foundation",
     "gmbh",
     "inc",
     "incorporated",
@@ -30,13 +31,30 @@ const VENDOR_SUFFIXES: &[&str] = &[
     "limited",
     "llc",
     "ltd",
+    "maintainer",
+    "maintainers",
     "oy",
     "oyj",
     "plc",
+    "project",
     "pte",
     "sa",
     "sarl",
     "spa",
+    "team",
+];
+const PRODUCT_NOISE_SUFFIXES: &[&[&str]] = &[
+    &["64", "bit"],
+    &["32", "bit"],
+    &["amd64"],
+    &["arm64"],
+    &["beta"],
+    &["canary"],
+    &["nightly"],
+    &["preview"],
+    &["stable"],
+    &["x64"],
+    &["x86"],
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +83,35 @@ pub enum InventorySource {
     RunningService,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCorrelationConfidence {
+    High,
+    Medium,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCorrelationReason {
+    ServiceName,
+    ExecutablePath,
+    PublisherQualifiedAlias,
+    ProcessAlias,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInventoryTarget<'a> {
+    pub process_name: &'a str,
+    pub process_path: &'a str,
+    pub service_name: &'a str,
+    pub publisher: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeInventoryMatch {
+    pub installed: InstalledSoftware,
+    pub reason: RuntimeCorrelationReason,
+    pub confidence: RuntimeCorrelationConfidence,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InventorySeed {
     display_name: String,
@@ -72,6 +119,30 @@ struct InventorySeed {
     publisher_hint: Option<String>,
     version_hint: Option<String>,
     source: InventorySource,
+}
+
+pub fn correlate_runtime_inventory(
+    target: &RuntimeInventoryTarget<'_>,
+    inventory: &[InstalledSoftware],
+) -> Option<RuntimeInventoryMatch> {
+    let process_aliases = runtime_process_aliases(target);
+    let service_alias = canonical_product_key(target.service_name);
+    let publisher_vendor = normalize_vendor_key(target.publisher);
+    let normalized_process_path = normalize_inventory_path(target.process_path);
+
+    inventory
+        .iter()
+        .filter_map(|installed| {
+            runtime_match_candidate(
+                installed,
+                &process_aliases,
+                service_alias.as_deref(),
+                publisher_vendor.as_deref(),
+                normalized_process_path.as_deref(),
+            )
+        })
+        .max_by_key(|(rank, _)| rank.clone())
+        .map(|(_, matched)| matched)
 }
 
 pub fn startup_inventory_delay() -> Duration {
@@ -85,6 +156,157 @@ pub fn collect_startup_inventory() -> Vec<InstalledSoftware> {
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn collect_installed_software() -> Vec<InstalledSoftware> {
     collect_installed_software_limited(usize::MAX)
+}
+
+fn runtime_match_candidate(
+    installed: &InstalledSoftware,
+    process_aliases: &BTreeSet<String>,
+    service_alias: Option<&str>,
+    publisher_vendor: Option<&str>,
+    normalized_process_path: Option<&str>,
+) -> Option<((u8, u8, u8, u8, String), RuntimeInventoryMatch)> {
+    let installed_aliases = installed_identity_aliases(installed);
+
+    if let Some(service_alias) = service_alias {
+        if installed_aliases.contains(service_alias) {
+            return Some((
+                runtime_match_rank(RuntimeCorrelationReason::ServiceName, installed),
+                RuntimeInventoryMatch {
+                    installed: installed.clone(),
+                    reason: RuntimeCorrelationReason::ServiceName,
+                    confidence: RuntimeCorrelationConfidence::High,
+                },
+            ));
+        }
+    }
+
+    let path_match = normalized_process_path
+        .zip(normalize_inventory_path(&installed.executable_path).as_deref())
+        .is_some_and(|(target_path, installed_path)| target_path == installed_path);
+    if path_match {
+        return Some((
+            runtime_match_rank(RuntimeCorrelationReason::ExecutablePath, installed),
+            RuntimeInventoryMatch {
+                installed: installed.clone(),
+                reason: RuntimeCorrelationReason::ExecutablePath,
+                confidence: RuntimeCorrelationConfidence::High,
+            },
+        ));
+    }
+
+    if !process_aliases
+        .iter()
+        .any(|alias| installed_aliases.contains(alias))
+    {
+        return None;
+    }
+
+    let reason =
+        if publisher_vendor.is_some() && installed.vendor_key.as_deref() == publisher_vendor {
+            RuntimeCorrelationReason::PublisherQualifiedAlias
+        } else {
+            RuntimeCorrelationReason::ProcessAlias
+        };
+    let confidence = match reason {
+        RuntimeCorrelationReason::PublisherQualifiedAlias => RuntimeCorrelationConfidence::High,
+        RuntimeCorrelationReason::ProcessAlias => RuntimeCorrelationConfidence::Medium,
+        RuntimeCorrelationReason::ServiceName | RuntimeCorrelationReason::ExecutablePath => {
+            RuntimeCorrelationConfidence::High
+        }
+    };
+
+    Some((
+        runtime_match_rank(reason, installed),
+        RuntimeInventoryMatch {
+            installed: installed.clone(),
+            reason,
+            confidence,
+        },
+    ))
+}
+
+fn runtime_match_rank(
+    reason: RuntimeCorrelationReason,
+    installed: &InstalledSoftware,
+) -> (u8, u8, u8, u8, String) {
+    (
+        runtime_reason_rank(reason),
+        runtime_source_rank(reason, installed.source),
+        u8::from(installed.version_hint.is_some()),
+        u8::from(installed.publisher_hint.is_some()),
+        installed.product_key.clone(),
+    )
+}
+
+fn runtime_reason_rank(reason: RuntimeCorrelationReason) -> u8 {
+    match reason {
+        RuntimeCorrelationReason::ServiceName => 4,
+        RuntimeCorrelationReason::ExecutablePath => 3,
+        RuntimeCorrelationReason::PublisherQualifiedAlias => 2,
+        RuntimeCorrelationReason::ProcessAlias => 1,
+    }
+}
+
+fn runtime_source_rank(reason: RuntimeCorrelationReason, source: InventorySource) -> u8 {
+    match reason {
+        RuntimeCorrelationReason::ServiceName => match source {
+            InventorySource::RunningService => 4,
+            InventorySource::WindowsUninstallRegistry => 3,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 2,
+            InventorySource::RunningProcess => 1,
+        },
+        RuntimeCorrelationReason::ExecutablePath => match source {
+            InventorySource::WindowsUninstallRegistry => 4,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 3,
+            InventorySource::RunningService => 2,
+            InventorySource::RunningProcess => 1,
+        },
+        RuntimeCorrelationReason::PublisherQualifiedAlias
+        | RuntimeCorrelationReason::ProcessAlias => match source {
+            InventorySource::WindowsUninstallRegistry => 4,
+            InventorySource::LinuxDpkgStatus
+            | InventorySource::LinuxRpmDatabase
+            | InventorySource::LinuxApkInstalled => 3,
+            InventorySource::RunningProcess => 2,
+            InventorySource::RunningService => 1,
+        },
+    }
+}
+
+fn installed_identity_aliases(installed: &InstalledSoftware) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    if let Some(alias) = canonical_product_key(&installed.product_key) {
+        aliases.insert(alias);
+    }
+    for alias in &installed.product_aliases {
+        if let Some(normalized) = canonical_product_key(alias) {
+            aliases.insert(normalized);
+        }
+    }
+    aliases
+}
+
+fn runtime_process_aliases(target: &RuntimeInventoryTarget<'_>) -> BTreeSet<String> {
+    let mut aliases = BTreeSet::new();
+    add_product_aliases(&mut aliases, target.process_name);
+    if let Some(file_name) = std::path::Path::new(target.process_path).file_stem() {
+        add_product_aliases(&mut aliases, &file_name.to_string_lossy());
+    }
+    aliases
+}
+
+fn normalize_inventory_path(value: &str) -> Option<String> {
+    let trimmed = value.trim().trim_matches('"');
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let normalized = trimmed.replace('\\', "/").to_lowercase();
+    Some(normalized)
 }
 
 fn collect_installed_software_limited(max_entries: usize) -> Vec<InstalledSoftware> {
@@ -528,11 +750,15 @@ where
             continue;
         }
         let product_key = derive_product_key(&entry.display_name, &entry.executable_path);
-        let product_aliases = collect_product_aliases(&entry.display_name, &entry.executable_path);
         let vendor_key = entry
             .publisher_hint
             .as_deref()
             .and_then(normalize_vendor_key);
+        let product_aliases = collect_product_aliases(
+            &entry.display_name,
+            &entry.executable_path,
+            vendor_key.as_deref(),
+        );
         let candidate = InstalledSoftware {
             product_key: product_key.clone(),
             display_name: entry.display_name,
@@ -609,38 +835,128 @@ fn merge_product_aliases(target: &mut Vec<String>, source: &[String]) {
     *target = aliases.into_iter().collect();
 }
 
-fn collect_product_aliases(display_name: &str, executable_path: &str) -> Vec<String> {
+fn collect_product_aliases(
+    display_name: &str,
+    executable_path: &str,
+    vendor_key: Option<&str>,
+) -> Vec<String> {
     let mut aliases = BTreeSet::new();
 
-    let normalized_name = normalize_name(display_name);
-    if !normalized_name.is_empty() {
-        aliases.insert(normalized_name);
+    add_product_aliases(&mut aliases, display_name);
+
+    let executable_alias = std::path::Path::new(executable_path)
+        .file_stem()
+        .and_then(|file_name| canonical_product_key(&file_name.to_string_lossy()));
+    if let Some(file_name) = std::path::Path::new(executable_path).file_stem() {
+        add_product_aliases(&mut aliases, &file_name.to_string_lossy());
     }
 
-    if let Some(file_name) = std::path::Path::new(executable_path).file_stem() {
-        let candidate = normalize_name(&file_name.to_string_lossy());
-        if !candidate.is_empty() {
-            aliases.insert(candidate);
-        }
+    let primary_alias = canonical_product_key(display_name).or(executable_alias);
+    if let (Some(vendor_key), Some(primary_alias)) = (vendor_key, primary_alias.as_deref()) {
+        add_vendor_qualified_alias(&mut aliases, vendor_key, primary_alias);
     }
 
     aliases.into_iter().collect()
 }
 
+fn add_product_aliases(aliases: &mut BTreeSet<String>, input: &str) {
+    let tokens = tokenize_identity(input);
+    if tokens.is_empty() {
+        return;
+    }
+
+    aliases.insert(tokens.join("-"));
+    if let Some(canonical) = canonical_product_tokens(&tokens) {
+        aliases.insert(canonical);
+    }
+}
+
+fn add_vendor_qualified_alias(
+    aliases: &mut BTreeSet<String>,
+    vendor_key: &str,
+    primary_alias: &str,
+) {
+    let vendor_tokens = tokenize_identity(vendor_key);
+    let product_tokens = tokenize_identity(primary_alias);
+    if vendor_tokens.is_empty()
+        || product_tokens.is_empty()
+        || product_tokens.len() != 1
+        || product_tokens.starts_with(&vendor_tokens)
+        || product_tokens
+            .iter()
+            .all(|token| vendor_tokens.iter().any(|vendor| vendor == token))
+    {
+        return;
+    }
+
+    aliases.insert(format!(
+        "{}-{}",
+        vendor_tokens.join("-"),
+        product_tokens.join("-")
+    ));
+}
+
 fn derive_product_key(display_name: &str, executable_path: &str) -> String {
-    let normalized_name = normalize_name(display_name);
-    if !normalized_name.is_empty() {
-        return normalized_name;
+    if let Some(product_key) = canonical_product_key(display_name) {
+        return product_key;
     }
 
     if let Some(file_name) = std::path::Path::new(executable_path).file_name() {
-        let candidate = normalize_name(&file_name.to_string_lossy());
-        if !candidate.is_empty() {
-            return candidate;
+        if let Some(product_key) = canonical_product_key(&file_name.to_string_lossy()) {
+            return product_key;
         }
     }
 
     "unknown-product".to_string()
+}
+
+fn canonical_product_key(input: &str) -> Option<String> {
+    let tokens = tokenize_identity(input);
+    if tokens.is_empty() {
+        return None;
+    }
+
+    canonical_product_tokens(&tokens).or_else(|| Some(tokens.join("-")))
+}
+
+fn canonical_product_tokens(tokens: &[String]) -> Option<String> {
+    let trimmed = trim_product_noise_suffixes(tokens);
+    if trimmed.len() == tokens.len() {
+        return None;
+    }
+
+    let canonical = trimmed.join("-");
+    if canonical.is_empty() {
+        None
+    } else {
+        Some(canonical)
+    }
+}
+
+fn trim_product_noise_suffixes(tokens: &[String]) -> Vec<String> {
+    let mut end = tokens.len();
+    loop {
+        let mut removed = false;
+        for suffix in PRODUCT_NOISE_SUFFIXES {
+            if end > suffix.len() && ends_with_token_suffix(&tokens[..end], suffix) {
+                end -= suffix.len();
+                removed = true;
+                break;
+            }
+        }
+        if !removed {
+            break;
+        }
+    }
+    tokens[..end].to_vec()
+}
+
+fn ends_with_token_suffix(tokens: &[String], suffix: &[&str]) -> bool {
+    tokens.len() >= suffix.len()
+        && tokens[tokens.len() - suffix.len()..]
+            .iter()
+            .map(String::as_str)
+            .eq(suffix.iter().copied())
 }
 
 fn normalize_vendor_key(publisher: &str) -> Option<String> {
@@ -731,12 +1047,27 @@ mod tests {
             normalize_vendor_key("Microsoft Corporation"),
             Some("microsoft".to_string())
         );
+        assert_eq!(
+            normalize_vendor_key("Fedora Project"),
+            Some("fedora".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Mozilla Foundation"),
+            Some("mozilla".to_string())
+        );
+        assert_eq!(
+            normalize_vendor_key("Debian Curl Maintainers"),
+            Some("debian-curl".to_string())
+        );
     }
 
     #[test]
     fn collect_product_aliases_uses_display_name_and_executable_stem() {
-        let aliases =
-            collect_product_aliases("Google Chrome", "C:/Program Files/Google/Chrome/chrome.exe");
+        let aliases = collect_product_aliases(
+            "Google Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            None,
+        );
         assert_eq!(
             aliases,
             vec!["chrome".to_string(), "google-chrome".to_string()]
@@ -744,9 +1075,51 @@ mod tests {
     }
 
     #[test]
+    fn collect_product_aliases_adds_canonical_variant_for_arch_suffixes() {
+        let aliases = collect_product_aliases(
+            "Google Chrome (64-bit)",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            None,
+        );
+        assert_eq!(
+            aliases,
+            vec![
+                "chrome".to_string(),
+                "google-chrome".to_string(),
+                "google-chrome-64-bit".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn collect_product_aliases_adds_vendor_qualified_alias_for_generic_product_name() {
+        let aliases = collect_product_aliases(
+            "Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            Some("google"),
+        );
+        assert_eq!(
+            aliases,
+            vec!["chrome".to_string(), "google-chrome".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_product_aliases_skips_redundant_vendor_qualification() {
+        let aliases = collect_product_aliases("curl", "/usr/bin/curl", Some("debian-curl"));
+        assert_eq!(aliases, vec!["curl".to_string()]);
+    }
+
+    #[test]
     fn derive_product_key_prefers_display_name() {
         let key = derive_product_key("Google Chrome", "/opt/chrome/chrome");
         assert_eq!(key, "google-chrome");
+    }
+
+    #[test]
+    fn derive_product_key_strips_channel_suffixes() {
+        let key = derive_product_key("microsoft-edge-stable", "");
+        assert_eq!(key, "microsoft-edge");
     }
 
     #[test]
@@ -801,6 +1174,118 @@ mod tests {
                 "Dhcp".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_prefers_service_name_for_shared_host_processes() {
+        let inventory = collect_from_entries(vec![
+            seed(
+                "svchost.exe",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningProcess,
+            ),
+            seed(
+                "Dnscache",
+                "C:/Windows/System32/svchost.exe",
+                Some("Microsoft Corporation"),
+                Some("10.0.0"),
+                InventorySource::RunningService,
+            ),
+        ]);
+        let target = RuntimeInventoryTarget {
+            process_name: "svchost.exe",
+            process_path: "C:/Windows/System32/svchost.exe",
+            service_name: "Dnscache",
+            publisher: "Microsoft Corporation",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "dnscache");
+        assert_eq!(matched.reason, RuntimeCorrelationReason::ServiceName);
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_uses_case_insensitive_executable_paths() {
+        let inventory = collect_from_entries(vec![seed(
+            "Google Chrome",
+            "C:\\Program Files\\Google\\Chrome\\chrome.exe",
+            Some("Google LLC"),
+            Some("124.0.6367.91"),
+            InventorySource::WindowsUninstallRegistry,
+        )]);
+        let target = RuntimeInventoryTarget {
+            process_name: "chrome.exe",
+            process_path: "c:/program files/google/chrome/CHROME.EXE",
+            service_name: "",
+            publisher: "Google LLC",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "google-chrome");
+        assert_eq!(matched.reason, RuntimeCorrelationReason::ExecutablePath);
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_prefers_vendor_confirmed_aliases() {
+        let inventory = vec![
+            InstalledSoftware {
+                product_key: "fedora-curl".into(),
+                display_name: "curl".into(),
+                executable_path: String::new(),
+                publisher_hint: Some("Fedora Project".into()),
+                version_hint: Some("8.8.0-1.fc40".into()),
+                product_aliases: vec!["curl".into(), "fedora-curl".into()],
+                vendor_key: Some("fedora".into()),
+                source: InventorySource::LinuxRpmDatabase,
+            },
+            InstalledSoftware {
+                product_key: "example-curl".into(),
+                display_name: "curl".into(),
+                executable_path: String::new(),
+                publisher_hint: Some("Example Maintainer".into()),
+                version_hint: Some("8.8.0".into()),
+                product_aliases: vec!["curl".into(), "example-curl".into()],
+                vendor_key: Some("example".into()),
+                source: InventorySource::LinuxDpkgStatus,
+            },
+        ];
+        let target = RuntimeInventoryTarget {
+            process_name: "curl",
+            process_path: "/usr/bin/curl",
+            service_name: "",
+            publisher: "Fedora Project",
+        };
+
+        let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
+        assert_eq!(matched.installed.product_key, "fedora-curl");
+        assert_eq!(
+            matched.reason,
+            RuntimeCorrelationReason::PublisherQualifiedAlias
+        );
+        assert_eq!(matched.confidence, RuntimeCorrelationConfidence::High);
+    }
+
+    #[test]
+    fn correlate_runtime_inventory_returns_none_without_path_or_alias_overlap() {
+        let inventory = collect_from_entries(vec![seed(
+            "Google Chrome",
+            "C:/Program Files/Google/Chrome/chrome.exe",
+            Some("Google LLC"),
+            Some("124.0.6367.91"),
+            InventorySource::WindowsUninstallRegistry,
+        )]);
+        let target = RuntimeInventoryTarget {
+            process_name: "powershell.exe",
+            process_path: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            service_name: "",
+            publisher: "Microsoft Corporation",
+        };
+
+        assert!(correlate_runtime_inventory(&target, &inventory).is_none());
     }
 
     #[test]
@@ -1038,10 +1523,8 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Debian curl maintainers")
         );
-        assert_eq!(
-            inventory[0].vendor_key.as_deref(),
-            Some("debian-curl-maintainers")
-        );
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("debian-curl"));
+        assert_eq!(inventory[0].product_aliases, vec!["curl".to_string()]);
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -1071,7 +1554,11 @@ mod tests {
             inventory[0].publisher_hint.as_deref(),
             Some("Fedora Project")
         );
-        assert_eq!(inventory[0].vendor_key.as_deref(), Some("fedora-project"));
+        assert_eq!(inventory[0].vendor_key.as_deref(), Some("fedora"));
+        assert_eq!(
+            inventory[0].product_aliases,
+            vec!["curl".to_string(), "fedora-curl".to_string()]
+        );
         assert_eq!(inventory[0].version_hint.as_deref(), Some("8.8.0-1.fc40"));
         assert_eq!(inventory[0].executable_path, "/usr/bin/curl");
     }
@@ -1168,12 +1655,18 @@ mod tests {
         assert_eq!(inventory.len(), 2);
         assert!(inventory.iter().any(|row| {
             row.product_key == "svchost"
-                && row.product_aliases == vec!["svchost".to_string()]
+                && row.product_aliases
+                    == vec!["microsoft-svchost".to_string(), "svchost".to_string()]
                 && row.source == InventorySource::RunningProcess
         }));
         assert!(inventory.iter().any(|row| {
             row.product_key == "dnscache"
-                && row.product_aliases == vec!["dnscache".to_string(), "svchost".to_string()]
+                && row.product_aliases
+                    == vec![
+                        "dnscache".to_string(),
+                        "microsoft-dnscache".to_string(),
+                        "svchost".to_string(),
+                    ]
                 && row.source == InventorySource::RunningService
         }));
     }

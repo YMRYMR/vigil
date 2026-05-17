@@ -6,6 +6,12 @@
 //! audited in the same way as the built-in controls. `<rules-file>.sha256`
 //! is required beside the YAML file; Vigil verifies the SHA-256 digest before
 //! parsing and refuses missing or tampered rule files.
+//!
+//! Advisory-aware predicates intentionally consume only the normalized,
+//! high-confidence advisory reason strings already attached to a connection.
+//! This keeps the Phase 16 rule slice conservative: no extra live cache
+//! lookups happen in the rule engine, and a missing or unparsable advisory
+//! reason simply leaves the advisory predicates unmatched instead of guessing.
 
 use crate::{
     active_response, audit,
@@ -16,6 +22,7 @@ use crate::{
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -54,6 +61,24 @@ pub struct ResponseRule {
     #[serde(default)]
     pub require_long_lived: bool,
     #[serde(default)]
+    pub require_advisory_match: bool,
+    #[serde(default)]
+    pub require_known_exploited_advisory: bool,
+    #[serde(default)]
+    pub require_advisory_mitigation_guidance: bool,
+    #[serde(default)]
+    pub require_advisory_vendor_mitigation_guidance: bool,
+    #[serde(default)]
+    pub require_advisory_public_internet_exposure: bool,
+    #[serde(default)]
+    pub require_missing_advisory_fix_version: bool,
+    #[serde(default)]
+    pub advisory_id_contains: Option<String>,
+    #[serde(default)]
+    pub advisory_product_contains: Option<String>,
+    #[serde(default)]
+    pub min_advisory_severity: Option<AdvisorySeverity>,
+    #[serde(default)]
     pub action: RuleAction,
     #[serde(default)]
     pub duration: Option<String>,
@@ -67,6 +92,26 @@ pub enum RuleAction {
     BlockRemote,
     BlockProcess,
     Quarantine,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum AdvisorySeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ParsedAdvisoryReason<'a> {
+    primary_id: &'a str,
+    product_name: &'a str,
+    severity: Option<AdvisorySeverity>,
+    known_exploited: bool,
+    mitigation_guidance: bool,
+    vendor_mitigation_guidance: bool,
+    missing_fix_version: bool,
 }
 
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
@@ -208,6 +253,12 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
     if rule.require_long_lived && !conn.long_lived {
         return false;
     }
+
+    let advisory_reasons = parse_advisory_reasons(&conn.reasons);
+    if !matches_advisory_filters(rule, conn, &advisory_reasons) {
+        return false;
+    }
+
     if let Some(text) = rule.process_name_contains.as_ref() {
         if !normalise_name(&conn.proc_name).contains(&normalise_name(text)) {
             return false;
@@ -227,6 +278,222 @@ fn matches_rule(rule: &ResponseRule, conn: &ConnInfo) -> bool {
         }
     }
     true
+}
+
+fn matches_advisory_filters(
+    rule: &ResponseRule,
+    conn: &ConnInfo,
+    advisory_reasons: &[ParsedAdvisoryReason<'_>],
+) -> bool {
+    let has_advisory_filter = rule.require_advisory_match
+        || rule.require_known_exploited_advisory
+        || rule.require_advisory_mitigation_guidance
+        || rule.require_advisory_vendor_mitigation_guidance
+        || rule.require_advisory_public_internet_exposure
+        || rule.require_missing_advisory_fix_version
+        || rule.advisory_id_contains.is_some()
+        || rule.advisory_product_contains.is_some()
+        || rule.min_advisory_severity.is_some();
+    if !has_advisory_filter {
+        return true;
+    }
+    if advisory_reasons.is_empty() {
+        return false;
+    }
+    if rule.require_advisory_public_internet_exposure && !is_public_internet_exposed_listener(conn)
+    {
+        return false;
+    }
+
+    let advisory_id_contains = rule
+        .advisory_id_contains
+        .as_ref()
+        .map(|text| text.trim().to_ascii_lowercase())
+        .filter(|text| !text.is_empty());
+    if rule.advisory_id_contains.is_some() && advisory_id_contains.is_none() {
+        return false;
+    }
+
+    let advisory_product_contains = rule
+        .advisory_product_contains
+        .as_ref()
+        .map(|text| normalise_name(text))
+        .filter(|text| !text.is_empty());
+    if rule.advisory_product_contains.is_some() && advisory_product_contains.is_none() {
+        return false;
+    }
+
+    advisory_reasons.iter().any(|reason| {
+        (!rule.require_known_exploited_advisory || reason.known_exploited)
+            && (!rule.require_advisory_mitigation_guidance || reason.mitigation_guidance)
+            && (!rule.require_advisory_vendor_mitigation_guidance
+                || reason.vendor_mitigation_guidance)
+            && (!rule.require_missing_advisory_fix_version || reason.missing_fix_version)
+            && advisory_id_contains
+                .as_ref()
+                .is_none_or(|text| reason.primary_id.to_ascii_lowercase().contains(text))
+            && advisory_product_contains
+                .as_ref()
+                .is_none_or(|text| normalise_name(reason.product_name).contains(text))
+            && rule
+                .min_advisory_severity
+                .is_none_or(|min| reason.severity.is_some_and(|severity| severity >= min))
+    })
+}
+
+fn parse_advisory_reasons<'a>(reasons: &'a [String]) -> Vec<ParsedAdvisoryReason<'a>> {
+    reasons
+        .iter()
+        .filter_map(|reason| parse_advisory_reason(reason))
+        .collect()
+}
+
+fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
+    const PREFIX: &str = "High-confidence advisory match: ";
+
+    let body = reason.strip_prefix(PREFIX)?;
+    let (left, product_name) = body.split_once(" applies to ")?;
+    let product_name = product_name.trim();
+    if product_name.is_empty() {
+        return None;
+    }
+
+    let (primary_id, detail_block) = if let Some((primary_id, details)) = left.split_once(" (") {
+        let details = details.strip_suffix(')')?;
+        (primary_id.trim(), Some(details.trim()))
+    } else {
+        (left.trim(), None)
+    };
+    if primary_id.is_empty() {
+        return None;
+    }
+
+    let mut severity = None;
+    let mut known_exploited = false;
+    let mut mitigation_guidance = false;
+    let mut vendor_mitigation_guidance = false;
+    let mut missing_fix_version = false;
+    if let Some(detail_block) = detail_block {
+        for detail in detail_block
+            .split(',')
+            .map(str::trim)
+            .filter(|detail| !detail.is_empty())
+        {
+            if detail.eq_ignore_ascii_case("known exploited") {
+                known_exploited = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("mitigation guidance available") {
+                mitigation_guidance = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("vendor guidance available") {
+                vendor_mitigation_guidance = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("no fixed-version bound") {
+                missing_fix_version = true;
+                continue;
+            }
+            if severity.is_none() {
+                severity = parse_advisory_severity(detail);
+            }
+        }
+    }
+
+    Some(ParsedAdvisoryReason {
+        primary_id,
+        product_name,
+        severity,
+        known_exploited,
+        mitigation_guidance,
+        vendor_mitigation_guidance,
+        missing_fix_version,
+    })
+}
+
+fn parse_advisory_severity(text: &str) -> Option<AdvisorySeverity> {
+    let token = text.split_whitespace().next()?.trim().to_ascii_lowercase();
+    match token.as_str() {
+        "low" => Some(AdvisorySeverity::Low),
+        "medium" => Some(AdvisorySeverity::Medium),
+        "high" => Some(AdvisorySeverity::High),
+        "critical" => Some(AdvisorySeverity::Critical),
+        _ => None,
+    }
+}
+
+fn is_public_internet_exposed_listener(conn: &ConnInfo) -> bool {
+    if !conn.status.eq_ignore_ascii_case("LISTEN") {
+        return false;
+    }
+    let Some(host) = conn
+        .local_addr
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim_matches(['[', ']']))
+    else {
+        return false;
+    };
+    let Ok(ip) = host.parse::<IpAddr>() else {
+        return false;
+    };
+    is_globally_routable_ip(ip)
+}
+
+fn is_globally_routable_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ipv4) => is_globally_routable_ipv4(ipv4),
+        IpAddr::V6(ipv6) => is_globally_routable_ipv6(ipv6),
+    }
+}
+
+fn is_globally_routable_ipv4(ip: Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    if ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_unspecified()
+        || octets[0] == 0
+        || octets[0] >= 224
+    {
+        return false;
+    }
+
+    let shared_address_space = octets[0] == 100 && (64..=127).contains(&octets[1]);
+    let iana_protocol_assignments = octets[0] == 192 && octets[1] == 0 && octets[2] == 0;
+    let deprecated_relay = octets[0] == 192 && octets[1] == 88 && octets[2] == 99;
+    let documentation = matches!(
+        (octets[0], octets[1], octets[2]),
+        (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
+    );
+    let benchmarking = octets[0] == 198 && (octets[1] == 18 || octets[1] == 19);
+
+    !(shared_address_space
+        || iana_protocol_assignments
+        || deprecated_relay
+        || documentation
+        || benchmarking)
+}
+
+fn is_globally_routable_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4() {
+        return is_globally_routable_ipv4(mapped);
+    }
+
+    let segments = ip.segments();
+    let unique_local = (segments[0] & 0xfe00) == 0xfc00;
+    let unicast_link_local = (segments[0] & 0xffc0) == 0xfe80;
+    let deprecated_site_local = (segments[0] & 0xffc0) == 0xfec0;
+    let documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
+
+    !(ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || unique_local
+        || unicast_link_local
+        || deprecated_site_local
+        || documentation)
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +713,143 @@ mod tests {
         assert!(state.note_rule_load_error("/tmp/rules.yaml", "signature mismatch"));
     }
 
+    #[test]
+    fn parses_advisory_reason_with_known_exploited_vendor_guidance_severity_and_fix_bound_marker() {
+        let parsed = parse_advisory_reason(
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, mitigation guidance available, vendor guidance available, no fixed-version bound) applies to Google Chrome",
+        )
+        .unwrap();
+
+        assert_eq!(parsed.primary_id, "CVE-2026-12345");
+        assert_eq!(parsed.product_name, "Google Chrome");
+        assert_eq!(parsed.severity, Some(AdvisorySeverity::Critical));
+        assert!(parsed.known_exploited);
+        assert!(parsed.mitigation_guidance);
+        assert!(parsed.vendor_mitigation_guidance);
+        assert!(parsed.missing_fix_version);
+    }
+
+    #[test]
+    fn advisory_filters_match_high_confidence_reason() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, mitigation guidance available, vendor guidance available, no fixed-version bound) applies to Google Chrome".into(),
+        ];
+
+        let rule = ResponseRule {
+            name: "exploited browser advisory".into(),
+            min_score: None,
+            process_name_contains: None,
+            remote_contains: None,
+            require_unsigned: false,
+            require_pre_login: false,
+            require_reputation_hit: false,
+            require_dga: false,
+            require_recently_dropped: false,
+            require_long_lived: false,
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
+            require_advisory_vendor_mitigation_guidance: true,
+            require_advisory_public_internet_exposure: false,
+            require_missing_advisory_fix_version: true,
+            advisory_id_contains: Some("CVE-2026-12345".into()),
+            advisory_product_contains: Some("chrome".into()),
+            min_advisory_severity: Some(AdvisorySeverity::Critical),
+            action: RuleAction::BlockRemote,
+            duration: None,
+        };
+
+        assert!(matches_rule(&rule, &conn));
+    }
+
+    #[test]
+    fn advisory_filters_do_not_mix_signals_from_different_reasons() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited, vendor guidance available) applies to Google Chrome".into(),
+            "High-confidence advisory match: CVE-2026-99999 (medium 5.4, mitigation guidance available, no fixed-version bound) applies to Example Agent".into(),
+        ];
+
+        let rule = ResponseRule {
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
+            require_advisory_vendor_mitigation_guidance: true,
+            require_missing_advisory_fix_version: true,
+            advisory_id_contains: Some("CVE-2026-12345".into()),
+            advisory_product_contains: Some("chrome".into()),
+            min_advisory_severity: Some(AdvisorySeverity::Critical),
+            ..sample_rule()
+        };
+
+        assert!(!matches_rule(&rule, &conn));
+    }
+
+    #[test]
+    fn advisory_public_internet_exposure_matches_only_global_listeners() {
+        let mut conn = sample_conn();
+        conn.status = "LISTEN".into();
+        conn.remote_addr = "LISTEN".into();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-12345 (critical 9.8, known exploited) applies to Google Chrome".into(),
+        ];
+
+        let rule = ResponseRule {
+            require_advisory_match: true,
+            require_advisory_public_internet_exposure: true,
+            ..sample_rule()
+        };
+
+        conn.local_addr = "8.8.8.8:443".into();
+        assert!(matches_rule(&rule, &conn));
+
+        conn.local_addr = "10.0.0.5:443".into();
+        assert!(!matches_rule(&rule, &conn));
+
+        conn.local_addr = "0.0.0.0:443".into();
+        assert!(!matches_rule(&rule, &conn));
+
+        conn.local_addr = "2607:f8b0:4005:80a::200e:443".into();
+        assert!(matches_rule(&rule, &conn));
+
+        conn.local_addr = "2001:db8::1:443".into();
+        assert!(!matches_rule(&rule, &conn));
+
+        conn.local_addr = "8.8.8.8:443".into();
+        conn.status = "ESTABLISHED".into();
+        assert!(!matches_rule(&rule, &conn));
+    }
+
+    #[test]
+    fn advisory_filters_reject_missing_or_weaker_matches() {
+        let mut conn = sample_conn();
+        conn.reasons = vec![
+            "High-confidence advisory match: CVE-2026-54321 (medium 5.4) applies to Example Agent"
+                .into(),
+        ];
+
+        let exploited_rule = ResponseRule {
+            require_advisory_match: true,
+            require_known_exploited_advisory: true,
+            require_advisory_mitigation_guidance: true,
+            require_advisory_vendor_mitigation_guidance: true,
+            require_missing_advisory_fix_version: true,
+            min_advisory_severity: Some(AdvisorySeverity::High),
+            advisory_product_contains: Some("chrome".into()),
+            ..sample_rule()
+        };
+        assert!(!matches_rule(&exploited_rule, &conn));
+
+        let mut no_advisory_conn = sample_conn();
+        no_advisory_conn.reasons = vec!["Unusual destination port 4444".into()];
+        let advisory_rule = ResponseRule {
+            require_advisory_match: true,
+            ..sample_rule()
+        };
+        assert!(!matches_rule(&advisory_rule, &no_advisory_conn));
+    }
+
     fn write_sidecar(path: &Path, content: &str) {
         let digest = Sha256::digest(content.as_bytes());
         fs::write(
@@ -475,5 +879,67 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("vigil-response-rules-test-{nanos}"))
+    }
+
+    fn sample_rule() -> ResponseRule {
+        ResponseRule {
+            name: "sample".into(),
+            min_score: None,
+            process_name_contains: None,
+            remote_contains: None,
+            require_unsigned: false,
+            require_pre_login: false,
+            require_reputation_hit: false,
+            require_dga: false,
+            require_recently_dropped: false,
+            require_long_lived: false,
+            require_advisory_match: false,
+            require_known_exploited_advisory: false,
+            require_advisory_mitigation_guidance: false,
+            require_advisory_vendor_mitigation_guidance: false,
+            require_advisory_public_internet_exposure: false,
+            require_missing_advisory_fix_version: false,
+            advisory_id_contains: None,
+            advisory_product_contains: None,
+            min_advisory_severity: None,
+            action: RuleAction::KillConnection,
+            duration: None,
+        }
+    }
+
+    fn sample_conn() -> ConnInfo {
+        ConnInfo {
+            timestamp: "12:00:00".into(),
+            proc_name: "chrome.exe".into(),
+            pid: 4242,
+            proc_path: "C:/Program Files/Google/Chrome/chrome.exe".into(),
+            proc_user: "user".into(),
+            parent_user: "user".into(),
+            parent_name: "explorer.exe".into(),
+            parent_pid: 1337,
+            service_name: String::new(),
+            publisher: "Google LLC".into(),
+            command_line: String::new(),
+            local_addr: "10.0.0.2:51234".into(),
+            remote_addr: "198.51.100.20:443".into(),
+            status: "ESTABLISHED".into(),
+            score: 10,
+            reasons: vec![],
+            attack_tags: vec![],
+            ancestor_chain: vec![],
+            pre_login: false,
+            hostname: Some("example.test".into()),
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            tls_sni: None,
+            tls_ja3: None,
+        }
     }
 }

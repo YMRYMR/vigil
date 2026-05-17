@@ -1,5 +1,50 @@
 use crate::config::Config;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RiskyEnableTarget {
+    AutoResponse,
+    AllowlistMode,
+    ScheduledLockdown,
+    HoneypotAutoIsolate,
+}
+
+impl RiskyEnableTarget {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::AutoResponse => "Enable auto response",
+            Self::AllowlistMode => "Enable allowlist-only mode",
+            Self::ScheduledLockdown => "Enable scheduled lockdown",
+            Self::HoneypotAutoIsolate => "Enable auto-isolate on decoy touch",
+        }
+    }
+
+    pub fn body(self) -> &'static str {
+        match self {
+            Self::AutoResponse => {
+                "Vigil can take containment actions without waiting for you once the relevant action toggles are enabled. Keep dry run on until you trust the scoring on this machine."
+            }
+            Self::AllowlistMode => {
+                "Processes outside your trusted and allowlisted set can become containment candidates. Turning this on too early can disrupt browsers, chat tools, updates, or other normal software."
+            }
+            Self::ScheduledLockdown => {
+                "Vigil can isolate the machine network automatically during the configured hours. A wrong schedule can cut off the device when you still need connectivity."
+            }
+            Self::HoneypotAutoIsolate => {
+                "A decoy-file touch can isolate the machine automatically. This is useful as a trap, but it can surprise a non-expert user if they do not expect the network to drop."
+            }
+        }
+    }
+
+    pub fn success_message(self) -> &'static str {
+        match self {
+            Self::AutoResponse => "Auto response enabled.",
+            Self::AllowlistMode => "Allowlist-only mode enabled.",
+            Self::ScheduledLockdown => "Scheduled lockdown enabled.",
+            Self::HoneypotAutoIsolate => "Decoy-touch auto-isolate enabled.",
+        }
+    }
+}
+
 pub struct SettingsDraft {
     pub alert_threshold: u8,
     pub poll_interval_secs: u64,
@@ -43,11 +88,17 @@ pub struct SettingsDraft {
     pub honeypot_decoy_names_text: String,
     pub break_glass_timeout_mins: u64,
     pub break_glass_heartbeat_secs: u64,
+    pub extra_safe_prompts: bool,
     pub ui_scale: f32,
     pub status_msg: Option<(String, std::time::Instant)>,
     pub grant_capabilities_requested: bool,
     pub uninstall_confirm_requested: bool,
+    pub uninstall_confirm_text: String,
     pub uninstall_requested: bool,
+    pub pending_risky_enable: Option<RiskyEnableTarget>,
+    pub risky_enable_confirm_text: String,
+    pub pending_trusted_addition: Option<String>,
+    pub trusted_add_confirm_text: String,
 }
 
 impl SettingsDraft {
@@ -95,11 +146,17 @@ impl SettingsDraft {
             honeypot_decoy_names_text: cfg.honeypot_decoy_names.join("\n"),
             break_glass_timeout_mins: cfg.break_glass_timeout_mins,
             break_glass_heartbeat_secs: cfg.break_glass_heartbeat_secs,
+            extra_safe_prompts: cfg.extra_safe_prompts,
             ui_scale: cfg.sanitised_ui_scale(),
             status_msg: None,
             grant_capabilities_requested: false,
             uninstall_confirm_requested: false,
+            uninstall_confirm_text: String::new(),
             uninstall_requested: false,
+            pending_risky_enable: None,
+            risky_enable_confirm_text: String::new(),
+            pending_trusted_addition: None,
+            trusted_add_confirm_text: String::new(),
         }
     }
 
@@ -188,6 +245,7 @@ impl SettingsDraft {
                 break_glass_heartbeat_secs,
                 self.break_glass_heartbeat_secs.clamp(5, 300)
             );
+            set_if_changed!(extra_safe_prompts, self.extra_safe_prompts);
         }
     }
 
@@ -229,6 +287,7 @@ impl SettingsDraft {
             || split_lines(&self.honeypot_decoy_names_text) != cfg.honeypot_decoy_names
             || self.break_glass_timeout_mins != cfg.break_glass_timeout_mins
             || self.break_glass_heartbeat_secs != cfg.break_glass_heartbeat_secs
+            || self.extra_safe_prompts != cfg.extra_safe_prompts
     }
 }
 
