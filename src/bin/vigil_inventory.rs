@@ -380,7 +380,7 @@ fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
 fn collect_apk_entries() -> Vec<InventoryEntry> {
     let Ok(installed) = std::fs::read_to_string("/lib/apk/db/installed") else {
         return Vec::new();
-    }
+    };
     parse_apk_installed(&installed)
 }
 
