@@ -9,9 +9,9 @@ use super::linux_command_plan::StdLinuxCommandRunner;
 use super::linux_command_plan::{LinuxCommand, LinuxCommandRunner};
 use super::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_block_remote_plan,
-    firewall_backend_block_uid_plan, firewall_backend_isolate_plan,
-    firewall_backend_restore_plan, firewall_backend_setup_plan, select_firewall_backend,
-    IptablesPolicySnapshot, LinuxFirewallBackend,
+    firewall_backend_block_uid_plan, firewall_backend_isolate_plan, firewall_backend_restore_plan,
+    firewall_backend_setup_plan, select_firewall_backend, IptablesPolicySnapshot,
+    LinuxFirewallBackend,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,12 +62,7 @@ pub fn execute_selected_setup_plan(
     runner: &impl LinuxCommandRunner,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    execute_firewall_plan(
-        runner,
-        backend,
-        firewall_backend_setup_plan(backend),
-        None,
-    )
+    execute_firewall_plan(runner, backend, firewall_backend_setup_plan(backend), None)
 }
 
 pub fn execute_selected_isolate_plan(
@@ -333,15 +328,17 @@ mod tests {
     fn restore_uses_selected_backend() {
         let nft_runner = RecordingRunner::new(true);
         let nft_isolated = execute_selected_isolate_plan(&nft_runner, "isolate").unwrap();
-        let nft_restore = execute_restore_plan(&nft_runner, nft_isolated.restore_state.as_ref().unwrap())
-            .unwrap();
+        let nft_restore =
+            execute_restore_plan(&nft_runner, nft_isolated.restore_state.as_ref().unwrap())
+                .unwrap();
         assert_eq!(nft_restore.backend, LinuxFirewallBackend::Nftables);
         assert_eq!(
             nft_restore.commands,
-            vec![LinuxCommand::new(
-                "nft",
-                ["delete", "table", "inet", "vigil"]
-            )]
+            vec![
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "input"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "forward"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "output"]),
+            ]
         );
     }
 }

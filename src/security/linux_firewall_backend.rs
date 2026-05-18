@@ -8,7 +8,7 @@
 
 use super::linux_command_plan::{
     iptables_insert_block_remote, iptables_insert_block_uid, iptables_list_rules,
-    iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table,
+    iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table, nft_flush_chain,
     nft_insert_block_all, nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset,
     LinuxCommand, LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
 };
@@ -72,7 +72,6 @@ impl IptablesPolicySnapshot {
         Ok(Self { chains })
     }
 }
-
 /// Prefer nftables when it is usable, otherwise fall back to iptables.
 ///
 /// The probe is intentionally read-only: `nft list ruleset` requires enough
@@ -91,7 +90,6 @@ pub fn capture_iptables_policy_snapshot(
     let output = runner.stdout(&iptables_list_rules())?;
     IptablesPolicySnapshot::from_iptables_list(&output)
 }
-
 pub fn firewall_backend_setup_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCommand> {
     match backend {
         LinuxFirewallBackend::Nftables => vec![
@@ -127,7 +125,11 @@ pub fn firewall_backend_restore_plan(
     iptables_snapshot: Option<&IptablesPolicySnapshot>,
 ) -> Result<Vec<LinuxCommand>, String> {
     match backend {
-        LinuxFirewallBackend::Nftables => Ok(vec![nft_delete_table()]),
+        LinuxFirewallBackend::Nftables => Ok(vec![
+            nft_flush_chain(NFT_INPUT_CHAIN),
+            nft_flush_chain(NFT_FORWARD_CHAIN),
+            nft_flush_chain(NFT_OUTPUT_CHAIN),
+        ]),
         LinuxFirewallBackend::Iptables => {
             let snapshot = iptables_snapshot.ok_or_else(|| {
                 "iptables restore requires a captured chain-policy snapshot".to_string()
@@ -287,10 +289,11 @@ mod tests {
     fn restore_plan_matches_backend() {
         assert_eq!(
             firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, None).unwrap(),
-            vec![LinuxCommand::new(
-                "nft",
-                ["delete", "table", "inet", "vigil"]
-            )]
+            vec![
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "input"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "forward"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "output"]),
+            ]
         );
         assert_eq!(
             firewall_backend_restore_plan(
