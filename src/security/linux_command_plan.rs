@@ -199,6 +199,7 @@ pub fn nft_insert_block_all(rule_name: &str, direction: &str) -> LinuxCommand {
 }
 
 pub fn nft_insert_block_remote(rule_name: &str, target: &str) -> LinuxCommand {
+    let family = nft_addr_family(target);
     LinuxCommand::new(
         "nft",
         [
@@ -207,7 +208,7 @@ pub fn nft_insert_block_remote(rule_name: &str, target: &str) -> LinuxCommand {
             "inet",
             NFT_TABLE,
             NFT_OUTPUT_CHAIN,
-            "ip",
+            family,
             "daddr",
             target,
             "counter",
@@ -315,6 +316,14 @@ fn nft_chain_for_direction(direction: &str) -> &'static str {
         "forward" => NFT_FORWARD_CHAIN,
         "out" => NFT_OUTPUT_CHAIN,
         _ => NFT_OUTPUT_CHAIN,
+    }
+}
+
+fn nft_addr_family(target: &str) -> &'static str {
+    if target.contains(':') {
+        "ip6"
+    } else {
+        "ip"
     }
 }
 
@@ -475,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn planned_nft_remote_block_targets_output_daddr() {
+    fn planned_nft_remote_block_targets_ipv4_output_daddr() {
         assert_eq!(
             nft_insert_block_remote("block-example", "203.0.113.10"),
             LinuxCommand::new(
@@ -492,6 +501,30 @@ mod tests {
                     "counter",
                     "comment",
                     "Vigil:block-example",
+                    "drop",
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn planned_nft_remote_block_targets_ipv6_output_daddr() {
+        assert_eq!(
+            nft_insert_block_remote("block-v6", "2606:4700:4700::1111"),
+            LinuxCommand::new(
+                "nft",
+                [
+                    "insert",
+                    "rule",
+                    "inet",
+                    "vigil",
+                    "output",
+                    "ip6",
+                    "daddr",
+                    "2606:4700:4700::1111",
+                    "counter",
+                    "comment",
+                    "Vigil:block-v6",
                     "drop",
                 ],
             )
