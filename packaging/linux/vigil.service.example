@@ -1,0 +1,46 @@
+[Unit]
+Description=Vigil network monitor
+Documentation=https://github.com/YMRYMR/vigil
+After=network.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
+
+[Service]
+Type=simple
+# Replace both placeholders before installing this example manually.
+ExecStart=/opt/vigil/vigil --service-mode --data-dir /var/lib/vigil
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+# Vigil needs host network/process visibility and controlled response actions.
+# These bounds keep the service from gaining unrelated privileges while still
+# allowing Linux monitoring, firewall response, process response, and recovery.
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW CAP_NET_BIND_SERVICE CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_KILL CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW CAP_BPF CAP_PERFMON CAP_SYS_PTRACE CAP_KILL CAP_DAC_READ_SEARCH
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/vigil /etc/hosts
+
+# Keep network address families broad enough for endpoint monitoring and local
+# response helpers. Do not enable private networking; Vigil must observe host
+# networking rather than an isolated namespace.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+
+[Install]
+WantedBy=multi-user.target
