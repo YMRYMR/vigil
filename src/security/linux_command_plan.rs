@@ -149,6 +149,105 @@ pub fn iptables_delete_rule(chain: &str, rule_name: &str) -> LinuxCommand {
     )
 }
 
+pub const NFT_TABLE: &str = "vigil";
+pub const NFT_INPUT_CHAIN: &str = "input";
+pub const NFT_OUTPUT_CHAIN: &str = "output";
+pub const NFT_FORWARD_CHAIN: &str = "forward";
+
+pub fn nft_list_ruleset() -> LinuxCommand {
+    LinuxCommand::new("nft", ["list", "ruleset"])
+}
+
+pub fn nft_add_table() -> LinuxCommand {
+    LinuxCommand::new("nft", ["add", "table", "inet", NFT_TABLE])
+}
+
+pub fn nft_add_filter_chain(chain: &str, hook: &str, priority: i32, policy: &str) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        [
+            "add",
+            "chain",
+            "inet",
+            NFT_TABLE,
+            chain,
+            &format!("{{ type filter hook {hook} priority {priority}; policy {policy}; }}"),
+        ],
+    )
+}
+
+pub fn nft_delete_table() -> LinuxCommand {
+    LinuxCommand::new("nft", ["delete", "table", "inet", NFT_TABLE])
+}
+
+pub fn nft_insert_block_all(rule_name: &str, direction: &str) -> LinuxCommand {
+    let chain = nft_chain_for_direction(direction);
+    LinuxCommand::new(
+        "nft",
+        [
+            "insert",
+            "rule",
+            "inet",
+            NFT_TABLE,
+            chain,
+            "counter",
+            "comment",
+            &nft_comment(rule_name),
+            "drop",
+        ],
+    )
+}
+
+pub fn nft_insert_block_remote(rule_name: &str, target: &str) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        [
+            "insert",
+            "rule",
+            "inet",
+            NFT_TABLE,
+            NFT_OUTPUT_CHAIN,
+            "ip",
+            "daddr",
+            target,
+            "counter",
+            "comment",
+            &nft_comment(rule_name),
+            "drop",
+        ],
+    )
+}
+
+pub fn nft_insert_block_uid(rule_name: &str, direction: &str, uid: u32) -> LinuxCommand {
+    let chain = nft_chain_for_direction(direction);
+    let uid = uid.to_string();
+    let mut args = vec![
+        "insert".to_string(),
+        "rule".to_string(),
+        "inet".to_string(),
+        NFT_TABLE.to_string(),
+        chain.to_string(),
+    ];
+    if chain == NFT_OUTPUT_CHAIN {
+        args.extend([
+            "meta".to_string(),
+            "skuid".to_string(),
+            uid,
+        ]);
+    }
+    args.extend([
+        "counter".to_string(),
+        "comment".to_string(),
+        nft_comment(rule_name),
+        "drop".to_string(),
+    ]);
+    LinuxCommand::new("nft", args)
+}
+
+pub fn nft_flush_chain(chain: &str) -> LinuxCommand {
+    LinuxCommand::new("nft", ["flush", "chain", "inet", NFT_TABLE, chain])
+}
+
 pub fn ip_link_set(adapter_name: &str, enabled: bool) -> LinuxCommand {
     LinuxCommand::new(
         "ip",
@@ -210,7 +309,20 @@ fn chain_for_direction(direction: &str) -> &'static str {
     }
 }
 
+fn nft_chain_for_direction(direction: &str) -> &'static str {
+    match direction {
+        "in" => NFT_INPUT_CHAIN,
+        "forward" => NFT_FORWARD_CHAIN,
+        "out" => NFT_OUTPUT_CHAIN,
+        _ => NFT_OUTPUT_CHAIN,
+    }
+}
+
 fn iptables_comment(rule_name: &str) -> String {
+    format!("Vigil:{rule_name}")
+}
+
+fn nft_comment(rule_name: &str) -> String {
     format!("Vigil:{rule_name}")
 }
 
@@ -337,6 +449,109 @@ mod tests {
                     "DROP",
                 ],
             )
+        );
+    }
+
+    #[test]
+    fn planned_nft_setup_uses_vigil_inet_table() {
+        assert_eq!(
+            nft_add_table(),
+            LinuxCommand::new("nft", ["add", "table", "inet", "vigil"])
+        );
+        assert_eq!(
+            nft_add_filter_chain(NFT_OUTPUT_CHAIN, "output", 0, "accept"),
+            LinuxCommand::new(
+                "nft",
+                [
+                    "add",
+                    "chain",
+                    "inet",
+                    "vigil",
+                    "output",
+                    "{ type filter hook output priority 0; policy accept; }",
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn planned_nft_remote_block_targets_output_daddr() {
+        assert_eq!(
+            nft_insert_block_remote("block-example", "203.0.113.10"),
+            LinuxCommand::new(
+                "nft",
+                [
+                    "insert",
+                    "rule",
+                    "inet",
+                    "vigil",
+                    "output",
+                    "ip",
+                    "daddr",
+                    "203.0.113.10",
+                    "counter",
+                    "comment",
+                    "Vigil:block-example",
+                    "drop",
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn planned_nft_uid_block_uses_meta_skuid_on_output() {
+        assert_eq!(
+            nft_insert_block_uid("process-block", "out", 1000),
+            LinuxCommand::new(
+                "nft",
+                [
+                    "insert",
+                    "rule",
+                    "inet",
+                    "vigil",
+                    "output",
+                    "meta",
+                    "skuid",
+                    "1000",
+                    "counter",
+                    "comment",
+                    "Vigil:process-block",
+                    "drop",
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn planned_nft_input_process_block_does_not_emit_skuid() {
+        assert_eq!(
+            nft_insert_block_uid("process-block", "in", 1000),
+            LinuxCommand::new(
+                "nft",
+                [
+                    "insert",
+                    "rule",
+                    "inet",
+                    "vigil",
+                    "input",
+                    "counter",
+                    "comment",
+                    "Vigil:process-block",
+                    "drop",
+                ],
+            )
+        );
+    }
+
+    #[test]
+    fn planned_nft_cleanup_can_flush_chain_or_delete_table() {
+        assert_eq!(
+            nft_flush_chain(NFT_OUTPUT_CHAIN),
+            LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "output"])
+        );
+        assert_eq!(
+            nft_delete_table(),
+            LinuxCommand::new("nft", ["delete", "table", "inet", "vigil"])
         );
     }
 
