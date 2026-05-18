@@ -6,6 +6,8 @@
 //! follow-up refactor that will route iptables/ip/ss/hosts-file operations
 //! through an injectable runner.
 
+#![allow(dead_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxCommand {
     pub program: &'static str,
@@ -230,11 +232,7 @@ pub fn nft_insert_block_uid(rule_name: &str, direction: &str, uid: u32) -> Linux
         chain.to_string(),
     ];
     if chain == NFT_OUTPUT_CHAIN {
-        args.extend([
-            "meta".to_string(),
-            "skuid".to_string(),
-            uid,
-        ]);
+        args.extend(["meta".to_string(), "skuid".to_string(), uid]);
     }
     args.extend([
         "counter".to_string(),
