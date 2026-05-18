@@ -6,10 +6,10 @@
 //! iptables-fallback behavior explicit and unit-testable before runtime use.
 
 use super::linux_command_plan::{
-    iptables_insert_block_all, iptables_insert_block_remote, iptables_insert_block_uid,
-    iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table,
-    nft_insert_block_all, nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset,
-    LinuxCommand, LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
+    iptables_insert_block_remote, iptables_insert_block_uid, iptables_set_policy,
+    nft_add_filter_chain, nft_add_table, nft_delete_table, nft_insert_block_all,
+    nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset, LinuxCommand,
+    LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,7 +51,10 @@ pub fn firewall_backend_setup_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCo
     }
 }
 
-pub fn firewall_backend_isolate_plan(backend: LinuxFirewallBackend, rule_name: &str) -> Vec<LinuxCommand> {
+pub fn firewall_backend_isolate_plan(
+    backend: LinuxFirewallBackend,
+    rule_name: &str,
+) -> Vec<LinuxCommand> {
     match backend {
         LinuxFirewallBackend::Nftables => vec![
             nft_insert_block_all(rule_name, "in"),
@@ -98,7 +101,9 @@ pub fn firewall_backend_block_uid_plan(
 ) -> Vec<LinuxCommand> {
     match backend {
         LinuxFirewallBackend::Nftables => vec![nft_insert_block_uid(rule_name, direction, uid)],
-        LinuxFirewallBackend::Iptables => vec![iptables_insert_block_uid(rule_name, direction, uid)],
+        LinuxFirewallBackend::Iptables => {
+            vec![iptables_insert_block_uid(rule_name, direction, uid)]
+        }
     }
 }
 
@@ -126,21 +131,34 @@ mod tests {
 
     #[test]
     fn selects_nftables_when_probe_succeeds() {
-        let runner = ProbeRunner { nft_available: true };
-        assert_eq!(select_firewall_backend(&runner), LinuxFirewallBackend::Nftables);
+        let runner = ProbeRunner {
+            nft_available: true,
+        };
+        assert_eq!(
+            select_firewall_backend(&runner),
+            LinuxFirewallBackend::Nftables
+        );
     }
 
     #[test]
     fn falls_back_to_iptables_when_nft_probe_fails() {
-        let runner = ProbeRunner { nft_available: false };
-        assert_eq!(select_firewall_backend(&runner), LinuxFirewallBackend::Iptables);
+        let runner = ProbeRunner {
+            nft_available: false,
+        };
+        assert_eq!(
+            select_firewall_backend(&runner),
+            LinuxFirewallBackend::Iptables
+        );
     }
 
     #[test]
     fn nftables_setup_creates_vigil_table_and_chains() {
         let plan = firewall_backend_setup_plan(LinuxFirewallBackend::Nftables);
         assert_eq!(plan.len(), 4);
-        assert_eq!(plan[0], LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]));
+        assert_eq!(
+            plan[0],
+            LinuxCommand::new("nft", ["add", "table", "inet", "vigil"])
+        );
         assert_eq!(plan[1].args[4], "input");
         assert_eq!(plan[2].args[4], "forward");
         assert_eq!(plan[3].args[4], "output");
@@ -156,7 +174,9 @@ mod tests {
         let plan = firewall_backend_isolate_plan(LinuxFirewallBackend::Nftables, "isolate");
         assert_eq!(plan.len(), 3);
         assert!(plan.iter().all(|command| command.program == "nft"));
-        assert!(plan.iter().all(|command| command.args.iter().any(|arg| arg == "drop")));
+        assert!(plan
+            .iter()
+            .all(|command| command.args.iter().any(|arg| arg == "drop")));
     }
 
     #[test]
@@ -175,8 +195,14 @@ mod tests {
     #[test]
     fn nftables_restore_deletes_vigil_table() {
         assert_eq!(
-            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, &[("INPUT", "DROP")]),
-            vec![LinuxCommand::new("nft", ["delete", "table", "inet", "vigil"])]
+            firewall_backend_restore_plan(
+                LinuxFirewallBackend::Nftables,
+                &[("INPUT", "DROP")]
+            ),
+            vec![LinuxCommand::new(
+                "nft",
+                ["delete", "table", "inet", "vigil"]
+            )]
         );
     }
 
@@ -209,11 +235,17 @@ mod tests {
 
     #[test]
     fn uid_block_plan_matches_backend() {
-        let nft = firewall_backend_block_uid_plan(LinuxFirewallBackend::Nftables, "uid", "out", 1000);
+        let nft =
+            firewall_backend_block_uid_plan(LinuxFirewallBackend::Nftables, "uid", "out", 1000);
         assert_eq!(nft[0].program, "nft");
         assert!(nft[0].args.iter().any(|arg| arg == "skuid"));
 
-        let iptables = firewall_backend_block_uid_plan(LinuxFirewallBackend::Iptables, "uid", "out", 1000);
+        let iptables = firewall_backend_block_uid_plan(
+            LinuxFirewallBackend::Iptables,
+            "uid",
+            "out",
+            1000,
+        );
         assert_eq!(iptables[0].program, "iptables");
         assert!(iptables[0].args.iter().any(|arg| arg == "--uid-owner"));
     }
