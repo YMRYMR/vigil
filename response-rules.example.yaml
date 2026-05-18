@@ -34,3 +34,12 @@ rules:
     min_advisory_severity: critical
     action: block_process
     duration: 24h
+
+  - name: quarantine_publicly_exposed_known_exploited_service_without_fix_bound
+    require_advisory_match: true
+    require_known_exploited_advisory: true
+    require_advisory_public_internet_exposure: true
+    require_missing_advisory_fix_version: true
+    min_advisory_severity: critical
+    action: quarantine
+    duration: 24h
