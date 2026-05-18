@@ -107,6 +107,39 @@ VBoxManage dhcpserver add \
   --enable
 ```
 
+## Temporary internet access for setup only
+
+The VM definitions below are host-only by default. If you need internet access to
+install OS packages, fetch updates, or download Vigil release artifacts, attach a
+NAT adapter temporarily, perform the setup, then remove or disable NAT before
+creating the `vigil-installed` snapshot and before running any resilience test.
+
+Attach temporary NAT to a powered-off VM:
+
+```bash
+VBoxManage modifyvm vigil-linux --nic2 nat
+VBoxManage modifyvm target-linux --nic2 nat
+VBoxManage modifyvm vigil-windows --nic2 nat
+```
+
+Remove NAT again before tests:
+
+```bash
+VBoxManage modifyvm vigil-linux --nic2 none
+VBoxManage modifyvm target-linux --nic2 none
+VBoxManage modifyvm vigil-windows --nic2 none
+```
+
+Verify no VM has NAT enabled before running test phases:
+
+```bash
+VBoxManage showvminfo vigil-linux --machinereadable | grep '^nic[0-9]="'
+VBoxManage showvminfo target-linux --machinereadable | grep '^nic[0-9]="'
+VBoxManage showvminfo vigil-windows --machinereadable | grep '^nic[0-9]="'
+```
+
+Expected test-time result: `nic1="hostonly"` and no `nat` adapters.
+
 ## Create Linux VMs
 
 Download Linux ISOs manually and place them under `~/iso/` or another local
@@ -120,7 +153,7 @@ Create the Vigil Linux VM:
 ```bash
 VBoxManage createvm --name vigil-linux --ostype Ubuntu_64 --register
 VBoxManage modifyvm vigil-linux --memory 4096 --cpus 2 --vram 128 --graphicscontroller vmsvga
-VBoxManage modifyvm vigil-linux --nic1 nat --nic2 hostonly --hostonlyadapter2 vboxnet0
+VBoxManage modifyvm vigil-linux --nic1 hostonly --hostonlyadapter1 vboxnet0 --nic2 none
 VBoxManage createhd --filename "$HOME/VirtualBox VMs/vigil-linux/vigil-linux.vdi" --size 50000
 VBoxManage storagectl vigil-linux --name SATA --add sata --controller IntelAhci
 VBoxManage storageattach vigil-linux --storagectl SATA --port 0 --device 0 --type hdd \
@@ -136,7 +169,7 @@ Create the target Linux VM:
 ```bash
 VBoxManage createvm --name target-linux --ostype Ubuntu_64 --register
 VBoxManage modifyvm target-linux --memory 2048 --cpus 1 --vram 64 --graphicscontroller vmsvga
-VBoxManage modifyvm target-linux --nic1 nat --nic2 hostonly --hostonlyadapter2 vboxnet0
+VBoxManage modifyvm target-linux --nic1 hostonly --hostonlyadapter1 vboxnet0 --nic2 none
 VBoxManage createhd --filename "$HOME/VirtualBox VMs/target-linux/target-linux.vdi" --size 25000
 VBoxManage storagectl target-linux --name SATA --add sata --controller IntelAhci
 VBoxManage storageattach target-linux --storagectl SATA --port 0 --device 0 --type hdd \
@@ -154,8 +187,8 @@ On `vigil-linux`:
 
 ```bash
 ip link
-sudo ip addr add 192.168.56.10/24 dev enp0s8
-sudo ip link set enp0s8 up
+sudo ip addr add 192.168.56.10/24 dev enp0s3
+sudo ip link set enp0s3 up
 ping -c 3 192.168.56.1
 ```
 
@@ -163,8 +196,8 @@ On `target-linux`:
 
 ```bash
 ip link
-sudo ip addr add 192.168.56.20/24 dev enp0s8
-sudo ip link set enp0s8 up
+sudo ip addr add 192.168.56.20/24 dev enp0s3
+sudo ip link set enp0s3 up
 ping -c 3 192.168.56.10
 ```
 
@@ -173,7 +206,7 @@ Persist the static IP with NetworkManager, if present.
 On `vigil-linux`:
 
 ```bash
-sudo nmcli con add type ethernet ifname enp0s8 con-name vigil-hostonly \
+sudo nmcli con add type ethernet ifname enp0s3 con-name vigil-hostonly \
   ipv4.method manual ipv4.addresses 192.168.56.10/24 ipv4.gateway "" \
   ipv4.dns "" connection.autoconnect yes
 sudo nmcli con up vigil-hostonly
@@ -182,7 +215,7 @@ sudo nmcli con up vigil-hostonly
 On `target-linux`:
 
 ```bash
-sudo nmcli con add type ethernet ifname enp0s8 con-name target-hostonly \
+sudo nmcli con add type ethernet ifname enp0s3 con-name target-hostonly \
   ipv4.method manual ipv4.addresses 192.168.56.20/24 ipv4.gateway "" \
   ipv4.dns "" connection.autoconnect yes
 sudo nmcli con up target-hostonly
@@ -200,7 +233,7 @@ Create `vigil-windows`:
 VBoxManage createvm --name vigil-windows --ostype Windows11_64 --register
 VBoxManage modifyvm vigil-windows --memory 6144 --cpus 2 --vram 128 --graphicscontroller vboxsvga
 VBoxManage modifyvm vigil-windows --firmware efi --ioapic on --boot1 dvd --boot2 disk
-VBoxManage modifyvm vigil-windows --nic1 nat --nic2 hostonly --hostonlyadapter2 vboxnet0
+VBoxManage modifyvm vigil-windows --nic1 hostonly --hostonlyadapter1 vboxnet0 --nic2 none
 VBoxManage createhd --filename "$HOME/VirtualBox VMs/vigil-windows/vigil-windows.vdi" --size 80000
 VBoxManage storagectl vigil-windows --name SATA --add sata --controller IntelAhci
 VBoxManage storageattach vigil-windows --storagectl SATA --port 0 --device 0 --type hdd \
@@ -215,12 +248,12 @@ Inside Windows, set the host-only adapter to a static address:
 
 ```powershell
 Get-NetAdapter
-New-NetIPAddress -InterfaceAlias "Ethernet 2" -IPAddress 192.168.56.30 -PrefixLength 24
+New-NetIPAddress -InterfaceAlias "Ethernet" -IPAddress 192.168.56.30 -PrefixLength 24
 Test-NetConnection 192.168.56.1
 Test-NetConnection 192.168.56.20 -Port 8080
 ```
 
-Use the actual adapter alias shown by `Get-NetAdapter` if it is not `Ethernet 2`.
+Use the actual adapter alias shown by `Get-NetAdapter` if it is not `Ethernet`.
 
 ## Snapshot discipline
 
@@ -232,9 +265,12 @@ VBoxManage snapshot target-linux take clean-os --description "Fresh local target
 VBoxManage snapshot vigil-windows take clean-os --description "Fresh OS before Vigil"
 ```
 
-Create a second snapshot after installing and configuring Vigil:
+Create a second snapshot after installing and configuring Vigil, with NAT disabled:
 
 ```bash
+VBoxManage modifyvm vigil-linux --nic2 none
+VBoxManage modifyvm target-linux --nic2 none
+VBoxManage modifyvm vigil-windows --nic2 none
 VBoxManage snapshot vigil-linux take vigil-installed --description "Vigil installed and baseline configured"
 VBoxManage snapshot vigil-windows take vigil-installed --description "Vigil installed and baseline configured"
 ```
@@ -254,7 +290,7 @@ From a release AppImage:
 ```bash
 mkdir -p ~/vigil-lab
 cd ~/vigil-lab
-# Copy the AppImage into this directory from the host or download it if the VM has internet.
+# Copy the AppImage into this directory from the host or attach temporary NAT only for download/setup.
 chmod +x Vigil-*.AppImage
 ./Vigil-*.AppImage
 ```
@@ -356,7 +392,8 @@ Test-NetConnection 192.168.56.20 -Port 9001
 
 Docker can help generate benign local load, but it should not replace full VM
 host testing because container networking and namespaces can hide host details.
-Use it only inside `vigil-linux` after snapshots are in place.
+Use it only inside `vigil-linux` after snapshots are in place and after any
+required temporary NAT setup has been removed again.
 
 ```bash
 sudo apt update
@@ -370,6 +407,12 @@ cannot attribute it precisely, record that as a visibility limitation rather tha
 trying to add stealth behavior to the simulator.
 
 ## Test phases
+
+Before each phase, verify the VM is on the host-only network only:
+
+```bash
+VBoxManage showvminfo vigil-linux --machinereadable | grep '^nic[0-9]="'
+```
 
 ### Phase 0: baseline observation
 
