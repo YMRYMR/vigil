@@ -62,6 +62,22 @@ rules:
 
 This example only matches when Vigil already found one high-confidence applicable advisory reason for a Chrome-family product, marked it as known exploited, preserved that mitigation guidance is available in the protected advisory cache, confirmed that the matching remediation link is explicitly vendor-tagged, rated it at least critical, and could not find an upper fixed-version bound on the matched advisory range.
 
+Another conservative pattern is to gate on obvious public-internet exposure for the same advisory-backed event:
+
+```yaml
+rules:
+  - name: quarantine_publicly_exposed_known_exploited_service_without_fix_bound
+    require_advisory_match: true
+    require_known_exploited_advisory: true
+    require_advisory_public_internet_exposure: true
+    require_missing_advisory_fix_version: true
+    min_advisory_severity: critical
+    action: quarantine
+    duration: 24h
+```
+
+This second example still stays within the current trust boundary. It matches only when Vigil already found a high-confidence applicable advisory reason, the affected service is currently listening on an obviously globally routable local IP address, the advisory is known exploited, the matched severity is at least critical, and the matched advisory range still has no upper fixed-version bound.
+
 ## Current scope limits
 
 This is still an intentionally narrow slice of mitigation-aware response rules.
