@@ -1,8 +1,8 @@
 use super::linux_command_plan::{
-    iptables_insert_block_remote, iptables_insert_block_uid, iptables_set_policy,
-    nft_add_filter_chain, nft_add_table, nft_delete_table, nft_insert_block_all,
-    nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset, LinuxCommand,
-    LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
+    iptables_insert_block_remote, iptables_insert_block_uid, iptables_list_rules,
+    iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table,
+    nft_insert_block_all, nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset,
+    LinuxCommand, LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,51 @@ impl LinuxFirewallBackend {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IptablesChainPolicy {
+    pub chain: String,
+    pub policy: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IptablesPolicySnapshot {
+    pub chains: Vec<IptablesChainPolicy>,
+}
+
+impl IptablesPolicySnapshot {
+    pub fn from_iptables_list(output: &str) -> Result<Self, String> {
+        let mut chains = Vec::new();
+        for line in output.lines() {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed.strip_prefix("Chain ") else {
+                continue;
+            };
+            let Some((chain, policy_part)) = rest.split_once(" (policy ") else {
+                continue;
+            };
+            let Some(policy) = policy_part.strip_suffix(')') else {
+                continue;
+            };
+            if matches!(chain, "INPUT" | "FORWARD" | "OUTPUT") {
+                chains.push(IptablesChainPolicy {
+                    chain: chain.to_string(),
+                    policy: policy.to_string(),
+                });
+            }
+        }
+
+        for required in ["INPUT", "FORWARD", "OUTPUT"] {
+            if !chains.iter().any(|chain| chain.chain == required) {
+                return Err(format!(
+                    "iptables policy snapshot did not include the {required} chain"
+                ));
+            }
+        }
+
+        Ok(Self { chains })
+    }
+}
+
 /// Prefer nftables when it is usable, otherwise fall back to iptables.
 ///
 /// The probe is intentionally read-only: `nft list ruleset` requires enough
@@ -31,6 +76,13 @@ pub fn select_firewall_backend(runner: &impl LinuxCommandRunner) -> LinuxFirewal
     } else {
         LinuxFirewallBackend::Iptables
     }
+}
+
+pub fn capture_iptables_policy_snapshot(
+    runner: &impl LinuxCommandRunner,
+) -> Result<IptablesPolicySnapshot, String> {
+    let output = runner.stdout(&iptables_list_rules())?;
+    IptablesPolicySnapshot::from_iptables_list(&output)
 }
 
 pub fn firewall_backend_setup_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCommand> {
@@ -63,14 +115,22 @@ pub fn firewall_backend_isolate_plan(
     }
 }
 
-pub fn firewall_backend_restore_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCommand> {
+pub fn firewall_backend_restore_plan(
+    backend: LinuxFirewallBackend,
+    iptables_snapshot: Option<&IptablesPolicySnapshot>,
+) -> Result<Vec<LinuxCommand>, String> {
     match backend {
-        LinuxFirewallBackend::Nftables => vec![nft_delete_table()],
-        LinuxFirewallBackend::Iptables => vec![
-            iptables_set_policy("INPUT", "ACCEPT"),
-            iptables_set_policy("FORWARD", "ACCEPT"),
-            iptables_set_policy("OUTPUT", "ACCEPT"),
-        ],
+        LinuxFirewallBackend::Nftables => Ok(vec![nft_delete_table()]),
+        LinuxFirewallBackend::Iptables => {
+            let snapshot = iptables_snapshot.ok_or_else(|| {
+                "iptables restore requires a captured chain-policy snapshot".to_string()
+            })?;
+            Ok(snapshot
+                .chains
+                .iter()
+                .map(|chain| iptables_set_policy(&chain.chain, &chain.policy))
+                .collect())
+        }
     }
 }
 
@@ -115,6 +175,11 @@ mod tests {
         fn stdout(&self, command: &LinuxCommand) -> Result<String, String> {
             if command.program == "nft" && self.nft_available {
                 Ok("table inet filter".to_string())
+            } else if command.program == "iptables" {
+                Ok(
+                    "Chain INPUT (policy ACCEPT)\nChain FORWARD (policy DROP)\nChain OUTPUT (policy ACCEPT)\n"
+                        .to_string(),
+                )
             } else {
                 Err("not available".to_string())
             }
@@ -140,6 +205,33 @@ mod tests {
         assert_eq!(
             select_firewall_backend(&runner),
             LinuxFirewallBackend::Iptables
+        );
+    }
+
+    #[test]
+    fn captures_iptables_chain_policies_from_list_output() {
+        let runner = ProbeRunner {
+            nft_available: false,
+        };
+        let snapshot = capture_iptables_policy_snapshot(&runner).unwrap();
+        assert_eq!(
+            snapshot,
+            IptablesPolicySnapshot {
+                chains: vec![
+                    IptablesChainPolicy {
+                        chain: "INPUT".to_string(),
+                        policy: "ACCEPT".to_string(),
+                    },
+                    IptablesChainPolicy {
+                        chain: "FORWARD".to_string(),
+                        policy: "DROP".to_string(),
+                    },
+                    IptablesChainPolicy {
+                        chain: "OUTPUT".to_string(),
+                        policy: "ACCEPT".to_string(),
+                    },
+                ],
+            }
         );
     }
 
@@ -187,20 +279,45 @@ mod tests {
     #[test]
     fn restore_plan_matches_backend() {
         assert_eq!(
-            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables),
+            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, None).unwrap(),
             vec![LinuxCommand::new(
                 "nft",
                 ["delete", "table", "inet", "vigil"]
             )]
         );
         assert_eq!(
-            firewall_backend_restore_plan(LinuxFirewallBackend::Iptables),
+            firewall_backend_restore_plan(
+                LinuxFirewallBackend::Iptables,
+                Some(&IptablesPolicySnapshot {
+                    chains: vec![
+                        IptablesChainPolicy {
+                            chain: "INPUT".to_string(),
+                            policy: "ACCEPT".to_string(),
+                        },
+                        IptablesChainPolicy {
+                            chain: "FORWARD".to_string(),
+                            policy: "DROP".to_string(),
+                        },
+                        IptablesChainPolicy {
+                            chain: "OUTPUT".to_string(),
+                            policy: "ACCEPT".to_string(),
+                        },
+                    ],
+                }),
+            )
+            .unwrap(),
             vec![
                 LinuxCommand::new("iptables", ["-P", "INPUT", "ACCEPT"]),
-                LinuxCommand::new("iptables", ["-P", "FORWARD", "ACCEPT"]),
+                LinuxCommand::new("iptables", ["-P", "FORWARD", "DROP"]),
                 LinuxCommand::new("iptables", ["-P", "OUTPUT", "ACCEPT"]),
             ]
         );
+    }
+
+    #[test]
+    fn iptables_restore_requires_a_snapshot() {
+        let err = firewall_backend_restore_plan(LinuxFirewallBackend::Iptables, None).unwrap_err();
+        assert!(err.contains("snapshot"));
     }
 
     #[test]
