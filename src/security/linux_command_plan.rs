@@ -171,7 +171,7 @@ pub fn nft_add_filter_chain(chain: &str, hook: &str, priority: i32, policy: &str
             "inet",
             NFT_TABLE,
             chain,
-            &format!("{ type filter hook {hook} priority {priority}; policy {policy}; }")
+            &format!("{{ type filter hook {hook} priority {priority}; policy {policy}; }}"),
         ],
     )
 }
