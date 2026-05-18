@@ -237,12 +237,8 @@ mod tests {
         assert_eq!(nft[0].program, "nft");
         assert!(nft[0].args.iter().any(|arg| arg == "skuid"));
 
-        let iptables = firewall_backend_block_uid_plan(
-            LinuxFirewallBackend::Iptables,
-            "uid",
-            "out",
-            1000,
-        );
+        let iptables =
+            firewall_backend_block_uid_plan(LinuxFirewallBackend::Iptables, "uid", "out", 1000);
         assert_eq!(iptables[0].program, "iptables");
         assert!(iptables[0].args.iter().any(|arg| arg == "--uid-owner"));
     }
