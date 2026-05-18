@@ -66,14 +66,16 @@ pub fn firewall_backend_isolate_plan(backend: LinuxFirewallBackend, rule_name: &
     }
 }
 
-pub fn firewall_backend_restore_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCommand> {
+pub fn firewall_backend_restore_plan(
+    backend: LinuxFirewallBackend,
+    iptables_policies: &[(&str, &str)],
+) -> Vec<LinuxCommand> {
     match backend {
         LinuxFirewallBackend::Nftables => vec![nft_delete_table()],
-        LinuxFirewallBackend::Iptables => vec![
-            iptables_set_policy("INPUT", "ACCEPT"),
-            iptables_set_policy("FORWARD", "ACCEPT"),
-            iptables_set_policy("OUTPUT", "ACCEPT"),
-        ],
+        LinuxFirewallBackend::Iptables => iptables_policies
+            .iter()
+            .map(|(chain, policy)| iptables_set_policy(chain, policy))
+            .collect(),
     }
 }
 
@@ -171,17 +173,24 @@ mod tests {
     }
 
     #[test]
-    fn restore_plan_matches_backend() {
+    fn nftables_restore_deletes_vigil_table() {
         assert_eq!(
-            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables),
+            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, &[("INPUT", "DROP")]),
             vec![LinuxCommand::new("nft", ["delete", "table", "inet", "vigil"])]
         );
+    }
+
+    #[test]
+    fn iptables_restore_uses_captured_policies() {
         assert_eq!(
-            firewall_backend_restore_plan(LinuxFirewallBackend::Iptables),
+            firewall_backend_restore_plan(
+                LinuxFirewallBackend::Iptables,
+                &[("INPUT", "DROP"), ("FORWARD", "ACCEPT"), ("OUTPUT", "DROP")],
+            ),
             vec![
-                LinuxCommand::new("iptables", ["-P", "INPUT", "ACCEPT"]),
+                LinuxCommand::new("iptables", ["-P", "INPUT", "DROP"]),
                 LinuxCommand::new("iptables", ["-P", "FORWARD", "ACCEPT"]),
-                LinuxCommand::new("iptables", ["-P", "OUTPUT", "ACCEPT"]),
+                LinuxCommand::new("iptables", ["-P", "OUTPUT", "DROP"]),
             ]
         );
     }
