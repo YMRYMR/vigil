@@ -27,6 +27,7 @@ Current Linux-specific priorities:
 - Package inventory through dpkg, RPM, and Alpine apk sources.
 - Reversible active-response actions through Linux-native controls.
 - Clear privilege UX around root and Linux capabilities.
+- Service and active-response hardening tracked in [`LINUX-HARDENING.md`](LINUX-HARDENING.md).
 
 ## Out of active scope
 
