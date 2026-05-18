@@ -227,8 +227,8 @@ mod tests {
             "2606:4700:4700::1111",
         );
         assert_eq!(plan.len(), 1);
-        assert_eq!(plan[0].args[5], "output");
-        assert_eq!(plan[0].args[6], "ip6");
+        assert_eq!(plan[0].args[4], "output");
+        assert_eq!(plan[0].args[5], "ip6");
     }
 
     #[test]
