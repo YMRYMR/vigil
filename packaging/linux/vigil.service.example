@@ -3,6 +3,8 @@ Description=Vigil network monitor
 Documentation=https://github.com/YMRYMR/vigil
 After=network.target
 Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -10,8 +12,6 @@ Type=simple
 ExecStart=/opt/vigil/vigil --service-mode --data-dir /var/lib/vigil
 Restart=on-failure
 RestartSec=5s
-StartLimitIntervalSec=300
-StartLimitBurst=3
 StandardOutput=journal
 StandardError=journal
 
@@ -35,7 +35,7 @@ ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/var/lib/vigil /etc/hosts /etc/systemd/system
+ReadWritePaths=/var/lib/vigil /etc/hosts
 
 # Keep network address families broad enough for endpoint monitoring and local
 # response helpers. Do not enable private networking; Vigil must observe host
