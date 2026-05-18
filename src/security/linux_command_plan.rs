@@ -155,6 +155,9 @@ pub const NFT_TABLE: &str = "vigil";
 pub const NFT_INPUT_CHAIN: &str = "input";
 pub const NFT_OUTPUT_CHAIN: &str = "output";
 pub const NFT_FORWARD_CHAIN: &str = "forward";
+pub const NFT_ISOL_IN_CHAIN: &str = "isolin";
+pub const NFT_ISOL_FORWARD_CHAIN: &str = "isolforward";
+pub const NFT_ISOL_OUT_CHAIN: &str = "isolout";
 
 pub fn nft_list_ruleset() -> LinuxCommand {
     LinuxCommand::new("nft", ["list", "ruleset"])
@@ -180,6 +183,36 @@ pub fn nft_add_filter_chain(chain: &str, hook: &str, priority: i32, policy: &str
 
 pub fn nft_delete_table() -> LinuxCommand {
     LinuxCommand::new("nft", ["delete", "table", "inet", NFT_TABLE])
+}
+
+pub fn nft_add_chain(chain: &str) -> LinuxCommand {
+    LinuxCommand::new("nft", ["add", "chain", "inet", NFT_TABLE, chain])
+}
+
+pub fn nft_insert_jump_rule(src_chain: &str, dst_chain: &str) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        [
+            "insert", "rule", "inet", NFT_TABLE, src_chain, "jump", dst_chain,
+        ],
+    )
+}
+
+pub fn nft_insert_block_all_into(chain: &str, rule_name: &str) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        [
+            "insert",
+            "rule",
+            "inet",
+            NFT_TABLE,
+            chain,
+            "counter",
+            "comment",
+            &nft_comment(rule_name),
+            "drop",
+        ],
+    )
 }
 
 pub fn nft_insert_block_all(rule_name: &str, direction: &str) -> LinuxCommand {

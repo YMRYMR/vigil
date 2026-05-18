@@ -6,6 +6,8 @@ pub mod integrity;
 pub mod linux_command_plan;
 #[cfg(any(target_os = "linux", test))]
 pub mod linux_firewall_backend;
+#[cfg(any(target_os = "linux", test))]
+pub mod linux_firewall_executor;
 pub mod operator_provenance;
 pub mod policy;
 pub mod quarantine;
