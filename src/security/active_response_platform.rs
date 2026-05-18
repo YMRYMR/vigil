@@ -1,3 +1,14 @@
+#[cfg(target_os = "linux")]
+use super::super::linux_command_plan::{
+    nft_flush_chain, StdLinuxCommandRunner, NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN,
+    NFT_ISOL_OUT_CHAIN,
+};
+#[cfg(target_os = "linux")]
+use super::super::linux_firewall_backend::{
+    capture_iptables_policy_snapshot, IptablesPolicySnapshot,
+};
+#[cfg(target_os = "linux")]
+use super::super::linux_firewall_executor::execute_system_isolate_plan;
 #[allow(unused_imports)]
 use super::{
     socket_addr_from_text, unix_now, AutorunEntry, AutorunSnapshot, FirewallProfileState,
@@ -1103,40 +1114,30 @@ mod imp {
     pub fn snapshot_firewall_profiles() -> Result<FirewallSnapshot, String> {
         #[cfg(target_os = "linux")]
         {
-            let output = command_stdout("iptables", &["-L", "-n"])?;
-            let mut profiles = Vec::new();
-            for line in output.lines() {
-                let l = line.trim();
-                // Default policy lines look like: "Chain INPUT (policy DROP)"
-                if let Some(rest) = l.strip_prefix("Chain ") {
-                    let mut parts = rest.splitn(2, ' ');
-                    let chain = parts.next().unwrap_or("");
-                    let policy_part = parts.next().unwrap_or("");
-                    if let Some(policy) = policy_part
-                        .trim_start_matches('(')
-                        .strip_prefix("policy ")
-                        .and_then(|s| s.strip_suffix(')'))
-                    {
-                        profiles.push(FirewallProfileState {
-                            name: chain.to_string(),
-                            enabled: !policy.eq_ignore_ascii_case("DROP"),
-                            inbound_action: policy.to_string(),
-                            outbound_action: policy.to_string(),
-                        });
-                    }
-                }
-            }
-            return Ok(FirewallSnapshot { profiles });
+            let ipt_snapshot = capture_iptables_policy_snapshot(&StdLinuxCommandRunner)?;
+            return Ok(iptables_snapshot_to_firewall(&ipt_snapshot));
         }
         #[allow(unreachable_code)]
         Ok(FirewallSnapshot { profiles: vec![] })
     }
+
+    fn iptables_snapshot_to_firewall(snapshot: &IptablesPolicySnapshot) -> FirewallSnapshot {
+        let profiles = snapshot
+            .chains
+            .iter()
+            .map(|cp| FirewallProfileState {
+                name: cp.chain.clone(),
+                enabled: !cp.policy.eq_ignore_ascii_case("DROP"),
+                inbound_action: cp.policy.clone(),
+                outbound_action: cp.policy.clone(),
+            })
+            .collect();
+        FirewallSnapshot { profiles }
+    }
     pub fn apply_firewall_isolation() -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            for chain in &["INPUT", "FORWARD", "OUTPUT"] {
-                command_status("iptables", &["-P", chain, "DROP"])?;
-            }
+            execute_system_isolate_plan("apply_firewall_isolation")?;
             return Ok(());
         }
         #[allow(unreachable_code)]
@@ -1145,6 +1146,12 @@ mod imp {
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
+            let _ = StdLinuxCommandRunner
+                .status(&nft_flush_chain(NFT_ISOL_IN_CHAIN))
+                .and_then(|()| {
+                    StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_FORWARD_CHAIN))
+                })
+                .and_then(|()| StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_OUT_CHAIN)));
             for profile in &_snapshot.profiles {
                 let policy = if profile.enabled {
                     profile.outbound_action.as_str()
