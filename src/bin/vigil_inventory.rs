@@ -54,6 +54,8 @@ struct InventoryEntry {
     product_aliases: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vendor_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    vendor_aliases: Vec<String>,
     source: &'static str,
 }
 
@@ -104,6 +106,11 @@ fn enrich_inventory_identity(entry: &mut InventoryEntry) {
         .publisher_hint
         .as_deref()
         .and_then(normalize_vendor_key);
+    entry.vendor_aliases = entry
+        .publisher_hint
+        .as_deref()
+        .map(collect_vendor_aliases)
+        .unwrap_or_default();
     entry.normalized_version = entry
         .version_hint
         .as_deref()
@@ -131,6 +138,18 @@ fn collect_product_aliases(display_name: &str, executable_path: Option<&str>) ->
                 aliases.insert(alias);
             }
         }
+    }
+    aliases.into_iter().collect()
+}
+
+fn collect_vendor_aliases(publisher: &str) -> Vec<String> {
+    let publisher = publisher.split('<').next().unwrap_or(publisher).trim();
+    let mut aliases = BTreeSet::new();
+    if let Some(alias) = normalize_vendor_key(publisher) {
+        aliases.insert(alias);
+    }
+    if let Some(alias) = normalize_identity(publisher) {
+        aliases.insert(alias);
     }
     aliases.into_iter().collect()
 }
@@ -324,6 +343,7 @@ fn inventory_entry_from_uninstall_key(key: &winreg::RegKey) -> Option<InventoryE
         product_key: None,
         product_aliases: Vec::new(),
         vendor_key: None,
+        vendor_aliases: Vec::new(),
         source: "windows-uninstall-registry",
     })
 }
@@ -397,6 +417,7 @@ fn inventory_entry_from_dpkg_fields(fields: &BTreeMap<String, String>) -> Option
         product_key: None,
         product_aliases: Vec::new(),
         vendor_key: None,
+        vendor_aliases: Vec::new(),
         source: "linux-dpkg-status",
     })
 }
@@ -447,6 +468,7 @@ fn inventory_entry_from_rpm_line(line: &str) -> Option<InventoryEntry> {
         product_key: None,
         product_aliases: Vec::new(),
         vendor_key: None,
+        vendor_aliases: Vec::new(),
         source: "linux-rpm-database",
     })
 }
@@ -498,6 +520,7 @@ fn inventory_entry_from_apk_fields(fields: &BTreeMap<char, String>) -> Option<In
         product_key: None,
         product_aliases: Vec::new(),
         vendor_key: None,
+        vendor_aliases: Vec::new(),
         source: "linux-apk-installed",
     })
 }
@@ -655,6 +678,18 @@ mod tests {
     }
 
     #[test]
+    fn collect_vendor_aliases_keeps_full_and_suffix_stripped_forms() {
+        assert_eq!(
+            collect_vendor_aliases("Example Corporation <sec@example.com>"),
+            vec!["example".to_string(), "example-corporation".to_string()]
+        );
+        assert_eq!(
+            collect_vendor_aliases("Microsoft Corporation"),
+            vec!["microsoft".to_string(), "microsoft-corporation".to_string()]
+        );
+    }
+
+    #[test]
     fn parse_normalized_version_hint_tracks_dpkg_epoch_and_revision() {
         let parsed =
             parse_normalized_version_hint("linux-dpkg-status", "1:2.39.2-1ubuntu1").unwrap();
@@ -726,6 +761,7 @@ mod tests {
             product_key: None,
             product_aliases: Vec::new(),
             vendor_key: None,
+            vendor_aliases: Vec::new(),
             source: "windows-uninstall-registry",
         };
 
@@ -740,6 +776,10 @@ mod tests {
         assert_eq!(
             entry.product_aliases,
             vec!["agent".to_string(), "example-agent".to_string()]
+        );
+        assert_eq!(
+            entry.vendor_aliases,
+            vec!["example".to_string(), "example-corp".to_string()]
         );
     }
 }
