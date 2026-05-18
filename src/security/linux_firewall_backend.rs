@@ -1,3 +1,11 @@
+//! Linux firewall backend selection and command sequencing.
+//!
+//! This module keeps backend choice and high-level firewall command sequences
+//! separate from command construction. It is intentionally not wired into the
+//! live active-response path yet; the goal is to make the nftables-preferred,
+//! iptables-fallback behavior explicit and unit-testable before runtime use.
+#![cfg_attr(not(test), allow(dead_code))]
+
 use super::linux_command_plan::{
     iptables_insert_block_remote, iptables_insert_block_uid, iptables_list_rules,
     iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table,
@@ -12,7 +20,6 @@ pub enum LinuxFirewallBackend {
 }
 
 impl LinuxFirewallBackend {
-    #[allow(dead_code)]
     pub fn label(self) -> &'static str {
         match self {
             Self::Nftables => "nftables",
