@@ -139,6 +139,16 @@ Use [`docs/RESPONSE-RULES.md`](docs/RESPONSE-RULES.md) together with
 turn those high-confidence advisory matches into conservative operator-managed
 response rules.
 
+Those advisory-aware predicates stay intentionally narrow today. Mitigation
+guidance counts only when the protected advisory cache preserves non-empty
+mitigation text or an explicit remediation-tagged reference such as `Fix`,
+`Patch`, `Update`, `Upgrade`, `Workaround`, `Guidance`, or `Solution`. Vendor
+guidance counts only when that same tagged reference is also marked as
+vendor-authored material such as `Vendor Advisory`, `Vendor Bulletin`, or
+`Vendor Notice`. Public-internet exposure counts only for a current `LISTEN`
+socket bound to an obviously globally routable local IP. Fixed-version-only
+tokens do not count as operator guidance.
+
 Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if the deployment
 needs higher NVD API headroom.
