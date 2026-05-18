@@ -639,11 +639,15 @@ pkill -f 'nc -l 192.168.56.20 9001' || true
 Restore firewall state from a snapshot if any containment test changed host
 networking. Prefer snapshot restore over manual cleanup for disruptive tests.
 
-Remove Linux service mode when not testing it:
+Remove Linux service mode when not testing it. Set `VIGIL_BIN` to the same binary
+path used for installation, then fail loudly if that binary is missing:
 
 ```bash
-sudo vigil --uninstall-service || true
+VIGIL_BIN="${VIGIL_BIN:-$HOME/vigil/target/release/vigil}"
+test -x "$VIGIL_BIN"
+sudo "$VIGIL_BIN" --uninstall-service
 sudo systemctl daemon-reload
+systemctl status vigil.service --no-pager || true
 ```
 
 Restore the VM snapshot for a clean state:
