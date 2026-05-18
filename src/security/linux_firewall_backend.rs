@@ -195,13 +195,10 @@ mod tests {
     #[test]
     fn nftables_restore_deletes_vigil_table() {
         assert_eq!(
-            firewall_backend_restore_plan(
-                LinuxFirewallBackend::Nftables,
-                &[("INPUT", "DROP")]
-            ),
+            firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, &[("INPUT", "DROP")]),
             vec![LinuxCommand::new(
                 "nft",
-                ["delete", "table", "inet", "vigil"]
+                ["delete", "table", "inet", "vigil"],
             )]
         );
     }
