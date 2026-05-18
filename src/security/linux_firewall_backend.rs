@@ -8,9 +8,10 @@
 
 use super::linux_command_plan::{
     iptables_insert_block_remote, iptables_insert_block_uid, iptables_list_rules,
-    iptables_set_policy, nft_add_filter_chain, nft_add_table, nft_delete_table, nft_flush_chain,
-    nft_insert_block_all, nft_insert_block_remote, nft_insert_block_uid, nft_list_ruleset,
-    LinuxCommand, LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN,
+    iptables_set_policy, nft_add_chain, nft_add_filter_chain, nft_add_table, nft_flush_chain,
+    nft_insert_block_all_into, nft_insert_block_remote, nft_insert_block_uid, nft_insert_jump_rule,
+    nft_list_ruleset, LinuxCommand, LinuxCommandRunner, NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN,
+    NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN, NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +98,12 @@ pub fn firewall_backend_setup_plan(backend: LinuxFirewallBackend) -> Vec<LinuxCo
             nft_add_filter_chain(NFT_INPUT_CHAIN, "input", 0, "accept"),
             nft_add_filter_chain(NFT_FORWARD_CHAIN, "forward", 0, "accept"),
             nft_add_filter_chain(NFT_OUTPUT_CHAIN, "output", 0, "accept"),
+            nft_add_chain(NFT_ISOL_IN_CHAIN),
+            nft_add_chain(NFT_ISOL_FORWARD_CHAIN),
+            nft_add_chain(NFT_ISOL_OUT_CHAIN),
+            nft_insert_jump_rule(NFT_INPUT_CHAIN, NFT_ISOL_IN_CHAIN),
+            nft_insert_jump_rule(NFT_FORWARD_CHAIN, NFT_ISOL_FORWARD_CHAIN),
+            nft_insert_jump_rule(NFT_OUTPUT_CHAIN, NFT_ISOL_OUT_CHAIN),
         ],
         LinuxFirewallBackend::Iptables => Vec::new(),
     }
@@ -108,9 +115,9 @@ pub fn firewall_backend_isolate_plan(
 ) -> Vec<LinuxCommand> {
     match backend {
         LinuxFirewallBackend::Nftables => vec![
-            nft_insert_block_all(rule_name, "in"),
-            nft_insert_block_all(rule_name, "forward"),
-            nft_insert_block_all(rule_name, "out"),
+            nft_insert_block_all_into(NFT_ISOL_IN_CHAIN, rule_name),
+            nft_insert_block_all_into(NFT_ISOL_FORWARD_CHAIN, rule_name),
+            nft_insert_block_all_into(NFT_ISOL_OUT_CHAIN, rule_name),
         ],
         LinuxFirewallBackend::Iptables => vec![
             iptables_set_policy("INPUT", "DROP"),
@@ -126,9 +133,9 @@ pub fn firewall_backend_restore_plan(
 ) -> Result<Vec<LinuxCommand>, String> {
     match backend {
         LinuxFirewallBackend::Nftables => Ok(vec![
-            nft_flush_chain(NFT_INPUT_CHAIN),
-            nft_flush_chain(NFT_FORWARD_CHAIN),
-            nft_flush_chain(NFT_OUTPUT_CHAIN),
+            nft_flush_chain(NFT_ISOL_IN_CHAIN),
+            nft_flush_chain(NFT_ISOL_FORWARD_CHAIN),
+            nft_flush_chain(NFT_ISOL_OUT_CHAIN),
         ]),
         LinuxFirewallBackend::Iptables => {
             let snapshot = iptables_snapshot.ok_or_else(|| {
@@ -247,7 +254,7 @@ mod tests {
     #[test]
     fn nftables_setup_creates_vigil_table_and_chains() {
         let plan = firewall_backend_setup_plan(LinuxFirewallBackend::Nftables);
-        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.len(), 10);
         assert_eq!(
             plan[0],
             LinuxCommand::new("nft", ["add", "table", "inet", "vigil"])
@@ -255,6 +262,38 @@ mod tests {
         assert_eq!(plan[1].args[4], "input");
         assert_eq!(plan[2].args[4], "forward");
         assert_eq!(plan[3].args[4], "output");
+        assert_eq!(plan[4].args[4], "isolin");
+        assert_eq!(plan[5].args[4], "isolforward");
+        assert_eq!(plan[6].args[4], "isolout");
+        assert_eq!(
+            plan[7],
+            LinuxCommand::new(
+                "nft",
+                ["insert", "rule", "inet", "vigil", "input", "jump", "isolin"]
+            )
+        );
+        assert_eq!(
+            plan[8],
+            LinuxCommand::new(
+                "nft",
+                [
+                    "insert",
+                    "rule",
+                    "inet",
+                    "vigil",
+                    "forward",
+                    "jump",
+                    "isolforward"
+                ]
+            )
+        );
+        assert_eq!(
+            plan[9],
+            LinuxCommand::new(
+                "nft",
+                ["insert", "rule", "inet", "vigil", "output", "jump", "isolout"]
+            )
+        );
     }
 
     #[test]
@@ -263,13 +302,16 @@ mod tests {
     }
 
     #[test]
-    fn nftables_isolation_uses_vigil_drop_rules_without_changing_global_policy() {
+    fn nftables_isolation_uses_separate_chains_without_changing_main_chains() {
         let plan = firewall_backend_isolate_plan(LinuxFirewallBackend::Nftables, "isolate");
         assert_eq!(plan.len(), 3);
         assert!(plan.iter().all(|command| command.program == "nft"));
         assert!(plan
             .iter()
             .all(|command| command.args.iter().any(|arg| arg == "drop")));
+        assert_eq!(plan[0].args[4], "isolin");
+        assert_eq!(plan[1].args[4], "isolforward");
+        assert_eq!(plan[2].args[4], "isolout");
     }
 
     #[test]
@@ -290,9 +332,9 @@ mod tests {
         assert_eq!(
             firewall_backend_restore_plan(LinuxFirewallBackend::Nftables, None).unwrap(),
             vec![
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "input"]),
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "forward"]),
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "output"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolin"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolforward"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolout"]),
             ]
         );
         assert_eq!(

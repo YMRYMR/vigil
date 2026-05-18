@@ -68,12 +68,24 @@ pub fn execute_selected_setup_plan(
 pub fn execute_selected_isolate_plan(
     runner: &impl LinuxCommandRunner,
     rule_name: &str,
-) -> Result<ExecutedLinuxFirewallPlan, String> {
+) -> Result<ExecutedLinuxFirewallPlan, (String, Option<LinuxFirewallRestoreState>)> {
     let backend = select_firewall_backend(runner);
-    let restore_state = capture_restore_state(runner, backend)?;
+    let restore_state = match capture_restore_state(runner, backend) {
+        Ok(s) => s,
+        Err(e) => return Err((e, None)),
+    };
     let mut commands = firewall_backend_setup_plan(backend);
     commands.extend(firewall_backend_isolate_plan(backend, rule_name));
-    execute_firewall_plan(runner, backend, commands, Some(restore_state))
+    for command in &commands {
+        if let Err(e) = runner.status(command) {
+            return Err((e, Some(restore_state)));
+        }
+    }
+    Ok(ExecutedLinuxFirewallPlan {
+        backend,
+        commands,
+        restore_state: Some(restore_state),
+    })
 }
 
 pub fn execute_restore_plan(
@@ -116,7 +128,7 @@ pub fn execute_selected_uid_block_plan(
 
 #[cfg(target_os = "linux")]
 pub fn execute_system_isolate_plan(rule_name: &str) -> Result<ExecutedLinuxFirewallPlan, String> {
-    execute_selected_isolate_plan(&StdLinuxCommandRunner, rule_name)
+    execute_selected_isolate_plan(&StdLinuxCommandRunner, rule_name).map_err(|(msg, _state)| msg)
 }
 
 #[cfg(target_os = "linux")]
@@ -201,7 +213,7 @@ mod tests {
         let runner = RecordingRunner::new(true);
         let executed = execute_selected_isolate_plan(&runner, "isolate").unwrap();
         assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
-        assert_eq!(executed.commands.len(), 7);
+        assert_eq!(executed.commands.len(), 13);
         assert!(executed
             .commands
             .iter()
@@ -260,7 +272,7 @@ mod tests {
             execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
                 .unwrap();
         assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
-        assert_eq!(executed.commands.len(), 5);
+        assert_eq!(executed.commands.len(), 11);
 
         let last = executed.commands.last().unwrap();
         assert_eq!(last.program, "nft");
@@ -300,9 +312,10 @@ mod tests {
     #[test]
     fn execution_stops_on_first_command_failure() {
         let runner = RecordingRunner::failing(true, "nft");
-        let err = execute_selected_isolate_plan(&runner, "isolate").unwrap_err();
+        let (err, restore_state) = execute_selected_isolate_plan(&runner, "isolate").unwrap_err();
         assert!(err.contains("nft failed"));
         assert_eq!(runner.commands.borrow().len(), 1);
+        assert!(restore_state.is_some());
     }
 
     #[test]
@@ -335,9 +348,9 @@ mod tests {
         assert_eq!(
             nft_restore.commands,
             vec![
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "input"]),
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "forward"]),
-                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "output"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolin"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolforward"]),
+                LinuxCommand::new("nft", ["flush", "chain", "inet", "vigil", "isolout"]),
             ]
         );
     }
