@@ -6,6 +6,8 @@
 //! follow-up refactor that will route iptables/ip/ss/hosts-file operations
 //! through an injectable runner.
 
+#![allow(dead_code)]
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinuxCommand {
     pub program: &'static str,
