@@ -23,3 +23,23 @@ rules:
     remote_contains: .example
     action: block_process
     duration: 1h
+
+  - name: block_known_exploited_browser_with_vendor_guidance_and_no_fix_bound
+    require_advisory_match: true
+    require_known_exploited_advisory: true
+    require_advisory_mitigation_guidance: true
+    require_advisory_vendor_mitigation_guidance: true
+    require_missing_advisory_fix_version: true
+    advisory_product_contains: chrome
+    min_advisory_severity: critical
+    action: block_process
+    duration: 24h
+
+  - name: quarantine_publicly_exposed_known_exploited_service_without_fix_bound
+    require_advisory_match: true
+    require_known_exploited_advisory: true
+    require_advisory_public_internet_exposure: true
+    require_missing_advisory_fix_version: true
+    min_advisory_severity: critical
+    action: quarantine
+    duration: 24h

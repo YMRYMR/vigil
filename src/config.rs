@@ -126,6 +126,8 @@ pub struct Config {
     #[serde(default = "default_break_glass_heartbeat_secs")]
     pub break_glass_heartbeat_secs: u64,
 
+    #[serde(default = "default_true")]
+    pub extra_safe_prompts: bool,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
 }
@@ -380,6 +382,7 @@ impl Default for Config {
             break_glass_enabled: true,
             break_glass_timeout_mins: 10,
             break_glass_heartbeat_secs: 30,
+            extra_safe_prompts: true,
             ui_scale: 1.0,
         }
     }
@@ -539,6 +542,7 @@ mod tests {
         assert!(!cfg.honeypot_auto_isolate);
         assert_eq!(cfg.honeypot_poll_secs, 10);
         assert!(cfg.break_glass_enabled);
+        assert!(cfg.extra_safe_prompts);
     }
     #[test]
     fn defaults_include_extended_lolbas_entries() {
@@ -556,5 +560,16 @@ mod tests {
         };
         assert_eq!(cfg.sanitised_activity_history_cap(), 128);
         assert_eq!(cfg.sanitised_alerts_history_cap(), 4_096);
+    }
+    #[test]
+    fn config_backfills_missing_policy_defaults() {
+        let mut value = serde_json::to_value(Config::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        object.remove("allowlist_processes");
+        object.remove("extra_safe_prompts");
+
+        let cfg: Config = serde_json::from_value(value).unwrap();
+        assert!(cfg.allowlist_processes.is_empty());
+        assert!(cfg.extra_safe_prompts);
     }
 }

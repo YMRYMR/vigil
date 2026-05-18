@@ -25,6 +25,7 @@ contract and startup-safety rule.
 ## Documentation
 
 - [User guide](docs/USER-GUIDE.md) — released functionality and operator workflows
+- [Response rules](docs/RESPONSE-RULES.md) — YAML syntax, advisory-aware predicates, and example rule patterns
 - [Supported platforms](docs/SUPPORTED-PLATFORMS.md) — Windows/Linux support contract
 - [Security policy](SECURITY.md) — vulnerability reporting and security contacts
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
@@ -125,6 +126,28 @@ vigil --sync-nvd-change-history
 vigil --advisory-cache-status
 vigil --advisory-change-history-status
 ```
+
+After the protected software inventory snapshot and protected advisory cache both
+exist locally, print explainable product-to-advisory matches with:
+
+```bash
+vigil --advisory-match-status
+```
+
+Use [`docs/RESPONSE-RULES.md`](docs/RESPONSE-RULES.md) together with
+[`response-rules.example.yaml`](response-rules.example.yaml) when you want to
+turn those high-confidence advisory matches into conservative operator-managed
+response rules.
+
+Those advisory-aware predicates stay intentionally narrow today. Mitigation
+guidance counts only when the protected advisory cache preserves non-empty
+mitigation text or an explicit remediation-tagged reference such as `Fix`,
+`Patch`, `Update`, `Upgrade`, `Workaround`, `Guidance`, or `Solution`. Vendor
+guidance counts only when that same tagged reference is also marked as
+vendor-authored material such as `Vendor Advisory`, `Vendor Bulletin`, or
+`Vendor Notice`. Public-internet exposure counts only for a current `LISTEN`
+socket bound to an obviously globally routable local IP. Fixed-version-only
+tokens do not count as operator guidance.
 
 Use `--sync-nvd --force` only when you need to override the normal 2-hour
 minimum interval. Provide an API key via `VIGIL_NVD_API_KEY` if the deployment

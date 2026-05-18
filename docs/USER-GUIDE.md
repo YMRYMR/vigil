@@ -21,6 +21,28 @@ Vigil's active support targets are Windows and Linux. New feature work should de
 
 See [Supported platforms](SUPPORTED-PLATFORMS.md) for the support contract and startup safety rule.
 
+## First-use checklist
+
+If you are new to Vigil, start with a calm observe-first setup instead of enabling every protection at once.
+
+1. Open Activity and Alerts first. Learn what normal traffic looks like on your machine before changing policy.
+2. Use Admin Mode only when you need deeper visibility or active response actions. Vigil is still useful without it.
+3. Leave auto response, allowlist-only mode, scheduled lockdown, and decoy-triggered auto-isolation off until you trust the scores and your trusted-process list.
+4. Prefer reversible actions first. Suspend process, temporary IP blocks, and restore-network workflows are safer than permanent blocking or immediate full isolation.
+5. Treat machine isolation as a last resort for suspected active compromise, not as a normal cleanup button.
+
+## Building a sane trusted list
+
+Treat the trusted-process list as a learned baseline, not as a fast way to silence alerts. Trusted entries skip routine penalties and can suppress automatic response, so each one should be familiar, stable, and expected.
+
+1. Start with Vigil's shipped trusted baseline. It covers common system and browser processes that would otherwise generate noise on many machines.
+2. Observe first. Watch Activity and Alerts until you know what normal looks like for your browser, chat tools, VPN, terminal, package manager, and other routine software.
+3. Prefer trusting from the Inspector. The Inspector lets you review the process name, executable path, publisher, parent, and live connections before you add it.
+4. Add only software you recognize and expect to use the network regularly.
+5. Revisit your learned additions if the software moves to a new path, changes ownership, or starts triggering new kinds of alerts.
+
+Avoid trusting installers, updaters running from Downloads or Temp, script hosts such as `powershell`, `cmd`, or `mshta`, one-off troubleshooting tools, and anything you do not immediately recognize.
+
 ## Install and launch
 
 ### Windows
@@ -71,7 +93,7 @@ The Settings tab stores changes automatically. Common settings include:
 - autostart at login
 - trusted processes
 - allowlist-only mode
-- user-defined response rules
+- user-defined response rules, including conservative advisory-aware predicates
 - scheduled lockdown
 - break-glass recovery timeout
 - forensic capture options
@@ -80,6 +102,13 @@ The Settings tab stores changes automatically. Common settings include:
 
 Policy-sensitive settings require Admin Mode when protected policy editing is enabled.
 Configured blocklists and response-rule YAML stay operator-managed: Vigil can verify optional `.sha256` sidecars when you provide them, and it also records first-seen and changed hashes in its protected local provenance registry so later edits are visible without treating every intentional update as corruption.
+
+By default, Vigil also requires an extra typed confirmation before turning on disruptive protections such as auto response, allowlist-only mode, scheduled lockdown, or decoy-triggered auto-isolation. That guardrail is there so a non-expert user does not enable a feature that can cut off normal software or network access without pausing to review the consequences.
+
+The Trusted Processes section now includes a short onboarding tutorial. It explains how to keep the shipped baseline, learn from Activity and the Inspector, and add only stable apps you already recognize.
+
+Response rules can also match high-confidence advisory context conservatively, including known-exploited status, mitigation-guidance availability from explicit remediation tags such as `Fix`, `Patch`, `Update`, `Upgrade`, `Workaround`, `Guidance`, and `Solution`, vendor guidance that only counts when the same tagged reference is also marked as vendor-authored material such as `Vendor Advisory`, `Vendor Bulletin`, or `Vendor Notice`, missing fixed-version bounds, affected-product text, and obvious public-internet exposure for a globally routable listening socket. See [Response rules](RESPONSE-RULES.md) and `response-rules.example.yaml` for the exact YAML fields and example patterns.
+That public-exposure predicate is intentionally strict: only a current `LISTEN` socket bound to an obviously globally routable local IP matches today. Wildcard binds such as `0.0.0.0`, loopback listeners, RFC1918 or CGNAT IPv4 ranges, unique-local IPv6 addresses, and reachability that depends on NAT or reverse proxies still stay unmatched.
 
 ### Help
 
@@ -181,6 +210,8 @@ vigil --import-bsi certbund-feed.xml bsi-advisories.json
 ```
 
 The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored JSON, then preserve source links, identifiers, timestamps, and other provenance fields in the same protected advisory cache as the other Phase 16 sources.
+
+Once Vigil has both the protected advisory cache and a local software inventory snapshot, you can also use those matches as conservative inputs for operator-managed response rules. The dedicated [Response rules](RESPONSE-RULES.md) guide and `response-rules.example.yaml` show how to keep that automation explainable and fail-open.
 
 ## Local software inventory
 
