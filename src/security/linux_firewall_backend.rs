@@ -4,6 +4,7 @@
 //! separate from command construction. It is intentionally not wired into the
 //! live active-response path yet; the goal is to make the nftables-preferred,
 //! iptables-fallback behavior explicit and unit-testable before runtime use.
+#![cfg_attr(not(test), allow(dead_code))]
 
 use super::linux_command_plan::{
     iptables_insert_block_remote, iptables_insert_block_uid, iptables_set_policy,
