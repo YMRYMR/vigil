@@ -85,8 +85,11 @@ pub struct VulnerabilityRecord {
     pub affected_products: Vec<AffectedProduct>,
     pub references: Vec<VulnerabilityReference>,
     pub mitigations: Vec<String>,
+    #[serde(default)]
     pub fix_version: Option<String>,
+    #[serde(default)]
     pub workaround_instructions: Vec<String>,
+    #[serde(default)]
     pub upgrade_instructions: Vec<String>,
     pub provenance: VulnerabilityProvenance,
 }
@@ -726,16 +729,17 @@ fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> Advi
         .iter_mut()
         .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
     {
-        source.last_attempt_unix = now;
         source.status = if source.expires_unix <= now {
             SourceHealth::Stale
         } else {
             SourceHealth::Error
         };
         source.last_error = Some(err.to_string());
+        // Capture previous retry delay before updating timestamps.
         let prev_delay = source
             .retry_after_unix
             .saturating_sub(source.last_attempt_unix);
+        source.last_attempt_unix = now;
         let next_delay = if prev_delay == 0 || prev_delay > 86400 {
             300
         } else {
