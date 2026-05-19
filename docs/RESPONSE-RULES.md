@@ -30,6 +30,9 @@ Supported advisory predicates:
 - `require_advisory_vendor_mitigation_guidance: true`
 - `require_advisory_public_internet_exposure: true`
 - `require_missing_advisory_fix_version: true`
+- `require_advisory_fix_available: true`
+- `require_advisory_workaround_available: true`
+- `require_advisory_upgrade_available: true`
 - `advisory_id_contains: "CVE-2026-12345"`
 - `advisory_product_contains: "chrome"`
 - `min_advisory_severity: high`
@@ -92,8 +95,11 @@ Today the rule engine can match only these advisory attributes:
 - explicitly vendor-tagged mitigation guidance references in the protected advisory cache
 - obvious public-internet exposure for a current listening socket bound to a globally routable local IP
 - missing fixed-version bound on the matched advisory range
+- explicit fix/patch version availability (`require_advisory_fix_available`)
+- workaround instructions availability (`require_advisory_workaround_available`)
+- upgrade instructions availability (`require_advisory_upgrade_available`)
 
-The broader roadmap item still remains open for richer guidance attribution beyond explicit vendor-plus-remediation tags and broader exposure inference beyond an obviously globally routable listener.
+The three guidance-type predicates (`fix_available`, `workaround_available`, `upgrade_available`) are populated from NVD reference tags during import. A reference tagged `Patch` or `Fix` populates `fix_version`; `Workaround` or `Mitigation` populates `workaround_instructions`; `Upgrade`, `Update`, or `Vendor Upgrade` populates `upgrade_instructions`. Multiple URLs per category are preserved.
 
 ## Actions
 
