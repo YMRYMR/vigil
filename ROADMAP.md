@@ -84,7 +84,7 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ## Phase 19 — Cloud Fleet Console & Integrations (PRO backlog)
 
-The single most important phase for turning Vigil into a business. Without a hosted console there is no recurring-revenue surface and no SMB / MSP path.
+Extends Vigil with a hosted console for multi-endpoint fleet management, alert aggregation, and outbound integrations.
 
 ### Hosted fleet console
 
@@ -108,7 +108,7 @@ The single most important phase for turning Vigil into a business. Without a hos
 
 ## Phase 20 — MSP Multi-tenant & White-label (PRO backlog)
 
-Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 19.
+Multi-tenant architecture for managed service providers managing multiple customer fleets. Depends on Phase 19.
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules.
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails.
@@ -120,7 +120,7 @@ Unlocks the highest-conversion channel for a solo-run security product: managed 
 
 ## Phase 21 — Managed Threat Intel Feed (PRO backlog)
 
-Turns PRO from a one-time install into a subscription with a clear renewal trigger.
+Adds a managed intelligence feed for PRO-tier deployments with signed, versioned rule packs.
 
 - [ ] **Hosted feed service** — hourly-refreshed managed IP / domain / hash blocklist consumed by PRO agents via authenticated pull.
 - [ ] **Curated LoLBAS, C2 port, and process-rule updates** — versioned, signed rule packs delivered to agents.
