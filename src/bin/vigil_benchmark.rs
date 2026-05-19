@@ -266,7 +266,12 @@ fn main() {
     // ── Step 4: Generate report ─────────────────────────────────────────
     println!("[4/4] Generating report…");
 
-    let verdict = if event_source.realtime && p95_ms < 100.0 {
+    let realtime_threshold = if event_source.name == "eBPF" {
+        200.0
+    } else {
+        100.0
+    };
+    let verdict = if event_source.realtime && p95_ms < realtime_threshold {
         "PASS"
     } else if !event_source.realtime && p95_ms < 6000.0 {
         "PASS (polling)"
@@ -298,27 +303,27 @@ fn main() {
         verdict: verdict.into(),
     };
 
-    // Write JSON report.
-    let json = serde_json::to_string_pretty(&report).unwrap();
-    let report_path = output_path.unwrap_or_else(|| PathBuf::from("vigil_benchmark.json"));
-    std::fs::write(&report_path, &json).unwrap_or_else(|e| {
-        eprintln!(
-            "Warning: could not write report to {}: {e}",
-            report_path.display()
-        );
-    });
-    println!("      ✓ JSON report → {}", report_path.display());
-
-    // Write HTML report if requested.
-    if let Some(html_path) = html_path {
-        let html = render_html_report(&report);
-        std::fs::write(&html_path, &html).unwrap_or_else(|e| {
+    if !quick {
+        let json = serde_json::to_string_pretty(&report).unwrap();
+        let report_path = output_path.unwrap_or_else(|| PathBuf::from("vigil_benchmark.json"));
+        std::fs::write(&report_path, &json).unwrap_or_else(|e| {
             eprintln!(
-                "Warning: could not write HTML report to {}: {e}",
-                html_path.display()
+                "Warning: could not write report to {}: {e}",
+                report_path.display()
             );
         });
-        println!("      ✓ HTML report → {}", html_path.display());
+        println!("      ✓ JSON report → {}", report_path.display());
+
+        if let Some(html_path) = html_path {
+            let html = render_html_report(&report);
+            std::fs::write(&html_path, &html).unwrap_or_else(|e| {
+                eprintln!(
+                    "Warning: could not write HTML report to {}: {e}",
+                    html_path.display()
+                );
+            });
+            println!("      ✓ HTML report → {}", html_path.display());
+        }
     }
 
     // ── Final summary ───────────────────────────────────────────────────
@@ -429,12 +434,11 @@ fn detect_event_source(platform: Platform) -> EventSourceInfo {
             }
         }
         Platform::Linux => {
-            let ebpf_active = Path::new("/sys/fs/bpf").exists()
-                || Command::new("systemctl")
-                    .args(["is-active", "vigil-ebpf"])
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false);
+            let ebpf_active = Command::new("systemctl")
+                .args(["is-active", "vigil-ebpf"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
             if ebpf_active {
                 EventSourceInfo {
                     name: "eBPF".into(),

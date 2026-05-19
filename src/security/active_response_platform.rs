@@ -331,9 +331,10 @@ mod imp {
         if recovered_any {
             return Ok(());
         }
-        if !snapshot.adapters.is_empty() && snapshot_adapters_are_enabled(snapshot).unwrap_or(false)
-        {
-            return Ok(());
+        if let Ok(current) = snapshot_active_adapters() {
+            if !current.adapters.is_empty() {
+                return Ok(());
+            }
         }
         if warnings.is_empty() {
             Err("no saved adapters could be restored".into())
@@ -383,6 +384,8 @@ mod imp {
             );
             if let Err(err) = kill_tcp_connection(&SocketKillTarget { local, remote }) {
                 match err {
+                    // Some Windows builds report 317 for already-closed sockets;
+                    // it is noisy but does not prevent isolation.
                     SocketKillError::OsError(msg) if msg == "317" => continue,
                     SocketKillError::UnsupportedAddressFamily => continue,
                     other => return Err(other.to_string()),
@@ -557,22 +560,202 @@ mod imp {
             Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
         }
     }
-    fn hidden_command(program: &str) -> Result<Command, String> {
-        let resolved = command_paths::resolve(program)?;
-        let mut cmd = Command::new(resolved);
-        cmd.creation_flags(CREATE_NO_WINDOW);
-        Ok(cmd)
+    pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
+        let local = match target.local {
+            SocketAddr::V4(local) => local,
+            SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily),
+        };
+        let remote = match target.remote {
+            SocketAddr::V4(remote) => remote,
+            SocketAddr::V6(_) => return Err(SocketKillError::UnsupportedAddressFamily),
+        };
+        let row = MIB_TCPROW_LH {
+            Anonymous: MIB_TCPROW_LH_0 {
+                State: MIB_TCP_STATE_DELETE_TCB,
+            },
+            dwLocalAddr: u32::from_be_bytes(local.ip().octets()),
+            dwLocalPort: u32::from(local.port().to_be()),
+            dwRemoteAddr: u32::from_be_bytes(remote.ip().octets()),
+            dwRemotePort: u32::from(remote.port().to_be()),
+        };
+        let status = unsafe { SetTcpEntry(&row) };
+        if status == NO_ERROR.0 {
+            Ok(())
+        } else if status == ERROR_ACCESS_DENIED.0 {
+            Err(SocketKillError::PermissionDenied)
+        } else {
+            Err(SocketKillError::OsError(status.to_string()))
+        }
+    }
+    pub fn add_block_rule(rule_name: &str, target: &str) -> Result<(), String> {
+        let status = hidden_command("netsh")?
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                "dir=out",
+                "action=block",
+                &format!("remoteip={target}"),
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add firewall rule for {target}"))
+        }
+    }
+    #[allow(dead_code)]
+    pub fn add_block_all_rule(rule_name: &str, dir: &str) -> Result<(), String> {
+        let status = hidden_command("netsh")?
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                &format!("dir={dir}"),
+                "action=block",
+                "remoteip=any",
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add isolation rule {rule_name}"))
+        }
+    }
+    pub fn add_block_program_rule(
+        rule_name: &str,
+        _pid: u32,
+        path: &str,
+        dir: &str,
+    ) -> Result<(), String> {
+        let status = hidden_command("netsh")?
+            .args([
+                "advfirewall",
+                "firewall",
+                "add",
+                "rule",
+                &format!("name={rule_name}"),
+                &format!("dir={dir}"),
+                "action=block",
+                &format!("program={path}"),
+                "profile=any",
+                "enable=yes",
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to add process firewall rule {rule_name}"))
+        }
+    }
+    pub fn delete_rule(rule_name: &str) -> Result<(), String> {
+        let status = hidden_command("netsh")?
+            .args([
+                "advfirewall",
+                "firewall",
+                "delete",
+                "rule",
+                &format!("name={rule_name}"),
+            ])
+            .status()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("failed to delete firewall rule {rule_name}"))
+        }
+    }
+    fn firewall_rule_present(rule_name: &str) -> Result<bool, String> {
+        let output = hidden_command("netsh")?
+            .args([
+                "advfirewall",
+                "firewall",
+                "show",
+                "rule",
+                &format!("name={rule_name}"),
+            ])
+            .output()
+            .map_err(|e| format!("failed to spawn netsh: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        let merged = format!("{stdout}\n{stderr}");
+        if merged.contains("no rules match") {
+            return Ok(false);
+        }
+        Ok(output.status.success())
+    }
+    fn firewall_profiles_fully_blocked(snapshot: &FirewallSnapshot) -> bool {
+        !snapshot.profiles.is_empty()
+            && snapshot.profiles.iter().all(|profile| {
+                profile.enabled
+                    && profile.inbound_action.eq_ignore_ascii_case("Block")
+                    && profile.outbound_action.eq_ignore_ascii_case("Block")
+            })
+    }
+    fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
+        let mut saw_known_adapter = false;
+        let mut saw_enabled_adapter = false;
+        for adapter in &snapshot.adapters {
+            let status = run_powershell(&format!(
+                "(Get-NetAdapter -Name {} -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Status)",
+                ps_quoted(&adapter.name)
+            ))?;
+            let status = status.trim();
+            if status.is_empty() {
+                continue;
+            }
+            saw_known_adapter = true;
+            // "Disconnected" still means the adapter is enabled; only treat
+            // explicit "Disabled" as still being isolated by adapter cutoff.
+            if !status.eq_ignore_ascii_case("Disabled") {
+                saw_enabled_adapter = true;
+                break;
+            }
+        }
+        if saw_enabled_adapter {
+            return Ok(true);
+        }
+        if saw_known_adapter {
+            return Ok(false);
+        }
+        Ok(true)
+    }
+    fn schedule_wireless_reconnect(name: String, profile: Option<String>) {
+        let _ = std::thread::Builder::new()
+            .name("vigil-wifi-reconnect".into())
+            .spawn(move || {
+                let _ = reconnect_wireless_adapter(&name, profile.as_deref());
+            });
     }
     fn run_powershell(script: &str) -> Result<String, String> {
+        let script = format!("$ErrorActionPreference = 'Stop'; {script}");
         let output = hidden_command("powershell")?
-            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                &script,
+            ])
             .output()
-            .map_err(|e| format!("failed to spawn PowerShell: {e}"))?;
+            .map_err(|e| format!("failed to spawn powershell: {e}"))?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         } else {
             Err(format!(
-                "PowerShell failed: {}",
+                "powershell failed: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
             ))
         }
@@ -580,175 +763,280 @@ mod imp {
     fn run_powershell_json(script: &str) -> Result<String, String> {
         run_powershell(script)
     }
-    fn ps_quoted(text: &str) -> String {
-        format!("'{}'", text.replace('"', "''"))
+    fn snapshot_connected_wifi_profiles() -> BTreeMap<String, String> {
+        let output = hidden_command("netsh")
+            .map(|mut cmd| {
+                cmd.args(["wlan", "show", "interfaces"]);
+                cmd
+            })
+            .ok()
+            .and_then(|mut cmd| cmd.output().ok());
+        let Some(output) = output else {
+            return BTreeMap::new();
+        };
+        if !output.status.success() {
+            return BTreeMap::new();
+        }
+        parse_wifi_profile_map(&String::from_utf8_lossy(&output.stdout))
     }
-    fn parse_firewall_snapshot(json: &str) -> Result<FirewallSnapshot, String> {
-        if json.trim().is_empty() || json.trim() == "null" {
+    fn reconnect_wireless_adapter(name: &str, profile: Option<&str>) -> Result<(), String> {
+        // Give Windows a brief moment to bring the radio interface fully up.
+        std::thread::sleep(Duration::from_millis(900));
+        if let Some(profile) = profile {
+            let status = hidden_command("netsh")?
+                .args([
+                    "wlan",
+                    "connect",
+                    &format!("name={profile}"),
+                    &format!("interface={name}"),
+                ])
+                .status()
+                .map_err(|e| format!("failed to spawn netsh wlan connect: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+        }
+        for _ in 0..4 {
+            let status = hidden_command("netsh")?
+                .args(["wlan", "reconnect", &format!("interface={name}")])
+                .status()
+                .map_err(|e| format!("failed to spawn netsh wlan reconnect: {e}"))?;
+            if status.success() {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(900));
+        }
+        Err(format!("netsh wlan reconnect failed for {name}"))
+    }
+    fn hidden_command(program: &str) -> Result<Command, String> {
+        let mut cmd = Command::new(command_paths::resolve(program)?);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        Ok(cmd)
+    }
+    fn ps_quoted(text: &str) -> String {
+        format!("'{}'", text.replace('\'', "''"))
+    }
+    fn parse_firewall_snapshot(text: &str) -> Result<FirewallSnapshot, String> {
+        if text.trim().is_empty() {
             return Ok(FirewallSnapshot { profiles: vec![] });
         }
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| format!("parse firewall JSON: {e}"))?;
-        let entries = if value.is_array() {
-            value.as_array().cloned().unwrap_or_default()
-        } else {
-            vec![value]
+        let value: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| format!("failed to parse firewall profile snapshot: {e}"))?;
+        let mut profiles = Vec::new();
+        let items = match value {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(map) => vec![serde_json::Value::Object(map)],
+            serde_json::Value::Null => Vec::new(),
+            other => {
+                return Err(format!(
+                    "unexpected firewall profile snapshot shape: {other}"
+                ))
+            }
         };
-        let profiles = entries
-            .into_iter()
-            .filter_map(|entry| {
-                let name = entry.get("Name")?.as_str()?.to_string();
-                let enabled = entry.get("Enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                let inbound_action = entry
-                    .get("DefaultInboundAction")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("NotConfigured")
-                    .to_string();
-                let outbound_action = entry
-                    .get("DefaultOutboundAction")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("NotConfigured")
-                    .to_string();
-                Some(FirewallProfileState {
-                    name,
-                    enabled,
-                    inbound_action,
-                    outbound_action,
-                })
-            })
-            .collect();
-        Ok(FirewallSnapshot { profiles })
-    }
-    fn firewall_rule_present(name: &str) -> Result<bool, String> {
-        let escaped = name.replace('"', "\"");
-        let output = run_powershell_json(&format!(
-            "$rule = Get-NetFirewallRule -DisplayName \"{escaped}\" -ErrorAction SilentlyContinue; if ($null -eq $rule) {{ '' }} else {{ $rule.Enabled }}"
-        ))?;
-        Ok(output.trim().eq_ignore_ascii_case("True"))
-    }
-    fn firewall_profiles_fully_blocked(snapshot: &FirewallSnapshot) -> bool {
-        snapshot.profiles.len() == 3
-            && snapshot.profiles.iter().all(|profile| {
-                profile.enabled
-                    && profile.inbound_action.eq_ignore_ascii_case("Block")
-                    && profile.outbound_action.eq_ignore_ascii_case("Block")
-            })
-    }
-    fn snapshot_connected_wifi_profiles() -> std::collections::HashMap<String, Option<String>> {
-        let mut profiles = std::collections::HashMap::new();
-        let output = match run_powershell_json(
-            "Get-NetAdapter | Where-Object { $_.PhysicalMediaType -eq 'Native 802.11' -or $_.NdisPhysicalMedium -eq 'WirelessLan' } | Select-Object Name | ConvertTo-Json -Compress",
-        ) {
-            Ok(output) => output,
-            Err(_) => return profiles,
-        };
-        let value: serde_json::Value = match serde_json::from_str(&output) {
-            Ok(value) => value,
-            Err(_) => return profiles,
-        };
-        let entries = if value.is_array() {
-            value.as_array().cloned().unwrap_or_default()
-        } else {
-            vec![value]
-        };
-        for entry in entries {
-            let Some(name) = entry.get("Name").and_then(|v| v.as_str()) else {
+        for item in items {
+            let Some(name) = item.get("Name").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let profile = run_powershell(&format!(
-                "$p = netsh wlan show interfaces | Select-String -Pattern '^\s*SSID\s*:\s*(.+)$' | Select-Object -First 1; if ($p) {{ $p.Matches[0].Groups[1].Value.Trim() }}"
-            ))
-            .ok()
-            .filter(|text| !text.trim().is_empty());
-            profiles.insert(name.to_string(), profile);
+            let enabled = item
+                .get("Enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let inbound_action = item
+                .get("DefaultInboundAction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Block")
+                .to_string();
+            let outbound_action = item
+                .get("DefaultOutboundAction")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Block")
+                .to_string();
+            profiles.push(FirewallProfileState {
+                name: name.to_string(),
+                enabled,
+                inbound_action,
+                outbound_action,
+            });
         }
-        profiles
+        profiles.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(FirewallSnapshot { profiles })
     }
-    fn schedule_wireless_reconnect(_name: String, _profile: Option<String>) {}
-    fn snapshot_adapters_are_enabled(snapshot: &NetworkSnapshot) -> Result<bool, String> {
-        let current = snapshot_active_adapters()?;
-        Ok(snapshot.adapters.iter().all(|saved| {
-            current
-                .adapters
-                .iter()
-                .any(|current| current.name == saved.name)
-        }))
-    }
-    fn parse_adapter_snapshot(
-        json: &str,
-        wifi_profiles: &std::collections::HashMap<String, Option<String>>,
-    ) -> Result<Vec<NetworkAdapterState>, String> {
-        if json.trim().is_empty() || json.trim() == "null" {
+    fn parse_tcp_session_snapshot(text: &str) -> Result<Vec<TcpSessionState>, String> {
+        if text.trim().is_empty() {
             return Ok(vec![]);
         }
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| format!("parse adapter JSON: {e}"))?;
-        let entries = if value.is_array() {
-            value.as_array().cloned().unwrap_or_default()
-        } else {
-            vec![value]
-        };
-        Ok(entries
-            .into_iter()
-            .filter_map(|entry| {
-                let name = entry.get("Name")?.as_str()?.to_string();
-                let medium = entry
-                    .get("NdisPhysicalMedium")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or_default();
-                let is_wireless = medium.eq_ignore_ascii_case("WirelessLan")
-                    || medium.eq_ignore_ascii_case("Native802_11")
-                    || medium.eq_ignore_ascii_case("Native 802.11");
-                Some(NetworkAdapterState {
-                    wifi_profile: wifi_profiles.get(&name).cloned().unwrap_or(None),
-                    name,
-                    is_wireless,
-                })
-            })
-            .collect())
-    }
-    fn parse_tcp_session_snapshot(json: &str) -> Result<Vec<TcpSessionState>, String> {
-        if json.trim().is_empty() || json.trim() == "null" {
-            return Ok(vec![]);
-        }
-        let value: serde_json::Value =
-            serde_json::from_str(json).map_err(|e| format!("parse TCP JSON: {e}"))?;
-        let entries = if value.is_array() {
-            value.as_array().cloned().unwrap_or_default()
-        } else {
-            vec![value]
+        let value: serde_json::Value = serde_json::from_str(text)
+            .map_err(|e| format!("failed to parse TCP session snapshot: {e}"))?;
+        let items = match value {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(map) => vec![serde_json::Value::Object(map)],
+            serde_json::Value::Null => Vec::new(),
+            other => {
+                return Err(format!("unexpected TCP session snapshot shape: {other}"));
+            }
         };
         let mut sessions = Vec::new();
-        for entry in entries {
-            let local_address = entry
+        for item in items {
+            let local_address = item
                 .get("LocalAddress")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing LocalAddress".to_string())?
+                .unwrap_or_default()
                 .to_string();
-            let remote_address = entry
+            let remote_address = item
                 .get("RemoteAddress")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| "missing RemoteAddress".to_string())?
+                .unwrap_or_default()
                 .to_string();
-            let local_port = entry
+            let local_port = item
                 .get("LocalPort")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| "missing LocalPort".to_string())? as u16;
-            let remote_port = entry
+                .and_then(|v| u16::try_from(v).ok())
+                .unwrap_or(0);
+            let remote_port = item
                 .get("RemotePort")
                 .and_then(|v| v.as_u64())
-                .ok_or_else(|| "missing RemotePort".to_string())? as u16;
-            sessions.push(TcpSessionState {
-                local_address,
-                local_port,
-                remote_address,
-                remote_port,
-            });
+                .and_then(|v| u16::try_from(v).ok())
+                .unwrap_or(0);
+            if !local_address.trim().is_empty()
+                && !remote_address.trim().is_empty()
+                && local_port != 0
+                && remote_port != 0
+            {
+                sessions.push(TcpSessionState {
+                    local_address,
+                    local_port,
+                    remote_address,
+                    remote_port,
+                });
+            }
         }
         Ok(sessions)
     }
+    fn parse_adapter_snapshot(
+        text: &str,
+        wifi_profiles: &BTreeMap<String, String>,
+    ) -> Result<Vec<NetworkAdapterState>, String> {
+        if text.trim().is_empty() {
+            return Ok(vec![]);
+        }
+        let value: serde_json::Value =
+            serde_json::from_str(text).map_err(|e| format!("failed to parse adapter list: {e}"))?;
+        let items = match value {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(map) => vec![serde_json::Value::Object(map)],
+            serde_json::Value::Null => Vec::new(),
+            other => {
+                return Err(format!("unexpected adapter list shape: {other}"));
+            }
+        };
+        let mut adapters = Vec::new();
+        for item in items {
+            let Some(name) = item.get("Name").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let name = name.trim();
+            if name.is_empty() {
+                continue;
+            }
+            let medium = item
+                .get("NdisPhysicalMedium")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let description = item
+                .get("InterfaceDescription")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let is_wireless = medium.contains("802")
+                || medium.contains("wireless")
+                || description.contains("wi-fi")
+                || description.contains("wifi")
+                || description.contains("wireless")
+                || description.contains("wlan");
+            adapters.push(NetworkAdapterState {
+                name: name.to_string(),
+                is_wireless,
+                wifi_profile: wifi_profiles.get(name).cloned(),
+            });
+        }
+        Ok(adapters)
+    }
+    fn parse_wifi_profile_map(text: &str) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let mut current_name: Option<String> = None;
+        let mut current_profile: Option<String> = None;
+        let mut current_ssid: Option<String> = None;
+        let mut connected = false;
+        let flush = |out: &mut BTreeMap<String, String>,
+                     name: &mut Option<String>,
+                     profile: &mut Option<String>,
+                     ssid: &mut Option<String>,
+                     connected: &mut bool| {
+            if *connected {
+                if let Some(iface) = name.as_ref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+                    if let Some(value) = profile
+                        .as_ref()
+                        .or(ssid.as_ref())
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        out.insert(iface.to_string(), value.to_string());
+                    }
+                }
+            }
+            *name = None;
+            *profile = None;
+            *ssid = None;
+            *connected = false;
+        };
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Some((key, value)) = trimmed.split_once(':') else {
+                continue;
+            };
+            let key = key.trim().to_ascii_lowercase();
+            let value = value.trim();
+            let is_name_key = key == "name" || key == "nombre";
+            if is_name_key {
+                flush(
+                    &mut out,
+                    &mut current_name,
+                    &mut current_profile,
+                    &mut current_ssid,
+                    &mut connected,
+                );
+                current_name = Some(value.to_string());
+                continue;
+            }
+            if key == "state" || key == "estado" {
+                let lower = value.to_ascii_lowercase();
+                connected = lower.starts_with("connected") || lower.starts_with("conectad");
+                continue;
+            }
+            if key == "profile" || key == "perfil" {
+                current_profile = Some(value.to_string());
+                continue;
+            }
+            if key == "ssid" {
+                current_ssid = Some(value.to_string());
+            }
+        }
+        flush(
+            &mut out,
+            &mut current_name,
+            &mut current_profile,
+            &mut current_ssid,
+            &mut connected,
+        );
+        out
+    }
 }
 
+#[cfg(windows)]
 pub use imp::*;
 
 #[cfg(not(windows))]
@@ -767,11 +1055,15 @@ mod imp {
         cfg!(target_os = "linux") || cfg!(target_os = "macos")
     }
     pub fn is_elevated() -> bool {
+        // Root always has privileges.
         if unsafe { libc::geteuid() == 0 } {
             return true;
         }
+        // Check CAP_NET_ADMIN (bit 12) from /proc/self/status CapEff.
         check_capability(12)
     }
+    /// Check whether a specific Linux capability (by bit index) is present in
+    /// the effective capability set of the current process.
     #[cfg(target_os = "linux")]
     fn check_capability(bit: u8) -> bool {
         let Ok(data) = std::fs::read_to_string("/proc/self/status") else {
@@ -814,6 +1106,8 @@ mod imp {
     ) -> Result<AutorunRevertResult, String> {
         Err("Autorun revert is not implemented on this platform.".into())
     }
+
+    // ── Firewall / iptables operations (Linux) ─────────────────────────────
 
     const IPTABLES_COMMENT_PREFIX: &str = "Vigil:";
 
@@ -885,8 +1179,10 @@ mod imp {
         Ok(())
     }
     pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
+        // If firewall snapshot exists with non-empty profiles, iptables isolation is active.
         if let Some(snapshot) = state.firewall_snapshot.as_ref() {
             if !snapshot.profiles.is_empty() {
+                // Check if current iptables policies are DROP.
                 let current = snapshot_firewall_profiles()?;
                 let all_drop = current.profiles.iter().all(|profile| {
                     profile.enabled
@@ -898,6 +1194,7 @@ mod imp {
                 }
             }
         }
+        // Adapter-level fallback.
         let Some(snapshot) = state.network_snapshot.as_ref() else {
             return Ok(false);
         };
@@ -1044,6 +1341,8 @@ mod imp {
         }
     }
 
+    // ── Process control (Linux: SIGSTOP / SIGCONT) ─────────────────────────
+
     pub fn suspend_process(pid: u32) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
@@ -1066,6 +1365,8 @@ mod imp {
             Err("Process resume is not implemented on this platform.".into())
         }
     }
+
+    // ── TCP connection kill (Linux: ss -K) ─────────────────────────────────
 
     pub fn kill_tcp_connection(target: &SocketKillTarget) -> Result<(), SocketKillError> {
         #[cfg(target_os = "linux")]
@@ -1119,6 +1420,7 @@ mod imp {
                 if parts.len() < 4 {
                     continue;
                 }
+                // State 01 = ESTABLISHED in /proc/net/tcp.
                 if parts[3] != "01" {
                     continue;
                 }
@@ -1158,6 +1460,8 @@ mod imp {
             Err("TCP termination is not implemented on this platform.".into())
         }
     }
+    /// Parse "AABBCCDD:PPPP" hex format from /proc/net/tcp into (ip_string, port).
+    /// The IP is little-endian hex (e.g. "0100007F" = 127.0.0.1).
     #[cfg(target_os = "linux")]
     #[allow(dead_code)]
     fn parse_hex_addr_port(s: &str) -> Option<(String, u16)> {
@@ -1177,6 +1481,8 @@ mod imp {
             port,
         ))
     }
+
+    // ── Domain blocking via /etc/hosts ─────────────────────────────────────
 
     pub fn add_domain_block(domain: &str, marker: &str) -> Result<(), String> {
         #[cfg(target_os = "linux")]
@@ -1221,9 +1527,12 @@ mod imp {
     }
     #[cfg(target_os = "linux")]
     fn flush_dns() {
+        // Try systemd-resolve first (older Ubuntu), then resolvectl.
         let _ = command_status("resolvectl", &["flush-caches"]);
         let _ = command_status("systemd-resolve", &["--flush-caches"]);
     }
+
+    // ── Network adapter management ─────────────────────────────────────────
 
     pub fn snapshot_active_adapters() -> Result<NetworkSnapshot, String> {
         #[cfg(target_os = "linux")]
@@ -1344,6 +1653,8 @@ mod imp {
         #[allow(unreachable_code)]
         Ok(0)
     }
+
+    // ── Command helpers ────────────────────────────────────────────────────
 
     fn command_stdout(program: &str, args: &[&str]) -> Result<String, String> {
         let output = command_base(program, args)?
