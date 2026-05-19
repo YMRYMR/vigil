@@ -103,6 +103,7 @@ pub struct RuntimeInventoryTarget<'a> {
     pub process_path: &'a str,
     pub service_name: &'a str,
     pub publisher: &'a str,
+    pub exposed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1199,6 +1200,7 @@ mod tests {
             process_path: "C:/Windows/System32/svchost.exe",
             service_name: "Dnscache",
             publisher: "Microsoft Corporation",
+            exposed: false,
         };
 
         let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
@@ -1221,6 +1223,7 @@ mod tests {
             process_path: "c:/program files/google/chrome/CHROME.EXE",
             service_name: "",
             publisher: "Google LLC",
+            exposed: false,
         };
 
         let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
@@ -1258,6 +1261,7 @@ mod tests {
             process_path: "/usr/bin/curl",
             service_name: "",
             publisher: "Fedora Project",
+            exposed: false,
         };
 
         let matched = correlate_runtime_inventory(&target, &inventory).unwrap();
@@ -1283,6 +1287,7 @@ mod tests {
             process_path: "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
             service_name: "",
             publisher: "Microsoft Corporation",
+            exposed: false,
         };
 
         assert!(correlate_runtime_inventory(&target, &inventory).is_none());
