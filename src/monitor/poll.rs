@@ -216,7 +216,57 @@ fn platform_poll() -> Vec<RawConn> {
     out.extend(linux_parse_proc("/proc/net/tcp6", true, &inode_to_pid));
     out.extend(linux_parse_udp_proc("/proc/net/udp", false, &inode_to_pid));
     out.extend(linux_parse_udp_proc("/proc/net/udp6", true, &inode_to_pid));
+    linux_log_icmp_stats();
     out
+}
+
+/// Log notable ICMP statistics from /proc/net/snmp.
+/// Runs during every poll cycle on Linux. This is read-only and cheap.
+#[cfg(target_os = "linux")]
+fn linux_log_icmp_stats() {
+    let content = match std::fs::read_to_string("/proc/net/snmp") {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut in_echo_reps: u64 = 0;
+    let mut in_echos: u64 = 0;
+    let mut in_dest_unreach: u64 = 0;
+    let mut lines = content.lines();
+    while let Some(line) = lines.next() {
+        if line.starts_with("Icmp:") {
+            let headers: Vec<&str> = line.split_whitespace().collect();
+            if let Some(values_line) = lines.next() {
+                let values: Vec<&str> = values_line.split_whitespace().collect();
+                for (i, h) in headers.iter().enumerate() {
+                    if i >= values.len() {
+                        break;
+                    }
+                    let v: u64 = values[i].parse().unwrap_or(0);
+                    match *h {
+                        "InEchoReps" => in_echo_reps = v,
+                        "InEchos" => in_echos = v,
+                        "InDestUnreachs" => in_dest_unreach = v,
+                        _ => {}
+                    }
+                }
+            }
+            break;
+        }
+    }
+    // Log when ICMP echo flood or high unreachable rate is detected.
+    if in_echos > 0 && in_echos > in_echo_reps.saturating_mul(10) && in_echos > 100 {
+        tracing::warn!(
+            "ICMP anomaly: {} echo requests vs {} replies (possible scan or flood)",
+            in_echos,
+            in_echo_reps
+        );
+    }
+    if in_dest_unreach > 1000 {
+        tracing::info!(
+            "ICMP destination unreachable count: {} (possible scanning activity)",
+            in_dest_unreach
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]

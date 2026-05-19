@@ -117,8 +117,17 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>, Vec<Stri
     let mut reasons: Vec<String> = Vec::new();
     let mut attack_tags: Vec<String> = Vec::new();
 
+    // QUIC detection: UDP port 443 is very likely QUIC.
+    let is_quic = input.protocol == "UDP" && input.remote_port == 443;
+    if is_quic {
+        s = s.saturating_add(1);
+        reasons.push("QUIC traffic (encrypted UDP, less observable than TCP)".into());
+        attack_tags.push("T1090 Proxy / QUIC Tunneling (heuristic)".into());
+    }
+
     // UDP-specific scoring: flag UDP traffic as less observable than TCP.
-    if input.protocol == "UDP" {
+    // QUIC connections are already scored above and exempted from this rule.
+    if input.protocol == "UDP" && !is_quic {
         s = s.saturating_add(1);
         reasons.push("UDP traffic (protocol less observable than TCP)".into());
         attack_tags.push("T1090 Proxy / Protocol Anomaly (heuristic)".into());
