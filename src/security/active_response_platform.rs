@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 use super::super::linux_command_plan::{
-    nft_flush_chain, StdLinuxCommandRunner, NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN,
-    NFT_ISOL_OUT_CHAIN,
+    nft_flush_chain, nft_list_ruleset, StdLinuxCommandRunner, NFT_ISOL_FORWARD_CHAIN,
+    NFT_ISOL_IN_CHAIN, NFT_ISOL_OUT_CHAIN,
 };
 #[cfg(target_os = "linux")]
 use super::super::linux_firewall_backend::{
@@ -1148,12 +1148,20 @@ mod imp {
     pub fn restore_firewall_profiles(_snapshot: &FirewallSnapshot) -> Result<(), String> {
         #[cfg(target_os = "linux")]
         {
-            let _ = StdLinuxCommandRunner
-                .status(&nft_flush_chain(NFT_ISOL_IN_CHAIN))
-                .and_then(|()| {
-                    StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_FORWARD_CHAIN))
-                })
-                .and_then(|()| StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_OUT_CHAIN)));
+            let vigil_exists = StdLinuxCommandRunner
+                .stdout(&nft_list_ruleset())
+                .map(|s| s.contains("table inet vigil"))
+                .unwrap_or(false);
+            if vigil_exists {
+                StdLinuxCommandRunner
+                    .status(&nft_flush_chain(NFT_ISOL_IN_CHAIN))
+                    .and_then(|()| {
+                        StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_FORWARD_CHAIN))
+                    })
+                    .and_then(|()| {
+                        StdLinuxCommandRunner.status(&nft_flush_chain(NFT_ISOL_OUT_CHAIN))
+                    })?;
+            }
             for profile in &_snapshot.profiles {
                 let policy = if profile.enabled {
                     profile.outbound_action.as_str()
