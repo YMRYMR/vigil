@@ -141,6 +141,108 @@ pub struct Monitor {
 
 const EBPF_EVENT_QUEUE_CAPACITY: usize = 8192;
 
+enum StartedEventSource {
+    Etw {
+        active: bool,
+        rx: Option<mpsc::UnboundedReceiver<RawConn>>,
+    },
+    Ebpf {
+        active: bool,
+        rx: Option<mpsc::Receiver<RawConn>>,
+    },
+    Polling {
+        enabled: bool,
+    },
+}
+
+trait EventSource {
+    fn name(&self) -> &'static str;
+    fn start(self: Box<Self>) -> StartedEventSource;
+}
+
+struct EtwSource;
+
+impl EventSource for EtwSource {
+    fn name(&self) -> &'static str {
+        "ETW"
+    }
+
+    fn start(self: Box<Self>) -> StartedEventSource {
+        let (tx, rx) = mpsc::unbounded_channel::<RawConn>();
+        let active = etw::start(tx);
+        StartedEventSource::Etw {
+            active,
+            rx: if active { Some(rx) } else { None },
+        }
+    }
+}
+
+struct EbpfSource;
+
+impl EventSource for EbpfSource {
+    fn name(&self) -> &'static str {
+        "eBPF"
+    }
+
+    fn start(self: Box<Self>) -> StartedEventSource {
+        let (tx, rx) = mpsc::channel::<RawConn>(EBPF_EVENT_QUEUE_CAPACITY);
+        let active = ebpf::start(tx);
+        StartedEventSource::Ebpf {
+            active,
+            rx: if active { Some(rx) } else { None },
+        }
+    }
+}
+
+struct PollingSource;
+
+impl EventSource for PollingSource {
+    fn name(&self) -> &'static str {
+        "polling"
+    }
+
+    fn start(self: Box<Self>) -> StartedEventSource {
+        StartedEventSource::Polling { enabled: true }
+    }
+}
+
+struct SourceSet {
+    etw_rx: Option<mpsc::UnboundedReceiver<RawConn>>,
+    ebpf_rx: Option<mpsc::Receiver<RawConn>>,
+    using_etw: bool,
+    using_ebpf: bool,
+    polling_enabled: bool,
+}
+
+fn start_event_sources(sources: Vec<Box<dyn EventSource>>) -> SourceSet {
+    let mut set = SourceSet {
+        etw_rx: None,
+        ebpf_rx: None,
+        using_etw: false,
+        using_ebpf: false,
+        polling_enabled: false,
+    };
+
+    for source in sources {
+        tracing::debug!(source = source.name(), "initializing monitor event source");
+        match source.start() {
+            StartedEventSource::Etw { active, rx } => {
+                set.using_etw = active;
+                set.etw_rx = if active { rx } else { None };
+            }
+            StartedEventSource::Ebpf { active, rx } => {
+                set.using_ebpf = active;
+                set.ebpf_rx = if active { rx } else { None };
+            }
+            StartedEventSource::Polling { enabled } => {
+                set.polling_enabled = enabled;
+            }
+        }
+    }
+
+    set
+}
+
 impl Monitor {
     pub fn new(config: Arc<RwLock<Config>>) -> Self {
         let (tx, _) = broadcast::channel(4096);
@@ -159,13 +261,23 @@ impl Monitor {
     pub fn start(self) -> tokio::task::JoinHandle<()> {
         let config = self.config.clone();
         let tx = self.tx.clone();
-        let (etw_tx, etw_rx) = mpsc::unbounded_channel::<RawConn>();
-        let using_etw = etw::start(etw_tx);
-        let etw_rx = if using_etw { Some(etw_rx) } else { None };
+        let SourceSet {
+            etw_rx,
+            ebpf_rx,
+            using_etw,
+            using_ebpf,
+            polling_enabled,
+        } = start_event_sources(vec![
+            Box::new(EtwSource),
+            Box::new(EbpfSource),
+            Box::new(PollingSource),
+        ]);
 
-        // Try eBPF on Linux (stub for now — always returns false on Windows).
-        let (ebpf_tx, ebpf_rx) = mpsc::channel::<RawConn>(EBPF_EVENT_QUEUE_CAPACITY);
-        let using_ebpf = ebpf::start(ebpf_tx);
+        if !polling_enabled {
+            tracing::warn!(
+                "polling fallback disabled; monitor may miss connections when real-time sources are unavailable"
+            );
+        }
         if using_ebpf {
             tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
         }
@@ -182,13 +294,7 @@ impl Monitor {
         honeypot::start(config.clone(), tx.clone(), threshold);
         tokio::task::spawn_blocking(move || {
             let rt = tokio::runtime::Handle::current();
-            rt.block_on(poll_loop(
-                config,
-                tx,
-                etw_rx,
-                if using_ebpf { Some(ebpf_rx) } else { None },
-                using_etw,
-            ))
+            rt.block_on(poll_loop(config, tx, etw_rx, ebpf_rx, using_etw))
         })
     }
 }
