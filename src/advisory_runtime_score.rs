@@ -62,6 +62,9 @@ struct RuntimeAdvisoryCandidate {
     mitigation_guidance: bool,
     vendor_mitigation_guidance: bool,
     missing_fix_version: bool,
+    fix_available: bool,
+    workaround_available: bool,
+    upgrade_available: bool,
     score_delta: u8,
     exposed: bool,
 }
@@ -217,6 +220,9 @@ fn build_candidate(
         mitigation_guidance: has_mitigation_guidance(record),
         vendor_mitigation_guidance: has_vendor_mitigation_guidance(record),
         missing_fix_version: matched.missing_fix_version,
+        fix_available: record.fix_version.is_some(),
+        workaround_available: !record.workaround_instructions.is_empty(),
+        upgrade_available: !record.upgrade_instructions.is_empty(),
         score_delta: advisory_score_delta(record.known_exploited, severity_rank),
         exposed: false,
     })
@@ -238,6 +244,15 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
     }
     if candidate.missing_fix_version {
         details.push("no fixed-version bound".to_string());
+    }
+    if candidate.fix_available {
+        details.push("fix available".to_string());
+    }
+    if candidate.workaround_available {
+        details.push("workaround available".to_string());
+    }
+    if candidate.upgrade_available {
+        details.push("upgrade available".to_string());
     }
     if candidate.exposed {
         details.push("exposed".to_string());

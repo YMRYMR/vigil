@@ -73,6 +73,12 @@ pub struct ResponseRule {
     #[serde(default)]
     pub require_missing_advisory_fix_version: bool,
     #[serde(default)]
+    pub require_advisory_fix_available: bool,
+    #[serde(default)]
+    pub require_advisory_workaround_available: bool,
+    #[serde(default)]
+    pub require_advisory_upgrade_available: bool,
+    #[serde(default)]
     pub advisory_id_contains: Option<String>,
     #[serde(default)]
     pub advisory_product_contains: Option<String>,
@@ -112,6 +118,9 @@ struct ParsedAdvisoryReason<'a> {
     mitigation_guidance: bool,
     vendor_mitigation_guidance: bool,
     missing_fix_version: bool,
+    fix_available: bool,
+    workaround_available: bool,
+    upgrade_available: bool,
 }
 
 pub fn maybe_apply(conn: &ConnInfo, cfg: &Config, state: &mut EngineState) -> Option<String> {
@@ -291,6 +300,9 @@ fn matches_advisory_filters(
         || rule.require_advisory_vendor_mitigation_guidance
         || rule.require_advisory_public_internet_exposure
         || rule.require_missing_advisory_fix_version
+        || rule.require_advisory_fix_available
+        || rule.require_advisory_workaround_available
+        || rule.require_advisory_upgrade_available
         || rule.advisory_id_contains.is_some()
         || rule.advisory_product_contains.is_some()
         || rule.min_advisory_severity.is_some();
@@ -329,6 +341,9 @@ fn matches_advisory_filters(
             && (!rule.require_advisory_vendor_mitigation_guidance
                 || reason.vendor_mitigation_guidance)
             && (!rule.require_missing_advisory_fix_version || reason.missing_fix_version)
+            && (!rule.require_advisory_fix_available || reason.fix_available)
+            && (!rule.require_advisory_workaround_available || reason.workaround_available)
+            && (!rule.require_advisory_upgrade_available || reason.upgrade_available)
             && advisory_id_contains
                 .as_ref()
                 .is_none_or(|text| reason.primary_id.to_ascii_lowercase().contains(text))
@@ -373,6 +388,9 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
     let mut mitigation_guidance = false;
     let mut vendor_mitigation_guidance = false;
     let mut missing_fix_version = false;
+    let mut fix_available = false;
+    let mut workaround_available = false;
+    let mut upgrade_available = false;
     if let Some(detail_block) = detail_block {
         for detail in detail_block
             .split(',')
@@ -395,6 +413,18 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
                 missing_fix_version = true;
                 continue;
             }
+            if detail.eq_ignore_ascii_case("fix available") {
+                fix_available = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("workaround available") {
+                workaround_available = true;
+                continue;
+            }
+            if detail.eq_ignore_ascii_case("upgrade available") {
+                upgrade_available = true;
+                continue;
+            }
             if severity.is_none() {
                 severity = parse_advisory_severity(detail);
             }
@@ -409,6 +439,9 @@ fn parse_advisory_reason(reason: &str) -> Option<ParsedAdvisoryReason<'_>> {
         mitigation_guidance,
         vendor_mitigation_guidance,
         missing_fix_version,
+        fix_available,
+        workaround_available,
+        upgrade_available,
     })
 }
 
@@ -753,6 +786,9 @@ mod tests {
             require_advisory_vendor_mitigation_guidance: true,
             require_advisory_public_internet_exposure: false,
             require_missing_advisory_fix_version: true,
+            require_advisory_fix_available: false,
+            require_advisory_workaround_available: false,
+            require_advisory_upgrade_available: false,
             advisory_id_contains: Some("CVE-2026-12345".into()),
             advisory_product_contains: Some("chrome".into()),
             min_advisory_severity: Some(AdvisorySeverity::Critical),
@@ -899,6 +935,9 @@ mod tests {
             require_advisory_vendor_mitigation_guidance: false,
             require_advisory_public_internet_exposure: false,
             require_missing_advisory_fix_version: false,
+            require_advisory_fix_available: false,
+            require_advisory_workaround_available: false,
+            require_advisory_upgrade_available: false,
             advisory_id_contains: None,
             advisory_product_contains: None,
             min_advisory_severity: None,

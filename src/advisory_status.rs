@@ -145,6 +145,7 @@ mod tests {
             status: SourceHealth::Fresh,
             last_attempt_unix: 0,
             last_error: None,
+            retry_after_unix: 0,
         };
 
         assert_eq!(source_state(&source, 30), "stale");
@@ -165,6 +166,7 @@ mod tests {
             status: SourceHealth::Error,
             last_attempt_unix: 0,
             last_error: None,
+            retry_after_unix: 0,
         };
 
         assert_eq!(source_state(&source, 30), "error");
@@ -185,6 +187,7 @@ mod tests {
             status: SourceHealth::Error,
             last_attempt_unix: 0,
             last_error: Some("rate limit".into()),
+            retry_after_unix: 0,
         };
 
         assert!(source_needs_attention(&source, 30));
@@ -205,6 +208,7 @@ mod tests {
             status: SourceHealth::Fresh,
             last_attempt_unix: 0,
             last_error: None,
+            retry_after_unix: 0,
         };
 
         assert_eq!(
@@ -228,6 +232,7 @@ mod tests {
             status: SourceHealth::Fresh,
             last_attempt_unix: 0,
             last_error: None,
+            retry_after_unix: 0,
         };
 
         assert_eq!(source_attribution(&source), None);

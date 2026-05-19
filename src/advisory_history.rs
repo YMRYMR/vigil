@@ -706,6 +706,7 @@ fn parse_snapshot(
         status: SourceHealth::Fresh,
         last_attempt_unix: 0,
         last_error: None,
+        retry_after_unix: 0,
     };
 
     let changes = payload
@@ -813,6 +814,7 @@ fn stamp_sync_success(cache: &mut ChangeHistoryCache, requested_pages: usize, no
             status: SourceHealth::Fresh,
             last_attempt_unix: now,
             last_error: None,
+            retry_after_unix: 0,
         }),
     }
     if requested_pages > 0 {
@@ -844,6 +846,7 @@ fn stamp_sync_failure(mut cache: ChangeHistoryCache, error: &str, now: u64) -> C
             status: SourceHealth::Error,
             last_attempt_unix: now,
             last_error: Some(error.to_string()),
+            retry_after_unix: 0,
         }),
     }
     cache
@@ -1163,6 +1166,7 @@ mod tests {
                 status: SourceHealth::Fresh,
                 last_attempt_unix: 0,
                 last_error: None,
+                retry_after_unix: 0,
             }],
             changes: vec![CveChangeEvent {
                 cve_id: "CVE-2026-9999".into(),
@@ -1344,6 +1348,7 @@ mod tests {
             status: SourceHealth::Error,
             last_attempt_unix: 10,
             last_error: Some("boom".into()),
+            retry_after_unix: 0,
         }];
 
         merge_source(
@@ -1361,6 +1366,7 @@ mod tests {
                 status: SourceHealth::Fresh,
                 last_attempt_unix: 30,
                 last_error: None,
+                retry_after_unix: 0,
             },
         );
 
@@ -1458,6 +1464,7 @@ mod tests {
                 status: SourceHealth::Error,
                 last_attempt_unix: 33,
                 last_error: Some("old error".into()),
+                retry_after_unix: 0,
             }],
             changes: vec![CveChangeEvent {
                 cve_id: "CVE-2026-12345".into(),
