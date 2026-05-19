@@ -10,7 +10,7 @@ use super::linux_command_plan::{
     iptables_delete_rule, nft_delete_rule_by_handle, nft_flush_chain, nft_list_chain_handles,
     nft_list_ruleset, nft_parse_handle_by_comment, LinuxCommand, LinuxCommandRunner,
     NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN,
-    NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN, NFT_TABLE,
+    NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN,
 };
 use super::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_block_remote_plan,

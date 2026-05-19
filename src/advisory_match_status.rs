@@ -4,7 +4,7 @@ use crate::advisory_match::{
     MatchBasis, MatchConfidence, VersionMatchStatus,
 };
 use crate::software_inventory::{InstalledSoftware, InventorySource};
-use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
+use crate::storage::{DbInventoryStore, InventoryStore};
 use crate::version_compare::VersionSource;
 use std::path::PathBuf;
 
@@ -36,7 +36,7 @@ struct RecordAdvisoryMatch {
 }
 
 pub fn run_cli() -> Result<(), String> {
-    let inventory = ProtectedJsonInventoryStore::new_default().load_inventory()?;
+    let inventory = DbInventoryStore::new().load_inventory()?;
     if inventory.is_empty() {
         println!(
             "Advisory match status: unavailable (no protected software inventory snapshot found)."

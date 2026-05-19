@@ -22,8 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const CACHE_FILE: &str = "vigil-advisory-cache.json";
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const DB_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
 const NVD_SOURCE_KEY: &str = "nvd-cve";
 const NVD_SOURCE_KIND: &str = "nvd";
@@ -452,35 +451,8 @@ fn load_cache_summary() -> Result<Option<CacheSummary>, String> {
 }
 
 fn load_cache() -> Result<Option<AdvisoryCache>, String> {
-    // Try SQLite DB first (faster, supports multi-source).
-    if let Ok(db) = crate::storage::db::StorageDb::open() {
-        if let Some(cache) = db.load_advisory_cache()? {
-            return Ok(Some(cache));
-        }
-    }
-    // Fall back to legacy JSON cache.
-    let path = cache_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| {
-            format!(
-                "failed to load protected advisory cache {}: {e}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        return Ok(None);
-    };
-    if cache.schema_version != CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected advisory cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
-    Ok(Some(cache))
+    let db = crate::storage::db::StorageDb::open()?;
+    db.load_advisory_cache()
 }
 
 fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
@@ -495,38 +467,21 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
 }
 
 fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
-    let path = cache_path();
-    crate::security::policy::save_struct_with_integrity(&path, cache).map_err(|e| {
-        format!(
-            "failed to save protected advisory cache {}: {e}",
-            path.display()
-        )
-    })?;
-    // Mirror to SQLite DB (best-effort, non-fatal on failure).
-    if let Ok(db) = crate::storage::db::StorageDb::open() {
-        let _ = db.replace_advisory_sources(&cache.sources);
-        for source in &cache.sources {
-            let source_records: Vec<_> = cache
-                .records
-                .iter()
-                .filter(|r| r.provenance.source_key == source.source_key)
-                .cloned()
-                .collect();
-            if !source_records.is_empty() {
-                let _ = db.replace_advisory_records(
-                    &source_records,
-                    &source.source_key,
-                    &source.source_kind,
-                );
-            }
+    let db = crate::storage::db::StorageDb::open()?;
+    db.replace_advisory_sources(&cache.sources)?;
+    for source in &cache.sources {
+        let source_records: Vec<_> = cache
+            .records
+            .iter()
+            .filter(|r| r.provenance.source_key == source.source_key)
+            .cloned()
+            .collect();
+        if !source_records.is_empty() {
+            db.replace_advisory_records(&source_records, &source.source_key, &source.source_kind)?;
         }
-        let _ = db.checkpoint();
     }
+    db.checkpoint()?;
     Ok(())
-}
-
-fn cache_path() -> PathBuf {
-    crate::config::data_dir().join(CACHE_FILE)
 }
 
 fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
@@ -606,7 +561,7 @@ fn sync_nvd_with_fetcher(
 
 fn empty_cache(now: u64) -> AdvisoryCache {
     AdvisoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
+        schema_version: DB_SCHEMA_VERSION,
         generated_unix: now,
         sources: vec![],
         records: vec![],
@@ -803,7 +758,7 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
         .collect::<Vec<_>>();
 
     Ok(AdvisoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
+        schema_version: DB_SCHEMA_VERSION,
         generated_unix: fetched_unix,
         sources: vec![source],
         records,
@@ -812,7 +767,7 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
 
 fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> AdvisoryCache {
     let mut merged = existing.unwrap_or_else(|| AdvisoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
+        schema_version: DB_SCHEMA_VERSION,
         generated_unix: incoming.generated_unix,
         sources: vec![],
         records: vec![],
@@ -834,7 +789,7 @@ fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> Advi
         merge_record_indexed(&mut merged.records, &mut record_index, record);
     }
     merged.generated_unix = unix_now();
-    merged.schema_version = CACHE_SCHEMA_VERSION;
+    merged.schema_version = DB_SCHEMA_VERSION;
     merged
 }
 
@@ -1333,7 +1288,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(cache.schema_version, CACHE_SCHEMA_VERSION);
+        assert_eq!(cache.schema_version, DB_SCHEMA_VERSION);
         assert_eq!(cache.records.len(), 1);
         assert_eq!(cache.sources[0].source_key, "nvd-cve");
         assert_eq!(cache.sources[0].total_results, 1);
@@ -1395,46 +1350,14 @@ mod tests {
         assert_eq!(deduped[1].match_criteria_id, secondary.match_criteria_id);
     }
 
-    #[test]
-    fn protected_cache_round_trip_preserves_records() {
-        let dir = temp_dir();
-        let path = dir.join(CACHE_FILE);
-        let cache = AdvisoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
-            generated_unix: 42,
-            sources: vec![AdvisorySourceCache {
-                source_key: "nvd-cve".into(),
-                source_kind: "nvd".into(),
-                source_url: "https://services.nvd.nist.gov/rest/json/cves/2.0".into(),
-                imported_from: Some("/tmp/nvd.json".into()),
-                imported_from_batch: vec!["/tmp/nvd.json".into()],
-                fetched_unix: 42,
-                expires_unix: 84,
-                snapshot_sha256: "abc".into(),
-                total_results: 1,
-                status: SourceHealth::Fresh,
-                last_attempt_unix: 0,
-                last_error: None,
-            }],
-            records: vec![VulnerabilityRecord {
-                primary_id: "CVE-2026-9999".into(),
-                summary: "Test record".into(),
-                ..VulnerabilityRecord::default()
-            }],
-        };
-
-        crate::security::policy::save_struct_with_integrity(&path, &cache).unwrap();
-        let loaded: AdvisoryCache = crate::security::policy::load_struct_with_integrity(&path)
-            .unwrap()
-            .unwrap();
-        assert_eq!(loaded.records.len(), 1);
-        assert_eq!(loaded.records[0].primary_id, "CVE-2026-9999");
-    }
+    // The old protected_cache_round_trip_preserves_records test used the
+    // legacy JSON path which has been removed. DB round-trip is covered
+    // by storage::db::tests::checkpoint_and_verify_round_trip.
 
     #[test]
     fn merge_cache_keeps_other_sources_and_updates_matching_nvd_records() {
         let existing = AdvisoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 100,
             sources: vec![
                 AdvisorySourceCache {
@@ -1493,7 +1416,7 @@ mod tests {
             ],
         };
         let imported = AdvisoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 110,
             sources: vec![AdvisorySourceCache {
                 source_key: "nvd-cve".into(),
@@ -1599,13 +1522,13 @@ mod tests {
 
         let merged = merge_cache(
             Some(AdvisoryCache {
-                schema_version: CACHE_SCHEMA_VERSION,
+                schema_version: DB_SCHEMA_VERSION,
                 generated_unix: 120,
                 sources: vec![],
                 records: vec![existing_record],
             }),
             AdvisoryCache {
-                schema_version: CACHE_SCHEMA_VERSION,
+                schema_version: DB_SCHEMA_VERSION,
                 generated_unix: 110,
                 sources: vec![],
                 records: vec![imported_record],
@@ -1716,7 +1639,7 @@ mod tests {
     #[test]
     fn nvd_sync_windows_split_long_offline_gaps() {
         let existing = AdvisoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 0,
             sources: vec![],
             records: vec![VulnerabilityRecord {

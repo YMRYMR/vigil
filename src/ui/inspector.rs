@@ -17,7 +17,7 @@ use crate::{
         RuntimeCorrelationConfidence, RuntimeCorrelationReason, RuntimeInventoryMatch,
         RuntimeInventoryTarget,
     },
-    storage::{InventoryStore, ProtectedJsonInventoryStore},
+    storage::{DbInventoryStore, InventoryStore},
     ui::{has_known_location, is_ghost_process_name, theme, ProcessSelection},
     version_compare::VersionSource,
 };
@@ -701,7 +701,7 @@ fn advisory_lookup_key(sel: &ProcessSelection) -> AdvisoryLookupKey {
 }
 
 fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspectorSnapshot {
-    let inventory = match ProtectedJsonInventoryStore::new_default().load_inventory() {
+    let inventory = match DbInventoryStore::new().load_inventory() {
         Ok(inventory) => inventory,
         Err(_) => {
             return AdvisoryInspectorSnapshot {
