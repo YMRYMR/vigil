@@ -118,7 +118,8 @@ impl StorageDb {
                 publisher_hint   TEXT NOT NULL DEFAULT '',
                 version_hint     TEXT NOT NULL DEFAULT '',
                 source           TEXT NOT NULL DEFAULT '',
-                updated_unix     INTEGER NOT NULL DEFAULT 0
+                updated_unix     INTEGER NOT NULL DEFAULT 0,
+                payload_json     TEXT NOT NULL DEFAULT '{}'
             );
 
             CREATE INDEX IF NOT EXISTS idx_inventory_path
@@ -141,6 +142,11 @@ impl StorageDb {
             )
             .map_err(|e| format!("set schema version: {e}"))?;
         }
+
+        // Migration: add payload_json column to software_inventory if missing.
+        let _ = conn.execute_batch(
+            "ALTER TABLE software_inventory ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}';",
+        );
         Ok(())
     }
 
@@ -343,6 +349,68 @@ impl StorageDb {
             sources,
             records,
         }))
+    }
+
+    // ── Software inventory helpers ──────────────────────────────────────
+
+    pub fn replace_software_inventory(
+        &self,
+        entries: &[crate::software_inventory::InstalledSoftware],
+    ) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM software_inventory", [])
+            .map_err(|e| format!("clear inventory: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO software_inventory
+                 (product_key, display_name, executable_path, publisher_hint,
+                  version_hint, source, updated_unix, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| format!("prepare inventory insert: {e}"))?;
+        for entry in entries {
+            let payload = serde_json::to_string(entry).unwrap_or_default();
+            stmt.execute(rusqlite::params![
+                entry.product_key,
+                entry.display_name,
+                entry.executable_path,
+                entry.publisher_hint.as_deref().unwrap_or(""),
+                entry.version_hint.as_deref().unwrap_or(""),
+                format!("{:?}", entry.source),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs(),
+                payload,
+            ])
+            .map_err(|e| format!("insert inventory {}: {e}", entry.product_key))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_software_inventory(
+        &self,
+    ) -> Result<Vec<crate::software_inventory::InstalledSoftware>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT payload_json FROM software_inventory ORDER BY product_key")
+            .map_err(|e| format!("prepare inventory select: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let payload: String = row.get(0)?;
+                Ok(payload)
+            })
+            .map_err(|e| format!("query inventory: {e}"))?;
+        let mut result = Vec::new();
+        for row in rows {
+            let payload = row.map_err(|e| format!("read inventory row: {e}"))?;
+            if let Ok(entry) =
+                serde_json::from_str::<crate::software_inventory::InstalledSoftware>(&payload)
+            {
+                result.push(entry);
+            }
+        }
+        Ok(result)
     }
 
     pub fn verify(&self) -> Result<bool, String> {

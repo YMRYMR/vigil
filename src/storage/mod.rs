@@ -50,10 +50,25 @@ impl InventoryStore for ProtectedJsonInventoryStore {
                 "failed to persist protected software inventory {}: {e}",
                 self.path().display()
             )
-        })
+        })?;
+        // Mirror to SQLite DB (best-effort, non-fatal on failure).
+        if let Ok(db) = crate::storage::db::StorageDb::open() {
+            let _ = db.replace_software_inventory(entries);
+            let _ = db.checkpoint();
+        }
+        Ok(())
     }
 
     fn load_inventory(&self) -> Result<Vec<InstalledSoftware>, String> {
+        // Try SQLite DB first.
+        if let Ok(db) = crate::storage::db::StorageDb::open() {
+            if let Ok(entries) = db.load_software_inventory() {
+                if !entries.is_empty() {
+                    return Ok(entries);
+                }
+            }
+        }
+        // Fall back to legacy JSON cache.
         let loaded: Option<SoftwareInventoryState> =
             crate::security::policy::load_struct_with_integrity(self.path()).map_err(|e| {
                 format!(
