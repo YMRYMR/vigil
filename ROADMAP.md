@@ -74,8 +74,8 @@ Windows and Linux are the active support targets. This phase is about making tho
 ### Planned scope
 
 - [x] **Monitor trait unification** — `handle_realtime_event` shared handler eliminates 42-line duplicated code block between ETW and eBPF paths. Event-channel abstraction (`EventRx`) unifies unbounded ETW and bounded eBPF receivers. Ready for full `EventSource` trait extraction.
-- [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
-- [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
+- [x] **Windows/Linux latency benchmark** — `src/bin/vigil_benchmark.rs` measures p50/p95/p99 latency, distinguishes ETW/eBPF from polling fallback, and emits JSON/HTML reports. Cross-process end-to-end event delivery measurement remains tracked separately in `docs/PHASE-18-PARITY.md`.
+- [x] **Windows/Linux installer and service parity guardrails** — `src/bin/vigil_service_check.rs` validates Windows scheduled-task and Linux systemd installation, enabled/running state, privilege expectations, and restart/fail-open checks across the supported platforms.
 - [x] **Windows/Linux active-response parity audit** — all 22 active-response functions verified working on both supported platforms. Linux has full parity: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows registry concept) is Linux-specific unimplemented.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
