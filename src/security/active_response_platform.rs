@@ -331,10 +331,9 @@ mod imp {
         if recovered_any {
             return Ok(());
         }
-        if let Ok(current) = snapshot_active_adapters() {
-            if !current.adapters.is_empty() {
-                return Ok(());
-            }
+        if !snapshot.adapters.is_empty() && snapshot_adapters_are_enabled(snapshot).unwrap_or(false)
+        {
+            return Ok(());
         }
         if warnings.is_empty() {
             Err("no saved adapters could be restored".into())
