@@ -15,7 +15,7 @@ use std::process::Command;
 
 const LINUX_SERVICE_NAME: &str = "vigil";
 const LINUX_SERVICE_PATH: &str = "/etc/systemd/system/vigil.service";
-const WINDOWS_TASK_NAME: &str = "Vigil";
+const WINDOWS_TASK_NAME: &str = "VigilBootMonitor";
 const CONFIG_PATH: &str = "vigil.json";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,22 +127,32 @@ fn check_config_exists() -> CheckResult {
 }
 
 fn default_data_dir() -> PathBuf {
+    // Matches Vigil's config::data_dir() logic.
+    if let Some(dir) = std::env::var_os("VIGIL_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     #[cfg(windows)]
     {
-        let p = std::env::var("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(r"C:\ProgramData"));
-        p.join("Vigil")
+        if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+            return PathBuf::from(dir).join("Vigil");
+        }
+        if let Some(dir) = std::env::var_os("APPDATA") {
+            return PathBuf::from(dir).join("Vigil");
+        }
+        PathBuf::from(r"C:\ProgramData\Vigil")
     }
     #[cfg(target_os = "linux")]
     {
-        let p = std::env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|_| {
-                std::env::var("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-            })
-            .unwrap_or_else(|_| PathBuf::from("/var/lib"));
-        p.join("vigil")
+        if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+            return PathBuf::from(dir).join("vigil");
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("vigil");
+        }
+        PathBuf::from("/var/lib/vigil")
     }
     #[cfg(not(any(windows, target_os = "linux")))]
     {

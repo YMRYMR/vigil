@@ -82,7 +82,64 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ---
 
-## Phase 19 — Cloud Fleet Console & Integrations (PRO backlog)
+## Phase 19 — YARA Signature Integration (OPEN backlog)
+
+Add signature-based malware detection alongside the existing behavioural heuristics. YARA scans new processes and selected memory regions on creation, catches known malware families that behavioural scoring alone misses, and feeds matches into the existing scoring pipeline with clear `YARA rule: <name>` reasons and ATT&CK tags.
+
+- [ ] **Binary embedding of community YARA rules** — bundle a curated ruleset (e.g. Valhalla, YARA Forge) at compile time, updated via signed auto-update (Phase 22).
+- [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match.
+- [ ] **Memory region scan** — scan selected process memory (e.g., `--dump` target) for in-memory malware that hides from disk scanning.
+- [ ] **YARA rule management UI** — show matched rules in the inspector, allow operators to toggle rule categories, and view rule metadata (author, description, reference).
+- [ ] **Custom rule import** — let operators drop their own `.yar` files alongside blocklists, verified by `.sha256` sidecar (same integrity model as response rules).
+
+---
+
+## Phase 20 — Security Posture Dashboard (OPEN backlog)
+
+A single-panel view that answers "is Vigil actually protecting me?" without digging through logs.
+
+- [ ] **Health summary** — real-time monitoring status (ETW/eBPF/polling), blocklist engine state (loaded entries / empty / degraded), advisory cache freshness, response rules loaded, firewall isolation status.
+- [ ] **Threat dashboard** — current connection score distribution, top blocked targets, recent alerts over time, YARA matches summary.
+- [ ] **Tray indicator integration** — tray icon colour and tooltip reflects current protection status (green = healthy, yellow = degraded, red = stopped / no real-time).
+- [ ] **CLI status command** — `vigil status` emits JSON with all health signals for scripting and remote monitoring.
+
+---
+
+## Phase 21 — Jitter-Aware C2 Beaconing Detection (OPEN backlog)
+
+Real command-and-control channels use random intervals (jitter), not fixed-period beacons. The current beacon tracker only catches fixed-interval patterns.
+
+- [ ] **Jitter detection engine** — analyse inter-arrival times for irregular-but-correlated patterns using statistical dispersion (coefficient of variation, entropy of intervals).
+- [ ] **Low-and-slow detection** — detect beaconing with very long periods (hours) and high jitter that current fixed-window analysis misses.
+- [ ] **Scoring integration** — beaconing-like + jitter → score bump with `C2 Beaconing (jitter)` reason and `T1095 C2 Communication` ATT&CK tag.
+
+---
+
+## Phase 22 — Signed Auto-Update Channel (OPEN backlog)
+
+A lightweight, SaaS-free update mechanism for threat data. Pulls signed JSON manifests from GitHub releases so the OPEN community gets fresh blocklists, YARA rules, and LoLBAS definitions without any cloud dependency.
+
+- [ ] **Signed manifest format** — Ed25519-signed JSON manifest listing the latest rule pack versions and SHA-256 hashes. Verification reuses the existing `security::update` Ed25519 verification code.
+- [ ] **Periodic poll** — check for updates every N hours; download and verify new rule packs; apply atomically with rollback on verification failure.
+- [ ] **Curated IP/domain blocklist feed** — hourly-refreshed IP/domain blocklist from abuse.ch and Emerging Threats, published as signed releases.
+- [ ] **Curated YARA rules feed** — versioned YARA rule packs from Valhalla / YARA Forge community feed.
+- [ ] **Curated LoLBAS and C2 port definitions** — versioned updates to the built-in LoLBAS and malware-port heuristics.
+- [ ] **Transparency** — every update logged in the audit trail with manifest hash and rule count.
+
+---
+
+## Phase 23 — File Integrity Monitoring (OPEN backlog)
+
+Track SHA-256 hashes of critical system binaries and configuration files, alert on unexpected changes.
+
+- [ ] **Baseline snapshot** — take hash snapshots of monitored directories on install (system32, `/usr/bin`, common config paths).
+- [ ] **Periodic verification** — re-hash on a configurable interval; report changed / new / deleted files.
+- [ ] **Alert integration** — unexpected changes feed into the scoring pipeline with `File Integrity` reason and `T1070 Indicator Removal` ATT&CK tag.
+- [ ] **Protected state** — baseline hash list stored with the same HMAC integrity protection as other Vigil-owned state files.
+
+---
+
+## Phase 24 — Cloud Fleet Console & Integrations (PRO backlog)
 
 Extends Vigil with a hosted console for multi-endpoint fleet management, alert aggregation, and outbound integrations.
 
@@ -130,7 +187,7 @@ Adds a managed intelligence feed for PRO-tier deployments with signed, versioned
 
 ---
 
-## Phase 22 — Compliance Reporting Pack (PRO backlog)
+## Phase 25 — Hosted Feed Service (PRO backlog)
 
 Pairs naturally with the tamper-evident logging already in the OPEN tier.
 
@@ -142,7 +199,7 @@ Pairs naturally with the tamper-evident logging already in the OPEN tier.
 
 ---
 
-## Phase 23 — Identity & User Context (PRO backlog)
+## Phase 27 — Identity & User Context (PRO backlog)
 
 Modern detections hinge on who, not just what. Adds identity attribution so alerts can differentiate privileged accounts from standard users.
 
@@ -154,7 +211,7 @@ Modern detections hinge on who, not just what. Adds identity attribution so aler
 
 ---
 
-## Phase 24 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+## Phase 28 — Playbook Builder & SaaS-session Visibility (PRO backlog)
 
 Two differentiators bundled together because each alone is narrow, but together they round out the modern endpoint story.
 
@@ -178,10 +235,15 @@ Two differentiators bundled together because each alone is narrow, but together 
 |---|---|---|---|
 | 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
 | 7.x | 17 | Protocol expansion | ✅ Complete |
-| 8.x | 18 | Windows/Linux detection and response parity | 🔲 Backlog |
-| PRO 1.x | 19 | Cloud fleet console & integrations | 🔲 Backlog |
-| PRO 1.x | 20 | MSP multi-tenant & white-label | 🔲 Backlog |
-| PRO 1.x | 21 | Managed threat intel feed | 🔲 Backlog |
-| PRO 1.x | 22 | Compliance reporting pack | 🔲 Backlog |
-| PRO 1.x | 23 | Identity & user context | 🔲 Backlog |
-| PRO 1.x | 24 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
+| 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
+| 9.x | 19 | YARA signature integration | 🔲 Backlog |
+| 10.x | 20 | Security posture dashboard | 🔲 Backlog |
+| 11.x | 21 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
+| 12.x | 22 | Signed auto-update channel | 🔲 Backlog |
+| 13.x | 23 | File integrity monitoring | 🔲 Backlog |
+| PRO 1.x | 24 | Cloud fleet console & integrations | 🔲 Backlog |
+| PRO 1.x | 25 | MSP multi-tenant & white-label | 🔲 Backlog |
+| PRO 1.x | 26 | Managed threat intel feed | 🔲 Backlog |
+| PRO 1.x | 27 | Compliance reporting pack | 🔲 Backlog |
+| PRO 1.x | 28 | Identity & user context | 🔲 Backlog |
+| PRO 1.x | 29 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
