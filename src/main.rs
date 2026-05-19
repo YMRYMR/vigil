@@ -185,7 +185,7 @@ fn spawn_bootstrap(
                         software_count,
                         "startup-safe software inventory snapshot collected"
                     );
-                    let inventory_store = storage::ProtectedJsonInventoryStore::new_default();
+                    let inventory_store = storage::DbInventoryStore::new();
                     if let Err(err) =
                         storage::InventoryStore::replace_inventory(&inventory_store, &inventory)
                     {

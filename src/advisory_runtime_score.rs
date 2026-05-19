@@ -10,7 +10,7 @@ use crate::software_inventory::{
     correlate_runtime_inventory, InstalledSoftware, InventorySource, RuntimeCorrelationConfidence,
     RuntimeInventoryTarget,
 };
-use crate::storage::{InventoryStore, ProtectedJsonInventoryStore};
+use crate::storage::{DbInventoryStore, InventoryStore};
 use crate::version_compare::VersionSource;
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -100,7 +100,7 @@ pub fn advisory_score_for_runtime_target(
 fn load_advisory_score_for_runtime_target(
     target: &RuntimeInventoryTarget<'_>,
 ) -> AdvisoryScoreOutcome {
-    let inventory = match ProtectedJsonInventoryStore::new_default().load_inventory() {
+    let inventory = match DbInventoryStore::new().load_inventory() {
         Ok(inventory) => inventory,
         Err(_) => return AdvisoryScoreOutcome::default(),
     };
