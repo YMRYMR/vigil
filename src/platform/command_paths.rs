@@ -39,6 +39,7 @@ fn resolve_linux(program: &str) -> Result<PathBuf, String> {
     let candidates: &[&str] = match program {
         "kill" => &["/bin/kill", "/usr/bin/kill"],
         "iptables" => &["/usr/sbin/iptables", "/sbin/iptables"],
+        "nft" => &["/usr/sbin/nft", "/sbin/nft"],
         "ip" => &["/usr/sbin/ip", "/sbin/ip"],
         "ss" => &["/usr/sbin/ss", "/usr/bin/ss", "/bin/ss"],
         "resolvectl" => &["/usr/bin/resolvectl", "/bin/resolvectl"],

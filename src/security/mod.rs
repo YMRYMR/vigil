@@ -1,6 +1,7 @@
 pub mod active_response;
 pub mod auto_response;
 pub mod file_quarantine;
+pub mod firewall;
 pub mod integrity;
 #[cfg(any(target_os = "linux", test))]
 pub mod linux_command_plan;
