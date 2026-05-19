@@ -139,25 +139,20 @@ fn default_data_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os("APPDATA") {
             return PathBuf::from(dir).join("Vigil");
         }
-        PathBuf::from(r"C:\ProgramData\Vigil")
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
-        if let Some(dir) = std::env::var_os("XDG_DATA_HOME") {
+        if let Some(dir) = std::env::var_os("XDG_CONFIG_HOME") {
             return PathBuf::from(dir).join("vigil");
         }
         if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(home)
-                .join(".local")
-                .join("share")
-                .join("vigil");
+            return PathBuf::from(home).join(".config").join("vigil");
         }
-        PathBuf::from("/var/lib/vigil")
     }
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        PathBuf::from("/var/lib/vigil")
-    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.join("vigil-data")))
+        .unwrap_or_else(|| PathBuf::from("vigil-data"))
 }
 
 fn check_binary_exists() -> CheckResult {
@@ -192,7 +187,7 @@ fn check_windows_service() -> Vec<CheckResult> {
                     CheckStatus::Fail
                 },
                 detail: if has_task {
-                    "Task 'Vigil' is registered".into()
+                    format!("Task '{}' is registered", WINDOWS_TASK_NAME)
                 } else {
                     format!("Task '{}' is not registered", WINDOWS_TASK_NAME)
                 },
