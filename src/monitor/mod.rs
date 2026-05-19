@@ -397,6 +397,7 @@ async fn poll_loop(
 
 /// States that indicate the connection has finished and should be removed
 /// from the active set immediately rather than waiting for polling cleanup.
+#[allow(dead_code)]
 fn is_terminal_state(status: &str) -> bool {
     matches!(status, "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB")
 }
@@ -587,9 +588,11 @@ fn process_conn(
     let pid_exposed = current_exposed
         || known.values().filter(|c| c.pid == raw_conn.pid).any(|c| {
             if c.status == "LISTEN" || c.remote_addr == "LISTEN" {
+                // Check for wildcard listeners: 0.0.0.0:port (IPv4) or
+                // :::port (IPv6 unspecified — three colons because the
+                // address is "::" and the port separator adds another ":").
                 c.local_addr.starts_with("0.0.0.0:")
-                    || c.local_addr.starts_with("[::]:")
-                    || c.local_addr.starts_with("::")
+                    || c.local_addr.starts_with(":::")
                     || is_remote_public(&c.local_addr)
             } else {
                 is_remote_public(&c.remote_addr)
