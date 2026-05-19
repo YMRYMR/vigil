@@ -447,12 +447,23 @@ fn process_conn(
             &cfg,
         )
     };
-    // Compute per-process exposure: exposed if any connection is a
-    // globally routable listener or has a public remote address.
-    let pid_exposed = known
-        .values()
-        .filter(|c| c.pid == raw_conn.pid)
-        .any(|c| is_remote_public(&c.remote_addr));
+    // Compute per-process exposure: exposed if any connection (including
+    // the current one, which is not yet in `known`) has a globally routable
+    // listener address or a public remote IP.
+    let local_addr = format!("{}:{}", raw_conn.local_ip, raw_conn.local_port);
+    let current_exposed = if raw_conn.status == "LISTEN" || raw_conn.remote_ip.is_empty() {
+        is_remote_public(&local_addr)
+    } else {
+        is_remote_public(&format!("{}:{}", raw_conn.remote_ip, raw_conn.remote_port))
+    };
+    let pid_exposed = current_exposed
+        || known.values().filter(|c| c.pid == raw_conn.pid).any(|c| {
+            if c.status == "LISTEN" || c.remote_addr == "LISTEN" {
+                is_remote_public(&c.local_addr)
+            } else {
+                is_remote_public(&c.remote_addr)
+            }
+        });
     let advisory_score = advisory_runtime_score::advisory_score_for_runtime_target(
         &crate::software_inventory::RuntimeInventoryTarget {
             process_name: &proc.name,
@@ -596,9 +607,14 @@ fn is_remote_public(addr: &str) -> bool {
                 || v4.octets()[0] >= 224)
         }
         std::net::IpAddr::V6(v6) => {
+            let octets = v6.octets();
+            let is_ula = octets[0] == 0xfc || octets[0] == 0xfd;
+            let is_unique_local = octets[0] == 0xfe && (octets[1] & 0xc0) == 0xc0;
             !(v6.is_loopback()
                 || v6.is_unspecified()
-                || v6.octets()[0] == 0xfe && v6.octets()[1] == 0x80)
+                || (octets[0] == 0xfe && octets[1] == 0x80) // link-local
+                || is_ula
+                || is_unique_local)
         }
     }
 }
