@@ -576,16 +576,21 @@ fn process_conn(
     // Compute per-process exposure: exposed if any connection (including
     // the current one, which is not yet in `known`) has a globally routable
     // listener address or a public remote IP.
+    // For LISTEN sockets, treat wildcard (0.0.0.0, ::) as exposed since
+    // they bind to all interfaces including public ones.
     let local_addr = format!("{}:{}", raw_conn.local_ip, raw_conn.local_port);
     let current_exposed = if raw_conn.status == "LISTEN" || raw_conn.remote_ip.is_empty() {
-        is_remote_public(&local_addr)
+        raw_conn.local_ip == "0.0.0.0" || raw_conn.local_ip == "::" || is_remote_public(&local_addr)
     } else {
         is_remote_public(&format!("{}:{}", raw_conn.remote_ip, raw_conn.remote_port))
     };
     let pid_exposed = current_exposed
         || known.values().filter(|c| c.pid == raw_conn.pid).any(|c| {
             if c.status == "LISTEN" || c.remote_addr == "LISTEN" {
-                is_remote_public(&c.local_addr)
+                c.local_addr.starts_with("0.0.0.0:")
+                    || c.local_addr.starts_with("[::]:")
+                    || c.local_addr.starts_with("::")
+                    || is_remote_public(&c.local_addr)
             } else {
                 is_remote_public(&c.remote_addr)
             }

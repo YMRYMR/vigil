@@ -43,6 +43,7 @@ struct AdvisoryScoreLookupKey {
     process_path: String,
     service_name: String,
     publisher: String,
+    exposed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -91,6 +92,7 @@ pub fn advisory_score_for_runtime_target(
         process_path: target.process_path.to_string(),
         service_name: target.service_name.to_string(),
         publisher: target.publisher.to_string(),
+        exposed: target.exposed,
     };
     let cache_lock = ADVISORY_SCORE_CACHE.get_or_init(|| RwLock::new(None));
 
