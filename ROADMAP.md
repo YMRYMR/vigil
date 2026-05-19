@@ -35,10 +35,10 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 
 - [x] **Local advisory inspector** — show matched public advisories, CVEs, severity, known-exploitation flags, fixed versions, mitigation links, and source references for the selected process or installed product.
 - [x] **Conservative scoring hooks** — optionally raise score only when a live process or exposed service maps with high confidence to a severe or exploited public vulnerability, with clear reasons and low-noise defaults.
-- [ ] **Mitigation-aware response rules** — the initial conservative advisory-aware predicate slice is shipped, but broader roadmap work remains for richer guidance attribution and wider exposure inference.
-- [ ] **Public-source-to-blocklist/rule-pack conversion** — derive optional signed local IP, domain, hash, or process rule packs from high-confidence public advisories and NCSC/BSI technical content where indicators are explicitly published.
-- [ ] **Exposure-first prioritization** — prioritize vulnerabilities that are both relevant to the local machine and actually exposed through a running process, listening service, or browser-facing component.
-- [ ] **Offline-first and fail-open behaviour** — keep protection working from the last trusted cache, never weaken existing detection if source refresh fails, and surface stale or partial-source state clearly to the operator.
+- [x] **Mitigation-aware response rules** — three new response rule predicates (`require_advisory_fix_available`, `require_advisory_workaround_available`, `require_advisory_upgrade_available`) plus structured guidance fields (`fix_version`, `workaround_instructions`, `upgrade_instructions`) on `VulnerabilityRecord` populated from NVD reference tags.
+- [x] **Public-source-to-blocklist/rule-pack conversion** — `src/advisory_ioc.rs` extracts IPs, domains, and hashes from advisory reference URLs and CVE summaries; `blocklist::add_advisory_iocs()` injects them into the live blocklist engine automatically during each cache save.
+- [x] **Exposure-first prioritization** — `exposed` field on `RuntimeAdvisoryCandidate` sorts exposed matches first in advisory scoring; reason strings include `exposed` tag for response rule parsing.
+- [x] **Offline-first and fail-open behaviour** — degraded blocklist mode (serves last-known-good cache on integrity failure), stale-data watermarking (reduces advisory score for expired sources), exponential-backoff NVD retry scheduling, and bounded WAL via auto-checkpoint.
 
 ### Docs and policy
 
@@ -176,7 +176,7 @@ Two differentiators bundled together because each alone is narrow, but together 
 
 | Version | Phase | Description | Status |
 |---|---|---|---|
-| 6.x | 16 | Public vulnerability intelligence & advisory feeds | 🚧 Foundations in place |
+| 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
 | 7.x | 17 | Protocol expansion | 🔲 Backlog |
 | 8.x | 18 | Windows/Linux detection and response parity | 🔲 Backlog |
 | PRO 1.x | 19 | Cloud fleet console & integrations | 🔲 Backlog |
