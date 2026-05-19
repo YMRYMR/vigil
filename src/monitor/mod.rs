@@ -447,12 +447,19 @@ fn process_conn(
             &cfg,
         )
     };
+    // Compute per-process exposure: exposed if any connection is a
+    // globally routable listener or has a public remote address.
+    let pid_exposed = known
+        .values()
+        .filter(|c| c.pid == raw_conn.pid)
+        .any(|c| is_remote_public(&c.remote_addr));
     let advisory_score = advisory_runtime_score::advisory_score_for_runtime_target(
         &crate::software_inventory::RuntimeInventoryTarget {
             process_name: &proc.name,
             process_path: &proc.path,
             service_name: &proc.service_name,
             publisher: &proc.publisher,
+            exposed: pid_exposed,
         },
     );
     if advisory_score.score_delta > 0 {
@@ -566,4 +573,32 @@ fn process_conn(
         return;
     };
     let _ = tx.send(event);
+}
+
+/// Returns `true` when an address string contains a publicly routable IP.
+fn is_remote_public(addr: &str) -> bool {
+    let host = if let Some(pos) = addr.rfind(':') {
+        &addr[..pos]
+    } else {
+        addr
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let Ok(ip) = host.parse::<std::net::IpAddr>() else {
+        return false;
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.octets()[0] >= 224)
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.octets()[0] == 0xfe && v6.octets()[1] == 0x80)
+        }
+    }
 }

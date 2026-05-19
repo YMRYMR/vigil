@@ -147,15 +147,15 @@ fn advisory_score_from_data(
     // Offline-first watermark: reduce trust when advisory data is stale.
     let stale_penalty = if cache_has_stale_sources(cache) { 1 } else { 0 };
 
-    let mut candidates = cache
+    let mut candidates: Vec<RuntimeAdvisoryCandidate> = cache
         .records
         .iter()
         .filter_map(|record| build_candidate(&runtime_match.installed, record))
-        .collect::<Vec<_>>();
-
-    // Mark candidates whose process is exposed. The `exposed` field is
-    // populated upstream by the monitor pipeline (Feature 3). For now,
-    // candidates default to false and the priority sort still works.
+        .collect();
+    // Propagate exposure from the runtime target to each candidate.
+    for candidate in &mut candidates {
+        candidate.exposed = target.exposed;
+    }
 
     candidates.sort_by(|left, right| {
         right
@@ -664,6 +664,7 @@ mod tests {
             process_path,
             service_name: "",
             publisher,
+            exposed: false,
         }
     }
 
@@ -860,6 +861,7 @@ mod tests {
             process_path: "C:/Windows/System32/svchost.exe",
             service_name: "Dnscache",
             publisher: "Microsoft Corporation",
+            exposed: false,
         };
         let outcome = advisory_score_from_data(&target, &inventory, &cache);
 

@@ -730,6 +730,7 @@ fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspe
         process_path: &sel.proc_path,
         service_name: &sel.service_name,
         publisher: &sel.publisher,
+        exposed: false,
     };
     let cache = match load_advisory_cache_for_inspector() {
         Ok(cache) => cache,
