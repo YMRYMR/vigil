@@ -212,6 +212,7 @@ mod tests {
             local_addr: "127.0.0.1:1234".into(),
             remote_addr: "203.0.113.10:443".into(),
             status: "ESTABLISHED".into(),
+            protocol: crate::types::TransportProtocol::Tcp,
             score: 12,
             reasons: vec!["test reason".into()],
             attack_tags: vec!["T1105".into()],

@@ -1653,6 +1653,7 @@ mod tests {
             local_addr: local.into(),
             remote_addr: remote.into(),
             status: status.into(),
+            protocol: crate::types::TransportProtocol::Tcp,
             score: 9,
             reasons: vec!["test".into()],
             ancestor_chain: vec![("cmd.exe".into(), 123)],

@@ -265,6 +265,7 @@ mod linux_impl {
             remote_ip: if is_listen { String::new() } else { remote_ip },
             remote_port: if is_listen { 0 } else { event.dport },
             status,
+            protocol: crate::types::TransportProtocol::Tcp,
         }
     }
 }

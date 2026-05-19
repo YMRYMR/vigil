@@ -89,6 +89,7 @@ fn synthetic_alert(path: &Path, score: u8) -> ConnInfo {
         baseline_deviation: false,
         script_host_suspicious: false,
         command_line: String::new(),
+        protocol: crate::types::TransportProtocol::Tcp,
         attack_tags: Vec::new(),
         tls_sni: None,
         tls_ja3: None,

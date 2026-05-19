@@ -260,6 +260,7 @@ mod win {
             remote_ip: remote_ip.to_string(),
             remote_port,
             status: "ESTABLISHED".to_string(),
+            protocol: crate::types::TransportProtocol::Tcp,
         };
 
         if let Some(tx) = CONN_TX.get() {

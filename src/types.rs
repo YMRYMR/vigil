@@ -2,6 +2,28 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Transport protocol for a connection or event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TransportProtocol {
+    Tcp,
+    Udp,
+}
+
+impl TransportProtocol {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Tcp => "TCP",
+            Self::Udp => "UDP",
+        }
+    }
+}
+
+impl Default for TransportProtocol {
+    fn default() -> Self {
+        Self::Tcp
+    }
+}
+
 /// Everything captured about a single active connection event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnInfo {
@@ -23,6 +45,8 @@ pub struct ConnInfo {
     pub local_addr: String,
     pub remote_addr: String,
     pub status: String,
+    #[serde(default)]
+    pub protocol: TransportProtocol,
 
     pub score: u8,
     pub reasons: Vec<String>,
