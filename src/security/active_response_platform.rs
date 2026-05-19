@@ -1123,6 +1123,7 @@ mod imp {
         Ok(FirewallSnapshot { profiles: vec![] })
     }
 
+    #[cfg(target_os = "linux")]
     fn iptables_snapshot_to_firewall(snapshot: &IptablesPolicySnapshot) -> FirewallSnapshot {
         let profiles = snapshot
             .chains
