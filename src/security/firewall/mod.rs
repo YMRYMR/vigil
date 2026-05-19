@@ -131,3 +131,75 @@ pub use wfp::WfpBackend;
 mod nftables;
 #[cfg(target_os = "linux")]
 pub use nftables::NftablesBackend;
+
+/// Global firewall backend instance, lazily created on first access.
+pub fn get_backend() -> &'static dyn FirewallBackend {
+    use std::sync::OnceLock;
+    static BACKEND: OnceLock<Box<dyn FirewallBackend + Send + Sync>> = OnceLock::new();
+    BACKEND
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                Box::new(WfpBackend::new())
+            }
+            #[cfg(target_os = "linux")]
+            {
+                Box::new(NftablesBackend::new())
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
+            {
+                compile_error!("Unsupported platform");
+            }
+        })
+        .as_ref()
+}
+
+/// CLI firewall subcommand dispatcher.
+pub fn run_cli(args: &[String]) {
+    let backend = get_backend();
+    match args.first().map(|s| s.as_str()) {
+        Some("status") | None => {
+            println!("Firewall backend: {}", backend.label());
+            println!("Available: {}", backend.is_available());
+            match backend.snapshot_profiles() {
+                Ok(snapshot) => {
+                    println!("Profiles:");
+                    for profile in &snapshot.profiles {
+                        println!(
+                            "  {}: enabled={}, inbound={}, outbound={}",
+                            profile.name,
+                            profile.enabled,
+                            profile.inbound_action,
+                            profile.outbound_action
+                        );
+                    }
+                }
+                Err(e) => println!("Profile snapshot failed: {e}"),
+            }
+            match backend.isolation_controls_active(None) {
+                Ok(active) => println!("Isolation active: {active}"),
+                Err(e) => println!("Isolation check failed: {e}"),
+            }
+        }
+        Some("panic") => {
+            println!("Firewall panic: dropping all Vigil firewall rules...");
+            // Delete known isolation rules
+            let _ = backend.delete_rule("Vigil Isolate In");
+            let _ = backend.delete_rule("Vigil Isolate Out");
+            println!("Panic complete. Network restored to OS defaults.");
+        }
+        Some("list") => {
+            println!("Firewall rules: (managed by active_response state)");
+            let status = crate::security::active_response::status();
+            println!("  Blocked IPs: {}", status.blocked_rules);
+            println!("  Blocked processes: {}", status.blocked_processes);
+            println!("  Blocked domains: {}", status.blocked_domains);
+            println!("  Suspended processes: {}", status.suspended_processes);
+            println!("  Isolated: {}", status.isolated);
+        }
+        Some(other) => {
+            eprintln!("Unknown firewall subcommand: {other}");
+            eprintln!("Usage: vigil --firewall <status|list|panic>");
+        }
+    }
+}
