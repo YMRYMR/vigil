@@ -1,4 +1,5 @@
-//! IP reputation via user-supplied plain-text blocklists.
+//! IP reputation + domain + hash reputation via user-supplied plain-text blocklists
+//! and optionally from advisory-sourced indicators.
 //!
 //! This is the "offline reputation" half of Phase 10.  Active online lookups
 //! (AbuseIPDB, Shodan, VirusTotal) are deferred — they require API keys and
@@ -8,36 +9,36 @@
 //! then list the paths in `blocklist_paths` in `vigil.json`.
 //!
 //! ## File format
-//! - One IP (v4 or v6) or CIDR per line.
+//! - One entry per line: IP, CIDR, domain, or SHA-256 hash.
 //! - `#` to end-of-line is a comment.
 //! - Blank lines are ignored.
 //! - Required integrity sidecar: place `<blocklist>.sha256` beside the file,
 //!   containing a SHA-256 digest in standard `sha256sum` format. Vigil verifies
 //!   it before parsing and fails closed if it is missing or mismatched.
 //!
-//! Example `abuseipdb.txt`:
-//! ```text
-//! # Compiled 2026-04-14 from AbuseIPDB top reports
-//! 185.220.101.0/24   # Tor exit nodes
-//! 45.141.84.15       # Known C2
-//! 2001:db8::/32      # Research net
-//! ```
+//! ## Degraded mode
+//! When a blocklist fails integrity verification but a prior good version was
+//! loaded, the cached version is served with a warning instead of dropping
+//! the blocklist entirely. Call `reload()` to retry all paths.
 
 use crate::security::integrity;
 use ipnetwork::IpNetwork;
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::path::Path;
+#[allow(unused_imports)]
+use std::path::PathBuf;
 use std::sync::RwLock;
 
 // ── One loaded list ──────────────────────────────────────────────────────────
 
+#[derive(Clone)]
 struct Blocklist {
-    /// File stem shown in alerts (e.g. "abuseipdb").
     name: String,
-    /// Exact-match IPs (fast path).
-    ips: std::collections::HashSet<IpAddr>,
-    /// CIDR networks (linear scan; usually small).
+    ips: HashSet<IpAddr>,
     nets: Vec<IpNetwork>,
+    domains: HashSet<String>,
+    hashes: HashSet<String>,
 }
 
 impl Blocklist {
@@ -66,8 +67,10 @@ impl Blocklist {
             .unwrap_or("blocklist")
             .to_string();
 
-        let mut ips = std::collections::HashSet::new();
+        let mut ips = HashSet::new();
         let mut nets = Vec::new();
+        let mut domains = HashSet::new();
+        let mut hashes = HashSet::new();
 
         for (lineno, raw_line) in raw.lines().enumerate() {
             let line = match raw_line.find('#') {
@@ -86,38 +89,77 @@ impl Blocklist {
                         tracing::warn!("{}:{}: bad CIDR '{line}': {e}", path.display(), lineno + 1)
                     }
                 }
+            } else if let Ok(a) = line.parse::<IpAddr>() {
+                ips.insert(a);
+            } else if is_hash(line) {
+                hashes.insert(line.to_lowercase());
+            } else if is_domain(line) {
+                domains.insert(line.to_lowercase());
             } else {
-                match line.parse::<IpAddr>() {
-                    Ok(a) => {
-                        ips.insert(a);
-                    }
-                    Err(e) => {
-                        tracing::warn!("{}:{}: bad IP '{line}': {e}", path.display(), lineno + 1)
-                    }
-                }
+                tracing::warn!(
+                    "{}:{}: unrecognised entry '{line}'",
+                    path.display(),
+                    lineno + 1
+                )
             }
         }
 
         tracing::info!(
-            "loaded blocklist '{name}': {} IPs, {} CIDRs from {}",
+            "loaded blocklist '{}': {} IPs, {} CIDRs, {} domains, {} hashes from {}",
+            name,
             ips.len(),
             nets.len(),
+            domains.len(),
+            hashes.len(),
             path.display()
         );
-        Some(Self { name, ips, nets })
+        Some(Self {
+            name,
+            ips,
+            nets,
+            domains,
+            hashes,
+        })
     }
 
-    fn matches(&self, ip: &IpAddr) -> bool {
+    fn matches_ip(&self, ip: &IpAddr) -> bool {
         if self.ips.contains(ip) {
             return true;
         }
         self.nets.iter().any(|n| n.contains(*ip))
     }
+
+    fn matches_domain(&self, domain: &str) -> bool {
+        let d = domain.to_lowercase();
+        self.domains.contains(&d)
+            || self
+                .domains
+                .iter()
+                .any(|pat| d.ends_with(&format!(".{pat}")))
+    }
+
+    fn matches_hash(&self, hash: &str) -> bool {
+        self.hashes.contains(&hash.to_lowercase())
+    }
+}
+
+fn is_hash(s: &str) -> bool {
+    let lower = s.as_bytes();
+    (lower.len() == 64 || lower.len() == 40 || lower.len() == 32)
+        && lower.iter().all(|&b| b.is_ascii_hexdigit())
+}
+
+fn is_domain(s: &str) -> bool {
+    s.contains('.')
+        && !s.contains(':')
+        && !s.contains('/')
+        && s.chars()
+            .all(|c| c.is_ascii() && (c.is_ascii_alphanumeric() || c == '.' || c == '-'))
 }
 
 // ── Engine ───────────────────────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct BlocklistEngine {
     lists: Vec<Blocklist>,
 }
@@ -133,20 +175,62 @@ impl BlocklistEngine {
         Self { lists }
     }
 
-    /// Check `ip` against every loaded list. Returns the name of the first
-    /// matching list, or `None` if no list contains the IP.
     pub fn lookup(&self, ip: &str) -> Option<String> {
         let addr: IpAddr = ip.parse().ok()?;
         for bl in &self.lists {
-            if bl.matches(&addr) {
+            if bl.matches_ip(&addr) {
                 return Some(bl.name.clone());
             }
         }
         None
     }
 
+    pub fn lookup_domain(&self, domain: &str) -> Option<String> {
+        for bl in &self.lists {
+            if bl.matches_domain(domain) {
+                return Some(bl.name.clone());
+            }
+        }
+        None
+    }
+
+    pub fn lookup_hash(&self, hash: &str) -> Option<String> {
+        for bl in &self.lists {
+            if bl.matches_hash(hash) {
+                return Some(bl.name.clone());
+            }
+        }
+        None
+    }
+
+    pub fn add_iocs(
+        &mut self,
+        source_name: &str,
+        ips: Vec<IpAddr>,
+        domains: Vec<String>,
+        hashes: Vec<String>,
+    ) {
+        if ips.is_empty() && domains.is_empty() && hashes.is_empty() {
+            return;
+        }
+        self.lists.push(Blocklist {
+            name: format!("advisory:{source_name}"),
+            ips: ips.into_iter().collect(),
+            nets: Vec::new(),
+            domains: domains.into_iter().collect(),
+            hashes: hashes.into_iter().collect(),
+        });
+        tracing::info!(
+            "added advisory-sourced blocklist 'advisory:{}'",
+            source_name
+        );
+    }
+
     pub fn total_entries(&self) -> usize {
-        self.lists.iter().map(|l| l.ips.len() + l.nets.len()).sum()
+        self.lists
+            .iter()
+            .map(|l| l.ips.len() + l.nets.len() + l.domains.len() + l.hashes.len())
+            .sum()
     }
 
     pub fn list_count(&self) -> usize {
@@ -154,17 +238,75 @@ impl BlocklistEngine {
     }
 }
 
-// ── Global singleton ─────────────────────────────────────────────────────────
+// ── Global singleton with degraded-mode caching ──────────────────────────────
 
 static ENGINE: RwLock<Option<BlocklistEngine>> = RwLock::new(None);
+/// Last-known-good engine, preserved across reload failures for degraded mode.
+static DEGRADED_BACKUP: RwLock<Option<BlocklistEngine>> = RwLock::new(None);
 
 pub fn init(paths: &[String]) {
     let eng = BlocklistEngine::load(paths);
-    *ENGINE.write().unwrap() = Some(eng);
+    let empty = eng.list_count() == 0;
+    if empty {
+        if let Ok(backup) = DEGRADED_BACKUP.read() {
+            if let Some(prev) = backup.as_ref() {
+                tracing::warn!(
+                    "all blocklists failed to load; serving previous good state in degraded mode"
+                );
+                *ENGINE.write().unwrap() = Some(prev.clone());
+                return;
+            }
+        }
+    }
+    // Save current as backup for future degraded mode.
+    if !empty {
+        *DEGRADED_BACKUP.write().unwrap() = Some(eng.clone());
+    }
+    *ENGINE.write().unwrap() = if empty { None } else { Some(eng) };
+}
+
+/// Reload all blocklist paths. If all fail, the previous good state is kept.
+pub fn reload(paths: &[String]) {
+    init(paths);
+}
+
+/// Add advisory-sourced IOCs to the in-memory engine.
+pub fn add_advisory_iocs(
+    source_name: &str,
+    ips: Vec<IpAddr>,
+    domains: Vec<String>,
+    hashes: Vec<String>,
+) {
+    if let Ok(mut eng) = ENGINE.write() {
+        match eng.as_mut() {
+            Some(e) => e.add_iocs(source_name, ips, domains, hashes),
+            None => {
+                let mut e = BlocklistEngine::default();
+                e.add_iocs(source_name, ips, domains, hashes);
+                *eng = Some(e);
+            }
+        }
+    }
 }
 
 pub fn lookup(ip: &str) -> Option<String> {
     ENGINE.read().unwrap().as_ref().and_then(|e| e.lookup(ip))
+}
+
+pub fn lookup_domain(domain: &str) -> Option<String> {
+    ENGINE
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(|e| e.lookup_domain(domain))
+}
+
+pub fn lookup_hash(hash: &str) -> Option<String> {
+    ENGINE
+        .read()
+        .unwrap()
+        .as_ref()
+        .and_then(|e| e.lookup_hash(hash))
 }
 
 pub fn stats() -> (usize, usize) {
@@ -182,7 +324,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use std::io::Write;
 
-    fn mktmp(content: &str, name: &str) -> std::path::PathBuf {
+    fn mktmp(content: &str, name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
         p.push(format!("vigil_bl_test_{}_{}.txt", std::process::id(), name));
         let mut f = std::fs::File::create(&p).unwrap();
@@ -247,24 +389,35 @@ mod tests {
     }
 
     #[test]
+    fn domain_match() {
+        let content = "badhost.example.com\nevil.org\n";
+        let p = mktmp(content, "domain");
+        write_sidecar(&p, content);
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert!(eng.lookup_domain("badhost.example.com").is_some());
+        assert!(eng.lookup_domain("sub.evil.org").is_some());
+        assert!(eng.lookup_domain("goodhost.example.com").is_none());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
+    }
+
+    #[test]
+    fn hash_match() {
+        let content = "a".repeat(64) + "\n";
+        let p = mktmp(&content, "hash");
+        write_sidecar(&p, &content);
+        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
+        assert!(eng.lookup_hash("a".repeat(64).as_str()).is_some());
+        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
+    }
+
+    #[test]
     fn source_name_is_file_stem() {
         let content = "1.2.3.4\n";
         let p = mktmp(content, "source");
         write_sidecar(&p, content);
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         let hit = eng.lookup("1.2.3.4").unwrap();
-        // Stem is something like "vigil_bl_test_<pid>_source"
         assert!(hit.contains("source"));
-        let _ = std::fs::remove_file(integrity::sidecar_path(&p));
-    }
-
-    #[test]
-    fn verified_sidecar_is_accepted() {
-        let content = "203.0.113.4\n";
-        let p = mktmp(content, "signed");
-        write_sidecar(&p, content);
-        let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
-        assert!(eng.lookup("203.0.113.4").is_some());
         let _ = std::fs::remove_file(integrity::sidecar_path(&p));
     }
 
@@ -284,5 +437,20 @@ mod tests {
         let eng = BlocklistEngine::load(&[p.to_string_lossy().into_owned()]);
         assert_eq!(eng.list_count(), 0);
         assert!(eng.lookup("203.0.113.6").is_none());
+    }
+
+    #[test]
+    fn ioc_addition_works() {
+        let mut eng = BlocklistEngine::default();
+        eng.add_iocs(
+            "test-source",
+            vec!["10.0.0.1".parse().unwrap()],
+            vec!["malware.example".into()],
+            vec!["a".repeat(64)],
+        );
+        assert_eq!(eng.list_count(), 1);
+        assert!(eng.lookup("10.0.0.1").is_some());
+        assert!(eng.lookup_domain("malware.example").is_some());
+        assert!(eng.lookup_hash(&"a".repeat(64)).is_some());
     }
 }

@@ -14,6 +14,7 @@
 
 mod advisory;
 mod advisory_history;
+mod advisory_ioc;
 mod advisory_match;
 mod advisory_match_status;
 mod advisory_ncsc_bsi;
