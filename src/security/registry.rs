@@ -129,6 +129,7 @@ pub mod win {
                         local_addr: label.clone(),
                         remote_addr: "REGISTRY".to_string(),
                         status: "AUTORUN".to_string(),
+                        protocol: crate::types::TransportProtocol::Tcp,
                         score: alert_threshold.max(8),
                         reasons: vec![reason],
                         pre_login: crate::session::is_pre_login(),

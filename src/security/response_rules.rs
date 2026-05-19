@@ -962,6 +962,7 @@ mod tests {
             local_addr: "10.0.0.2:51234".into(),
             remote_addr: "198.51.100.20:443".into(),
             status: "ESTABLISHED".into(),
+            protocol: crate::types::TransportProtocol::Tcp,
             score: 10,
             reasons: vec![],
             attack_tags: vec![],

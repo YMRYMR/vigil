@@ -69,6 +69,7 @@ struct ConnKey {
     local_port: u16,
     remote_ip: String,
     remote_port: u16,
+    protocol: crate::types::TransportProtocol,
 }
 
 impl From<&RawConn> for ConnKey {
@@ -79,6 +80,7 @@ impl From<&RawConn> for ConnKey {
             local_port: c.local_port,
             remote_ip: c.remote_ip.clone(),
             remote_port: c.remote_port,
+            protocol: c.protocol,
         }
     }
 }
@@ -317,6 +319,7 @@ fn process_conn(
                 format!("{}:{}", remote, raw_conn.remote_port)
             },
             status: raw_conn.status.clone(),
+            protocol: raw_conn.protocol,
             score: 0,
             reasons: vec![],
             attack_tags: vec![],
@@ -428,6 +431,7 @@ fn process_conn(
                 remote_ip: &raw_conn.remote_ip,
                 remote_port: raw_conn.remote_port,
                 status: &raw_conn.status,
+                protocol: raw_conn.protocol.as_str(),
                 ancestors: &ancestors_norm,
                 beaconing,
                 pre_login,
@@ -529,6 +533,7 @@ fn process_conn(
         local_addr,
         remote_addr,
         status: raw_conn.status.clone(),
+        protocol: raw_conn.protocol,
         score: score_value,
         reasons: reasons.clone(),
         attack_tags,

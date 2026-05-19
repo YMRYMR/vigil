@@ -15,9 +15,10 @@ pub struct RawConn {
     pub pid: u32,
     pub local_ip: String,
     pub local_port: u16,
-    pub remote_ip: String, // empty string when LISTEN
-    pub remote_port: u16,  // 0 when LISTEN
-    pub status: String,    // "ESTABLISHED" | "LISTEN" | "SYN_SENT" | …
+    pub remote_ip: String,
+    pub remote_port: u16,
+    pub status: String,
+    pub protocol: crate::types::TransportProtocol,
 }
 
 /// The set of statuses we keep for operator-visible lifecycle summaries.
@@ -50,6 +51,67 @@ pub fn poll() -> Vec<RawConn> {
 fn platform_poll() -> Vec<RawConn> {
     let mut out = Vec::new();
     out.extend(windows_tcp());
+    out.extend(windows_udp());
+    out
+}
+
+#[cfg(windows)]
+fn windows_udp() -> Vec<RawConn> {
+    use windows::Win32::Foundation::NO_ERROR;
+    use windows::Win32::NetworkManagement::IpHelper::{
+        GetExtendedUdpTable, MIB_UDPTABLE_OWNER_PID, UDP_TABLE_OWNER_PID,
+    };
+
+    let mut out = Vec::new();
+
+    unsafe {
+        let mut size: u32 = 0;
+        GetExtendedUdpTable(
+            None,
+            &mut size,
+            false,
+            2, /*AF_INET*/
+            UDP_TABLE_OWNER_PID,
+            0,
+        );
+
+        let mut buf: Vec<u8> = vec![0u8; size as usize];
+        let ret = GetExtendedUdpTable(
+            Some(buf.as_mut_ptr() as *mut _),
+            &mut size,
+            false,
+            2,
+            UDP_TABLE_OWNER_PID,
+            0,
+        );
+
+        if ret != NO_ERROR.0 {
+            return out;
+        }
+
+        let table = &*(buf.as_ptr() as *const MIB_UDPTABLE_OWNER_PID);
+        let rows = std::slice::from_raw_parts(table.table.as_ptr(), table.dwNumEntries as usize);
+
+        for row in rows {
+            let local_ip = Ipv4Addr::from(u32::from_be(row.dwLocalAddr)).to_string();
+            let local_port = (row.dwLocalPort as u16).to_be();
+
+            if local_ip.starts_with("127.") || local_ip == "0.0.0.0" {
+                continue;
+            }
+
+            out.push(RawConn {
+                pid: row.dwOwningPid,
+                local_ip,
+                local_port,
+                remote_ip: String::new(),
+                remote_port: 0,
+                status: "UDP".into(),
+                protocol: crate::types::TransportProtocol::Udp,
+            });
+        }
+    }
+
     out
 }
 
@@ -111,6 +173,7 @@ fn windows_tcp() -> Vec<RawConn> {
                 },
                 remote_port: if is_listen { 0 } else { remote_port },
                 status: status.to_string(),
+                protocol: crate::types::TransportProtocol::Tcp,
             });
         }
     }
@@ -146,6 +209,71 @@ fn platform_poll() -> Vec<RawConn> {
     let inode_to_pid = linux_inode_pid_map();
     out.extend(linux_parse_proc("/proc/net/tcp", false, &inode_to_pid));
     out.extend(linux_parse_proc("/proc/net/tcp6", true, &inode_to_pid));
+    out.extend(linux_parse_udp_proc("/proc/net/udp", false, &inode_to_pid));
+    out.extend(linux_parse_udp_proc("/proc/net/udp6", true, &inode_to_pid));
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn linux_parse_udp_proc(
+    path: &str,
+    is_v6: bool,
+    inode_to_pid: &std::collections::HashMap<u64, u32>,
+) -> Vec<RawConn> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    linux_parse_udp_proc_content(&content, is_v6, inode_to_pid)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_parse_udp_proc_content(
+    content: &str,
+    is_v6: bool,
+    inode_to_pid: &std::collections::HashMap<u64, u32>,
+) -> Vec<RawConn> {
+    let mut out = Vec::new();
+    for line in content.lines().skip(1) {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 10 {
+            continue;
+        }
+        let local_part = parts[1];
+        let remote_part = parts[2];
+        let state = parts[3];
+        let inode: u64 = parts[9].parse().unwrap_or(0);
+
+        // Track the UDP socket states that show active peers or wildcard listeners.
+        if state != "01" && state != "07" {
+            continue;
+        }
+
+        let (local_ip, local_port) = parse_linux_addr(local_part, is_v6);
+        let (remote_ip, remote_port) = parse_linux_addr(remote_part, is_v6);
+        let pid = inode_to_pid.get(&inode).copied().unwrap_or(0);
+
+        // Skip loopback.
+        if local_ip.starts_with("127.")
+            || local_ip == "::1"
+            || (remote_ip.starts_with("127.") || remote_ip == "::1")
+        {
+            continue;
+        }
+
+        let is_listen = remote_port == 0
+            && (remote_ip.is_empty() || remote_ip == "0.0.0.0" || remote_ip == "::");
+
+        out.push(RawConn {
+            pid,
+            local_ip,
+            local_port,
+            remote_ip: if is_listen { String::new() } else { remote_ip },
+            remote_port: if is_listen { 0 } else { remote_port },
+            status: "UDP".into(),
+            protocol: crate::types::TransportProtocol::Udp,
+        });
+    }
     out
 }
 
@@ -192,6 +320,7 @@ fn linux_parse_proc_content(
             remote_ip: if is_listen { String::new() } else { remote_ip },
             remote_port: if is_listen { 0 } else { remote_port },
             status: status.to_string(),
+            protocol: crate::types::TransportProtocol::Tcp,
         });
     }
     out
@@ -228,7 +357,7 @@ fn linux_inode_pid_map_from(proc_root: &std::path::Path) -> std::collections::Ha
             };
             let Some(target) = target.to_str() else {
                 continue;
-            };
+            }
             if let Some(inode) = target
                 .strip_prefix("socket:[")
                 .and_then(|s| s.strip_suffix(']'))
@@ -298,7 +427,7 @@ fn platform_poll() -> Vec<RawConn> {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "linux")]
-    use super::{linux_inode_pid_map_from, linux_parse_proc_content};
+    use super::{linux_inode_pid_map_from, linux_parse_proc_content, linux_parse_udp_proc_content};
 
     #[cfg(target_os = "linux")]
     use std::fs;
@@ -346,6 +475,26 @@ mod tests {
         assert_eq!(rows[0].local_ip, "127.0.0.1");
         assert_eq!(rows[0].remote_ip, "127.0.0.2");
         assert_eq!(rows[0].status, "ESTABLISHED");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn udp_listener_rows_are_normalized_to_empty_remote_endpoint() {
+        let mut map = std::collections::HashMap::new();
+        map.insert(4242, 1234);
+
+        let content = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
+   0: 0200000A:0035 00000000:0000 07 00000000:00000000 00:00000000 00000000   100        0 4242 1 0000000000000000 100 0 0 10 0\n";
+
+        let rows = linux_parse_udp_proc_content(content, false, &map);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 1234);
+        assert_eq!(rows[0].local_ip, "10.0.0.2");
+        assert_eq!(rows[0].remote_ip, "");
+        assert_eq!(rows[0].remote_port, 0);
+        assert_eq!(rows[0].status, "UDP");
+        assert_eq!(rows[0].protocol, crate::types::TransportProtocol::Udp);
     }
 
     #[test]
