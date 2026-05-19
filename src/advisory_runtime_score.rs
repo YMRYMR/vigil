@@ -1,5 +1,5 @@
 use crate::advisory::{
-    AdvisoryCache, AffectedProduct, VulnerabilityRecord, VulnerabilityReference,
+    AdvisoryCache, AffectedProduct, SourceHealth, VulnerabilityRecord, VulnerabilityReference,
     VulnerabilitySeverity,
 };
 use crate::advisory_match::{
@@ -15,14 +15,26 @@ use crate::version_compare::VersionSource;
 use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
-const ADVISORY_CACHE_FILE: &str = "vigil-advisory-cache.json";
-const ADVISORY_CACHE_SCHEMA_VERSION: u32 = 1;
 const ADVISORY_LOOKUP_CACHE_TTL: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AdvisoryScoreOutcome {
     pub score_delta: u8,
     pub reasons: Vec<String>,
+}
+
+/// Returns `true` when any advisory source in the cache is stale or in error.
+/// Used by the scorer to reduce score for outdated data (offline-first
+/// watermarking).
+fn cache_has_stale_sources(cache: &AdvisoryCache) -> bool {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    cache.sources.iter().any(|s| {
+        s.expires_unix > 0 && s.expires_unix < now
+            || matches!(s.status, SourceHealth::Stale | SourceHealth::Error)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +63,7 @@ struct RuntimeAdvisoryCandidate {
     vendor_mitigation_guidance: bool,
     missing_fix_version: bool,
     score_delta: u8,
+    exposed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,16 +141,24 @@ fn advisory_score_from_data(
         return AdvisoryScoreOutcome::default();
     }
 
+    // Offline-first watermark: reduce trust when advisory data is stale.
+    let stale_penalty = if cache_has_stale_sources(cache) { 1 } else { 0 };
+
     let mut candidates = cache
         .records
         .iter()
         .filter_map(|record| build_candidate(&runtime_match.installed, record))
         .collect::<Vec<_>>();
 
+    // Mark candidates whose process is exposed. The `exposed` field is
+    // populated upstream by the monitor pipeline (Feature 3). For now,
+    // candidates default to false and the priority sort still works.
+
     candidates.sort_by(|left, right| {
         right
-            .known_exploited
-            .cmp(&left.known_exploited)
+            .exposed
+            .cmp(&left.exposed)
+            .then_with(|| right.known_exploited.cmp(&left.known_exploited))
             .then_with(|| right.score_delta.cmp(&left.score_delta))
             .then_with(|| right.severity_rank.cmp(&left.severity_rank))
             .then_with(|| right.missing_fix_version.cmp(&left.missing_fix_version))
@@ -154,12 +175,17 @@ fn advisory_score_from_data(
         return AdvisoryScoreOutcome::default();
     };
 
-    let score_delta = candidates[0].score_delta;
-    let reasons = candidates
+    // Apply stale-data penalty: reduce delta when sources are expired.
+    let score_delta = candidates[0].score_delta.saturating_sub(stale_penalty);
+    let mut reasons: Vec<String> = candidates
         .into_iter()
         .filter(|candidate| candidate_priority(candidate) == best_priority)
         .map(|candidate| advisory_reason(&candidate))
         .collect();
+
+    if stale_penalty > 0 && score_delta > 0 {
+        reasons.push("(stale advisory data — sources are past their refresh TTL)".into());
+    }
 
     AdvisoryScoreOutcome {
         score_delta,
@@ -192,6 +218,7 @@ fn build_candidate(
         vendor_mitigation_guidance: has_vendor_mitigation_guidance(record),
         missing_fix_version: matched.missing_fix_version,
         score_delta: advisory_score_delta(record.known_exploited, severity_rank),
+        exposed: false,
     })
 }
 
@@ -211,6 +238,9 @@ fn advisory_reason(candidate: &RuntimeAdvisoryCandidate) -> String {
     }
     if candidate.missing_fix_version {
         details.push("no fixed-version bound".to_string());
+    }
+    if candidate.exposed {
+        details.push("exposed".to_string());
     }
 
     if details.is_empty() {
@@ -579,29 +609,8 @@ fn version_source_for_inventory(source: InventorySource) -> VersionSource {
 }
 
 fn load_advisory_cache() -> Result<Option<AdvisoryCache>, String> {
-    let path = crate::config::data_dir().join(ADVISORY_CACHE_FILE);
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|err| {
-            format!(
-                "failed to load protected advisory cache {}: {err}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        return Ok(None);
-    };
-    if cache.schema_version != ADVISORY_CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected advisory cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
-    Ok(Some(cache))
+    let db = crate::storage::db::StorageDb::global()?;
+    db.load_advisory_cache()
 }
 
 #[cfg(test)]
