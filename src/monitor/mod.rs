@@ -599,22 +599,40 @@ fn is_remote_public(addr: &str) -> bool {
     };
     match ip {
         std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            let cgnat = o[0] == 100 && (64..=127).contains(&o[1]);
+            let benchmarking = (o[0] == 198 && o[1] == 18) || (o[0] == 198 && o[1] == 19);
+            let iana_reserved = o[0] == 192 && o[1] == 0 && o[2] == 0;
+            let deprecated_relay = o[0] == 192 && o[1] == 88 && o[2] == 99;
+            let documentation = matches!(
+                (o[0], o[1], o[2]),
+                (192, 0, 2) | (198, 51, 100) | (203, 0, 113)
+            );
             !(v4.is_private()
                 || v4.is_loopback()
                 || v4.is_link_local()
                 || v4.is_broadcast()
                 || v4.is_unspecified()
-                || v4.octets()[0] >= 224)
+                || o[0] >= 224
+                || cgnat
+                || benchmarking
+                || iana_reserved
+                || deprecated_relay
+                || documentation)
         }
         std::net::IpAddr::V6(v6) => {
-            let octets = v6.octets();
-            let is_ula = octets[0] == 0xfc || octets[0] == 0xfd;
-            let is_unique_local = octets[0] == 0xfe && (octets[1] & 0xc0) == 0xc0;
+            let o = v6.octets();
+            let is_ula = o[0] == 0xfc || o[0] == 0xfd;
+            let is_unique_local = o[0] == 0xfe && (o[1] & 0xc0) == 0xc0;
+            let is_multicast = o[0] == 0xff;
+            let is_documentation = o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8;
             !(v6.is_loopback()
                 || v6.is_unspecified()
-                || (octets[0] == 0xfe && octets[1] == 0x80) // link-local
+                || (o[0] == 0xfe && o[1] == 0x80) // link-local
                 || is_ula
-                || is_unique_local)
+                || is_unique_local
+                || is_multicast
+                || is_documentation)
         }
     }
 }
