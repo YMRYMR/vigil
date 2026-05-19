@@ -23,6 +23,8 @@ const MANIFEST_FILENAME: &str = "vigil-state.manifest.json";
 const SCHEMA_VERSION: i64 = 1;
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
+static GLOBAL_DB: Mutex<Option<StorageDb>> = Mutex::new(None);
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageManifest {
     pub schema_version: i64,
@@ -38,7 +40,29 @@ pub struct StorageDb {
 }
 
 impl StorageDb {
+    /// Returns a reference to the global singleton database instance
+    /// (initialising it on first call) or an error.
+    ///
+    /// The reference is valid only while the returned guard is alive;
+    /// callers should not stash the reference beyond the guard scope.
+    pub fn global() -> Result<DbGuard, String> {
+        let mut guard = GLOBAL_DB
+            .lock()
+            .map_err(|e| format!("global db lock: {e}"))?;
+        if guard.is_none() {
+            *guard = Some(Self::open_inner()?);
+        }
+        Ok(DbGuard(guard))
+    }
+
+    /// Open a standalone database instance (bypasses the singleton).
+    /// Prefer `global()` for normal use; this is useful for tests or
+    /// scenarios that need an isolated connection.
     pub fn open() -> Result<Self, String> {
+        Self::open_inner()
+    }
+
+    fn open_inner() -> Result<Self, String> {
         let dir = crate::config::data_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create data dir: {e}"))?;
         let path = dir.join(DB_FILENAME);
@@ -55,8 +79,13 @@ impl StorageDb {
 
     fn bootstrap(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {e}"))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("pragmas: {e}"))?;
+        conn.execute_batch(
+            "            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA cache_size=-8000;",
+        )
+        .map_err(|e| format!("pragmas: {e}"))?;
 
         conn.execute_batch(
             "
@@ -146,7 +175,37 @@ impl StorageDb {
         let _ = conn.execute_batch(
             "ALTER TABLE software_inventory ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}';",
         );
+
+        // Performance pragmas (best-effort, applied each session).
+        let _ = conn.execute_batch(
+            "PRAGMA auto_vacuum=INCREMENTAL;
+             PRAGMA mmap_size=268435456;",
+        );
         Ok(())
+    }
+
+    // ── Transaction helpers ────────────────────────────────────────
+
+    /// Begin an explicit transaction. Caller must match with `commit` or
+    /// `rollback`. Nested transactions (savepoints) are not supported.
+    pub fn begin(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("begin transaction: {e}"))
+    }
+
+    /// Commit the current transaction.
+    pub fn commit(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("COMMIT;")
+            .map_err(|e| format!("commit transaction: {e}"))
+    }
+
+    /// Roll back the current transaction.
+    pub fn rollback(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("ROLLBACK;")
+            .map_err(|e| format!("rollback transaction: {e}"))
     }
 
     pub fn path(&self) -> &Path {
@@ -657,6 +716,19 @@ impl StorageDb {
 
         let result = hasher.finalize();
         Ok(result.iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
+/// RAII guard that derefs to `StorageDb` so callers can use
+/// `StorageDb::global()?.some_method()` directly.
+pub struct DbGuard(pub std::sync::MutexGuard<'static, Option<StorageDb>>);
+
+impl std::ops::Deref for DbGuard {
+    type Target = StorageDb;
+    fn deref(&self) -> &StorageDb {
+        self.0
+            .as_ref()
+            .expect("DbGuard value is always Some after global()")
     }
 }
 

@@ -457,7 +457,7 @@ fn load_cache_summary() -> Result<Option<CacheSummary>, String> {
 }
 
 fn load_cache() -> Result<Option<ChangeHistoryCache>, String> {
-    let db = crate::storage::db::StorageDb::open()?;
+    let db = crate::storage::db::StorageDb::global()?;
     db.load_change_history_cache()
 }
 
@@ -473,20 +473,32 @@ fn load_cache_for_import() -> Result<Option<ChangeHistoryCache>, String> {
 }
 
 fn save_cache(cache: &ChangeHistoryCache) -> Result<(), String> {
-    let db = crate::storage::db::StorageDb::open()?;
-    for source in &cache.sources {
-        let source_changes: Vec<_> = cache
-            .changes
-            .iter()
-            .filter(|c| c.provenance.source_key == source.source_key)
-            .cloned()
-            .collect();
-        if !source_changes.is_empty() {
-            db.replace_change_events(&source_changes, &source.source_key)?;
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        for source in &cache.sources {
+            let source_changes: Vec<_> = cache
+                .changes
+                .iter()
+                .filter(|c| c.provenance.source_key == source.source_key)
+                .cloned()
+                .collect();
+            if !source_changes.is_empty() {
+                db.replace_change_events(&source_changes, &source.source_key)?;
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint().map(|_| ())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
         }
     }
-    db.checkpoint()?;
-    Ok(())
 }
 
 fn load_snapshot_batch(paths: &[PathBuf]) -> Result<ChangeHistoryCache, String> {

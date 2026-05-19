@@ -451,7 +451,7 @@ fn load_cache_summary() -> Result<Option<CacheSummary>, String> {
 }
 
 fn load_cache() -> Result<Option<AdvisoryCache>, String> {
-    let db = crate::storage::db::StorageDb::open()?;
+    let db = crate::storage::db::StorageDb::global()?;
     db.load_advisory_cache()
 }
 
@@ -467,21 +467,37 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
 }
 
 fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
-    let db = crate::storage::db::StorageDb::open()?;
-    db.replace_advisory_sources(&cache.sources)?;
-    for source in &cache.sources {
-        let source_records: Vec<_> = cache
-            .records
-            .iter()
-            .filter(|r| r.provenance.source_key == source.source_key)
-            .cloned()
-            .collect();
-        if !source_records.is_empty() {
-            db.replace_advisory_records(&source_records, &source.source_key, &source.source_kind)?;
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        db.replace_advisory_sources(&cache.sources)?;
+        for source in &cache.sources {
+            let source_records: Vec<_> = cache
+                .records
+                .iter()
+                .filter(|r| r.provenance.source_key == source.source_key)
+                .cloned()
+                .collect();
+            if !source_records.is_empty() {
+                db.replace_advisory_records(
+                    &source_records,
+                    &source.source_key,
+                    &source.source_kind,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint().map(|_| ())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
         }
     }
-    db.checkpoint()?;
-    Ok(())
 }
 
 fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
