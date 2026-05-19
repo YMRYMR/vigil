@@ -16,14 +16,23 @@ impl DbInventoryStore {
 
 impl InventoryStore for DbInventoryStore {
     fn replace_inventory(&self, entries: &[InstalledSoftware]) -> Result<(), String> {
-        let db = crate::storage::db::StorageDb::open()?;
-        db.replace_software_inventory(entries)?;
-        db.checkpoint()?;
-        Ok(())
+        let db = crate::storage::db::StorageDb::global()?;
+        db.begin()?;
+        let result = db.replace_software_inventory(entries);
+        match result {
+            Ok(()) => {
+                db.commit()?;
+                db.checkpoint().map(|_| ())
+            }
+            Err(err) => {
+                let _ = db.rollback();
+                Err(err)
+            }
+        }
     }
 
     fn load_inventory(&self) -> Result<Vec<InstalledSoftware>, String> {
-        let db = crate::storage::db::StorageDb::open()?;
+        let db = crate::storage::db::StorageDb::global()?;
         db.load_software_inventory()
     }
 }

@@ -584,6 +584,15 @@ fn main() {
         }
     }
 
+    // Verify SQLite database integrity on startup.
+    match storage::db::StorageDb::global().and_then(|db| db.verify()) {
+        Ok(true) => tracing::info!("SQLite state store integrity verified"),
+        Ok(false) => tracing::warn!(
+            "SQLite state store integrity manifest missing or mismatch; data may be from a cold start"
+        ),
+        Err(err) => tracing::warn!("SQLite state store integrity check failed: {err}"),
+    }
+
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

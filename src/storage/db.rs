@@ -13,7 +13,7 @@
 //! 4. On startup `verify` re-computes the digest and compares it to the
 //!    manifest, failing closed on mismatch.
 
-use rusqlite::{types::ValueRef, Connection};
+use rusqlite::{types::ValueRef, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -22,6 +22,8 @@ const DB_FILENAME: &str = "vigil-state.db";
 const MANIFEST_FILENAME: &str = "vigil-state.manifest.json";
 const SCHEMA_VERSION: i64 = 1;
 const SCHEMA_VERSION_KEY: &str = "schema_version";
+
+static GLOBAL_DB: Mutex<Option<StorageDb>> = Mutex::new(None);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StorageManifest {
@@ -38,7 +40,29 @@ pub struct StorageDb {
 }
 
 impl StorageDb {
+    /// Returns a reference to the global singleton database instance
+    /// (initialising it on first call) or an error.
+    ///
+    /// The reference is valid only while the returned guard is alive;
+    /// callers should not stash the reference beyond the guard scope.
+    pub fn global() -> Result<DbGuard, String> {
+        let mut guard = GLOBAL_DB
+            .lock()
+            .map_err(|e| format!("global db lock: {e}"))?;
+        if guard.is_none() {
+            *guard = Some(Self::open_inner()?);
+        }
+        Ok(DbGuard(guard))
+    }
+
+    /// Open a standalone database instance (bypasses the singleton).
+    /// Prefer `global()` for normal use; this is useful for tests or
+    /// scenarios that need an isolated connection.
     pub fn open() -> Result<Self, String> {
+        Self::open_inner()
+    }
+
+    fn open_inner() -> Result<Self, String> {
         let dir = crate::config::data_dir();
         std::fs::create_dir_all(&dir).map_err(|e| format!("create data dir: {e}"))?;
         let path = dir.join(DB_FILENAME);
@@ -55,8 +79,15 @@ impl StorageDb {
 
     fn bootstrap(&self) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| format!("lock: {e}"))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
-            .map_err(|e| format!("pragmas: {e}"))?;
+        conn.execute_batch(
+            "            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            PRAGMA synchronous=NORMAL;
+            PRAGMA cache_size=-8000;
+            PRAGMA busy_timeout=5000;
+            PRAGMA journal_size_limit=16777216;",
+        )
+        .map_err(|e| format!("pragmas: {e}"))?;
 
         conn.execute_batch(
             "
@@ -102,8 +133,7 @@ impl StorageDb {
                 change_unix INTEGER NOT NULL,
                 event_name  TEXT NOT NULL DEFAULT '',
                 details_json TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY (change_id, primary_id, source_key),
-                FOREIGN KEY (primary_id, source_key) REFERENCES advisory_record(primary_id, source_key)
+                PRIMARY KEY (change_id, primary_id, source_key)
             );
 
             CREATE INDEX IF NOT EXISTS idx_change_event_cve
@@ -147,7 +177,42 @@ impl StorageDb {
         let _ = conn.execute_batch(
             "ALTER TABLE software_inventory ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}';",
         );
+
+        // Performance pragmas (best-effort, applied each session).
+        let _ = conn.execute_batch(
+            "PRAGMA auto_vacuum=INCREMENTAL;
+             PRAGMA mmap_size=268435456;
+             PRAGMA temp_store=MEMORY;",
+        );
+
+        // Optimise page size on new databases only (existing DBs are
+        // unaffected since page_size must be set before any tables).
+        let _ = conn.execute_batch("PRAGMA page_size=8192;");
         Ok(())
+    }
+
+    // ── Transaction helpers ────────────────────────────────────────
+
+    /// Begin an explicit transaction. Caller must match with `commit` or
+    /// `rollback`. Nested transactions (savepoints) are not supported.
+    pub fn begin(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("begin transaction: {e}"))
+    }
+
+    /// Commit the current transaction.
+    pub fn commit(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("COMMIT;")
+            .map_err(|e| format!("commit transaction: {e}"))
+    }
+
+    /// Roll back the current transaction.
+    pub fn rollback(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("ROLLBACK;")
+            .map_err(|e| format!("rollback transaction: {e}"))
     }
 
     pub fn path(&self) -> &Path {
@@ -261,24 +326,21 @@ impl StorageDb {
         source_kind: &str,
     ) -> Result<(), String> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM advisory_change_event WHERE source_key = ?1",
-            [source_key],
-        )
-        .map_err(|e| format!("clear change events for {source_key}: {e}"))?;
-        conn.execute(
-            "DELETE FROM advisory_record WHERE source_key = ?1",
-            [source_key],
-        )
-        .map_err(|e| format!("clear records for {source_key}: {e}"))?;
         let mut stmt = conn
             .prepare(
                 "INSERT INTO advisory_record
                  (primary_id, source_key, source_kind, published_unix, updated_unix,
                   severity, exploited, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(primary_id, source_key) DO UPDATE SET
+                 source_kind = excluded.source_kind,
+                 published_unix = excluded.published_unix,
+                 updated_unix = excluded.updated_unix,
+                 severity = excluded.severity,
+                 exploited = excluded.exploited,
+                 payload_json = excluded.payload_json",
             )
-            .map_err(|e| format!("prepare record insert: {e}"))?;
+            .map_err(|e| format!("prepare record upsert: {e}"))?;
         for rec in records {
             let published_unix = parse_nvd_timestamp(&rec.published).unwrap_or(0);
             let updated_unix = parse_nvd_timestamp(&rec.last_modified).unwrap_or(0);
@@ -309,6 +371,49 @@ impl StorageDb {
             .query_row("SELECT COUNT(*) FROM advisory_record", [], |row| row.get(0))
             .map_err(|e| format!("count records: {e}"))?;
         Ok(count as usize)
+    }
+
+    /// Query advisory records updated after a given timestamp.
+    /// Useful for incremental sync: only reload recently changed records.
+    pub fn load_advisory_records_since(
+        &self,
+        since_unix: u64,
+    ) -> Result<Vec<crate::advisory::VulnerabilityRecord>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM advisory_record
+                 WHERE updated_unix >= ?1 ORDER BY updated_unix",
+            )
+            .map_err(|e| format!("prepare records-since query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![since_unix], |row| {
+                let payload: String = row.get(0)?;
+                Ok(payload)
+            })
+            .map_err(|e| format!("query records since {since_unix}: {e}"))?;
+        let mut records = Vec::new();
+        for row in rows {
+            let payload = row.map_err(|e| format!("read record: {e}"))?;
+            if let Ok(rec) = serde_json::from_str::<crate::advisory::VulnerabilityRecord>(&payload)
+            {
+                records.push(rec);
+            }
+        }
+        Ok(records)
+    }
+
+    /// Returns the most recent `updated_unix` across all advisory records,
+    /// or `None` when the table is empty.
+    pub fn max_advisory_updated_unix(&self) -> Result<Option<u64>, String> {
+        let conn = self.conn()?;
+        let max: Option<Option<u64>> = conn
+            .query_row("SELECT MAX(updated_unix) FROM advisory_record", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| format!("max updated_unix: {e}"))?;
+        Ok(max.unwrap_or(None))
     }
 
     pub fn load_advisory_cache(&self) -> Result<Option<crate::advisory::AdvisoryCache>, String> {
@@ -413,6 +518,101 @@ impl StorageDb {
         Ok(result)
     }
 
+    /// Count advisory records grouped by source.
+    pub fn count_advisory_records_by_source(&self) -> Result<Vec<(String, usize)>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT source_key, COUNT(*) FROM advisory_record GROUP BY source_key")
+            .map_err(|e| format!("prepare count-by-source: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((key, count as usize))
+            })
+            .map_err(|e| format!("query count-by-source: {e}"))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("read count row: {e}"))?);
+        }
+        Ok(result)
+    }
+
+    // ── Change-history helpers ─────────────────────────────────────
+
+    pub fn replace_change_events(
+        &self,
+        changes: &[crate::advisory_history::CveChangeEvent],
+        source_key: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM advisory_change_event WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(|e| format!("clear changes for {source_key}: {e}"))?;
+        for evt in changes {
+            let change_unix = parse_nvd_timestamp(&evt.created).unwrap_or(0);
+            let details = serde_json::to_string(evt).unwrap_or_default();
+            conn.execute(
+                "INSERT INTO advisory_change_event
+                 (change_id, primary_id, source_key, change_unix, event_name, details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    evt.change_id,
+                    evt.cve_id,
+                    source_key,
+                    change_unix,
+                    evt.event_name,
+                    details,
+                ],
+            )
+            .map_err(|e| format!("insert change {}: {e}", evt.change_id))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_change_history_cache(
+        &self,
+    ) -> Result<Option<crate::advisory_history::ChangeHistoryCache>, String> {
+        use crate::advisory_history::{ChangeHistoryCache, CveChangeEvent};
+        let sources = self.load_advisory_sources()?;
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let mut changes = Vec::new();
+        for src in &sources {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT details_json FROM advisory_change_event
+                     WHERE source_key = ?1 ORDER BY change_unix",
+                )
+                .map_err(|e| format!("prepare change select: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![src.source_key], |row| {
+                    let payload: String = row.get(0)?;
+                    Ok(payload)
+                })
+                .map_err(|e| format!("query changes for {}: {e}", src.source_key))?;
+            for row in rows {
+                let payload = row.map_err(|e| format!("read change: {e}"))?;
+                if let Ok(evt) = serde_json::from_str::<CveChangeEvent>(&payload) {
+                    changes.push(evt);
+                }
+            }
+        }
+        Ok(Some(ChangeHistoryCache {
+            schema_version: 1,
+            generated_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            sources,
+            changes,
+        }))
+    }
+
     pub fn verify(&self) -> Result<bool, String> {
         let stored: Option<StorageManifest> =
             crate::security::policy::load_struct_with_integrity(&self.manifest_path)
@@ -424,7 +624,28 @@ impl StorageDb {
         Ok(manifest.digest == current_digest)
     }
 
+    /// Rebuild the query planner statistics. Call this after bulk imports
+    /// so the planner can make better index choices.
+    pub fn analyze(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("ANALYZE;")
+            .map_err(|e| format!("analyze: {e}"))
+    }
+
+    /// Perform WAL checkpoint to keep the WAL file from growing unbounded.
+    /// Call this periodically (e.g. after every batch of writes).
+    pub fn wal_checkpoint(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("WAL checkpoint: {e}"))
+    }
+
     pub fn checkpoint(&self) -> Result<StorageManifest, String> {
+        // Flush WAL before computing digest so the digest covers
+        // all committed data and the WAL stays bounded.
+        let _ = self.wal_checkpoint();
+        // Refresh query planner statistics after writes.
+        let _ = self.analyze();
         let digest = self.compute_digest()?;
         let table_count = {
             let conn = self.conn()?;
@@ -512,6 +733,19 @@ impl StorageDb {
 
         let result = hasher.finalize();
         Ok(result.iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
+/// RAII guard that derefs to `StorageDb` so callers can use
+/// `StorageDb::global()?.some_method()` directly.
+pub struct DbGuard(pub std::sync::MutexGuard<'static, Option<StorageDb>>);
+
+impl std::ops::Deref for DbGuard {
+    type Target = StorageDb;
+    fn deref(&self) -> &StorageDb {
+        self.0
+            .as_ref()
+            .expect("DbGuard value is always Some after global()")
     }
 }
 
