@@ -25,6 +25,7 @@ pub struct RawConn {
 const KEEP_STATUSES: &[&str] = &[
     "ESTABLISHED",
     "LISTEN",
+    "UDP",
     "SYN_SENT",
     "SYN_RECV",
     "CLOSE_WAIT",
@@ -38,10 +39,14 @@ const KEEP_STATUSES: &[&str] = &[
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Collect all current TCP connections that have a PID and a status we care about.
+fn retain_operator_visible_statuses(conns: &mut Vec<RawConn>) {
+    conns.retain(|c| c.pid != 0 && KEEP_STATUSES.contains(&c.status.as_str()));
+}
+
+/// Collect all current TCP/UDP connections that have a PID and a status we care about.
 pub fn poll() -> Vec<RawConn> {
     let mut conns = platform_poll();
-    conns.retain(|c| c.pid != 0 && KEEP_STATUSES.contains(&c.status.as_str()));
+    retain_operator_visible_statuses(&mut conns);
     conns
 }
 
@@ -357,7 +362,7 @@ fn linux_inode_pid_map_from(proc_root: &std::path::Path) -> std::collections::Ha
             };
             let Some(target) = target.to_str() else {
                 continue;
-            }
+            };
             if let Some(inode) = target
                 .strip_prefix("socket:[")
                 .and_then(|s| s.strip_suffix(']'))
@@ -428,6 +433,7 @@ fn platform_poll() -> Vec<RawConn> {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::{linux_inode_pid_map_from, linux_parse_proc_content, linux_parse_udp_proc_content};
+    use super::{retain_operator_visible_statuses, RawConn};
 
     #[cfg(target_os = "linux")]
     use std::fs;
@@ -442,6 +448,46 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("vigil-proc-{unique}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn retain_operator_visible_statuses_keeps_udp_rows_with_pid() {
+        let mut rows = vec![
+            RawConn {
+                pid: 1234,
+                local_ip: "10.0.0.2".into(),
+                local_port: 53,
+                remote_ip: String::new(),
+                remote_port: 0,
+                status: "UDP".into(),
+                protocol: crate::types::TransportProtocol::Udp,
+            },
+            RawConn {
+                pid: 5678,
+                local_ip: "10.0.0.3".into(),
+                local_port: 60000,
+                remote_ip: "198.51.100.10".into(),
+                remote_port: 9999,
+                status: "UNKNOWN".into(),
+                protocol: crate::types::TransportProtocol::Tcp,
+            },
+            RawConn {
+                pid: 0,
+                local_ip: "10.0.0.4".into(),
+                local_port: 5353,
+                remote_ip: String::new(),
+                remote_port: 0,
+                status: "UDP".into(),
+                protocol: crate::types::TransportProtocol::Udp,
+            },
+        ];
+
+        retain_operator_visible_statuses(&mut rows);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 1234);
+        assert_eq!(rows[0].status, "UDP");
+        assert_eq!(rows[0].protocol, crate::types::TransportProtocol::Udp);
     }
 
     #[test]
