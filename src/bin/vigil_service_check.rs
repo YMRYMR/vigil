@@ -325,15 +325,31 @@ fn check_linux_service() -> Vec<CheckResult> {
         });
     }
 
-    // Check capabilities (CAP_NET_ADMIN, etc.).
-    let has_caps = Command::new("systemctl")
-        .args(["show", "-p", "AmbientCapabilities", LINUX_SERVICE_NAME])
-        .output()
-        .map(|o| {
-            let stdout = String::from_utf8_lossy(&o.stdout);
-            stdout.contains("CAP_NET_ADMIN") || stdout.contains("CAP_NET_RAW")
-        })
-        .unwrap_or(false);
+    // Check capabilities via the systemd unit file. When the unit has
+    // CapabilityBoundingSet=CAP_NET_ADMIN or runs as root (no bounding
+    // set restriction), Vigil has the required network privileges.
+    let has_caps = if service_exists {
+        let content = std::fs::read_to_string(LINUX_SERVICE_PATH).unwrap_or_default();
+        let has_bounding = content.contains("CapabilityBoundingSet");
+        let has_admin = content.contains("CAP_NET_ADMIN") || content.contains("CAP_NET_RAW");
+        let runs_as_root = content.contains("User=root") || !content.contains("User=");
+        // If no bounding set is configured, root has all caps.
+        // If bounding set is configured, it must include CAP_NET_ADMIN.
+        (!has_bounding && runs_as_root) || (has_bounding && has_admin)
+    } else {
+        // If no service file exists, check the current process (for dev runs).
+        std::fs::read_to_string("/proc/self/status")
+            .map(|s| {
+                let cap_eff = s
+                    .lines()
+                    .find(|l| l.starts_with("CapEff:"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .and_then(|v| u64::from_str_radix(v.trim(), 16).ok())
+                    .unwrap_or(0);
+                (cap_eff & (1u64 << 12)) != 0 // CAP_NET_ADMIN
+            })
+            .unwrap_or(false)
+    };
     results.push(CheckResult {
         check: "Linux capabilities for network operations",
         status: if has_caps {
@@ -342,9 +358,9 @@ fn check_linux_service() -> Vec<CheckResult> {
             CheckStatus::Warn
         },
         detail: if has_caps {
-            "CAP_NET_ADMIN or CAP_NET_RAW is set".into()
+            "CAP_NET_ADMIN or root — eBPF and firewall operations available".into()
         } else {
-            "No network capabilities set — eBPF and firewall ops may fail".into()
+            "No CAP_NET_ADMIN — eBPF and iptables operations may fail".into()
         },
     });
 

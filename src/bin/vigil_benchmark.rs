@@ -48,6 +48,15 @@ fn main() {
     println!("=== Vigil Detection Latency Benchmark ===");
     println!("Connections: {count}");
     println!("Target:      {target}");
+    // Validate target address upfront.
+    let target_addr = match target.parse::<std::net::SocketAddr>() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("Invalid target '{target}': {e}");
+            eprintln!("Expected format: IP:PORT (e.g. 8.8.8.8:443)");
+            std::process::exit(1);
+        }
+    };
     println!();
 
     // Detect active event sources.
@@ -71,30 +80,27 @@ fn main() {
 
     for i in 0..count {
         let connect_start = Instant::now();
-        let conn = TcpStream::connect_timeout(&target.parse().unwrap(), CONNECTION_TIMEOUT);
-        let connect_done = Instant::now();
-        let connect_latency = connect_done.duration_since(connect_start);
-
-        match conn {
+        match TcpStream::connect_timeout(&target_addr, CONNECTION_TIMEOUT) {
             Ok(stream) => {
+                let connect_done = Instant::now();
                 let _ = stream;
                 samples.push(Sample {
                     connect_start,
                     connect_done,
                     detect_time: None,
-                    latency: Some(connect_latency),
+                    latency: Some(connect_done.duration_since(connect_start)),
                 });
                 print!(
                     "\rConnection {}/{} connected in {:?}",
                     i + 1,
                     count,
-                    connect_latency
+                    connect_done.duration_since(connect_start)
                 );
             }
             Err(e) => {
                 samples.push(Sample {
                     connect_start,
-                    connect_done,
+                    connect_done: Instant::now(),
                     detect_time: None,
                     latency: None,
                 });
