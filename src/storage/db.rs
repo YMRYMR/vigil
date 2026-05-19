@@ -13,7 +13,7 @@
 //! 4. On startup `verify` re-computes the digest and compares it to the
 //!    manifest, failing closed on mismatch.
 
-use rusqlite::{types::ValueRef, Connection};
+use rusqlite::{types::ValueRef, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -307,6 +307,49 @@ impl StorageDb {
         Ok(count as usize)
     }
 
+    /// Query advisory records updated after a given timestamp.
+    /// Useful for incremental sync: only reload recently changed records.
+    pub fn load_advisory_records_since(
+        &self,
+        since_unix: u64,
+    ) -> Result<Vec<crate::advisory::VulnerabilityRecord>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM advisory_record
+                 WHERE updated_unix >= ?1 ORDER BY updated_unix",
+            )
+            .map_err(|e| format!("prepare records-since query: {e}"))?;
+        let rows = stmt
+            .query_map(rusqlite::params![since_unix], |row| {
+                let payload: String = row.get(0)?;
+                Ok(payload)
+            })
+            .map_err(|e| format!("query records since {since_unix}: {e}"))?;
+        let mut records = Vec::new();
+        for row in rows {
+            let payload = row.map_err(|e| format!("read record: {e}"))?;
+            if let Ok(rec) = serde_json::from_str::<crate::advisory::VulnerabilityRecord>(&payload)
+            {
+                records.push(rec);
+            }
+        }
+        Ok(records)
+    }
+
+    /// Returns the most recent `updated_unix` across all advisory records,
+    /// or `None` when the table is empty.
+    pub fn max_advisory_updated_unix(&self) -> Result<Option<u64>, String> {
+        let conn = self.conn()?;
+        let max: Option<Option<u64>> = conn
+            .query_row("SELECT MAX(updated_unix) FROM advisory_record", [], |row| {
+                row.get(0)
+            })
+            .optional()
+            .map_err(|e| format!("max updated_unix: {e}"))?;
+        Ok(max.unwrap_or(None))
+    }
+
     pub fn load_advisory_cache(&self) -> Result<Option<crate::advisory::AdvisoryCache>, String> {
         let sources = self.load_advisory_sources()?;
         if sources.is_empty() {
@@ -405,6 +448,26 @@ impl StorageDb {
             {
                 result.push(entry);
             }
+        }
+        Ok(result)
+    }
+
+    /// Count advisory records grouped by source.
+    pub fn count_advisory_records_by_source(&self) -> Result<Vec<(String, usize)>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT source_key, COUNT(*) FROM advisory_record GROUP BY source_key")
+            .map_err(|e| format!("prepare count-by-source: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let key: String = row.get(0)?;
+                let count: i64 = row.get(1)?;
+                Ok((key, count as usize))
+            })
+            .map_err(|e| format!("query count-by-source: {e}"))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("read count row: {e}"))?);
         }
         Ok(result)
     }
