@@ -76,7 +76,7 @@ impl StorageDb {
             );
 
             CREATE TABLE IF NOT EXISTS advisory_record (
-                primary_id    TEXT PRIMARY KEY NOT NULL,
+                primary_id    TEXT NOT NULL,
                 source_key    TEXT NOT NULL REFERENCES advisory_source(source_key),
                 source_kind   TEXT NOT NULL,
                 published_unix INTEGER NOT NULL DEFAULT 0,
@@ -84,7 +84,8 @@ impl StorageDb {
                 severity      TEXT NOT NULL DEFAULT '',
                 exploited     INTEGER NOT NULL DEFAULT 0,
                 payload_json  TEXT NOT NULL DEFAULT '{}',
-                created_unix  INTEGER NOT NULL DEFAULT (strftime('%s','now'))
+                created_unix  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (primary_id, source_key)
             );
 
             CREATE INDEX IF NOT EXISTS idx_advisory_record_source
@@ -96,12 +97,13 @@ impl StorageDb {
 
             CREATE TABLE IF NOT EXISTS advisory_change_event (
                 change_id   TEXT NOT NULL,
-                primary_id  TEXT NOT NULL REFERENCES advisory_record(primary_id),
+                primary_id  TEXT NOT NULL,
                 source_key  TEXT NOT NULL,
                 change_unix INTEGER NOT NULL,
                 event_name  TEXT NOT NULL DEFAULT '',
                 details_json TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY (change_id, primary_id)
+                PRIMARY KEY (change_id, primary_id, source_key),
+                FOREIGN KEY (primary_id, source_key) REFERENCES advisory_record(primary_id, source_key)
             );
 
             CREATE INDEX IF NOT EXISTS idx_change_event_cve
