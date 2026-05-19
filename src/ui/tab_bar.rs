@@ -14,6 +14,7 @@ pub enum Tab {
     #[default]
     Activity,
     Alerts,
+    Firewall,
     Settings,
     Help,
 }
@@ -24,6 +25,7 @@ impl Tab {
         match self {
             Tab::Activity => format!("Activity ({activity_count})"),
             Tab::Alerts => format!("Alerts ({alerts_count})"),
+            Tab::Firewall => "Firewall".into(),
             Tab::Settings => "Settings".into(),
             Tab::Help => "Help".into(),
         }
@@ -35,7 +37,13 @@ impl Tab {
 /// Draw the tab bar and return the newly-active tab (same as `active` if
 /// no tab was clicked).
 pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: usize) -> Tab {
-    let all = [Tab::Activity, Tab::Alerts, Tab::Settings, Tab::Help];
+    let all = [
+        Tab::Activity,
+        Tab::Alerts,
+        Tab::Firewall,
+        Tab::Settings,
+        Tab::Help,
+    ];
     let mut result = active;
 
     // Separator line across the full width (drawn under the tabs)
@@ -55,6 +63,7 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: us
             let hover = match tab {
                 Tab::Activity => "View all observed process traffic.",
                 Tab::Alerts => "View high-signal alerting processes.",
+                Tab::Firewall => "View firewall status and managed rules.",
                 Tab::Settings => "Open settings.",
                 Tab::Help => "Open help and operator guidance.",
             };
