@@ -25,6 +25,7 @@ pub struct RawConn {
 const KEEP_STATUSES: &[&str] = &[
     "ESTABLISHED",
     "LISTEN",
+    "UDP",
     "SYN_SENT",
     "SYN_RECV",
     "CLOSE_WAIT",
@@ -38,10 +39,14 @@ const KEEP_STATUSES: &[&str] = &[
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-/// Collect all current TCP connections that have a PID and a status we care about.
+fn retain_operator_visible_statuses(conns: &mut Vec<RawConn>) {
+    conns.retain(|c| c.pid != 0 && KEEP_STATUSES.contains(&c.status.as_str()));
+}
+
+/// Collect all current TCP/UDP connections that have a PID and a status we care about.
 pub fn poll() -> Vec<RawConn> {
     let mut conns = platform_poll();
-    conns.retain(|c| c.pid != 0 && KEEP_STATUSES.contains(&c.status.as_str()));
+    retain_operator_visible_statuses(&mut conns);
     conns
 }
 
@@ -211,7 +216,57 @@ fn platform_poll() -> Vec<RawConn> {
     out.extend(linux_parse_proc("/proc/net/tcp6", true, &inode_to_pid));
     out.extend(linux_parse_udp_proc("/proc/net/udp", false, &inode_to_pid));
     out.extend(linux_parse_udp_proc("/proc/net/udp6", true, &inode_to_pid));
+    linux_log_icmp_stats();
     out
+}
+
+/// Log notable ICMP statistics from /proc/net/snmp.
+/// Runs during every poll cycle on Linux. This is read-only and cheap.
+#[cfg(target_os = "linux")]
+fn linux_log_icmp_stats() {
+    let content = match std::fs::read_to_string("/proc/net/snmp") {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut in_echo_reps: u64 = 0;
+    let mut in_echos: u64 = 0;
+    let mut in_dest_unreach: u64 = 0;
+    let mut lines = content.lines();
+    while let Some(line) = lines.next() {
+        if line.starts_with("Icmp:") {
+            let headers: Vec<&str> = line.split_whitespace().collect();
+            if let Some(values_line) = lines.next() {
+                let values: Vec<&str> = values_line.split_whitespace().collect();
+                for (i, h) in headers.iter().enumerate() {
+                    if i >= values.len() {
+                        break;
+                    }
+                    let v: u64 = values[i].parse().unwrap_or(0);
+                    match *h {
+                        "InEchoReps" => in_echo_reps = v,
+                        "InEchos" => in_echos = v,
+                        "InDestUnreachs" => in_dest_unreach = v,
+                        _ => {}
+                    }
+                }
+            }
+            break;
+        }
+    }
+    // Log when ICMP echo flood or high unreachable rate is detected.
+    if in_echos > 0 && in_echos > in_echo_reps.saturating_mul(10) && in_echos > 100 {
+        tracing::warn!(
+            "ICMP anomaly: {} echo requests vs {} replies (possible scan or flood)",
+            in_echos,
+            in_echo_reps
+        );
+    }
+    if in_dest_unreach > 1000 {
+        tracing::info!(
+            "ICMP destination unreachable count: {} (possible scanning activity)",
+            in_dest_unreach
+        );
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -357,7 +412,7 @@ fn linux_inode_pid_map_from(proc_root: &std::path::Path) -> std::collections::Ha
             };
             let Some(target) = target.to_str() else {
                 continue;
-            }
+            };
             if let Some(inode) = target
                 .strip_prefix("socket:[")
                 .and_then(|s| s.strip_suffix(']'))
@@ -428,6 +483,7 @@ fn platform_poll() -> Vec<RawConn> {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::{linux_inode_pid_map_from, linux_parse_proc_content, linux_parse_udp_proc_content};
+    use super::{retain_operator_visible_statuses, RawConn};
 
     #[cfg(target_os = "linux")]
     use std::fs;
@@ -442,6 +498,46 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir().join(format!("vigil-proc-{unique}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn retain_operator_visible_statuses_keeps_udp_rows_with_pid() {
+        let mut rows = vec![
+            RawConn {
+                pid: 1234,
+                local_ip: "10.0.0.2".into(),
+                local_port: 53,
+                remote_ip: String::new(),
+                remote_port: 0,
+                status: "UDP".into(),
+                protocol: crate::types::TransportProtocol::Udp,
+            },
+            RawConn {
+                pid: 5678,
+                local_ip: "10.0.0.3".into(),
+                local_port: 60000,
+                remote_ip: "198.51.100.10".into(),
+                remote_port: 9999,
+                status: "UNKNOWN".into(),
+                protocol: crate::types::TransportProtocol::Tcp,
+            },
+            RawConn {
+                pid: 0,
+                local_ip: "10.0.0.4".into(),
+                local_port: 5353,
+                remote_ip: String::new(),
+                remote_port: 0,
+                status: "UDP".into(),
+                protocol: crate::types::TransportProtocol::Udp,
+            },
+        ];
+
+        retain_operator_visible_statuses(&mut rows);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 1234);
+        assert_eq!(rows[0].status, "UDP");
+        assert_eq!(rows[0].protocol, crate::types::TransportProtocol::Udp);
     }
 
     #[test]

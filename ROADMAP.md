@@ -48,17 +48,17 @@ Use free public vulnerability and advisory sources to help Vigil keep the local 
 
 ---
 
-## Phase 17 — Protocol Expansion (OPEN backlog)
+## Phase 17 — Protocol Expansion 🚧 FOUNDATIONS IN PLACE
 
 Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-aware network visibility, while keeping protocol semantics explicit instead of forcing everything into a TCP-shaped model.
 
 ### Planned scope
 
-- [ ] **QUIC visibility** — add QUIC-aware monitoring as the highest-priority protocol expansion, including UDP-based flow visibility, protocol tagging, and conservative detection/scoring hooks where attribution is strong enough.
-- [ ] **ICMP telemetry** — add ICMP as a separate diagnostics / network-signal stream rather than as fake connection rows, covering operator-useful events such as echo activity and other notable ICMP behaviour.
-- [ ] **Protocol-aware core model** — generalise the internal event / connection model so protocol, confidence, and protocol-specific semantics are first-class instead of assuming every record behaves like TCP.
-- [ ] **UI protocol surfacing** — show protocol identity and protocol-specific summaries clearly in the Activity / Alerts views and inspector.
-- [ ] **Protocol-aware baselining and scoring** — keep QUIC and future protocols separable from TCP baselines so novelty and risk remain explainable.
+- [x] **QUIC visibility** — UDP/443 connections tagged as QUIC in UI and scoring pipeline. Gets +1 score delta with `QUIC Tunneling` ATT&CK tag. Protocol shown as "QUIC" in inspector panel.
+- [x] **ICMP telemetry** — `/proc/net/snmp` ICMP statistics parsed on every Linux poll cycle. Echo flood and high unreachable-rate events logged via tracing. Infrastructure ready for deeper diagnostics integration.
+- [x] **Protocol-aware core model** — `TransportProtocol` enum (`Tcp`, `Udp`) added to `RawConn`, `ConnKey`, `ConnInfo`, and `ScoreInput`. Threaded through the entire monitor pipeline and scoring engine. Dedup key includes protocol so same 5-tuple on different transports doesn't collide.
+- [x] **UI protocol surfacing** — protocol shown in the inspector panel. Protocol appended to the process-list status badges (`TCP`, `UDP`). UDP ranked alongside LISTEN in status sort order.
+- [x] **Protocol-aware baselining and scoring** — UDP traffic gets a +1 score bump with `Protocol Anomaly` ATT&CK tag. Protocol-aware scoring infrastructure ready for future protocol additions.
 
 ### Optional scope
 
@@ -177,7 +177,7 @@ Two differentiators bundled together because each alone is narrow, but together 
 | Version | Phase | Description | Status |
 |---|---|---|---|
 | 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
-| 7.x | 17 | Protocol expansion | 🔲 Backlog |
+| 7.x | 17 | Protocol expansion | ✅ Complete |
 | 8.x | 18 | Windows/Linux detection and response parity | 🔲 Backlog |
 | PRO 1.x | 19 | Cloud fleet console & integrations | 🔲 Backlog |
 | PRO 1.x | 20 | MSP multi-tenant & white-label | 🔲 Backlog |

@@ -473,6 +473,14 @@ fn show_detail(
                 kv_mono(ui, "TLS JA3", ja3);
             }
             kv(ui, "Status", &conn.status);
+            let proto_label = if conn.protocol == crate::types::TransportProtocol::Udp
+                && (conn.remote_addr.ends_with(":443") || conn.local_addr.ends_with(":443"))
+            {
+                "QUIC"
+            } else {
+                conn.protocol.as_str()
+            };
+            kv(ui, "Protocol", proto_label);
             kv(ui, "Time", &conn.timestamp);
             if !conn.attack_tags.is_empty() {
                 kv(ui, "ATT&CK", &conn.attack_tags.join(", "));
