@@ -117,6 +117,13 @@ pub fn score(input: &ScoreInput<'_>, cfg: &Config) -> (u8, Vec<String>, Vec<Stri
     let mut reasons: Vec<String> = Vec::new();
     let mut attack_tags: Vec<String> = Vec::new();
 
+    // UDP-specific scoring: flag UDP traffic as less observable than TCP.
+    if input.protocol == "UDP" {
+        s = s.saturating_add(1);
+        reasons.push("UDP traffic (protocol less observable than TCP)".into());
+        attack_tags.push("T1090 Proxy / Protocol Anomaly (heuristic)".into());
+    }
+
     const SAFE_NO_PATH: &[&str] = &["system", "kernel", "registry"];
     let is_ghost = input.name.starts_with('<') && input.name.ends_with('>');
     if input.path.is_empty() && !SAFE_NO_PATH.contains(&input.name) && !is_ghost {
