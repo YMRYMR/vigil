@@ -347,18 +347,24 @@ impl StorageDb {
         use sha2::{Digest, Sha256};
 
         let conn = self.conn()?;
-        let tables: Vec<String> = conn
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        let table_rows: Vec<(String, String)> = conn
+            .prepare("SELECT name, sql FROM sqlite_master WHERE type='table' ORDER BY name")
             .map_err(|e| format!("list tables: {e}"))?
-            .query_map([], |row| row.get(0))
+            .query_map([], |row| {
+                let name: String = row.get(0)?;
+                let sql: Option<String> = row.get(1)?;
+                Ok((name, sql.unwrap_or_default()))
+            })
             .map_err(|e| format!("query tables: {e}"))?
             .filter_map(|r| r.ok())
             .collect();
 
         let mut hasher = Sha256::new();
-        for table in &tables {
+        for (table, create_sql) in &table_rows {
             hasher.update(b"table:");
             hasher.update(table.as_bytes());
+            hasher.update(b"\nsql:");
+            hasher.update(create_sql.as_bytes());
             hasher.update(b"\n");
 
             let columns = table_columns(&conn, table)?;
@@ -421,7 +427,10 @@ fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> 
 }
 
 fn ordered_row_digest_query(table: &str, columns: &[String]) -> String {
-    let quoted_columns: Vec<String> = columns.iter().map(|column| quote_identifier(column)).collect();
+    let quoted_columns: Vec<String> = columns
+        .iter()
+        .map(|column| quote_identifier(column))
+        .collect();
     format!(
         "SELECT {} FROM {} ORDER BY {}",
         quoted_columns.join(", "),
