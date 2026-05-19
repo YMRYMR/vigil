@@ -1863,4 +1863,212 @@ mod tests {
         assert_eq!(state.firewall_snapshot, Some(firewall_snapshot));
         assert_eq!(state.network_snapshot, Some(network_snapshot));
     }
+
+    #[test]
+    fn normalise_target_trims_whitespace() {
+        assert_eq!(normalise_target(" 10.0.0.1 ").unwrap(), "10.0.0.1");
+    }
+
+    #[test]
+    fn normalise_target_rejects_empty() {
+        assert!(normalise_target("").is_err());
+        assert!(normalise_target("  ").is_err());
+    }
+
+    #[test]
+    fn normalise_domain_trims_lowercases_and_strips_trailing_dot() {
+        assert_eq!(normalise_domain("  Example.COM. ").unwrap(), "example.com");
+    }
+
+    #[test]
+    fn normalise_domain_rejects_ip_address() {
+        assert!(normalise_domain("8.8.8.8").is_err());
+    }
+
+    #[test]
+    fn normalise_domain_rejects_no_dot() {
+        assert!(normalise_domain("localhost").is_err());
+    }
+
+    #[test]
+    fn normalise_domain_rejects_special_chars() {
+        assert!(normalise_domain("bad space.com").is_err());
+    }
+
+    #[test]
+    fn rule_name_for_target_formats_correctly() {
+        assert_eq!(rule_name_for_target("10.0.0.1"), "Vigil Block 10.0.0.1");
+    }
+
+    #[test]
+    fn domain_marker_formats_correctly() {
+        assert_eq!(
+            domain_marker("evil.example"),
+            "# Vigil Domain Block evil.example"
+        );
+    }
+
+    #[test]
+    fn hex_prefix_produces_requested_length() {
+        let bytes = [0xab, 0xcd, 0xef];
+        assert_eq!(hex_prefix(&bytes, 4), "abcd");
+        assert_eq!(hex_prefix(&bytes, 6), "abcdef");
+        assert_eq!(hex_prefix(&bytes, 0), "");
+    }
+
+    #[test]
+    fn hex_prefix_handles_empty_bytes() {
+        assert_eq!(hex_prefix(&[], 4), "");
+    }
+
+    #[test]
+    fn extract_domain_from_hostname_returns_none_for_ip() {
+        assert!(extract_domain_from_hostname("8.8.8.8").is_none());
+    }
+
+    #[test]
+    fn extract_domain_from_hostname_lowercases_and_strips_dot() {
+        assert_eq!(
+            extract_domain_from_hostname("Bad.Example.COM.").unwrap(),
+            "bad.example.com"
+        );
+    }
+
+    #[test]
+    fn extract_domain_from_hostname_returns_none_for_empty() {
+        assert!(extract_domain_from_hostname("").is_none());
+    }
+
+    #[test]
+    fn parse_socket_addr_accepts_valid_addresses() {
+        assert!(parse_socket_addr("192.168.1.1:443", "remote").is_ok());
+        assert!(parse_socket_addr("[::1]:80", "local").is_ok());
+    }
+
+    #[test]
+    fn parse_socket_addr_rejects_port_only() {
+        assert!(parse_socket_addr(":443", "remote").is_err());
+    }
+
+    #[test]
+    fn socket_kill_target_requires_established_status() {
+        let c = conn("10.0.0.1:50000", "8.8.8.8:443", "TIME_WAIT");
+        assert!(matches!(
+            socket_kill_target(&c).unwrap_err(),
+            SocketKillError::UnsupportedStatus(_)
+        ));
+    }
+
+    #[test]
+    fn socket_kill_target_accepts_localhost_remote_as_valid_address() {
+        let parsed =
+            socket_kill_target(&conn("192.168.1.10:50000", "127.0.0.1:443", "ESTABLISHED"))
+                .unwrap();
+        assert_eq!(parsed.remote.to_string(), "127.0.0.1:443");
+    }
+
+    #[test]
+    fn duration_presets_have_distinct_ttls() {
+        use std::time::Duration;
+        assert_eq!(
+            DurationPreset::OneHour.ttl(),
+            Some(Duration::from_secs(3600))
+        );
+        assert_eq!(
+            DurationPreset::OneDay.ttl(),
+            Some(Duration::from_secs(86400))
+        );
+        assert_eq!(DurationPreset::Permanent.ttl(), None);
+    }
+
+    #[test]
+    fn duration_presets_labels_are_non_empty() {
+        assert!(!DurationPreset::OneHour.label().is_empty());
+        assert!(!DurationPreset::OneDay.label().is_empty());
+        assert!(!DurationPreset::Permanent.label().is_empty());
+    }
+
+    #[test]
+    fn reconcile_state_removes_non_expired_entries_unchanged() {
+        let mut state = State {
+            blocked: vec![blocked_target("10.0.0.1", Some(200))],
+            ..State::default()
+        };
+        let changed = reconcile_state(&mut state, 100, |_| unreachable!());
+        assert!(!changed);
+        assert_eq!(state.blocked.len(), 1);
+    }
+
+    #[test]
+    fn reconcile_state_handles_empty_state() {
+        let mut state = State::default();
+        let changed = reconcile_state(&mut state, 100, |_| unreachable!());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn reconcile_state_handles_non_expired_domains() {
+        let mut state = State {
+            blocked_domains: vec![blocked_domain("bad.example")],
+            ..State::default()
+        };
+        let changed = reconcile_state(&mut state, 100, |_| unreachable!());
+        assert!(!changed);
+    }
+
+    #[test]
+    fn process_block_matches_rejects_empty_path() {
+        let rule = BlockedProcess {
+            pid: 1234,
+            path: "C:/app.exe".into(),
+            inbound_rule_name: "in".into(),
+            outbound_rule_name: "out".into(),
+            expires_at_unix: None,
+        };
+        assert!(!process_block_matches(&rule, ""));
+    }
+
+    #[test]
+    fn suspended_process_matches_pid_and_matching_path() {
+        let entry = suspended_process(42, "C:/app.exe");
+        assert!(suspended_process_matches(&entry, 42, "C:/app.exe"));
+        assert!(suspended_process_matches(&entry, 42, ""));
+        assert!(!suspended_process_matches(&entry, 99, "C:/app.exe"));
+        assert!(!suspended_process_matches(&entry, 42, "C:/other.exe"));
+    }
+
+    #[test]
+    fn isolation_controls_still_effective_probe_reachable_relieves() {
+        let state = State {
+            network_snapshot: Some(NetworkSnapshot {
+                adapters: vec![NetworkAdapterState {
+                    name: "Ethernet".into(),
+                    is_wireless: false,
+                    wifi_profile: None,
+                }],
+            }),
+            ..State::default()
+        };
+        assert!(!isolation_controls_still_effective(&state, true, true));
+        assert!(isolation_controls_still_effective(&state, true, false));
+    }
+
+    #[test]
+    fn isolation_controls_still_effective_inactive_controls() {
+        let state = State::default();
+        assert!(!isolation_controls_still_effective(&state, false, false));
+    }
+
+    #[test]
+    fn process_block_rule_suffix_differs_for_equivalent_paths() {
+        let left = rule_suffix_for_process("C:/Temp/evil.exe");
+        let right = rule_suffix_for_process("C:\\Temp\\evil.exe");
+        assert_ne!(left, right);
+    }
+
+    #[test]
+    fn process_block_rule_suffix_starts_with_readable_prefix() {
+        let suffix = rule_suffix_for_process("/usr/bin/suspicious");
+        assert!(suffix.starts_with("usr_bin_suspicious_"));
+    }
 }

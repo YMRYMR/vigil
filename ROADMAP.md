@@ -78,7 +78,7 @@ Windows and Linux are the active support targets. This phase is about making tho
 - [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
 - [x] **Windows/Linux active-response parity audit** — all 22 active-response functions verified working on both supported platforms. Linux has full parity: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows registry concept) is Linux-specific unimplemented.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
-- [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
+- [x] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 
 ---
 
