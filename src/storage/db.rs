@@ -259,7 +259,7 @@ impl StorageDb {
         .map_err(|e| format!("clear records for {source_key}: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "INSERT INTO advisory_record
+                "INSERT OR REPLACE INTO advisory_record
                  (primary_id, source_key, source_kind, published_unix, updated_unix,
                   severity, exploited, payload_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
