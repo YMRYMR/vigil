@@ -452,6 +452,13 @@ fn load_cache_summary() -> Result<Option<CacheSummary>, String> {
 }
 
 fn load_cache() -> Result<Option<AdvisoryCache>, String> {
+    // Try SQLite DB first (faster, supports multi-source).
+    if let Ok(db) = crate::storage::db::StorageDb::open() {
+        if let Some(cache) = db.load_advisory_cache()? {
+            return Ok(Some(cache));
+        }
+    }
+    // Fall back to legacy JSON cache.
     let path = cache_path();
     if !path.exists() {
         return Ok(None);
