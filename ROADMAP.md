@@ -82,16 +82,18 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ---
 
-## Phase 19 — Native OS Firewall Engine (OPEN backlog)
+## Phase 19 — Native OS Firewall Engine 🚧 FOUNDATIONS IN PLACE
 
 Replace the OS firewall with Vigil's own WFP (Windows) / nftables (Linux) engine. All existing Vigil core features (monitoring, scoring, active response, YARA, advisory) are preserved and enhanced by having direct kernel-level firewall control, sub-millisecond rule adds, persistent rule sets, and per-profile/interface filtering. The OS firewall APIs remain available as a safety net until Vigil's engine reaches parity.
+
+Recent groundwork already landed on `master`: trusted `nft` command resolution, the cross-platform `FirewallBackend` abstraction, platform backend scaffolding for WFP and nftables/iptables, and `--firewall` status/list/panic CLI plumbing. The remaining checklist below tracks the still-open engine, persistence, UI, and safety work.
 
 ### Phase 0 — Foundation (2–3 weeks)
 
 - [ ] **Windows WFP user-mode API wrapper** — replace all `netsh advfirewall` calls with direct `Fwpm*` FFI bindings to `fwpmu.dll`. Sub-millisecond rule adds/removes. Filter-level operations (add, delete, enumerate) via `FwpmFilterAdd`, `FwpmFilterDeleteById`, `FwpmFilterEnum`. Provider registration (`FWPM_PROVIDER`) for Vigil rule ownership visibility. Sublayer registration at the correct weight relative to Windows Defender Firewall.
 - [ ] **Linux nftables backend activation** — route all Linux active-response firewall operations through the existing executor bridge in `linux_firewall_executor.rs` instead of inline iptables calls. Add `nft` to `command_paths.rs`. Wire `execute_selected_*` functions into `active_response_platform.rs`.
 - [ ] **Persistent rule store** — structured rule database (SQLite or integrity-protected JSON) with globally unique IDs, creation time, TTL, direction, action (block/allow/log), layer, interface filter, profile affinity, and scored/unscored flag for Vigil's dynamic response. Migrate current ad-hoc state tracking into this store.
-- [ ] **Cross-platform `FirewallBackend` trait** — abstract WFP/nftables behind a unified trait. Current platform-split stays as the high-level API surface (`block_remote`, `block_process`, `isolate_machine`, etc.).
+- [x] **Cross-platform `FirewallBackend` trait** — abstract WFP/nftables behind a unified trait. Current platform-split stays as the high-level API surface (`block_remote`, `block_process`, `isolate_machine`, etc.).
 
 ### Phase 1 — Core Firewall Engine (4–6 weeks)
 
@@ -113,7 +115,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables (Linux) engine
 - [ ] **Rule template system** — predefined canned rules for common scenarios (block all outbound for an app, allow specific ports, etc.).
 - [ ] **OS firewall profile visibility** — show current profile state (Domain/Private/Public), inbound/outbound default actions, active interface bindings.
 - [ ] **Permanent allow/block rules** — operator-defined rules that survive Vigil restart and are not subject to TTL expiry.
-- [ ] **CLI firewall commands** — `vigil firewall list`, `vigil firewall add`, `vigil firewall remove`, `vigil firewall status`.
+- [ ] **CLI firewall command expansion** — extend the landed `--firewall status`, `--firewall list`, and `--firewall panic` flows with operator add/remove workflows and full firewall management coverage.
 
 ### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
 
@@ -298,7 +300,7 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
 | 7.x | 17 | Protocol expansion | ✅ Complete |
 | 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
-| 9.x | 19 | Native OS firewall engine | 🔲 Backlog |
+| 9.x | 19 | Native OS firewall engine | 🚧 Foundations in place |
 | 10.x | 20 | YARA signature integration | 🔲 Backlog |
 | 11.x | 21 | Security posture dashboard | 🔲 Backlog |
 | 12.x | 22 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
