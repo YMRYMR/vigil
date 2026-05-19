@@ -499,8 +499,7 @@ fn main() {
             }
             "--firewall" => {
                 let sub_args: Vec<String> = args.iter().skip(i + 1).cloned().collect();
-                security::firewall::run_cli(&sub_args);
-                std::process::exit(0);
+                std::process::exit(security::firewall::run_cli(&sub_args));
             }
             autostart::ELEVATED_RELAUNCH_FLAG => {
                 elevated_relaunch = true;
