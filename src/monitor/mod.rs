@@ -621,14 +621,21 @@ fn is_remote_public(addr: &str) -> bool {
                 || documentation)
         }
         std::net::IpAddr::V6(v6) => {
+            // Normalize IPv4-mapped IPv6 (::ffff:x.x.x.x) to IPv4 for correct classification.
             let o = v6.octets();
+            if o[0..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+                let v4 = std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+                return is_remote_public(&v4.to_string());
+            }
             let is_ula = o[0] == 0xfc || o[0] == 0xfd;
             let is_unique_local = o[0] == 0xfe && (o[1] & 0xc0) == 0xc0;
             let is_multicast = o[0] == 0xff;
             let is_documentation = o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x0d && o[3] == 0xb8;
+            // Link-local is fe80::/10 (first 10 bits = 1111111010)
+            let is_link_local = o[0] == 0xfe && (o[1] & 0xc0) == 0x80;
             !(v6.is_loopback()
                 || v6.is_unspecified()
-                || (o[0] == 0xfe && o[1] == 0x80) // link-local
+                || is_link_local
                 || is_ula
                 || is_unique_local
                 || is_multicast
