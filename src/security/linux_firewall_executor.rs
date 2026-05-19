@@ -6,7 +6,12 @@
 
 #[cfg(target_os = "linux")]
 use super::linux_command_plan::StdLinuxCommandRunner;
-use super::linux_command_plan::{nft_delete_table, LinuxCommand, LinuxCommandRunner};
+use super::linux_command_plan::{
+    iptables_delete_rule, nft_delete_rule_by_handle, nft_flush_chain, nft_list_chain_handles,
+    nft_list_ruleset, nft_parse_handle_by_comment, LinuxCommand, LinuxCommandRunner,
+    NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN,
+    NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN, NFT_TABLE,
+};
 use super::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_block_remote_plan,
     firewall_backend_block_uid_plan, firewall_backend_isolate_plan, firewall_backend_restore_plan,
@@ -76,9 +81,20 @@ pub fn execute_selected_isolate_plan(
     };
     let mut commands = Vec::new();
     if backend == LinuxFirewallBackend::Nftables {
-        let _ = runner.status(&nft_delete_table());
+        let table_exists = runner
+            .stdout(&nft_list_ruleset())
+            .map(|s| s.contains("table inet vigil"))
+            .unwrap_or(false);
+        if table_exists {
+            commands.push(nft_flush_chain(NFT_ISOL_IN_CHAIN));
+            commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
+            commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
+        } else {
+            commands.extend(firewall_backend_setup_plan(backend));
+        }
+    } else {
+        commands.extend(firewall_backend_setup_plan(backend));
     }
-    commands.extend(firewall_backend_setup_plan(backend));
     commands.extend(firewall_backend_isolate_plan(backend, rule_name));
     for command in &commands {
         if let Err(e) = runner.status(command) {
@@ -159,6 +175,60 @@ pub fn execute_system_uid_block_plan(
     execute_selected_uid_block_plan(&StdLinuxCommandRunner, rule_name, direction, uid)
 }
 
+pub fn execute_selected_delete_plan(
+    runner: &impl LinuxCommandRunner,
+    rule_name: &str,
+) -> Result<(), String> {
+    let backend = select_firewall_backend(runner);
+    match backend {
+        LinuxFirewallBackend::Nftables => {
+            // Check both main chains and isolation sub-chains so that
+            // isolation rules and remote/UID block rules are both found.
+            for chain in &[
+                NFT_INPUT_CHAIN,
+                NFT_OUTPUT_CHAIN,
+                NFT_FORWARD_CHAIN,
+                NFT_ISOL_IN_CHAIN,
+                NFT_ISOL_FORWARD_CHAIN,
+                NFT_ISOL_OUT_CHAIN,
+            ] {
+                let output = match runner.stdout(&nft_list_chain_handles(chain)) {
+                    Ok(o) => o,
+                    // Chain may not exist yet (first isolation) — skip.
+                    Err(_) => continue,
+                };
+                if let Some(handle) = nft_parse_handle_by_comment(&output, rule_name) {
+                    runner.status(&nft_delete_rule_by_handle(chain, handle))?;
+                }
+            }
+            Ok(())
+        }
+        LinuxFirewallBackend::Iptables => {
+            let mut deleted_any = false;
+            for chain in &["INPUT", "OUTPUT", "FORWARD"] {
+                if runner
+                    .status(&iptables_delete_rule(chain, rule_name))
+                    .is_ok()
+                {
+                    deleted_any = true;
+                }
+            }
+            if deleted_any {
+                Ok(())
+            } else {
+                Err(format!(
+                    "failed to delete firewall rule {rule_name} from all chains"
+                ))
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn execute_system_delete_plan(rule_name: &str) -> Result<(), String> {
+    execute_selected_delete_plan(&StdLinuxCommandRunner, rule_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,12 +287,12 @@ mod tests {
         let runner = RecordingRunner::new(true);
         let executed = execute_selected_isolate_plan(&runner, "isolate").unwrap();
         assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
-        assert_eq!(executed.commands.len(), 13);
+        assert_eq!(executed.commands.len(), 6);
         assert!(executed
             .commands
             .iter()
             .all(|command| command.program == "nft"));
-        assert_eq!(runner.commands.borrow().len(), executed.commands.len() + 1);
+        assert_eq!(runner.commands.borrow().len(), executed.commands.len());
         assert_eq!(
             executed.restore_state,
             Some(LinuxFirewallRestoreState {
@@ -318,7 +388,7 @@ mod tests {
         let runner = RecordingRunner::failing(true, "nft");
         let (err, restore_state) = execute_selected_isolate_plan(&runner, "isolate").unwrap_err();
         assert!(err.contains("nft failed"));
-        assert_eq!(runner.commands.borrow().len(), 2);
+        assert_eq!(runner.commands.borrow().len(), 1);
         assert!(restore_state.is_some());
     }
 

@@ -280,6 +280,40 @@ pub fn nft_flush_chain(chain: &str) -> LinuxCommand {
     LinuxCommand::new("nft", ["flush", "chain", "inet", NFT_TABLE, chain])
 }
 
+pub fn nft_list_chain_handles(chain: &str) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        ["--handle", "list", "chain", "inet", NFT_TABLE, chain],
+    )
+}
+
+pub fn nft_delete_rule_by_handle(chain: &str, handle: u64) -> LinuxCommand {
+    LinuxCommand::new(
+        "nft",
+        [
+            "delete",
+            "rule",
+            "inet",
+            NFT_TABLE,
+            chain,
+            "handle",
+            &handle.to_string(),
+        ],
+    )
+}
+
+pub fn nft_parse_handle_by_comment(output: &str, rule_name: &str) -> Option<u64> {
+    let target = format!("Vigil:{rule_name}");
+    for line in output.lines() {
+        if line.contains(&target) {
+            if let Some(handle_str) = line.split("# handle ").nth(1) {
+                return handle_str.trim().parse::<u64>().ok();
+            }
+        }
+    }
+    None
+}
+
 pub fn ip_link_set(adapter_name: &str, enabled: bool) -> LinuxCommand {
     LinuxCommand::new(
         "ip",

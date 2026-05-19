@@ -494,7 +494,28 @@ fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
             "failed to save protected advisory cache {}: {e}",
             path.display()
         )
-    })
+    })?;
+    // Mirror to SQLite DB (best-effort, non-fatal on failure).
+    if let Ok(db) = crate::storage::db::StorageDb::open() {
+        let _ = db.replace_advisory_sources(&cache.sources);
+        for source in &cache.sources {
+            let source_records: Vec<_> = cache
+                .records
+                .iter()
+                .filter(|r| r.provenance.source_key == source.source_key)
+                .cloned()
+                .collect();
+            if !source_records.is_empty() {
+                let _ = db.replace_advisory_records(
+                    &source_records,
+                    &source.source_key,
+                    &source.source_kind,
+                );
+            }
+        }
+        let _ = db.checkpoint();
+    }
+    Ok(())
 }
 
 fn cache_path() -> PathBuf {

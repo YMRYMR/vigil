@@ -1,3 +1,5 @@
+pub mod db;
+
 use crate::software_inventory::InstalledSoftware;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
