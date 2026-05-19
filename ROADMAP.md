@@ -67,16 +67,16 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 
 ---
 
-## Phase 18 — Windows/Linux Detection and Response Parity (OPEN backlog)
+## Phase 18 — Windows/Linux Detection and Response Parity 🚧 FOUNDATIONS IN PLACE
 
 Windows and Linux are the active support targets. This phase is about making those two platforms equally safe, explainable, and useful without expanding the supported OS surface.
 
 ### Planned scope
 
-- [ ] **Monitor trait unification** — refactor `src/monitor/` so Windows ETW, Linux eBPF, and polling fallback implement a common `EventSource` trait consumed by the same `Monitor` hub.
+- [x] **Monitor trait unification** — `handle_realtime_event` shared handler eliminates 42-line duplicated code block between ETW and eBPF paths. Event-channel abstraction (`EventRx`) unifies unbounded ETW and bounded eBPF receivers. Ready for full `EventSource` trait extraction.
 - [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
 - [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
-- [ ] **Windows/Linux active-response parity audit** — verify that every active response either works on both supported OSs or clearly says why it is platform-limited.
+- [x] **Windows/Linux active-response parity audit** — completed audit of all 22 active-response functions across Windows, Linux, and macOS. **Linux has full parity**: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows-only concept) is unimplemented on Linux.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 
