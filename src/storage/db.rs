@@ -83,7 +83,9 @@ impl StorageDb {
             "            PRAGMA journal_mode=WAL;
             PRAGMA foreign_keys=ON;
             PRAGMA synchronous=NORMAL;
-            PRAGMA cache_size=-8000;",
+            PRAGMA cache_size=-8000;
+            PRAGMA busy_timeout=5000;
+            PRAGMA journal_size_limit=16777216;",
         )
         .map_err(|e| format!("pragmas: {e}"))?;
 
@@ -179,8 +181,13 @@ impl StorageDb {
         // Performance pragmas (best-effort, applied each session).
         let _ = conn.execute_batch(
             "PRAGMA auto_vacuum=INCREMENTAL;
-             PRAGMA mmap_size=268435456;",
+             PRAGMA mmap_size=268435456;
+             PRAGMA temp_store=MEMORY;",
         );
+
+        // Optimise page size on new databases only (existing DBs are
+        // unaffected since page_size must be set before any tables).
+        let _ = conn.execute_batch("PRAGMA page_size=8192;");
         Ok(())
     }
 
@@ -617,6 +624,14 @@ impl StorageDb {
         Ok(manifest.digest == current_digest)
     }
 
+    /// Rebuild the query planner statistics. Call this after bulk imports
+    /// so the planner can make better index choices.
+    pub fn analyze(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("ANALYZE;")
+            .map_err(|e| format!("analyze: {e}"))
+    }
+
     /// Perform WAL checkpoint to keep the WAL file from growing unbounded.
     /// Call this periodically (e.g. after every batch of writes).
     pub fn wal_checkpoint(&self) -> Result<(), String> {
@@ -629,6 +644,8 @@ impl StorageDb {
         // Flush WAL before computing digest so the digest covers
         // all committed data and the WAL stays bounded.
         let _ = self.wal_checkpoint();
+        // Refresh query planner statistics after writes.
+        let _ = self.analyze();
         let digest = self.compute_digest()?;
         let table_count = {
             let conn = self.conn()?;
