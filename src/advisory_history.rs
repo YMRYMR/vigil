@@ -18,8 +18,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-const CACHE_FILE: &str = "vigil-advisory-change-history-cache.json";
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const DB_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
 const NVD_SOURCE_KEY: &str = "nvd-cve-history";
 const NVD_SOURCE_KIND: &str = "nvd";
@@ -277,32 +276,10 @@ pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
 }
 
 pub fn run_status_cli() -> Result<(), String> {
-    let path = cache_path();
-    if !path.exists() {
-        println!("NVD change history cache: empty (no protected cache found).");
-        return Ok(());
-    }
-
-    let loaded: Option<ChangeHistoryCache> =
-        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
-            format!(
-                "failed to load protected change-history cache {}: {e}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        println!(
-            "NVD change history cache: unavailable (protected cache could not be verified or restored)."
-        );
+    let Some(cache) = load_cache()? else {
+        println!("NVD change history cache: empty.");
         return Ok(());
     };
-    if cache.schema_version != CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected change-history cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
 
     let now = unix_now();
     let stale_sources = cache
@@ -480,28 +457,8 @@ fn load_cache_summary() -> Result<Option<CacheSummary>, String> {
 }
 
 fn load_cache() -> Result<Option<ChangeHistoryCache>, String> {
-    let path = cache_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let loaded: Option<ChangeHistoryCache> =
-        crate::security::policy::load_struct_with_integrity(&path).map_err(|e| {
-            format!(
-                "failed to load protected change-history cache {}: {e}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        return Ok(None);
-    };
-    if cache.schema_version != CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected change-history cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
-    Ok(Some(cache))
+    let db = crate::storage::db::StorageDb::open()?;
+    db.load_change_history_cache()
 }
 
 fn load_cache_for_import() -> Result<Option<ChangeHistoryCache>, String> {
@@ -516,17 +473,20 @@ fn load_cache_for_import() -> Result<Option<ChangeHistoryCache>, String> {
 }
 
 fn save_cache(cache: &ChangeHistoryCache) -> Result<(), String> {
-    let path = cache_path();
-    crate::security::policy::save_struct_with_integrity(&path, cache).map_err(|e| {
-        format!(
-            "failed to save protected change-history cache {}: {e}",
-            path.display()
-        )
-    })
-}
-
-fn cache_path() -> PathBuf {
-    crate::config::data_dir().join(CACHE_FILE)
+    let db = crate::storage::db::StorageDb::open()?;
+    for source in &cache.sources {
+        let source_changes: Vec<_> = cache
+            .changes
+            .iter()
+            .filter(|c| c.provenance.source_key == source.source_key)
+            .cloned()
+            .collect();
+        if !source_changes.is_empty() {
+            db.replace_change_events(&source_changes, &source.source_key)?;
+        }
+    }
+    db.checkpoint()?;
+    Ok(())
 }
 
 fn load_snapshot_batch(paths: &[PathBuf]) -> Result<ChangeHistoryCache, String> {
@@ -611,7 +571,7 @@ fn sync_with_fetcher(
 
 fn empty_cache(now: u64) -> ChangeHistoryCache {
     ChangeHistoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
+        schema_version: DB_SCHEMA_VERSION,
         generated_unix: now,
         sources: vec![],
         changes: vec![],
@@ -748,7 +708,7 @@ fn parse_snapshot(
         .unwrap_or_default();
 
     Ok(ChangeHistoryCache {
-        schema_version: CACHE_SCHEMA_VERSION,
+        schema_version: DB_SCHEMA_VERSION,
         generated_unix,
         sources: vec![source],
         changes,
@@ -882,7 +842,7 @@ fn merge_cache(
     imported: ChangeHistoryCache,
 ) -> ChangeHistoryCache {
     let mut cache = existing.unwrap_or_else(|| empty_cache(imported.generated_unix));
-    cache.schema_version = CACHE_SCHEMA_VERSION;
+    cache.schema_version = DB_SCHEMA_VERSION;
     cache.generated_unix = cache.generated_unix.max(imported.generated_unix);
     for source in imported.sources {
         merge_source(&mut cache.sources, source);
@@ -1071,7 +1031,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(cache.schema_version, CACHE_SCHEMA_VERSION);
+        assert_eq!(cache.schema_version, DB_SCHEMA_VERSION);
         assert_eq!(cache.changes.len(), 1);
         assert_eq!(cache.sources[0].source_key, NVD_SOURCE_KEY);
         assert_eq!(cache.sources[0].total_results, 1);
@@ -1175,10 +1135,8 @@ mod tests {
 
     #[test]
     fn protected_cache_round_trip_preserves_change_events() {
-        let dir = temp_dir();
-        let path = dir.join(CACHE_FILE);
         let cache = ChangeHistoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 42,
             sources: vec![AdvisorySourceCache {
                 source_key: NVD_SOURCE_KEY.into(),
@@ -1199,7 +1157,7 @@ mod tests {
                 event_name: "Initial Analysis".into(),
                 change_id: "change-9999".into(),
                 source_identifier: "nvd@example.com".into(),
-                created: Some("2026-04-26T10:00:00.000".into()),
+                created: Some("2026-01-01T00:00:00.000".into()),
                 details: vec![],
                 provenance: ChangeHistoryProvenance {
                     source_kind: NVD_SOURCE_KIND.into(),
@@ -1210,10 +1168,25 @@ mod tests {
             }],
         };
 
-        crate::security::policy::save_struct_with_integrity(&path, &cache).unwrap();
-        let loaded: ChangeHistoryCache = crate::security::policy::load_struct_with_integrity(&path)
-            .unwrap()
-            .unwrap();
+        // Ensure a matching advisory record exists so the FK resolves.
+        let db = crate::storage::db::StorageDb::open().unwrap();
+        db.replace_advisory_sources(&cache.sources).unwrap();
+        db.replace_advisory_records(
+            &[crate::advisory::VulnerabilityRecord {
+                primary_id: "CVE-2026-9999".into(),
+                provenance: crate::advisory::VulnerabilityProvenance {
+                    source_key: NVD_SOURCE_KEY.into(),
+                    source_kind: NVD_SOURCE_KIND.into(),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }],
+            NVD_SOURCE_KEY,
+            NVD_SOURCE_KIND,
+        )
+        .unwrap();
+        save_cache(&cache).unwrap();
+        let loaded = load_cache().unwrap().unwrap();
         assert_eq!(loaded.changes.len(), 1);
         assert_eq!(loaded.changes[0].cve_id, "CVE-2026-9999");
     }
@@ -1387,7 +1360,7 @@ mod tests {
     #[test]
     fn sync_windows_split_long_offline_gaps() {
         let existing = ChangeHistoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 0,
             sources: vec![],
             changes: vec![CveChangeEvent {
@@ -1430,7 +1403,7 @@ mod tests {
     #[test]
     fn sync_windows_skip_future_latest_timestamp() {
         let existing = ChangeHistoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 0,
             sources: vec![],
             changes: vec![CveChangeEvent {
@@ -1458,7 +1431,7 @@ mod tests {
     #[test]
     fn sync_with_fetcher_skips_stamp_when_no_windows_are_queried() {
         let existing = ChangeHistoryCache {
-            schema_version: CACHE_SCHEMA_VERSION,
+            schema_version: DB_SCHEMA_VERSION,
             generated_unix: 7,
             sources: vec![AdvisorySourceCache {
                 source_key: NVD_SOURCE_KEY.into(),

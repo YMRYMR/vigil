@@ -102,8 +102,7 @@ impl StorageDb {
                 change_unix INTEGER NOT NULL,
                 event_name  TEXT NOT NULL DEFAULT '',
                 details_json TEXT NOT NULL DEFAULT '{}',
-                PRIMARY KEY (change_id, primary_id, source_key),
-                FOREIGN KEY (primary_id, source_key) REFERENCES advisory_record(primary_id, source_key)
+                PRIMARY KEY (change_id, primary_id, source_key)
             );
 
             CREATE INDEX IF NOT EXISTS idx_change_event_cve
@@ -261,24 +260,21 @@ impl StorageDb {
         source_kind: &str,
     ) -> Result<(), String> {
         let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM advisory_change_event WHERE source_key = ?1",
-            [source_key],
-        )
-        .map_err(|e| format!("clear change events for {source_key}: {e}"))?;
-        conn.execute(
-            "DELETE FROM advisory_record WHERE source_key = ?1",
-            [source_key],
-        )
-        .map_err(|e| format!("clear records for {source_key}: {e}"))?;
         let mut stmt = conn
             .prepare(
                 "INSERT INTO advisory_record
                  (primary_id, source_key, source_kind, published_unix, updated_unix,
                   severity, exploited, payload_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(primary_id, source_key) DO UPDATE SET
+                 source_kind = excluded.source_kind,
+                 published_unix = excluded.published_unix,
+                 updated_unix = excluded.updated_unix,
+                 severity = excluded.severity,
+                 exploited = excluded.exploited,
+                 payload_json = excluded.payload_json",
             )
-            .map_err(|e| format!("prepare record insert: {e}"))?;
+            .map_err(|e| format!("prepare record upsert: {e}"))?;
         for rec in records {
             let published_unix = parse_nvd_timestamp(&rec.published).unwrap_or(0);
             let updated_unix = parse_nvd_timestamp(&rec.last_modified).unwrap_or(0);
@@ -413,6 +409,81 @@ impl StorageDb {
         Ok(result)
     }
 
+    // ── Change-history helpers ─────────────────────────────────────
+
+    pub fn replace_change_events(
+        &self,
+        changes: &[crate::advisory_history::CveChangeEvent],
+        source_key: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM advisory_change_event WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(|e| format!("clear changes for {source_key}: {e}"))?;
+        for evt in changes {
+            let change_unix = parse_nvd_timestamp(&evt.created).unwrap_or(0);
+            let details = serde_json::to_string(evt).unwrap_or_default();
+            conn.execute(
+                "INSERT INTO advisory_change_event
+                 (change_id, primary_id, source_key, change_unix, event_name, details_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    evt.change_id,
+                    evt.cve_id,
+                    source_key,
+                    change_unix,
+                    evt.event_name,
+                    details,
+                ],
+            )
+            .map_err(|e| format!("insert change {}: {e}", evt.change_id))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_change_history_cache(
+        &self,
+    ) -> Result<Option<crate::advisory_history::ChangeHistoryCache>, String> {
+        use crate::advisory_history::{ChangeHistoryCache, CveChangeEvent};
+        let sources = self.load_advisory_sources()?;
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let mut changes = Vec::new();
+        for src in &sources {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT details_json FROM advisory_change_event
+                     WHERE source_key = ?1 ORDER BY change_unix",
+                )
+                .map_err(|e| format!("prepare change select: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![src.source_key], |row| {
+                    let payload: String = row.get(0)?;
+                    Ok(payload)
+                })
+                .map_err(|e| format!("query changes for {}: {e}", src.source_key))?;
+            for row in rows {
+                let payload = row.map_err(|e| format!("read change: {e}"))?;
+                if let Ok(evt) = serde_json::from_str::<CveChangeEvent>(&payload) {
+                    changes.push(evt);
+                }
+            }
+        }
+        Ok(Some(ChangeHistoryCache {
+            schema_version: 1,
+            generated_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            sources,
+            changes,
+        }))
+    }
+
     pub fn verify(&self) -> Result<bool, String> {
         let stored: Option<StorageManifest> =
             crate::security::policy::load_struct_with_integrity(&self.manifest_path)
@@ -424,7 +495,18 @@ impl StorageDb {
         Ok(manifest.digest == current_digest)
     }
 
+    /// Perform WAL checkpoint to keep the WAL file from growing unbounded.
+    /// Call this periodically (e.g. after every batch of writes).
+    pub fn wal_checkpoint(&self) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("WAL checkpoint: {e}"))
+    }
+
     pub fn checkpoint(&self) -> Result<StorageManifest, String> {
+        // Flush WAL before computing digest so the digest covers
+        // all committed data and the WAL stays bounded.
+        let _ = self.wal_checkpoint();
         let digest = self.compute_digest()?;
         let table_count = {
             let conn = self.conn()?;
