@@ -317,71 +317,86 @@ fn reference_has_vendor_mitigation_guidance(reference: &VulnerabilityReference) 
 }
 
 fn mitigation_reference_tag(tag: &str) -> bool {
-    let normalized = tag
-        .trim()
-        .to_ascii_lowercase()
-        .replace(['-', '_', '/'], " ");
-    normalized.split_whitespace().any(|token| {
-        matches!(
-            token,
-            "mitigation"
-                | "mitigations"
-                | "remediation"
-                | "remediations"
-                | "workaround"
-                | "workarounds"
-                | "solution"
-                | "solutions"
-                | "fix"
-                | "fixes"
-                | "patch"
-                | "patches"
-                | "update"
-                | "updates"
-                | "upgrade"
-                | "upgrades"
-                | "guidance"
-                | "guidances"
-        )
-    })
+    let tokens = normalized_reference_tag_tokens(tag);
+    tokens.iter().any(|token| mitigation_guidance_token(token))
+        || tokens_include_split_workaround(&tokens)
 }
 
 fn vendor_guidance_reference_tag(tag: &str) -> bool {
-    let normalized = tag
-        .trim()
+    let tokens = normalized_reference_tag_tokens(tag);
+    tokens.iter().any(|token| token == "vendor")
+        && (tokens.iter().any(|token| vendor_guidance_token(token))
+            || tokens_include_split_workaround(&tokens))
+}
+
+fn normalized_reference_tag_tokens(tag: &str) -> Vec<String> {
+    tag.trim()
         .to_ascii_lowercase()
-        .replace(['-', '_', '/'], " ");
-    let tokens = normalized.split_whitespace().collect::<Vec<_>>();
-    tokens.contains(&"vendor")
-        && tokens.iter().any(|token| {
-            matches!(
-                *token,
-                "advisory"
-                    | "advisories"
-                    | "bulletin"
-                    | "bulletins"
-                    | "notice"
-                    | "notices"
-                    | "mitigation"
-                    | "mitigations"
-                    | "fix"
-                    | "fixes"
-                    | "patch"
-                    | "patches"
-                    | "update"
-                    | "updates"
-                    | "upgrade"
-                    | "upgrades"
-                    | "solution"
-                    | "solutions"
-                    | "remediation"
-                    | "remediations"
-                    | "workaround"
-                    | "workarounds"
-                    | "guidance"
-                    | "guidances"
-            )
-        })
+        .replace(['-', '_', '/'], " ")
+        .split_whitespace()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn tokens_include_split_workaround(tokens: &[String]) -> bool {
+    tokens.windows(2).any(|window| {
+        window[0] == "work"
+            && matches!(window[1].as_str(), "around" | "arounds")
+    })
+}
+
+fn mitigation_guidance_token(token: &str) -> bool {
+    matches!(
+        token,
+        "mitigation"
+            | "mitigations"
+            | "remediation"
+            | "remediations"
+            | "workaround"
+            | "workarounds"
+            | "solution"
+            | "solutions"
+            | "fix"
+            | "fixes"
+            | "patch"
+            | "patches"
+            | "update"
+            | "updates"
+            | "upgrade"
+            | "upgrades"
+            | "guidance"
+            | "guidances"
+    )
+}
+
+fn vendor_guidance_token(token: &str) -> bool {
+    matches!(
+        token,
+        "advisory"
+            | "advisories"
+            | "bulletin"
+            | "bulletins"
+            | "notice"
+            | "notices"
+            | "mitigation"
+            | "mitigations"
+            | "fix"
+            | "fixes"
+            | "patch"
+            | "patches"
+            | "update"
+            | "updates"
+            | "upgrade"
+            | "upgrades"
+            | "solution"
+            | "solutions"
+            | "remediation"
+            | "remediations"
+            | "workaround"
+            | "workarounds"
+            | "guidance"
+            | "guidances"
+    )
 }
 
 fn advisory_score_delta(known_exploited: bool, severity_rank: u8) -> u8 {
@@ -482,7 +497,7 @@ fn version_status_rank(status: VersionMatchStatus) -> u8 {
         VersionMatchStatus::InRange => 5,
         VersionMatchStatus::NoConstraint => 4,
         VersionMatchStatus::MissingInstalledVersion => 3,
-        VersionMatchStatus::Unknown => 2,
+        VersionStatus::Unknown => 2,
         VersionMatchStatus::OutOfRange => 1,
     }
 }
@@ -1126,6 +1141,50 @@ mod tests {
     }
 
     #[test]
+    fn split_work_around_reference_tag_marks_reason_when_reference_uses_space_separated_workaround() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-43337",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/work-around".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Work Around".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(!outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
     fn vendor_advisory_reference_without_remediation_tag_stays_unmatched() {
         let inventory = vec![installed(
             "google-chrome",
@@ -1371,6 +1430,50 @@ mod tests {
             url: "https://example.test/vendor-upgrade".into(),
             source: Some("nvd".into()),
             tags: vec!["Vendor Upgrade".into()],
+        }];
+        let cache = cache(vec![advisory]);
+
+        let outcome = advisory_score_from_data(
+            &target(
+                "chrome.exe",
+                "C:/Program Files/Google/Chrome/chrome.exe",
+                "Google LLC",
+            ),
+            &inventory,
+            &cache,
+        );
+
+        assert_eq!(outcome.score_delta, 3);
+        assert!(outcome.reasons[0].contains("mitigation guidance available"));
+        assert!(outcome.reasons[0].contains("vendor guidance available"));
+    }
+
+    #[test]
+    fn split_vendor_work_around_reference_tag_marks_vendor_guidance() {
+        let inventory = vec![installed(
+            "google-chrome",
+            "Google Chrome",
+            Some("google"),
+            Some("124.0.6367.91"),
+            &["chrome", "google-chrome"],
+            InventorySource::WindowsUninstallRegistry,
+        )];
+        let mut advisory = record(
+            "CVE-2026-44451",
+            true,
+            "CRITICAL",
+            9.8,
+            vec![affected(
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                None,
+                None,
+                None,
+            )],
+        );
+        advisory.references = vec![VulnerabilityReference {
+            url: "https://example.test/vendor-work-around".into(),
+            source: Some("nvd".into()),
+            tags: vec!["Vendor Work Around".into()],
         }];
         let cache = cache(vec![advisory]);
 
