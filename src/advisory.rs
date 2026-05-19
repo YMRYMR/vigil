@@ -60,6 +60,8 @@ pub struct AdvisorySourceCache {
     pub last_attempt_unix: u64,
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub retry_after_unix: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -609,6 +611,7 @@ fn nvd_refresh_due() -> bool {
             })
             .is_none_or(|source| {
                 source.expires_unix <= now
+                    || (source.retry_after_unix > 0 && source.retry_after_unix <= now)
                     || matches!(source.status, SourceHealth::Error | SourceHealth::Stale)
             }),
         Ok(None) => true,
@@ -690,6 +693,7 @@ fn stamp_nvd_sync_success(cache: &mut AdvisoryCache, requested_pages: usize, now
         source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
         source.status = SourceHealth::Fresh;
         source.last_error = None;
+        source.retry_after_unix = 0;
         if requested_pages > 1 {
             source.imported_from = None;
         }
@@ -707,6 +711,7 @@ fn stamp_nvd_sync_success(cache: &mut AdvisoryCache, requested_pages: usize, now
             status: SourceHealth::Fresh,
             last_attempt_unix: now,
             last_error: None,
+            retry_after_unix: 0,
         });
     }
 }
@@ -724,6 +729,15 @@ fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> Advi
             SourceHealth::Error
         };
         source.last_error = Some(err.to_string());
+        let prev_delay = source
+            .retry_after_unix
+            .saturating_sub(source.last_attempt_unix);
+        let next_delay = if prev_delay == 0 || prev_delay > 86400 {
+            300
+        } else {
+            (prev_delay * 2).min(86400)
+        };
+        source.retry_after_unix = now.saturating_add(next_delay);
     } else {
         cache.sources.push(AdvisorySourceCache {
             source_key: NVD_SOURCE_KEY.into(),
@@ -738,6 +752,7 @@ fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> Advi
             status: SourceHealth::Stale,
             last_attempt_unix: now,
             last_error: Some(err.to_string()),
+            retry_after_unix: 0,
         });
     }
     cache
@@ -772,6 +787,7 @@ fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<Advi
         status: SourceHealth::Fresh,
         last_attempt_unix: 0,
         last_error: None,
+        retry_after_unix: 0,
     };
 
     let imported_unix = fetched_unix;
@@ -1466,6 +1482,7 @@ mod tests {
                     status: SourceHealth::Fresh,
                     last_attempt_unix: 0,
                     last_error: None,
+                    retry_after_unix: 0,
                 },
                 AdvisorySourceCache {
                     source_key: "euvd".into(),
@@ -1480,6 +1497,7 @@ mod tests {
                     status: SourceHealth::Fresh,
                     last_attempt_unix: 0,
                     last_error: None,
+                    retry_after_unix: 0,
                 },
             ],
             records: vec![
@@ -1524,6 +1542,7 @@ mod tests {
                 status: SourceHealth::Fresh,
                 last_attempt_unix: 0,
                 last_error: None,
+                retry_after_unix: 0,
             }],
             records: vec![
                 VulnerabilityRecord {

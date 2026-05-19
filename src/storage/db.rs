@@ -173,9 +173,13 @@ impl StorageDb {
             .map_err(|e| format!("set schema version: {e}"))?;
         }
 
-        // Migration: add payload_json column to software_inventory if missing.
+        // Migration: add columns that may be missing on databases created
+        // with earlier schema versions.
         let _ = conn.execute_batch(
             "ALTER TABLE software_inventory ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}';",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE advisory_source ADD COLUMN retry_after_unix INTEGER NOT NULL DEFAULT 0;",
         );
 
         // Performance pragmas (best-effort, applied each session).
@@ -241,8 +245,8 @@ impl StorageDb {
         let mut stmt = conn
             .prepare(
                 "INSERT INTO advisory_source
-                 (source_key, source_kind, source_url, fetched_unix, expires_unix, status, last_error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (source_key, source_kind, source_url, fetched_unix, expires_unix, status, last_error, retry_after_unix)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             )
             .map_err(|e| format!("prepare source insert: {e}"))?;
         for src in sources {
@@ -259,6 +263,7 @@ impl StorageDb {
                 src.expires_unix,
                 status,
                 src.last_error.as_deref().unwrap_or(""),
+                src.retry_after_unix,
             ])
             .map_err(|e| format!("insert source {}: {e}", src.source_key))?;
         }
@@ -272,7 +277,7 @@ impl StorageDb {
         let mut stmt = conn
             .prepare(
                 "SELECT source_key, source_kind, source_url, fetched_unix,
-                        expires_unix, status, last_error
+                        expires_unix, status, last_error, retry_after_unix
                  FROM advisory_source ORDER BY source_key",
             )
             .map_err(|e| format!("prepare source select: {e}"))?;
@@ -285,6 +290,7 @@ impl StorageDb {
                 let expires_unix: u64 = row.get(4)?;
                 let status_str: String = row.get(5)?;
                 let last_error: String = row.get(6)?;
+                let retry_after_unix: u64 = row.get(7)?;
                 let status = match status_str.as_str() {
                     "stale" => crate::advisory::SourceHealth::Stale,
                     "error" => crate::advisory::SourceHealth::Error,
@@ -307,6 +313,7 @@ impl StorageDb {
                     } else {
                         Some(last_error)
                     },
+                    retry_after_unix,
                 })
             })
             .map_err(|e| format!("query sources: {e}"))?;

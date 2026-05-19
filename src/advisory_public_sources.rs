@@ -541,6 +541,7 @@ fn source_cache(
         status: SourceHealth::Fresh,
         last_attempt_unix: fetched_unix,
         last_error: None,
+        retry_after_unix: 0,
     }
 }
 
