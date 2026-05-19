@@ -13,7 +13,7 @@
 //! 4. On startup `verify` re-computes the digest and compares it to the
 //!    manifest, failing closed on mismatch.
 
-use rusqlite::Connection;
+use rusqlite::{types::ValueRef, Connection};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -150,14 +150,15 @@ impl StorageDb {
         self.conn.lock().map_err(|e| format!("lock db: {e}"))
     }
 
-    // ── Advisory source helpers ─────────────────────────────────────────
+    // -- Advisory source helpers ----------------------------------------
 
     pub fn replace_advisory_sources(
         &self,
         sources: &[crate::advisory::AdvisorySourceCache],
     ) -> Result<(), String> {
         let conn = self.conn()?;
-        // Delete child rows first to respect FK constraint.
+        // Keep the replacement order FK-safe so source metadata refreshes
+        // cannot leave the mirror partially stale.
         conn.execute("DELETE FROM advisory_change_event", [])
             .map_err(|e| format!("clear change events: {e}"))?;
         conn.execute("DELETE FROM advisory_record", [])
@@ -243,7 +244,7 @@ impl StorageDb {
         Ok(result)
     }
 
-    // ── Advisory record helpers ─────────────────────────────────────────
+    // -- Advisory record helpers ----------------------------------------
 
     pub fn replace_advisory_records(
         &self,
@@ -253,13 +254,18 @@ impl StorageDb {
     ) -> Result<(), String> {
         let conn = self.conn()?;
         conn.execute(
+            "DELETE FROM advisory_change_event WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(|e| format!("clear change events for {source_key}: {e}"))?;
+        conn.execute(
             "DELETE FROM advisory_record WHERE source_key = ?1",
             [source_key],
         )
         .map_err(|e| format!("clear records for {source_key}: {e}"))?;
         let mut stmt = conn
             .prepare(
-                "INSERT OR REPLACE INTO advisory_record
+                "INSERT INTO advisory_record
                  (primary_id, source_key, source_kind, published_unix, updated_unix,
                   severity, exploited, payload_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -337,6 +343,7 @@ impl StorageDb {
 
     fn compute_digest(&self) -> Result<String, String> {
         use sha2::{Digest, Sha256};
+
         let conn = self.conn()?;
         let tables: Vec<String> = conn
             .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
@@ -345,42 +352,95 @@ impl StorageDb {
             .map_err(|e| format!("query tables: {e}"))?
             .filter_map(|r| r.ok())
             .collect();
+
         let mut hasher = Sha256::new();
         for table in &tables {
-            // Hash every row in the table sorted by primary key so that
-            // any content change (not just row count) alters the digest.
-            let sql = format!("SELECT * FROM \"{table}\" ORDER BY (SELECT NULL) LIMIT -1");
-            if let Ok(mut stmt) = conn.prepare(&sql) {
-                if let Ok(mut rows) = stmt.query([]) {
-                    while let Ok(Some(row)) = rows.next() {
-                        for i in 0..row.as_ref().column_count() {
-                            hasher.update(format!("{}:", i));
-                            match row.get_ref(i) {
-                                Ok(rusqlite::types::ValueRef::Null) => {
-                                    hasher.update(b"null");
-                                }
-                                Ok(rusqlite::types::ValueRef::Integer(n)) => {
-                                    hasher.update(n.to_string().as_bytes());
-                                }
-                                Ok(rusqlite::types::ValueRef::Real(f)) => {
-                                    hasher.update(format!("{f}").as_bytes());
-                                }
-                                Ok(rusqlite::types::ValueRef::Text(t)) => {
-                                    hasher.update(t);
-                                }
-                                Ok(rusqlite::types::ValueRef::Blob(b)) => {
-                                    hasher.update(b);
-                                }
-                                Err(_) => hasher.update(b"err"),
-                            }
-                        }
-                        hasher.update(b"|");
-                    }
+            hasher.update(b"table:");
+            hasher.update(table.as_bytes());
+            hasher.update(b"\n");
+
+            let columns = table_columns(&conn, table)?;
+            if columns.is_empty() {
+                continue;
+            }
+            for column in &columns {
+                hasher.update(b"column:");
+                hasher.update(column.as_bytes());
+                hasher.update(b"\n");
+            }
+
+            let sql = ordered_row_digest_query(table, &columns);
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| format!("prepare digest query for {table}: {e}"))?;
+            let mut rows = stmt
+                .query([])
+                .map_err(|e| format!("run digest query for {table}: {e}"))?;
+            while let Some(row) = rows
+                .next()
+                .map_err(|e| format!("read digest row for {table}: {e}"))?
+            {
+                hasher.update(b"row:");
+                for (index, column) in columns.iter().enumerate() {
+                    hasher.update(column.as_bytes());
+                    hasher.update(b"=");
+                    let value = row
+                        .get_ref(index)
+                        .map_err(|e| format!("read {table}.{column}: {e}"))?;
+                    update_hash_with_value(&mut hasher, value);
+                    hasher.update(b"|");
                 }
+                hasher.update(b"\n");
             }
         }
+
         let result = hasher.finalize();
         Ok(result.iter().map(|b| format!("{b:02x}")).collect())
+    }
+}
+
+fn quote_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+fn table_columns(conn: &Connection, table: &str) -> Result<Vec<String>, String> {
+    let sql = format!("PRAGMA table_info({})", quote_identifier(table));
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| format!("prepare table info for {table}: {e}"))?;
+    let rows = stmt
+        .query_map([], |row| row.get(1))
+        .map_err(|e| format!("query table info for {table}: {e}"))?;
+    let mut columns = Vec::new();
+    for row in rows {
+        columns.push(row.map_err(|e| format!("read table info for {table}: {e}"))?);
+    }
+    Ok(columns)
+}
+
+fn ordered_row_digest_query(table: &str, columns: &[String]) -> String {
+    let quoted_columns: Vec<String> = columns.iter().map(|column| quote_identifier(column)).collect();
+    format!(
+        "SELECT {} FROM {} ORDER BY {}",
+        quoted_columns.join(", "),
+        quote_identifier(table),
+        quoted_columns.join(", ")
+    )
+}
+
+fn update_hash_with_value<D: sha2::Digest>(hasher: &mut D, value: ValueRef<'_>) {
+    match value {
+        ValueRef::Null => hasher.update(b"null"),
+        ValueRef::Integer(v) => hasher.update(format!("int:{v}").as_bytes()),
+        ValueRef::Real(v) => hasher.update(format!("real:{:016x}", v.to_bits()).as_bytes()),
+        ValueRef::Text(bytes) => {
+            hasher.update(b"text:");
+            hasher.update(bytes);
+        }
+        ValueRef::Blob(bytes) => {
+            hasher.update(format!("blob:{}:", bytes.len()).as_bytes());
+            hasher.update(bytes);
+        }
     }
 }
 
@@ -400,7 +460,6 @@ fn parse_nvd_timestamp(ts: &Option<String>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     fn test_db() -> StorageDb {
         let unique = format!(
@@ -423,6 +482,45 @@ mod tests {
         };
         db.bootstrap().unwrap();
         db
+    }
+
+    fn sample_source(source_key: &str, source_kind: &str) -> crate::advisory::AdvisorySourceCache {
+        crate::advisory::AdvisorySourceCache {
+            source_key: source_key.to_string(),
+            source_kind: source_kind.to_string(),
+            source_url: format!("https://example.test/{source_key}"),
+            fetched_unix: 1,
+            expires_unix: 2,
+            status: crate::advisory::SourceHealth::Fresh,
+            ..Default::default()
+        }
+    }
+
+    fn sample_record(
+        primary_id: &str,
+        source_key: &str,
+        source_kind: &str,
+    ) -> crate::advisory::VulnerabilityRecord {
+        crate::advisory::VulnerabilityRecord {
+            primary_id: primary_id.to_string(),
+            summary: "test record".to_string(),
+            published: Some("2026-05-19T08:00:00".to_string()),
+            last_modified: Some("2026-05-19T08:05:00".to_string()),
+            severities: vec![crate::advisory::VulnerabilitySeverity {
+                source: source_kind.to_string(),
+                scheme: "cvss".to_string(),
+                severity: "HIGH".to_string(),
+                score: Some(7.5),
+                vector: None,
+            }],
+            provenance: crate::advisory::VulnerabilityProvenance {
+                source_kind: source_kind.to_string(),
+                source_key: source_key.to_string(),
+                source_url: format!("https://example.test/{source_key}"),
+                imported_unix: 1,
+            },
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -502,5 +600,70 @@ mod tests {
 
         let verified = db.verify().unwrap();
         assert!(!verified, "verify should fail after tamper");
+    }
+
+    #[test]
+    fn verify_fails_after_record_content_tamper() {
+        let db = test_db();
+        let source = sample_source("nvd-cve", "nvd");
+        let record = sample_record("CVE-2026-0001", &source.source_key, &source.source_kind);
+        db.replace_advisory_sources(std::slice::from_ref(&source))
+            .unwrap();
+        db.replace_advisory_records(
+            std::slice::from_ref(&record),
+            &source.source_key,
+            &source.source_kind,
+        )
+        .unwrap();
+        db.checkpoint().unwrap();
+
+        {
+            let conn = db.conn().unwrap();
+            conn.execute(
+                "UPDATE advisory_record SET payload_json = ?1 WHERE primary_id = ?2",
+                rusqlite::params!["{\"tampered\":true}", record.primary_id],
+            )
+            .unwrap();
+        }
+
+        let verified = db.verify().unwrap();
+        assert!(!verified, "verify should fail after record-content tamper");
+    }
+
+    #[test]
+    fn replace_advisory_sources_clears_dependent_rows_before_replacing_sources() {
+        let db = test_db();
+        let source1 = sample_source("nvd-cve", "nvd");
+        let source2 = sample_source("bsi", "bsi");
+        let record1 = sample_record("CVE-2026-0001", &source1.source_key, &source1.source_kind);
+        let record2 = sample_record("BSI-2026-0002", &source2.source_key, &source2.source_kind);
+
+        db.replace_advisory_sources(std::slice::from_ref(&source1))
+            .unwrap();
+        db.replace_advisory_records(
+            std::slice::from_ref(&record1),
+            &source1.source_key,
+            &source1.source_kind,
+        )
+        .unwrap();
+
+        db.replace_advisory_sources(&[source1.clone(), source2.clone()])
+            .unwrap();
+        db.replace_advisory_records(
+            std::slice::from_ref(&record1),
+            &source1.source_key,
+            &source1.source_kind,
+        )
+        .unwrap();
+        db.replace_advisory_records(
+            std::slice::from_ref(&record2),
+            &source2.source_key,
+            &source2.source_kind,
+        )
+        .unwrap();
+
+        let sources = db.load_advisory_sources().unwrap();
+        assert_eq!(sources.len(), 2);
+        assert_eq!(db.count_advisory_records().unwrap(), 2);
     }
 }
