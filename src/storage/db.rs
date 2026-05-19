@@ -305,6 +305,46 @@ impl StorageDb {
         Ok(count as usize)
     }
 
+    pub fn load_advisory_cache(&self) -> Result<Option<crate::advisory::AdvisoryCache>, String> {
+        let sources = self.load_advisory_sources()?;
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let conn = self.conn()?;
+        let mut records = Vec::new();
+        for src in &sources {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM advisory_record
+                     WHERE source_key = ?1 AND source_kind = ?2",
+                )
+                .map_err(|e| format!("prepare record select: {e}"))?;
+            let rows = stmt
+                .query_map(rusqlite::params![src.source_key, src.source_kind], |row| {
+                    let payload: String = row.get(0)?;
+                    Ok(payload)
+                })
+                .map_err(|e| format!("query records for {}: {e}", src.source_key))?;
+            for row in rows {
+                let payload = row.map_err(|e| format!("read record: {e}"))?;
+                if let Ok(rec) =
+                    serde_json::from_str::<crate::advisory::VulnerabilityRecord>(&payload)
+                {
+                    records.push(rec);
+                }
+            }
+        }
+        Ok(Some(crate::advisory::AdvisoryCache {
+            schema_version: 1,
+            generated_unix: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            sources,
+            records,
+        }))
+    }
+
     pub fn verify(&self) -> Result<bool, String> {
         let stored: Option<StorageManifest> =
             crate::security::policy::load_struct_with_integrity(&self.manifest_path)
