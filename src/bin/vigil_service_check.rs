@@ -84,27 +84,33 @@ fn main() {
     }
 
     // Report results.
-    let mut all_pass = true;
+    let mut has_failures = false;
+    let mut has_warnings = false;
     for r in &results {
         let icon = match r.status {
             CheckStatus::Pass => "✅",
-            CheckStatus::Fail => "❌",
-            CheckStatus::Warn => "⚠️",
+            CheckStatus::Fail => {
+                has_failures = true;
+                "❌"
+            }
+            CheckStatus::Warn => {
+                has_warnings = true;
+                "⚠️"
+            }
         };
         println!(" {icon} {}: {}", r.check, r.detail);
-        if matches!(r.status, CheckStatus::Fail) {
-            all_pass = false;
-        }
     }
 
     println!();
-    if all_pass {
-        println!("✅ All checks passed. Service parity is healthy.");
-    } else {
+    if has_failures {
         println!("❌ Some checks failed. Run with --fix to attempt repairs.");
-        if fix_mode {
-            println!("Fix mode is enabled but not all repairs are automated.");
-        }
+    } else if has_warnings {
+        println!("⚠️ All required checks passed, but there are warnings to review.");
+    } else {
+        println!("✅ All checks passed. Service parity is healthy.");
+    }
+    if fix_mode && (has_failures || has_warnings) {
+        println!("   Fix mode is enabled but not all repairs are automated.");
     }
 }
 
@@ -325,13 +331,13 @@ fn check_linux_service() -> Vec<CheckResult> {
         });
     }
 
-    // Check capabilities via the systemd unit file. When the unit has
-    // CapabilityBoundingSet=CAP_NET_ADMIN or runs as root (no bounding
-    // set restriction), Vigil has the required network privileges.
+    // Check capabilities via the systemd unit file. Firewall and eBPF
+    // operations require CAP_NET_ADMIN specifically. CAP_NET_RAW alone
+    // is insufficient.
     let has_caps = if service_exists {
         let content = std::fs::read_to_string(LINUX_SERVICE_PATH).unwrap_or_default();
         let has_bounding = content.contains("CapabilityBoundingSet");
-        let has_admin = content.contains("CAP_NET_ADMIN") || content.contains("CAP_NET_RAW");
+        let has_admin = content.contains("CAP_NET_ADMIN");
         let runs_as_root = content.contains("User=root") || !content.contains("User=");
         // If no bounding set is configured, root has all caps.
         // If bounding set is configured, it must include CAP_NET_ADMIN.
