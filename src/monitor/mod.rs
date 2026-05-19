@@ -36,6 +36,54 @@ use std::sync::{Arc, RwLock};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{sleep, Duration};
 
+/// Shared handler for RawConn events from any real-time source (ETW/eBPF).
+/// Deduplicates the new-connection / terminal-state / process_conn logic
+/// that was previously duplicated between the ETW and eBPF branches.
+fn handle_realtime_event(
+    raw_conn: RawConn,
+    known: &mut HashMap<ConnKey, ConnInfo>,
+    beacon: &mut BeaconTracker,
+    config: &Arc<RwLock<Config>>,
+    tx: &broadcast::Sender<ConnEvent>,
+    svc_map: &HashMap<u32, String>,
+    threshold: u8,
+    log_all: bool,
+    long_lived: &std::sync::Arc<LongLivedTracker>,
+    etw_expected: bool,
+    etw_active: bool,
+) {
+    let key = ConnKey::from(&raw_conn);
+    if known.contains_key(&key) {
+        if matches!(
+            raw_conn.status.as_str(),
+            "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB"
+        ) {
+            if let Some(info) = known.remove(&key) {
+                let _ = tx.send(ConnEvent::Closed {
+                    pid: info.pid,
+                    local: info.local_addr.clone(),
+                    remote: info.remote_addr.clone(),
+                });
+            }
+        }
+        return;
+    }
+    let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
+    process_conn(
+        &raw_conn,
+        beaconing,
+        known,
+        svc_map,
+        config,
+        tx,
+        threshold,
+        log_all,
+        long_lived,
+        etw_expected,
+        etw_active,
+    );
+}
+
 /// Stores the last 100 pipeline timing snapshots for diagnostics.
 const TIMING_HISTORY_CAP: usize = 100;
 
@@ -297,23 +345,7 @@ async fn poll_loop(
             raw = recv_etw(&mut etw_rx) => {
                 match raw {
                     Some(raw_conn) => {
-                        let key = ConnKey::from(&raw_conn);
-                        if !known.contains_key(&key) {
-                            let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
-                            process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
-                        } else if is_terminal_state(&raw_conn.status) {
-                            // eBPF fires on every TCP state transition. When a known
-                            // connection transitions to a terminal state (CLOSED,
-                            // TIME_WAIT, etc.), remove it immediately instead of
-                            // waiting for the slower polling cleanup pass.
-                            if let Some(info) = known.remove(&key) {
-                                let _ = tx.send(ConnEvent::Closed {
-                                    pid: info.pid,
-                                    local: info.local_addr.clone(),
-                                    remote: info.remote_addr.clone(),
-                                });
-                            }
-                        }
+                        handle_realtime_event(raw_conn, &mut known, &mut beacon, &config, &tx, &svc_map, threshold, log_all, &long_lived, etw_expected, etw_active);
                     }
                     None => {
                         tracing::warn!("ETW channel closed; falling back to polling");
@@ -325,19 +357,7 @@ async fn poll_loop(
             raw = recv_ebpf(&mut ebpf_rx), if etw_rx.is_none() => {
                 match raw {
                     Some(raw_conn) => {
-                        let key = ConnKey::from(&raw_conn);
-                        if !known.contains_key(&key) {
-                            let beaconing = beacon.record(raw_conn.pid, &raw_conn.remote_ip);
-                            process_conn(&raw_conn, beaconing, &mut known, &svc_map, &config, &tx, threshold, log_all, &long_lived, etw_expected, etw_active);
-                        } else if is_terminal_state(&raw_conn.status) {
-                            if let Some(info) = known.remove(&key) {
-                                let _ = tx.send(ConnEvent::Closed {
-                                    pid: info.pid,
-                                    local: info.local_addr.clone(),
-                                    remote: info.remote_addr.clone(),
-                                });
-                            }
-                        }
+                        handle_realtime_event(raw_conn, &mut known, &mut beacon, &config, &tx, &svc_map, threshold, log_all, &long_lived, etw_expected, etw_active);
                     }
                     None => {
                         ebpf_rx = None;
@@ -377,6 +397,7 @@ async fn poll_loop(
 
 /// States that indicate the connection has finished and should be removed
 /// from the active set immediately rather than waiting for polling cleanup.
+#[allow(dead_code)]
 fn is_terminal_state(status: &str) -> bool {
     matches!(status, "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB")
 }
@@ -556,16 +577,23 @@ fn process_conn(
     // Compute per-process exposure: exposed if any connection (including
     // the current one, which is not yet in `known`) has a globally routable
     // listener address or a public remote IP.
+    // For LISTEN sockets, treat wildcard (0.0.0.0, ::) as exposed since
+    // they bind to all interfaces including public ones.
     let local_addr = format!("{}:{}", raw_conn.local_ip, raw_conn.local_port);
     let current_exposed = if raw_conn.status == "LISTEN" || raw_conn.remote_ip.is_empty() {
-        is_remote_public(&local_addr)
+        raw_conn.local_ip == "0.0.0.0" || raw_conn.local_ip == "::" || is_remote_public(&local_addr)
     } else {
         is_remote_public(&format!("{}:{}", raw_conn.remote_ip, raw_conn.remote_port))
     };
     let pid_exposed = current_exposed
         || known.values().filter(|c| c.pid == raw_conn.pid).any(|c| {
             if c.status == "LISTEN" || c.remote_addr == "LISTEN" {
-                is_remote_public(&c.local_addr)
+                // Check for wildcard listeners: 0.0.0.0:port (IPv4) or
+                // :::port (IPv6 unspecified — three colons because the
+                // address is "::" and the port separator adds another ":").
+                c.local_addr.starts_with("0.0.0.0:")
+                    || c.local_addr.starts_with(":::")
+                    || is_remote_public(&c.local_addr)
             } else {
                 is_remote_public(&c.remote_addr)
             }

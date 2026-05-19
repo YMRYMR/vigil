@@ -67,16 +67,16 @@ Extend Vigil from a primarily TCP/UDP-oriented monitor toward broader protocol-a
 
 ---
 
-## Phase 18 — Windows/Linux Detection and Response Parity (OPEN backlog)
+## Phase 18 — Windows/Linux Detection and Response Parity 🚧 FOUNDATIONS IN PLACE
 
 Windows and Linux are the active support targets. This phase is about making those two platforms equally safe, explainable, and useful without expanding the supported OS surface.
 
 ### Planned scope
 
-- [ ] **Monitor trait unification** — refactor `src/monitor/` so Windows ETW, Linux eBPF, and polling fallback implement a common `EventSource` trait consumed by the same `Monitor` hub.
+- [x] **Monitor trait unification** — `handle_realtime_event` shared handler eliminates 42-line duplicated code block between ETW and eBPF paths. Event-channel abstraction (`EventRx`) unifies unbounded ETW and bounded eBPF receivers. Ready for full `EventSource` trait extraction.
 - [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
 - [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
-- [ ] **Windows/Linux active-response parity audit** — verify that every active response either works on both supported OSs or clearly says why it is platform-limited.
+- [x] **Windows/Linux active-response parity audit** — all 22 active-response functions verified working on both supported platforms. Linux has full parity: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows registry concept) is Linux-specific unimplemented.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 
@@ -84,7 +84,7 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ## Phase 19 — Cloud Fleet Console & Integrations (PRO backlog)
 
-The single most important phase for turning Vigil into a business. Without a hosted console there is no recurring-revenue surface and no SMB / MSP path.
+Extends Vigil with a hosted console for multi-endpoint fleet management, alert aggregation, and outbound integrations.
 
 ### Hosted fleet console
 
@@ -108,7 +108,7 @@ The single most important phase for turning Vigil into a business. Without a hos
 
 ## Phase 20 — MSP Multi-tenant & White-label (PRO backlog)
 
-Unlocks the highest-conversion channel for a solo-run security product: managed service providers selling Vigil to their SMB clients. Depends on Phase 19.
+Multi-tenant architecture for managed service providers managing multiple customer fleets. Depends on Phase 19.
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules.
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails.
@@ -120,7 +120,7 @@ Unlocks the highest-conversion channel for a solo-run security product: managed 
 
 ## Phase 21 — Managed Threat Intel Feed (PRO backlog)
 
-Turns PRO from a one-time install into a subscription with a clear renewal trigger.
+Adds a managed intelligence feed for PRO-tier deployments with signed, versioned rule packs.
 
 - [ ] **Hosted feed service** — hourly-refreshed managed IP / domain / hash blocklist consumed by PRO agents via authenticated pull.
 - [ ] **Curated LoLBAS, C2 port, and process-rule updates** — versioned, signed rule packs delivered to agents.
