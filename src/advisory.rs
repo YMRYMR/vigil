@@ -83,6 +83,9 @@ pub struct VulnerabilityRecord {
     pub affected_products: Vec<AffectedProduct>,
     pub references: Vec<VulnerabilityReference>,
     pub mitigations: Vec<String>,
+    pub fix_version: Option<String>,
+    pub workaround_instructions: Vec<String>,
+    pub upgrade_instructions: Vec<String>,
     pub provenance: VulnerabilityProvenance,
 }
 
@@ -491,7 +494,18 @@ fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
     match result {
         Ok(()) => {
             db.commit()?;
-            db.checkpoint().map(|_| ())
+            db.checkpoint()?;
+            // Extract IOCs from advisory records and feed into blocklist engine.
+            let iocs = crate::advisory_ioc::extract_iocs(&cache.records);
+            if !iocs.is_empty() {
+                crate::blocklist::add_advisory_iocs(
+                    "advisory",
+                    iocs.ips,
+                    iocs.domains,
+                    iocs.hashes,
+                );
+            }
+            Ok(())
         }
         Err(err) => {
             let _ = db.rollback();
@@ -959,6 +973,9 @@ fn parse_nvd_record(
         affected_products,
         references,
         mitigations,
+        fix_version: parse_fix_version(cve),
+        workaround_instructions: parse_workaround_instructions(cve),
+        upgrade_instructions: parse_upgrade_instructions(cve),
         provenance: VulnerabilityProvenance {
             source_kind: NVD_SOURCE_KIND.into(),
             source_key: NVD_SOURCE_KEY.into(),
@@ -1020,6 +1037,66 @@ fn parse_mitigations(cve: &Value) -> Vec<String> {
         }
     }
     mitigations
+}
+
+fn parse_fix_version(cve: &Value) -> Option<String> {
+    cve.get("references")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|r| {
+            let url = r.get("url").and_then(Value::as_str)?;
+            let tags = r.get("tags")?.as_array()?;
+            let has_fix_tag = tags.iter().filter_map(Value::as_str).any(|tag| {
+                tag.eq_ignore_ascii_case("patch")
+                    || tag.eq_ignore_ascii_case("fix")
+                    || tag.eq_ignore_ascii_case("vendor fix")
+            });
+            if has_fix_tag {
+                Some(url.to_string())
+            } else {
+                None
+            }
+        })
+        .next()
+}
+
+fn parse_workaround_instructions(cve: &Value) -> Vec<String> {
+    extract_instructional_urls(cve, |tag| {
+        tag.eq_ignore_ascii_case("workaround") || tag.eq_ignore_ascii_case("mitigation")
+    })
+}
+
+fn parse_upgrade_instructions(cve: &Value) -> Vec<String> {
+    extract_instructional_urls(cve, |tag| {
+        tag.eq_ignore_ascii_case("upgrade")
+            || tag.eq_ignore_ascii_case("update")
+            || tag.eq_ignore_ascii_case("vendor upgrade")
+    })
+}
+
+fn extract_instructional_urls<F>(cve: &Value, matcher: F) -> Vec<String>
+where
+    F: Fn(&str) -> bool,
+{
+    let mut result = Vec::new();
+    if let Some(references) = cve.get("references").and_then(Value::as_array) {
+        for reference in references {
+            let Some(url) = reference.get("url").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(tags) = reference.get("tags").and_then(Value::as_array) else {
+                continue;
+            };
+            if tags
+                .iter()
+                .filter_map(Value::as_str)
+                .any(|tag| matcher(tag))
+            {
+                push_unique(&mut result, url.to_string());
+            }
+        }
+    }
+    result
 }
 
 fn parse_references(cve: &Value) -> Vec<VulnerabilityReference> {

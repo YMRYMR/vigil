@@ -350,6 +350,9 @@ fn parse_json_record(
         affected_products: products_from_value(value),
         references: references_from_value(value, source_kind.source_name(), &source_url),
         mitigations,
+        fix_version: None,
+        workaround_instructions: vec![],
+        upgrade_instructions: vec![],
         provenance: VulnerabilityProvenance {
             source_kind: source_kind.source_kind().into(),
             source_key: source_kind.source_key().into(),
@@ -417,6 +420,9 @@ fn parse_rss_item(
         affected_products: Vec::new(),
         references,
         mitigations: Vec::new(),
+        fix_version: None,
+        workaround_instructions: vec![],
+        upgrade_instructions: vec![],
         provenance: VulnerabilityProvenance {
             source_kind: source_kind.source_kind().into(),
             source_key: source_kind.source_key().into(),

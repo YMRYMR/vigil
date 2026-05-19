@@ -300,6 +300,9 @@ fn parse_euvd_record(value: &Value, imported_unix: u64) -> Option<VulnerabilityR
         affected_products: products_from_value(value),
         references,
         mitigations,
+        fix_version: None,
+        workaround_instructions: vec![],
+        upgrade_instructions: vec![],
         provenance: VulnerabilityProvenance {
             source_kind: EUVD_SOURCE_KIND.into(),
             source_key: EUVD_SOURCE_KEY.into(),
@@ -356,6 +359,9 @@ fn parse_jvn_json_record(value: &Value, imported_unix: u64) -> Option<Vulnerabil
         affected_products: products_from_value(value),
         references: references_from_value(value, "JVN", &source_url),
         mitigations,
+        fix_version: None,
+        workaround_instructions: vec![],
+        upgrade_instructions: vec![],
         provenance: VulnerabilityProvenance {
             source_kind: JVN_SOURCE_KIND.into(),
             source_key: JVN_SOURCE_KEY.into(),
@@ -399,6 +405,9 @@ fn parse_jvn_rss_item(item: &str, imported_unix: u64) -> Option<VulnerabilityRec
             tags: vec!["source".into()],
         }],
         mitigations: Vec::new(),
+        fix_version: None,
+        workaround_instructions: vec![],
+        upgrade_instructions: vec![],
         provenance: VulnerabilityProvenance {
             source_kind: JVN_SOURCE_KIND.into(),
             source_key: JVN_SOURCE_KEY.into(),
