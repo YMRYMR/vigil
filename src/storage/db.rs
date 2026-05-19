@@ -157,6 +157,11 @@ impl StorageDb {
         sources: &[crate::advisory::AdvisorySourceCache],
     ) -> Result<(), String> {
         let conn = self.conn()?;
+        // Delete child rows first to respect FK constraint.
+        conn.execute("DELETE FROM advisory_change_event", [])
+            .map_err(|e| format!("clear change events: {e}"))?;
+        conn.execute("DELETE FROM advisory_record", [])
+            .map_err(|e| format!("clear records: {e}"))?;
         conn.execute("DELETE FROM advisory_source", [])
             .map_err(|e| format!("clear sources: {e}"))?;
         let mut stmt = conn
@@ -342,22 +347,20 @@ impl StorageDb {
             .collect();
         let mut hasher = Sha256::new();
         for table in &tables {
-            let count: i64 = conn
-                .query_row(&format!("SELECT COUNT(*) FROM \"{table}\""), [], |row| {
-                    row.get(0)
-                })
-                .unwrap_or(0);
-            hasher.update(format!("{table}:{count}"));
-            if table == &"meta" {
-                if let Ok(mut rows) = conn.prepare("SELECT key, value FROM meta ORDER BY key") {
-                    if let Ok(iter) = rows.query_map([], |row| {
-                        let key: String = row.get(0)?;
-                        let value: String = row.get(1)?;
-                        Ok((key, value))
-                    }) {
-                        for row in iter.flatten() {
-                            hasher.update(format!("{}={}", row.0, row.1));
+            // Hash every row in the table sorted by primary key so that
+            // any content change (not just row count) alters the digest.
+            let sql = format!("SELECT * FROM \"{table}\" ORDER BY (SELECT NULL) LIMIT -1");
+            if let Ok(mut stmt) = conn.prepare(&sql) {
+                if let Ok(mut rows) = stmt.query([]) {
+                    while let Ok(Some(row)) = rows.next() {
+                        for i in 0..row.as_ref().column_count() {
+                            let val: Result<String, _> = row.get(i);
+                            if let Ok(v) = val {
+                                hasher.update(format!("{}:", i));
+                                hasher.update(v.as_bytes());
+                            }
                         }
+                        hasher.update(b"|");
                     }
                 }
             }
