@@ -354,10 +354,24 @@ impl StorageDb {
                 if let Ok(mut rows) = stmt.query([]) {
                     while let Ok(Some(row)) = rows.next() {
                         for i in 0..row.as_ref().column_count() {
-                            let val: Result<String, _> = row.get(i);
-                            if let Ok(v) = val {
-                                hasher.update(format!("{}:", i));
-                                hasher.update(v.as_bytes());
+                            hasher.update(format!("{}:", i));
+                            match row.get_ref(i) {
+                                Ok(rusqlite::types::ValueRef::Null) => {
+                                    hasher.update(b"null");
+                                }
+                                Ok(rusqlite::types::ValueRef::Integer(n)) => {
+                                    hasher.update(n.to_string().as_bytes());
+                                }
+                                Ok(rusqlite::types::ValueRef::Real(f)) => {
+                                    hasher.update(format!("{f}").as_bytes());
+                                }
+                                Ok(rusqlite::types::ValueRef::Text(t)) => {
+                                    hasher.update(t);
+                                }
+                                Ok(rusqlite::types::ValueRef::Blob(b)) => {
+                                    hasher.update(b);
+                                }
+                                Err(_) => hasher.update(b"err"),
                             }
                         }
                         hasher.update(b"|");

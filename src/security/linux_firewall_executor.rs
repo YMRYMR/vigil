@@ -10,7 +10,7 @@ use super::linux_command_plan::{
     iptables_delete_rule, nft_delete_rule_by_handle, nft_flush_chain, nft_list_chain_handles,
     nft_list_ruleset, nft_parse_handle_by_comment, LinuxCommand, LinuxCommandRunner,
     NFT_FORWARD_CHAIN, NFT_INPUT_CHAIN, NFT_ISOL_FORWARD_CHAIN, NFT_ISOL_IN_CHAIN,
-    NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN,
+    NFT_ISOL_OUT_CHAIN, NFT_OUTPUT_CHAIN, NFT_TABLE,
 };
 use super::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_block_remote_plan,
@@ -182,8 +182,21 @@ pub fn execute_selected_delete_plan(
     let backend = select_firewall_backend(runner);
     match backend {
         LinuxFirewallBackend::Nftables => {
-            for chain in &[NFT_INPUT_CHAIN, NFT_OUTPUT_CHAIN, NFT_FORWARD_CHAIN] {
-                let output = runner.stdout(&nft_list_chain_handles(chain))?;
+            // Check both main chains and isolation sub-chains so that
+            // isolation rules and remote/UID block rules are both found.
+            for chain in &[
+                NFT_INPUT_CHAIN,
+                NFT_OUTPUT_CHAIN,
+                NFT_FORWARD_CHAIN,
+                NFT_ISOL_IN_CHAIN,
+                NFT_ISOL_FORWARD_CHAIN,
+                NFT_ISOL_OUT_CHAIN,
+            ] {
+                let output = match runner.stdout(&nft_list_chain_handles(chain)) {
+                    Ok(o) => o,
+                    // Chain may not exist yet (first isolation) — skip.
+                    Err(_) => continue,
+                };
                 if let Some(handle) = nft_parse_handle_by_comment(&output, rule_name) {
                     runner.status(&nft_delete_rule_by_handle(chain, handle))?;
                 }
