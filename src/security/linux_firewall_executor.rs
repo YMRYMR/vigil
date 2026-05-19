@@ -6,7 +6,7 @@
 
 #[cfg(target_os = "linux")]
 use super::linux_command_plan::StdLinuxCommandRunner;
-use super::linux_command_plan::{LinuxCommand, LinuxCommandRunner};
+use super::linux_command_plan::{nft_delete_table, LinuxCommand, LinuxCommandRunner};
 use super::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_block_remote_plan,
     firewall_backend_block_uid_plan, firewall_backend_isolate_plan, firewall_backend_restore_plan,
@@ -74,7 +74,11 @@ pub fn execute_selected_isolate_plan(
         Ok(s) => s,
         Err(e) => return Err((e, None)),
     };
-    let mut commands = firewall_backend_setup_plan(backend);
+    let mut commands = Vec::new();
+    if backend == LinuxFirewallBackend::Nftables {
+        let _ = runner.status(&nft_delete_table());
+    }
+    commands.extend(firewall_backend_setup_plan(backend));
     commands.extend(firewall_backend_isolate_plan(backend, rule_name));
     for command in &commands {
         if let Err(e) = runner.status(command) {
@@ -218,7 +222,7 @@ mod tests {
             .commands
             .iter()
             .all(|command| command.program == "nft"));
-        assert_eq!(runner.commands.borrow().len(), executed.commands.len());
+        assert_eq!(runner.commands.borrow().len(), executed.commands.len() + 1);
         assert_eq!(
             executed.restore_state,
             Some(LinuxFirewallRestoreState {
@@ -314,7 +318,7 @@ mod tests {
         let runner = RecordingRunner::failing(true, "nft");
         let (err, restore_state) = execute_selected_isolate_plan(&runner, "isolate").unwrap_err();
         assert!(err.contains("nft failed"));
-        assert_eq!(runner.commands.borrow().len(), 1);
+        assert_eq!(runner.commands.borrow().len(), 2);
         assert!(restore_state.is_some());
     }
 

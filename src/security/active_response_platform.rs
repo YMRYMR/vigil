@@ -1114,8 +1114,10 @@ mod imp {
     pub fn snapshot_firewall_profiles() -> Result<FirewallSnapshot, String> {
         #[cfg(target_os = "linux")]
         {
-            let ipt_snapshot = capture_iptables_policy_snapshot(&StdLinuxCommandRunner)?;
-            return Ok(iptables_snapshot_to_firewall(&ipt_snapshot));
+            if let Ok(ipt_snapshot) = capture_iptables_policy_snapshot(&StdLinuxCommandRunner) {
+                return Ok(iptables_snapshot_to_firewall(&ipt_snapshot));
+            }
+            return Ok(FirewallSnapshot { profiles: vec![] });
         }
         #[allow(unreachable_code)]
         Ok(FirewallSnapshot { profiles: vec![] })
