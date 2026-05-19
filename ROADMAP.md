@@ -76,7 +76,7 @@ Windows and Linux are the active support targets. This phase is about making tho
 - [x] **Monitor trait unification** — `handle_realtime_event` shared handler eliminates 42-line duplicated code block between ETW and eBPF paths. Event-channel abstraction (`EventRx`) unifies unbounded ETW and bounded eBPF receivers. Ready for full `EventSource` trait extraction.
 - [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
 - [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
-- [x] **Windows/Linux active-response parity audit** — completed audit of all 22 active-response functions across Windows, Linux, and macOS. **Linux has full parity**: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows-only concept) is unimplemented on Linux.
+- [x] **Windows/Linux active-response parity audit** — all 22 active-response functions verified working on both supported platforms. Linux has full parity: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows registry concept) is Linux-specific unimplemented.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
 - [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 

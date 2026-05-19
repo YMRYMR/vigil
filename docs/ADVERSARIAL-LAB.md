@@ -60,15 +60,6 @@ VBoxManage --version
 If Secure Boot blocks the VirtualBox kernel module, either enroll the module key
 or use a host configuration where VirtualBox modules can load normally.
 
-### macOS host
-
-```bash
-brew install --cask virtualbox
-VBoxManage --version
-```
-
-Grant the required macOS system extension permissions if prompted.
-
 ### Windows host with PowerShell
 
 Install VirtualBox from the official installer, then open a new PowerShell window
