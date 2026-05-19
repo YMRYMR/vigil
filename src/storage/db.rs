@@ -150,6 +150,148 @@ impl StorageDb {
         self.conn.lock().map_err(|e| format!("lock db: {e}"))
     }
 
+    // ── Advisory source helpers ─────────────────────────────────────────
+
+    pub fn replace_advisory_sources(
+        &self,
+        sources: &[crate::advisory::AdvisorySourceCache],
+    ) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute("DELETE FROM advisory_source", [])
+            .map_err(|e| format!("clear sources: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO advisory_source
+                 (source_key, source_kind, source_url, fetched_unix, expires_unix, status, last_error)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            )
+            .map_err(|e| format!("prepare source insert: {e}"))?;
+        for src in sources {
+            let status = match &src.status {
+                crate::advisory::SourceHealth::Fresh => "fresh",
+                crate::advisory::SourceHealth::Stale => "stale",
+                crate::advisory::SourceHealth::Error => "error",
+            };
+            stmt.execute(rusqlite::params![
+                src.source_key,
+                src.source_kind,
+                src.source_url,
+                src.fetched_unix,
+                src.expires_unix,
+                status,
+                src.last_error.as_deref().unwrap_or(""),
+            ])
+            .map_err(|e| format!("insert source {}: {e}", src.source_key))?;
+        }
+        Ok(())
+    }
+
+    pub fn load_advisory_sources(
+        &self,
+    ) -> Result<Vec<crate::advisory::AdvisorySourceCache>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT source_key, source_kind, source_url, fetched_unix,
+                        expires_unix, status, last_error
+                 FROM advisory_source ORDER BY source_key",
+            )
+            .map_err(|e| format!("prepare source select: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let source_key: String = row.get(0)?;
+                let source_kind: String = row.get(1)?;
+                let source_url: String = row.get(2)?;
+                let fetched_unix: u64 = row.get(3)?;
+                let expires_unix: u64 = row.get(4)?;
+                let status_str: String = row.get(5)?;
+                let last_error: String = row.get(6)?;
+                let status = match status_str.as_str() {
+                    "stale" => crate::advisory::SourceHealth::Stale,
+                    "error" => crate::advisory::SourceHealth::Error,
+                    _ => crate::advisory::SourceHealth::Fresh,
+                };
+                Ok(crate::advisory::AdvisorySourceCache {
+                    source_key,
+                    source_kind,
+                    source_url,
+                    imported_from: None,
+                    imported_from_batch: Vec::new(),
+                    fetched_unix,
+                    expires_unix,
+                    snapshot_sha256: String::new(),
+                    total_results: 0,
+                    status,
+                    last_attempt_unix: 0,
+                    last_error: if last_error.is_empty() {
+                        None
+                    } else {
+                        Some(last_error)
+                    },
+                })
+            })
+            .map_err(|e| format!("query sources: {e}"))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("read source row: {e}"))?);
+        }
+        Ok(result)
+    }
+
+    // ── Advisory record helpers ─────────────────────────────────────────
+
+    pub fn replace_advisory_records(
+        &self,
+        records: &[crate::advisory::VulnerabilityRecord],
+        source_key: &str,
+        source_kind: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute(
+            "DELETE FROM advisory_record WHERE source_key = ?1",
+            [source_key],
+        )
+        .map_err(|e| format!("clear records for {source_key}: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO advisory_record
+                 (primary_id, source_key, source_kind, published_unix, updated_unix,
+                  severity, exploited, payload_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            )
+            .map_err(|e| format!("prepare record insert: {e}"))?;
+        for rec in records {
+            let published_unix = parse_nvd_timestamp(&rec.published).unwrap_or(0);
+            let updated_unix = parse_nvd_timestamp(&rec.last_modified).unwrap_or(0);
+            let severity = rec
+                .severities
+                .first()
+                .map(|s| s.severity.as_str())
+                .unwrap_or("");
+            let payload = serde_json::to_string(rec).unwrap_or_default();
+            stmt.execute(rusqlite::params![
+                rec.primary_id,
+                source_key,
+                source_kind,
+                published_unix,
+                updated_unix,
+                severity,
+                rec.known_exploited as i64,
+                payload,
+            ])
+            .map_err(|e| format!("insert record {}: {e}", rec.primary_id))?;
+        }
+        Ok(())
+    }
+
+    pub fn count_advisory_records(&self) -> Result<usize, String> {
+        let conn = self.conn()?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM advisory_record", [], |row| row.get(0))
+            .map_err(|e| format!("count records: {e}"))?;
+        Ok(count as usize)
+    }
+
     pub fn verify(&self) -> Result<bool, String> {
         let stored: Option<StorageManifest> =
             crate::security::policy::load_struct_with_integrity(&self.manifest_path)
@@ -223,6 +365,19 @@ impl StorageDb {
         let result = hasher.finalize();
         Ok(result.iter().map(|b| format!("{b:02x}")).collect())
     }
+}
+
+fn parse_nvd_timestamp(ts: &Option<String>) -> Option<u64> {
+    let s = ts.as_ref()?;
+    if let Ok(dt) =
+        chrono::NaiveDateTime::parse_from_str(s.split('.').next().unwrap_or(s), "%Y-%m-%dT%H:%M:%S")
+    {
+        return Some(dt.and_utc().timestamp() as u64);
+    }
+    if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+        return Some(d.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp() as u64);
+    }
+    None
 }
 
 #[cfg(test)]
