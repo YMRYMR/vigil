@@ -497,7 +497,7 @@ fn version_status_rank(status: VersionMatchStatus) -> u8 {
         VersionMatchStatus::InRange => 5,
         VersionMatchStatus::NoConstraint => 4,
         VersionMatchStatus::MissingInstalledVersion => 3,
-        VersionStatus::Unknown => 2,
+        VersionMatchStatus::Unknown => 2,
         VersionMatchStatus::OutOfRange => 1,
     }
 }
