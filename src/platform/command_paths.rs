@@ -36,10 +36,15 @@ fn resolve_windows(program: &str) -> Result<PathBuf, String> {
 
 #[cfg(target_os = "linux")]
 fn resolve_linux(program: &str) -> Result<PathBuf, String> {
-    let candidates: &[&str] = match program {
+    resolve_from_candidates(program, linux_candidates(program))
+}
+
+#[cfg(target_os = "linux")]
+fn linux_candidates(program: &str) -> &'static [&'static str] {
+    match program {
         "kill" => &["/bin/kill", "/usr/bin/kill"],
         "iptables" => &["/usr/sbin/iptables", "/sbin/iptables"],
-        "nft" => &["/usr/sbin/nft", "/sbin/nft"],
+        "nft" => &["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft", "/bin/nft"],
         "ip" => &["/usr/sbin/ip", "/sbin/ip"],
         "ss" => &["/usr/sbin/ss", "/usr/bin/ss", "/bin/ss"],
         "resolvectl" => &["/usr/bin/resolvectl", "/bin/resolvectl"],
@@ -47,8 +52,7 @@ fn resolve_linux(program: &str) -> Result<PathBuf, String> {
         "systemctl" => &["/bin/systemctl", "/usr/bin/systemctl"],
         "crontab" => &["/usr/bin/crontab", "/bin/crontab"],
         _ => &[],
-    };
-    resolve_from_candidates(program, candidates)
+    }
 }
 
 fn resolve_from_candidates(program: &str, candidates: &[&str]) -> Result<PathBuf, String> {
@@ -58,4 +62,17 @@ fn resolve_from_candidates(program: &str, candidates: &[&str]) -> Result<PathBuf
         .map(PathBuf::from)
         .find(|path| Path::new(path).exists())
         .ok_or_else(|| format!("required trusted binary for {program} not found"))
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::linux_candidates;
+
+    #[test]
+    fn linux_trusted_candidates_include_nft() {
+        assert_eq!(
+            linux_candidates("nft"),
+            &["/usr/sbin/nft", "/sbin/nft", "/usr/bin/nft", "/bin/nft"]
+        );
+    }
 }

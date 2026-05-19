@@ -74,19 +74,80 @@ Windows and Linux are the active support targets. This phase is about making tho
 ### Planned scope
 
 - [x] **Monitor trait unification** — `handle_realtime_event` shared handler eliminates 42-line duplicated code block between ETW and eBPF paths. Event-channel abstraction (`EventRx`) unifies unbounded ETW and bounded eBPF receivers. Ready for full `EventSource` trait extraction.
-- [ ] **Windows/Linux latency benchmark** — measure p50/p95 detection latency on Windows ETW and Linux eBPF, compare against polling fallback, and document expected bounds.
-- [ ] **Windows/Linux installer and service parity** — keep Windows scheduled-task boot service and Linux systemd service behavior aligned, especially fail-open startup behavior.
+- [x] **Windows/Linux latency benchmark** — `src/bin/vigil_benchmark.rs` measures p50/p95/p99 latency, distinguishes ETW/eBPF from polling fallback, and emits JSON/HTML reports. Cross-process end-to-end event delivery measurement remains tracked separately in `docs/PHASE-18-PARITY.md`.
+- [x] **Windows/Linux installer and service parity guardrails** — `src/bin/vigil_service_check.rs` validates Windows scheduled-task and Linux systemd installation, enabled/running state, privilege expectations, and restart/fail-open checks across the supported platforms.
 - [x] **Windows/Linux active-response parity audit** — all 22 active-response functions verified working on both supported platforms. Linux has full parity: iptables/nftables, `ss -K`, `ip link`, `/etc/hosts`, process suspend/resume all work. Only autorun snapshot/revert (Windows registry concept) is Linux-specific unimplemented.
 - [x] **Windows/Linux inventory parity** — fold Windows uninstall registry and Linux package-manager inventory into the main inventory model without adding startup risk.
-- [ ] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
+- [x] **Windows/Linux test fixtures** — add detection and response regression tests that cover both supported OS families where practical.
 
 ---
 
-## Phase 19 — YARA Signature Integration (OPEN backlog)
+## Phase 19 — Native OS Firewall Engine (OPEN backlog)
+
+Replace the OS firewall with Vigil's own WFP (Windows) / nftables (Linux) engine. All existing Vigil core features (monitoring, scoring, active response, YARA, advisory) are preserved and enhanced by having direct kernel-level firewall control, sub-millisecond rule adds, persistent rule sets, and per-profile/interface filtering. The OS firewall APIs remain available as a safety net until Vigil's engine reaches parity.
+
+### Phase 0 — Foundation (2–3 weeks)
+
+- [ ] **Windows WFP user-mode API wrapper** — replace all `netsh advfirewall` calls with direct `Fwpm*` FFI bindings to `fwpmu.dll`. Sub-millisecond rule adds/removes. Filter-level operations (add, delete, enumerate) via `FwpmFilterAdd`, `FwpmFilterDeleteById`, `FwpmFilterEnum`. Provider registration (`FWPM_PROVIDER`) for Vigil rule ownership visibility. Sublayer registration at the correct weight relative to Windows Defender Firewall.
+- [ ] **Linux nftables backend activation** — route all Linux active-response firewall operations through the existing executor bridge in `linux_firewall_executor.rs` instead of inline iptables calls. Add `nft` to `command_paths.rs`. Wire `execute_selected_*` functions into `active_response_platform.rs`.
+- [ ] **Persistent rule store** — structured rule database (SQLite or integrity-protected JSON) with globally unique IDs, creation time, TTL, direction, action (block/allow/log), layer, interface filter, profile affinity, and scored/unscored flag for Vigil's dynamic response. Migrate current ad-hoc state tracking into this store.
+- [ ] **Cross-platform `FirewallBackend` trait** — abstract WFP/nftables behind a unified trait. Current platform-split stays as the high-level API surface (`block_remote`, `block_process`, `isolate_machine`, etc.).
+
+### Phase 1 — Core Firewall Engine (4–6 weeks)
+
+- [ ] **Windows WFP rule manager** — `FwpmEngineOpen` session management. `FwpmTransactionBegin/Commit` for atomic batch operations. `FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6` and `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4/V6` for outbound/inbound filtering. Filter conditions: local/remote IP (v4+v6), port, protocol, interface index, user/group SID (replaces current `add_block_program_rule` netsh approach). AE (Application Layer Enforcement) for PID/app-container-based filtering.
+- [ ] **Linux nftables rule manager** — create `vigil` nftables table with chains jumping from forward/input/output hooks. Rule management via existing `nft_insert_block_remote`, `nft_insert_block_uid`, etc. Rule lookup by handle via `nft_parse_handle_by_comment`. Boot persistence: `nft list ruleset` dump on shutdown, restore on startup.
+- [ ] **Dynamic vs. static rule separation** — Vigil's transient response rules (scored blocks with TTL) vs. operator-defined permanent allow/block rules. Same engine, different persistence lifetimes.
+- [ ] **Rule ordering and priority** — filter weight / chain priority that ensures Vigil's dynamic blocks override OS defaults, while operator permanent allows override Vigil dynamic blocks.
+
+### Phase 2 — Boot-Time Enforcement (2–3 weeks)
+
+- [ ] **Windows early-boot safe policy** — before Vigil userspace connects to WFP, the OS firewall's default profile applies (safe by default). On Vigil startup, load persistent rules from the rule store and apply them atomically. No kernel driver needed for user-space WFP management — `fwpmu.dll` filters persist in the kernel and survive process restarts.
+- [ ] **Windows ELAM readiness** — structure the WFP provider/sublayer registration so an Early Launch Anti-Malware (ELAM) driver could slot in at Phase 5 if cert signing (WHQL, ~3wk attestation) is justified. ELAM not required for Phase 2.
+- [ ] **Linux boot persistence** — nftables systemd service loads `/etc/nftables.conf` before `network.target`. Vigil writes its active ruleset to a Vigil-specific config fragment, included by the main nftables config. Systemd unit starts after `nftables.service`.
+- [ ] **Boot-time circuit breaker** — extend the existing pre-login guard and break-glass recovery to cover firewall rule state. If Vigil crashes during boot, the kernel keeps the last-applied filter set; the break-glass watchdog clears stale Vigil rules on heartbeat expiry.
+
+### Phase 3 — Firewall Management UI (3–4 weeks)
+
+- [ ] **Firewall tab in inspector** — show active Vigil rules (IP blocks, process blocks, isolation state), currently blocked connections, rule stats. Toggle rules on/off, edit TTLs, view rule history.
+- [ ] **Rule template system** — predefined canned rules for common scenarios (block all outbound for an app, allow specific ports, etc.).
+- [ ] **OS firewall profile visibility** — show current profile state (Domain/Private/Public), inbound/outbound default actions, active interface bindings.
+- [ ] **Permanent allow/block rules** — operator-defined rules that survive Vigil restart and are not subject to TTL expiry.
+- [ ] **CLI firewall commands** — `vigil firewall list`, `vigil firewall add`, `vigil firewall remove`, `vigil firewall status`.
+
+### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
+
+- [ ] **Crash-safe filter lifecycle** — on Vigil startup, `FwpmEngineOpen` binds to a new session. Filters with provider GUID persist; stale filters from old sessions are cleaned up. Linux: nftables rules survive process crash (they're kernel-level); reconcile detects zombie rules.
+- [ ] **Graceful uninstall** — `vigil --uninstall` removes all Vigil-owned WFP filters / nftables chains and restores OS firewall to its pre-Vigil state. Preserves operator-defined permanent rules for reinstall.
+- [ ] **Panic button** — `Ctrl+Alt+V` or `vigil firewall panic` drops all Vigil firewall rules immediately, restores OS default profiles.
+- [ ] **Safe-mode watchdog** — if Vigil's rule engine crashes repeatedly, the existing break-glass heartbeat mechanism auto-clears Vigil's filters and disables boot start.
+
+### Phase 5 — Feature Parity & Polish (4–6 weeks)
+
+- [ ] **Per-profile rules** — WFP `FWPM_CONDITION_NETWORK_PROFILE_ID` for Domain/Private/Public affinity. nftables sets match.
+- [ ] **Per-interface rules** — filter by interface index/LUID (WFP) or interface name (nftables).
+- [ ] **Logging & audit** — WFP built-in logging per-filter (`FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`). nftables counter rules with log prefix. Audit trail integration.
+- [ ] **Stealth mode** — WFP built-in; nftables drop inbound without RST/ICMP.
+- [ ] **Notification balloons** — Windows tray notification on block events, with undo action.
+- [ ] **Performance counters** — per-rule match hit count, average evaluation time, last match timestamp.
+- [ ] **Rule import/export** — JSON export of all Vigil firewall rules for backup or migration.
+- [ ] **Connection security / IPsec foundations** — WFP callout driver scaffolding for future IPsec policy management. Not yet feature-complete.
+
+### Safety guarantees throughout
+
+- A fresh Vigil install with no rules configured does **nothing** — the OS firewall continues handling traffic.
+- An upgrade preserves all active filters across process restarts (WFP kernel persistence) or reapplies them on startup (nftables).
+- An uninstall or crash restores the OS firewall to its pre-Vigil state.
+- Every rule has an operator-visible owner, creation time, and TTL. No hidden or orphaned state.
+- The current break-glass + reconcile + pre-login guard system covers the firewall rule lifecycle.
+
+---
+
+## Phase 20 — YARA Signature Integration (OPEN backlog)
 
 Add signature-based malware detection alongside the existing behavioural heuristics. YARA scans new processes and selected memory regions on creation, catches known malware families that behavioural scoring alone misses, and feeds matches into the existing scoring pipeline with clear `YARA rule: <name>` reasons and ATT&CK tags.
 
-- [ ] **Binary embedding of community YARA rules** — bundle a curated ruleset (e.g. Valhalla, YARA Forge) at compile time, updated via signed auto-update (Phase 22).
+- [ ] **Binary embedding of community YARA rules** — bundle a curated ruleset (e.g. Valhalla, YARA Forge) at compile time, updated via signed auto-update (Phase 23).
 - [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match.
 - [ ] **Memory region scan** — scan selected process memory (e.g., `--dump` target) for in-memory malware that hides from disk scanning.
 - [ ] **YARA rule management UI** — show matched rules in the inspector, allow operators to toggle rule categories, and view rule metadata (author, description, reference).
@@ -94,18 +155,18 @@ Add signature-based malware detection alongside the existing behavioural heurist
 
 ---
 
-## Phase 20 — Security Posture Dashboard (OPEN backlog)
+## Phase 21 — Security Posture Dashboard (OPEN backlog)
 
 A single-panel view that answers "is Vigil actually protecting me?" without digging through logs.
 
-- [ ] **Health summary** — real-time monitoring status (ETW/eBPF/polling), blocklist engine state (loaded entries / empty / degraded), advisory cache freshness, response rules loaded, firewall isolation status.
-- [ ] **Threat dashboard** — current connection score distribution, top blocked targets, recent alerts over time, YARA matches summary.
+- [ ] **Health summary** — real-time monitoring status (ETW/eBPF/polling), blocklist engine state (loaded entries / empty / degraded), advisory cache freshness, response rules loaded, firewall isolation status, native firewall engine health.
+- [ ] **Threat dashboard** — current connection score distribution, top blocked targets, recent alerts over time, YARA matches summary, firewall rule hit counts.
 - [ ] **Tray indicator integration** — tray icon colour and tooltip reflects current protection status (green = healthy, yellow = degraded, red = stopped / no real-time).
 - [ ] **CLI status command** — `vigil status` emits JSON with all health signals for scripting and remote monitoring.
 
 ---
 
-## Phase 21 — Jitter-Aware C2 Beaconing Detection (OPEN backlog)
+## Phase 22 — Jitter-Aware C2 Beaconing Detection (OPEN backlog)
 
 Real command-and-control channels use random intervals (jitter), not fixed-period beacons. The current beacon tracker only catches fixed-interval patterns.
 
@@ -115,7 +176,7 @@ Real command-and-control channels use random intervals (jitter), not fixed-perio
 
 ---
 
-## Phase 22 — Signed Auto-Update Channel (OPEN backlog)
+## Phase 23 — Signed Auto-Update Channel (OPEN backlog)
 
 A lightweight, SaaS-free update mechanism for threat data. Pulls signed JSON manifests from GitHub releases so the OPEN community gets fresh blocklists, YARA rules, and LoLBAS definitions without any cloud dependency.
 
@@ -124,11 +185,12 @@ A lightweight, SaaS-free update mechanism for threat data. Pulls signed JSON man
 - [ ] **Curated IP/domain blocklist feed** — hourly-refreshed IP/domain blocklist from abuse.ch and Emerging Threats, published as signed releases.
 - [ ] **Curated YARA rules feed** — versioned YARA rule packs from Valhalla / YARA Forge community feed.
 - [ ] **Curated LoLBAS and C2 port definitions** — versioned updates to the built-in LoLBAS and malware-port heuristics.
+- [ ] **Curated firewall rule templates** — versioned updates to canned firewall rule templates (WFP/nftables).
 - [ ] **Transparency** — every update logged in the audit trail with manifest hash and rule count.
 
 ---
 
-## Phase 23 — File Integrity Monitoring (OPEN backlog)
+## Phase 24 — File Integrity Monitoring (OPEN backlog)
 
 Track SHA-256 hashes of critical system binaries and configuration files, alert on unexpected changes.
 
@@ -139,7 +201,7 @@ Track SHA-256 hashes of critical system binaries and configuration files, alert 
 
 ---
 
-## Phase 24 — Cloud Fleet Console & Integrations (PRO backlog)
+## Phase 25 — Cloud Fleet Console & Integrations (PRO backlog)
 
 Extends Vigil with a hosted console for multi-endpoint fleet management, alert aggregation, and outbound integrations.
 
@@ -147,7 +209,7 @@ Extends Vigil with a hosted console for multi-endpoint fleet management, alert a
 
 - [ ] Multi-tenant SaaS backend with agent enrollment via install token.
 - [ ] Live endpoint status grid, alerts feed, and cross-fleet search.
-- [ ] Remote trigger: isolate / clear-isolation / kill process / block IP across selected endpoints.
+- [ ] Remote trigger: isolate / clear-isolation / kill process / block IP / firewall panic across selected endpoints.
 - [ ] Role-based access with per-action audit log.
 - [ ] End-to-end TLS, per-tenant encryption of sensitive fields, signed agent-to-server channel.
 - [ ] Self-serve signup, Stripe billing, seat-based subscription management.
@@ -163,9 +225,9 @@ Extends Vigil with a hosted console for multi-endpoint fleet management, alert a
 
 ---
 
-## Phase 20 — MSP Multi-tenant & White-label (PRO backlog)
+## Phase 26 — MSP Multi-tenant & White-label (PRO backlog)
 
-Multi-tenant architecture for managed service providers managing multiple customer fleets. Depends on Phase 19.
+Multi-tenant architecture for managed service providers managing multiple customer fleets. Depends on Phase 20 (YARA) and Phase 19 (Firewall Engine).
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules.
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails.
@@ -175,7 +237,7 @@ Multi-tenant architecture for managed service providers managing multiple custom
 
 ---
 
-## Phase 21 — Managed Threat Intel Feed (PRO backlog)
+## Phase 27 — Managed Threat Intel Feed (PRO backlog)
 
 Adds a managed intelligence feed for PRO-tier deployments with signed, versioned rule packs.
 
@@ -187,7 +249,7 @@ Adds a managed intelligence feed for PRO-tier deployments with signed, versioned
 
 ---
 
-## Phase 25 — Hosted Feed Service (PRO backlog)
+## Phase 28 — Compliance Reporting Pack (PRO backlog)
 
 Pairs naturally with the tamper-evident logging already in the OPEN tier.
 
@@ -199,7 +261,7 @@ Pairs naturally with the tamper-evident logging already in the OPEN tier.
 
 ---
 
-## Phase 27 — Identity & User Context (PRO backlog)
+## Phase 29 — Identity & User Context (PRO backlog)
 
 Modern detections hinge on who, not just what. Adds identity attribution so alerts can differentiate privileged accounts from standard users.
 
@@ -211,7 +273,7 @@ Modern detections hinge on who, not just what. Adds identity attribution so aler
 
 ---
 
-## Phase 28 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+## Phase 30 — Playbook Builder & SaaS-session Visibility (PRO backlog)
 
 Two differentiators bundled together because each alone is narrow, but together they round out the modern endpoint story.
 
@@ -236,14 +298,15 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
 | 7.x | 17 | Protocol expansion | ✅ Complete |
 | 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
-| 9.x | 19 | YARA signature integration | 🔲 Backlog |
-| 10.x | 20 | Security posture dashboard | 🔲 Backlog |
-| 11.x | 21 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
-| 12.x | 22 | Signed auto-update channel | 🔲 Backlog |
-| 13.x | 23 | File integrity monitoring | 🔲 Backlog |
-| PRO 1.x | 24 | Cloud fleet console & integrations | 🔲 Backlog |
-| PRO 1.x | 25 | MSP multi-tenant & white-label | 🔲 Backlog |
-| PRO 1.x | 26 | Managed threat intel feed | 🔲 Backlog |
-| PRO 1.x | 27 | Compliance reporting pack | 🔲 Backlog |
-| PRO 1.x | 28 | Identity & user context | 🔲 Backlog |
-| PRO 1.x | 29 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
+| 9.x | 19 | Native OS firewall engine | 🔲 Backlog |
+| 10.x | 20 | YARA signature integration | 🔲 Backlog |
+| 11.x | 21 | Security posture dashboard | 🔲 Backlog |
+| 12.x | 22 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
+| 13.x | 23 | Signed auto-update channel | 🔲 Backlog |
+| 14.x | 24 | File integrity monitoring | 🔲 Backlog |
+| PRO 1.x | 25 | Cloud fleet console & integrations | 🔲 Backlog |
+| PRO 1.x | 26 | MSP multi-tenant & white-label | 🔲 Backlog |
+| PRO 1.x | 27 | Managed threat intel feed | 🔲 Backlog |
+| PRO 1.x | 28 | Compliance reporting pack | 🔲 Backlog |
+| PRO 1.x | 29 | Identity & user context | 🔲 Backlog |
+| PRO 1.x | 30 | Playbook builder & SaaS-session visibility | 🔲 Backlog |

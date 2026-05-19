@@ -204,7 +204,55 @@ impl FirewallBackend for NftablesBackend {
     }
 
     fn terminate_active_connections(&self) -> Result<usize, String> {
-        Ok(0) // Placeholder — requires process enumeration + `ss -K` per connection
+        let runner = self.runner();
+        let output = runner.stdout(
+            &crate::security::linux_command_plan::ss_kill_tcp_connection(
+                "0.0.0.0", 0, "0.0.0.0", 0,
+            ),
+        );
+        // Enumerate ESTABLISHED connections via ss and kill each.
+        let ss_output = runner
+            .stdout(&crate::security::linux_command_plan::LinuxCommand::new(
+                "ss",
+                ["-t", "-n", "state", "established"],
+            ))
+            .unwrap_or_default();
+        let mut killed = 0usize;
+        for line in ss_output.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 5 {
+                continue;
+            }
+            let local = parts[3];
+            let remote = parts[4];
+            let (lip, lp) = match local.rsplit_once(':') {
+                Some(p) => p,
+                None => continue,
+            };
+            let (rip, rp) = match remote.rsplit_once(':') {
+                Some(p) => p,
+                None => continue,
+            };
+            let lport: u16 = match lp.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let rport: u16 = match rp.parse() {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            if runner
+                .status(
+                    &crate::security::linux_command_plan::ss_kill_tcp_connection(
+                        lip, lport, rip, rport,
+                    ),
+                )
+                .is_ok()
+            {
+                killed += 1;
+            }
+        }
+        Ok(killed)
     }
 
     fn add_domain_block(&self, domain: &str, marker: &str) -> Result<(), String> {
@@ -227,7 +275,9 @@ impl FirewallBackend for NftablesBackend {
         let filtered: Vec<&str> = content
             .lines()
             .filter(|line| {
-                !line.contains(domain) && !line.trim().eq_ignore_ascii_case(marker.trim())
+                let trimmed = line.trim();
+                let is_domain_line = trimmed.split_whitespace().any(|part| part == domain);
+                !is_domain_line && !trimmed.eq_ignore_ascii_case(marker.trim())
             })
             .collect();
         std::fs::write(path, filtered.join("\n") + "\n")

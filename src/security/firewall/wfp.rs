@@ -78,9 +78,9 @@ struct WfpDynamic {
 impl WfpDynamic {
     fn load() -> Result<Self, String> {
         unsafe {
-            let lib = LoadLibraryA("fwpmu.dll\0".as_ptr() as *const i8);
+            let lib = LoadLibraryA("Fwpuclnt.dll\0".as_ptr() as *const i8);
             if lib == 0 {
-                return Err("fwpmu.dll not available".into());
+                return Err("Fwpuclnt.dll not available".into());
             }
             Ok(Self {
                 engine_open: std::mem::transmute(
@@ -117,7 +117,7 @@ impl FirewallBackend for WfpBackend {
     }
 
     fn apply_isolation(&self, _rule_name: &str) -> Result<(), String> {
-        Err("WFP isolation not yet implemented - requires full FwpmFilterAdd binding".into())
+        run_powershell("Set-NetFirewallProfile -All -Enabled True -DefaultInboundAction Block -DefaultOutboundAction Block").map(|_| ())
     }
 
     fn restore_profiles(&self, snapshot: &FirewallSnapshot) -> Result<(), String> {
@@ -236,7 +236,12 @@ impl FirewallBackend for WfpBackend {
         modify_hosts(&hosts_path()?, |c| {
             *c = c
                 .lines()
-                .filter(|l| !l.contains(domain) && !l.trim().eq_ignore_ascii_case(marker.trim()))
+                .filter(|l| {
+                    let trimmed = l.trim();
+                    // Match exact domain entry (127.0.0.1 <domain> or ::1 <domain>)
+                    let is_domain_line = trimmed.split_whitespace().any(|part| part == domain);
+                    !is_domain_line && !trimmed.eq_ignore_ascii_case(marker.trim())
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
                 + "\n";
