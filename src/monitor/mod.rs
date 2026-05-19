@@ -360,7 +360,7 @@ fn process_conn(
             std::time::Duration::from_secs(cfg.fswatch_window_secs),
             std::time::Duration::from_secs(cfg.long_lived_secs),
             cfg.reverse_dns_enabled,
-            !cfg.blocklist_paths.is_empty(),
+            !cfg.blocklist_paths.is_empty() || crate::blocklist::stats().1 > 0,
             cfg.clone(),
         )
     };

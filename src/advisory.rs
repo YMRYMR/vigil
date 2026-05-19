@@ -610,9 +610,13 @@ fn nvd_refresh_due() -> bool {
                 source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
             })
             .is_none_or(|source| {
+                let retry_due = source.retry_after_unix > 0 && source.retry_after_unix <= now;
+                let stale_or_error =
+                    matches!(source.status, SourceHealth::Error | SourceHealth::Stale);
                 source.expires_unix <= now
-                    || (source.retry_after_unix > 0 && source.retry_after_unix <= now)
-                    || matches!(source.status, SourceHealth::Error | SourceHealth::Stale)
+                    || retry_due
+                    || (stale_or_error
+                        && (source.retry_after_unix == 0 || source.retry_after_unix <= now))
             }),
         Ok(None) => true,
         Err(err) => {
