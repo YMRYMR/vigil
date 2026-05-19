@@ -131,3 +131,121 @@ pub use wfp::WfpBackend;
 mod nftables;
 #[cfg(target_os = "linux")]
 pub use nftables::NftablesBackend;
+
+/// Global firewall backend instance, lazily created on first access.
+pub fn get_backend() -> &'static dyn FirewallBackend {
+    use std::sync::OnceLock;
+    static BACKEND: OnceLock<Box<dyn FirewallBackend + Send + Sync>> = OnceLock::new();
+    BACKEND
+        .get_or_init(|| {
+            #[cfg(windows)]
+            {
+                Box::new(WfpBackend::new())
+            }
+            #[cfg(target_os = "linux")]
+            {
+                Box::new(NftablesBackend::new())
+            }
+            #[cfg(not(any(windows, target_os = "linux")))]
+            {
+                compile_error!("Unsupported platform");
+            }
+        })
+        .as_ref()
+}
+
+/// CLI firewall subcommand dispatcher. Returns an exit code (0 = success).
+pub fn run_cli(args: &[String]) -> i32 {
+    let backend = get_backend();
+    match args.first().map(|s| s.as_str()) {
+        Some("status") | None => {
+            println!("Firewall backend: {}", backend.label());
+            println!("Available: {}", backend.is_available());
+            match backend.snapshot_profiles() {
+                Ok(snapshot) => {
+                    println!("Profiles:");
+                    for profile in &snapshot.profiles {
+                        println!(
+                            "  {}: enabled={}, inbound={}, outbound={}",
+                            profile.name,
+                            profile.enabled,
+                            profile.inbound_action,
+                            profile.outbound_action
+                        );
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Profile snapshot failed: {e}");
+                    return 1;
+                }
+            }
+            match backend.isolation_controls_active(None) {
+                Ok(active) => println!("Isolation active: {active}"),
+                Err(e) => eprintln!("Isolation check failed: {e}"),
+            }
+            0
+        }
+        Some("panic") => {
+            println!("Firewall panic: dropping all Vigil firewall rules...");
+            let mut had_error = false;
+            // Full emergency restore via active_response if possible
+            match crate::security::active_response::restore_machine() {
+                Ok(msg) => println!("{msg}"),
+                Err(e) => {
+                    eprintln!("active_response restore_machine failed: {e}");
+                    eprintln!("Falling back to brute-force cleanup...");
+                    // Brute-force: delete all known Vigil rule names
+                    for name in &["Vigil Isolate In", "Vigil Isolate Out"] {
+                        if let Err(e) = backend.delete_rule(name) {
+                            eprintln!("  Warning: could not delete rule '{name}': {e}");
+                        }
+                    }
+                    // Restore profiles to default-allow
+                    match backend.snapshot_profiles() {
+                        Ok(snapshot) => {
+                            let defaulted: Vec<_> = snapshot
+                                .profiles
+                                .iter()
+                                .map(|p| FirewallProfileState {
+                                    name: p.name.clone(),
+                                    enabled: true,
+                                    inbound_action: "Allow".into(),
+                                    outbound_action: "Allow".into(),
+                                })
+                                .collect();
+                            if let Err(e) = backend.restore_profiles(&FirewallSnapshot {
+                                profiles: defaulted,
+                            }) {
+                                eprintln!("  Warning: could not restore profiles: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!("  Warning: could not snapshot profiles: {e}"),
+                    }
+                    had_error = true;
+                }
+            }
+            if had_error {
+                eprintln!("Panic completed with warnings — network may not be fully restored.");
+                1
+            } else {
+                println!("Panic complete. Network restored to OS defaults.");
+                0
+            }
+        }
+        Some("list") => {
+            let status = crate::security::active_response::status();
+            println!("Firewall rules (managed by active_response state):");
+            println!("  Blocked IPs: {}", status.blocked_rules);
+            println!("  Blocked processes: {}", status.blocked_processes);
+            println!("  Blocked domains: {}", status.blocked_domains);
+            println!("  Suspended processes: {}", status.suspended_processes);
+            println!("  Isolated: {}", status.isolated);
+            0
+        }
+        Some(other) => {
+            eprintln!("Unknown firewall subcommand: {other}");
+            eprintln!("Usage: vigil --firewall <status|list|panic>");
+            1
+        }
+    }
+}

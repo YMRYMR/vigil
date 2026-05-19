@@ -497,6 +497,10 @@ fn main() {
             service::SERVICE_MODE_FLAG => {
                 service_mode = true;
             }
+            "--firewall" => {
+                let sub_args: Vec<String> = args.iter().skip(i + 1).cloned().collect();
+                std::process::exit(security::firewall::run_cli(&sub_args));
+            }
             autostart::ELEVATED_RELAUNCH_FLAG => {
                 elevated_relaunch = true;
             }
