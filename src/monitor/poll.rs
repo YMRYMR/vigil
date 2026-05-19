@@ -241,10 +241,8 @@ fn linux_parse_udp_proc(
             continue;
         }
 
-        let local_ip = parse_linux_hex_ip(local_part, is_v6);
-        let local_port = parse_linux_port(local_part);
-        let remote_ip = parse_linux_hex_ip(remote_part, is_v6);
-        let remote_port = parse_linux_port(remote_part);
+        let (local_ip, local_port) = parse_linux_addr(local_part, is_v6);
+        let (remote_ip, remote_port) = parse_linux_addr(remote_part, is_v6);
         let pid = inode_to_pid.get(&inode).copied().unwrap_or(0);
 
         // Skip loopback.
@@ -420,7 +418,7 @@ fn platform_poll() -> Vec<RawConn> {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "linux")]
-    use super::{linux_inode_pid_map_from, linux_parse_proc_content};
+    use super::{linux_inode_pid_map_from, linux_parse_proc_content, linux_parse_udp_proc};
 
     #[cfg(target_os = "linux")]
     use std::fs;
@@ -458,9 +456,9 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert(4242, 1234);
 
-        let content = "\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-   0: 0100007F:1F90 0200007F:0050 01 00000000:00000000 00:00000000 00000000   100        0 4242 1 0000000000000000 100 0 0 10 0\n";
+        let content = "\\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\\n\\
+   0: 0100007F:1F90 0200007F:0050 01 00000000:00000000 00:00000000 00000000   100        0 4242 1 0000000000000000 100 0 0 10 0\\n";
 
         let rows = linux_parse_proc_content(content, false, &map);
         assert_eq!(rows.len(), 1);
@@ -474,12 +472,37 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn parser_falls_back_to_pid_zero_when_inode_unmapped() {
         let map = std::collections::HashMap::new();
-        let content = "\
-  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n\
-   0: 0100007F:1F90 0200007F:0050 01 00000000:00000000 00:00000000 00000000   100        0 9999 1 0000000000000000 100 0 0 10 0\n";
+        let content = "\\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\\n\\
+   0: 0100007F:1F90 0200007F:0050 01 00000000:00000000 00:00000000 00000000   100        0 9999 1 0000000000000000 100 0 0 10 0\\n";
 
         let rows = linux_parse_proc_content(content, false, &map);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].pid, 0);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn udp_parser_uses_shared_linux_address_parser() {
+        let path = temp_proc_root().join("udp");
+        fs::write(
+            &path,
+            "\\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\\n\\
+   0: 0200000A:1F90 00000000:0000 07 00000000:00000000 00:00000000 00000000   100        0 4242 1 0000000000000000 100 0 0 10 0\\n",
+        )
+        .unwrap();
+
+        let mut map = std::collections::HashMap::new();
+        map.insert(4242, 1234);
+
+        let rows = linux_parse_udp_proc(path.to_str().unwrap(), false, &map);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 1234);
+        assert_eq!(rows[0].local_ip, "10.0.0.2");
+        assert_eq!(rows[0].local_port, 8080);
+        assert_eq!(rows[0].status, "UDP");
+
+        let _ = fs::remove_file(path);
     }
 }
