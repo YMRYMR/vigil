@@ -340,8 +340,7 @@ fn normalized_reference_tag_tokens(tag: &str) -> Vec<String> {
 
 fn tokens_include_split_workaround(tokens: &[String]) -> bool {
     tokens.windows(2).any(|window| {
-        window[0] == "work"
-            && matches!(window[1].as_str(), "around" | "arounds")
+        window[0] == "work" && matches!(window[1].as_str(), "around" | "arounds")
     })
 }
 
@@ -1141,7 +1140,8 @@ mod tests {
     }
 
     #[test]
-    fn split_work_around_reference_tag_marks_reason_when_reference_uses_space_separated_workaround() {
+    fn split_work_around_reference_tag_marks_reason_when_reference_uses_space_separated_workaround(
+    ) {
         let inventory = vec![installed(
             "google-chrome",
             "Google Chrome",
