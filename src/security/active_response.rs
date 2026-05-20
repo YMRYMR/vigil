@@ -154,6 +154,18 @@ pub fn list_rules() -> FirewallRuleList {
     if let Some(expires) = state.isolation_expires_unix {
         result.isolation_remaining_secs = expires.checked_sub(now);
     }
+    if let Some(snapshot) = state.firewall_snapshot {
+        result.profiles = snapshot
+            .profiles
+            .into_iter()
+            .map(|p| FirewallProfileEntry {
+                name: p.name,
+                enabled: p.enabled,
+                inbound_action: p.inbound_action,
+                outbound_action: p.outbound_action,
+            })
+            .collect();
+    }
     result
 }
 
