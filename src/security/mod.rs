@@ -16,3 +16,5 @@ pub mod registry;
 pub mod response_rules;
 pub mod tamper;
 pub mod update;
+#[cfg(windows)]
+pub mod windows_wfp;
