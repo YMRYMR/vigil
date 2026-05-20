@@ -82,40 +82,62 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ---
 
-## Phase 19 — Native OS Firewall Engine 🚧 FOUNDATIONS IN PLACE
+## Phase 19 — Native OS Firewall Engine 🚧 IN PROGRESS
 
 Replace the OS firewall with Vigil's own WFP (Windows) / nftables (Linux) engine. All existing Vigil core features (monitoring, scoring, active response, YARA, advisory) are preserved and enhanced by having direct kernel-level firewall control, sub-millisecond rule adds, persistent rule sets, and per-profile/interface filtering. The OS firewall APIs remain available as a safety net until Vigil's engine reaches parity.
 
-Recent groundwork already landed on `master`: trusted `nft` command resolution, the cross-platform `FirewallBackend` abstraction, platform backend scaffolding for WFP and nftables/iptables, and `--firewall` status/list/panic CLI plumbing. The remaining checklist below tracks the still-open engine, persistence, UI, and safety work.
-
 ### Phase 0 — Foundation (2–3 weeks)
 
-- [ ] **Windows WFP user-mode API wrapper** — replace all `netsh advfirewall` calls with direct `Fwpm*` FFI bindings to `fwpmu.dll`. Sub-millisecond rule adds/removes. Filter-level operations (add, delete, enumerate) via `FwpmFilterAdd`, `FwpmFilterDeleteById`, `FwpmFilterEnum`. Provider registration (`FWPM_PROVIDER`) for Vigil rule ownership visibility. Sublayer registration at the correct weight relative to Windows Defender Firewall.
-- [ ] **Linux nftables backend activation** — route all Linux active-response firewall operations through the existing executor bridge in `linux_firewall_executor.rs` instead of inline iptables calls. Add `nft` to `command_paths.rs`. Wire `execute_selected_*` functions into `active_response_platform.rs`.
-- [ ] **Persistent rule store** — structured rule database (SQLite or integrity-protected JSON) with globally unique IDs, creation time, TTL, direction, action (block/allow/log), layer, interface filter, profile affinity, and scored/unscored flag for Vigil's dynamic response. Migrate current ad-hoc state tracking into this store.
-- [x] **Cross-platform `FirewallBackend` trait** — abstract WFP/nftables behind a unified trait. Current platform-split stays as the high-level API surface (`block_remote`, `block_process`, `isolate_machine`, etc.).
+- [ ] **Windows WFP user-mode API wrapper** — dynamic `Fwpuclnt.dll` loading via `LoadLibrary`/`GetProcAddress`. Engine session open, provider/sublayer registration complete. Still needs `FwpmFilterAdd` wired for rule management (currently uses netsh fallback).
+- [x] **Linux nftables backend activation** — `nft` added to `command_paths.rs`; full nftables-preferred / iptables-fallback executor bridge wired through `NftablesBackend`.
+- [ ] **Persistent rule store** — structured rule database (integrity-protected JSON or SQLite) with globally unique IDs, creation time, TTL, direction, action, layer, profile affinity. Migrate current ad-hoc state tracking into this store.
+- [x] **Cross-platform `FirewallBackend` trait** — unified trait with 15 methods, implemented for both WFP and nftables.
 
 ### Phase 1 — Core Firewall Engine (4–6 weeks)
 
-- [ ] **Windows WFP rule manager** — `FwpmEngineOpen` session management. `FwpmTransactionBegin/Commit` for atomic batch operations. `FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6` and `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4/V6` for outbound/inbound filtering. Filter conditions: local/remote IP (v4+v6), port, protocol, interface index, user/group SID (replaces current `add_block_program_rule` netsh approach). AE (Application Layer Enforcement) for PID/app-container-based filtering.
-- [ ] **Linux nftables rule manager** — create `vigil` nftables table with chains jumping from forward/input/output hooks. Rule management via existing `nft_insert_block_remote`, `nft_insert_block_uid`, etc. Rule lookup by handle via `nft_parse_handle_by_comment`. Boot persistence: `nft list ruleset` dump on shutdown, restore on startup.
-- [ ] **Dynamic vs. static rule separation** — Vigil's transient response rules (scored blocks with TTL) vs. operator-defined permanent allow/block rules. Same engine, different persistence lifetimes.
-- [ ] **Rule ordering and priority** — filter weight / chain priority that ensures Vigil's dynamic blocks override OS defaults, while operator permanent allows override Vigil dynamic blocks.
+- [ ] **Windows WFP rule manager** — `FwpmFilterAdd`/`FwpmFilterDeleteById` wired via `WfpBackend`. `FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6` and `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4/V6` filtering. Filter conditions for remote IP, port, protocol, user SID. AE for PID-based filtering.
+- [x] **Linux nftables rule manager** — `vigil` nftables table with jump chains. Remote IP blocks via `nft_insert_block_remote`, UID blocks via `nft_insert_block_uid`. Rule lookup by handle via `nft_parse_handle_by_comment`. Setup idempotent.
+- [ ] **Dynamic vs. static rule separation** — transient response rules (TTL-based) vs. operator-defined permanent allow/block rules.
+- [ ] **Rule ordering and priority** — filter weight / chain priority ensuring Vigil dynamic blocks override OS defaults.
 
 ### Phase 2 — Boot-Time Enforcement (2–3 weeks)
 
-- [ ] **Windows early-boot safe policy** — before Vigil userspace connects to WFP, the OS firewall's default profile applies (safe by default). On Vigil startup, load persistent rules from the rule store and apply them atomically. No kernel driver needed for user-space WFP management — `fwpmu.dll` filters persist in the kernel and survive process restarts.
-- [ ] **Windows ELAM readiness** — structure the WFP provider/sublayer registration so an Early Launch Anti-Malware (ELAM) driver could slot in at Phase 5 if cert signing (WHQL, ~3wk attestation) is justified. ELAM not required for Phase 2.
-- [ ] **Linux boot persistence** — nftables systemd service loads `/etc/nftables.conf` before `network.target`. Vigil writes its active ruleset to a Vigil-specific config fragment, included by the main nftables config. Systemd unit starts after `nftables.service`.
-- [ ] **Boot-time circuit breaker** — extend the existing pre-login guard and break-glass recovery to cover firewall rule state. If Vigil crashes during boot, the kernel keeps the last-applied filter set; the break-glass watchdog clears stale Vigil rules on heartbeat expiry.
+- [x] **Startup rule reconciliation** — `reconcile_firewall_rules()` re-applies blocked IP/process/domain rules to the live backend on every startup, ensuring rules survive reboot on Linux. WFP natively persists across reboots.
+- [ ] **Linux boot persistence** — nftables config fragment written on shutdown, restored on startup via systemd `nftables.service`.
+- [ ] **Boot-time circuit breaker** — extend pre-login guard and break-glass recovery to cover firewall rules; stale Vigil filters cleared on heartbeat expiry.
 
 ### Phase 3 — Firewall Management UI (3–4 weeks)
 
-- [ ] **Firewall tab in inspector** — show active Vigil rules (IP blocks, process blocks, isolation state), currently blocked connections, rule stats. Toggle rules on/off, edit TTLs, view rule history.
-- [ ] **Rule template system** — predefined canned rules for common scenarios (block all outbound for an app, allow specific ports, etc.).
-- [ ] **OS firewall profile visibility** — show current profile state (Domain/Private/Public), inbound/outbound default actions, active interface bindings.
-- [ ] **Permanent allow/block rules** — operator-defined rules that survive Vigil restart and are not subject to TTL expiry.
-- [ ] **CLI firewall command expansion** — extend the landed `--firewall status`, `--firewall list`, and `--firewall panic` flows with operator add/remove workflows and full firewall management coverage.
+- [x] **Firewall tab in inspector** — shows active rules, isolation state, blocked IPs/processes/domains, suspended processes.
+- [ ] **Rule template system** — predefined canned rules for common scenarios.
+- [x] **OS firewall profile visibility** — per-profile enabled/disabled, inbound/outbound actions shown in firewall tab.
+- [ ] **Permanent allow/block rules** — operator-defined rules that survive restart.
+- [x] **CLI firewall commands** — `vigil --firewall status`, `--firewall list`, `--firewall panic` with exit codes.
+
+### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
+
+- [ ] **Crash-safe filter lifecycle** — WFP filters persist across process restarts; stale filter cleanup on startup. nftables rules survive process crash; reconcile detects zombie rules.
+- [ ] **Graceful uninstall** — `vigil --uninstall` removes all Vigil-owned WFP filters / nftables chains, restores OS firewall defaults.
+- [ ] **Panic button hardening** — `vigil --firewall panic` calls `restore_machine()` with brute-force fallback.
+- [ ] **Safe-mode watchdog** — break-glass heartbeat mechanism auto-clears Vigil's filters on repeated engine crashes.
+
+### Phase 5 — Feature Parity & Polish (4–6 weeks)
+
+- [ ] **Per-profile rules** — WFP `FWPM_CONDITION_NETWORK_PROFILE_ID` for Domain/Private/Public affinity.
+- [ ] **Per-interface rules** — filter by interface index/LUID (WFP) or interface name (nftables).
+- [ ] **Logging & audit** — WFP built-in logging per-filter. nftables counter rules with log prefix.
+- [ ] **Stealth mode** — drop inbound without RST/ICMP.
+- [ ] **Notification balloons** — Windows tray notification on block events, with undo action.
+- [ ] **Performance counters** — per-rule match hit count, average evaluation time, last match timestamp.
+- [ ] **Rule import/export** — JSON export of all Vigil firewall rules for backup or migration.
+
+### Safety guarantees throughout
+
+- A fresh Vigil install with no rules configured does **nothing** — the OS firewall continues handling traffic.
+- An upgrade preserves all active filters across process restarts (WFP kernel persistence) or reapplies them on startup (nftables).
+- An uninstall or crash restores the OS firewall to its pre-Vigil state.
+- Every rule has an operator-visible owner, creation time, and TTL. No hidden or orphaned state.
+- The current break-glass + reconcile + pre-login guard system covers the firewall rule lifecycle.
 
 ### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
 

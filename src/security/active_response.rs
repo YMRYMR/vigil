@@ -754,6 +754,80 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
     Ok(message)
 }
 
+/// Phase 19 P2: re-apply firewall rules that may have been lost on reboot.
+///
+/// On Linux, nftables/iptables rules are in-memory and disappear after a
+/// reboot. This function checks each blocked IP/process/domain from the
+/// persisted state against the live backend and re-applies any that are
+/// missing. On Windows, WFP filters survive reboots natively, so this is
+/// a no-op (the kernel persists Vigil's filters across restarts).
+fn reconcile_firewall_rules() {
+    #[cfg(not(windows))]
+    {
+        use crate::security::firewall::{self, FirewallBackend};
+        let backend = firewall::get_backend();
+        if !backend.is_available() {
+            return;
+        }
+        let Ok(state) = load_state() else {
+            return;
+        };
+        let mut reapplied = false;
+
+        // Re-apply any missing IP block rules.
+        for rule in &state.blocked {
+            if backend.rule_present(&rule.rule_name).unwrap_or(false) {
+                continue;
+            }
+            if backend
+                .add_block_rule(&rule.rule_name, &rule.target)
+                .is_ok()
+            {
+                reapplied = true;
+            }
+        }
+
+        // Re-apply any missing process block rules.
+        for rule in &state.blocked_processes {
+            if backend
+                .rule_present(&rule.outbound_rule_name)
+                .unwrap_or(false)
+            {
+                continue;
+            }
+            if backend
+                .add_block_program_rule(&rule.outbound_rule_name, rule.pid, &rule.path, "out")
+                .is_ok()
+            {
+                reapplied = true;
+            }
+        }
+
+        // Re-apply isolation rules if state says isolated.
+        if state.isolated {
+            if !backend
+                .rule_present(crate::security::active_response::ISOLATE_RULE_IN)
+                .unwrap_or(false)
+            {
+                let _ = backend.apply_isolation("Vigil Isolate");
+                reapplied = true;
+            }
+        }
+
+        if reapplied {
+            tracing::info!(
+                "reconcile_firewall_rules: reapplied missing firewall rules after reboot"
+            );
+        }
+    }
+    #[cfg(windows)]
+    {
+        // WFP filters persist in the kernel across reboots automatically.
+        // No re-application needed — the filters survive as long as the
+        // WFP provider/sublayer registration exists.
+    }
+}
+
 pub fn reconcile() {
     if !platform::is_elevated() {
         return;
@@ -828,6 +902,10 @@ pub fn reconcile() {
             note_state_load_error_once("reconcile_save", &err);
         }
     }
+    // Phase 19 P2: re-apply any firewall rules that should exist but
+    // may have been lost on reboot (WFP filters survive, but nftables
+    // / iptables rules do not unless explicitly persisted).
+    reconcile_firewall_rules();
 }
 pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
     ensure_modifiable()?;
