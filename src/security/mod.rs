@@ -1,4 +1,4 @@
-#[allow(clippy::collapsible_if, dead_code)]
+#[allow(clippy::collapsible_if, dead_code, unused_imports)]
 pub mod active_response;
 pub mod auto_response;
 pub mod file_quarantine;
