@@ -1,5 +1,7 @@
 # Vigil
 
+**WARNING! Vigil is under development. Use at your own risk**
+
 [![CI](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil)
