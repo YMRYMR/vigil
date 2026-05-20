@@ -259,7 +259,9 @@ pub fn install() -> CmdResult {
 }
 
 pub fn uninstall() -> CmdResult {
-    platform::uninstall()
+    let result = platform::uninstall();
+    crate::security::firewall::cleanup_on_uninstall();
+    result
 }
 
 fn disable_boot_start() -> Result<(), String> {

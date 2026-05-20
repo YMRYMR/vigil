@@ -7,11 +7,13 @@ use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FWPM_DISPLAY_DATA0, FWPM_PROVIDER0, FWPM_SESSION0, FWPM_SUBLAYER0,
 };
-use windows::Win32::System::LibraryLoader::{FreeLibrary, GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 
 const FWP_E_ALREADY_EXISTS_STATUS: u32 = 0x8032_0009;
 const VIGIL_WFP_PROVIDER_KEY: GUID = GUID::from_u128(0x3b6f3d34_6150_4e3c_9169_7df0c5f1cb52);
 const VIGIL_WFP_SUBLAYER_KEY: GUID = GUID::from_u128(0xe7fae0d0_3af1_4b9f_88ea_ee11e08c9c4a);
+static VIGIL_WFP_PROVIDER_KEY_REF: GUID = GUID::from_u128(0x3b6f3d34_6150_4e3c_9169_7df0c5f1cb52);
+static VIGIL_WFP_SUBLAYER_KEY_REF: GUID = GUID::from_u128(0xe7fae0d0_3af1_4b9f_88ea_ee11e08c9c4a);
 const VIGIL_WFP_SUBLAYER_WEIGHT: u16 = 0x7000;
 
 type FwpmEngineOpen0Fn = unsafe extern "system" fn(
@@ -85,11 +87,7 @@ impl WfpApi {
 
 impl Drop for WfpApi {
     fn drop(&mut self) {
-        unsafe {
-            if self.module.0 != 0 {
-                let _ = FreeLibrary(self.module);
-            }
-        }
+        // OS cleans up LoadLibrary handles on process exit.
     }
 }
 
@@ -121,7 +119,7 @@ impl WfpSession<'_> {
             name: PWSTR(name.as_mut_ptr()),
             description: PWSTR(description.as_mut_ptr()),
         };
-        sublayer.providerKey = std::ptr::addr_of!(VIGIL_WFP_PROVIDER_KEY) as _;
+        sublayer.providerKey = std::ptr::addr_of!(VIGIL_WFP_PROVIDER_KEY_REF) as _;
         sublayer.weight = VIGIL_WFP_SUBLAYER_WEIGHT;
         let status = unsafe { (self.api.sublayer_add)(self.handle, &sublayer, std::ptr::null()) };
         ok_or_already_exists(status, "register WFP sublayer")

@@ -32,6 +32,65 @@ impl NftablesBackend {
     fn runner(&self) -> StdLinuxCommandRunner {
         StdLinuxCommandRunner
     }
+
+    /// Save the current nftables rules under the Vigil table to a config
+    /// fragment that survives reboot. Called on graceful shutdown.
+    pub fn save_nftables_config(&self) {
+        let runner = self.runner();
+        let output = runner
+            .stdout(&crate::security::linux_command_plan::nft_list_ruleset())
+            .unwrap_or_default();
+        if output.is_empty() {
+            return;
+        }
+        let path = "/etc/nftables/vigil.conf";
+        if let Err(e) = std::fs::create_dir_all("/etc/nftables") {
+            tracing::warn!("could not create /etc/nftables: {e}");
+            return;
+        }
+        let mut content =
+            String::from("#!/usr/sbin/nft -f\n# Vigil firewall rules — auto-generated\n\n");
+        // Only preserve the vigil table
+        let mut in_vigil_table = false;
+        for line in output.lines() {
+            if line.contains("table inet vigil") {
+                in_vigil_table = true;
+                content.push_str(line);
+                content.push('\n');
+                continue;
+            }
+            if in_vigil_table && line.starts_with("table") && !line.contains("vigil") {
+                in_vigil_table = false;
+                continue;
+            }
+            if in_vigil_table {
+                content.push_str(line);
+                content.push('\n');
+            }
+        }
+        if let Err(e) = std::fs::write(path, &content) {
+            tracing::warn!("could not write nftables boot config: {e}");
+        } else {
+            tracing::info!("saved nftables boot config to {path}");
+        }
+    }
+
+    /// Load persisted nftables config from boot fragment (if present).
+    /// Called on startup to restore rules that survived a reboot.
+    pub fn load_nftables_config(&self) -> Result<(), String> {
+        let path = "/etc/nftables/vigil.conf";
+        if !std::path::Path::new(path).exists() {
+            return Ok(());
+        }
+        let runner = self.runner();
+        runner.status(&crate::security::linux_command_plan::LinuxCommand::new(
+            "nft",
+            ["-f", path],
+        ))?;
+        tracing::info!("loaded nftables boot config from {path}");
+        std::fs::remove_file(path).ok();
+        Ok(())
+    }
 }
 
 impl FirewallBackend for NftablesBackend {
@@ -282,6 +341,14 @@ impl FirewallBackend for NftablesBackend {
             return Ok(());
         }
         runner.status(&systemd_resolve_flush_caches())
+    }
+
+    fn save_boot_config(&self) {
+        self.save_nftables_config();
+    }
+
+    fn load_boot_config(&self) -> Result<(), String> {
+        self.load_nftables_config()
     }
 }
 
