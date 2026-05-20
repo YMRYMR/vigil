@@ -36,7 +36,10 @@ pub fn rule_dir() -> PathBuf {
 }
 
 pub fn load_verified_rules() -> Result<RuleLoadReport, String> {
-    load_verified_rules_with_registry(&rule_dir(), &operator_provenance::registry_file_path())
+    load_verified_rules_with_registry(
+        &rule_dir(),
+        &operator_provenance::registry_file_path(),
+    )
 }
 
 pub fn run_status_cli() -> Result<(), String> {
@@ -53,11 +56,7 @@ pub fn run_status_cli() -> Result<(), String> {
     println!("Skipped non-rule files: {}", report.skipped);
 
     for file in &report.files {
-        println!(
-            "  [{}] {}",
-            observation_label(&file.observation),
-            file.path.display()
-        );
+        println!("  [{}] {}", observation_label(&file.observation), file.path.display());
     }
     for err in &report.errors {
         eprintln!("  [error] {err}");
@@ -183,10 +182,7 @@ fn collect_rule_files(
         let entry = entry.map_err(|e| format!("failed to read YARA directory entry: {e}"))?;
         let path = entry.path();
         let file_type = entry.file_type().map_err(|e| {
-            format!(
-                "failed to inspect YARA directory entry {}: {e}",
-                path.display()
-            )
+            format!("failed to inspect YARA directory entry {}: {e}", path.display())
         })?;
         if file_type.is_symlink() {
             report.skipped += 1;
