@@ -21,15 +21,34 @@ Write-Host "  cargo OK" -ForegroundColor Green
 if(-not $SkipBuild){
     Step "Build"
     $out=cargo build --release --bin vigil 2>&1
-    if($LASTEXITCODE -ne 0){$out|Select -Last 15|%{Write-Host $_};throw "Build failed"}
+    if($LASTEXITCODE -ne 0){
+        Write-Host "  Build FAILED. Trying debug build..." -ForegroundColor Yellow
+        $out = cargo build --bin vigil 2>&1
+        if($LASTEXITCODE -ne 0){$out|Select -Last 10|%{Write-Host $_};throw "Build failed"}
+        $BIN="target/debug/vigil"
+    }
+    Write-Host "  built $BIN" -ForegroundColor Green
 }
-Write-Host "  built" -ForegroundColor Green
-if(-not(Test-Path $BIN)){throw "Binary missing at $BIN - run: cargo build --release"}
+if(-not(Test-Path $BIN)){
+    # Try debug build as fallback
+    $BIN="target/debug/vigil"
+    if(-not(Test-Path $BIN)){
+        Write-Host "  No binary found. Trying: cargo build" -ForegroundColor Yellow
+        $out = cargo build --bin vigil 2>&1
+        if($LASTEXITCODE -ne 0){$out|Select -Last 10|%{Write-Host $_};throw "Build failed"}
+        Write-Host "  built debug" -ForegroundColor Green
+    }
+}
+Write-Host "  binary: $BIN" -ForegroundColor Green
 
 Step "Start VM"
 $s=& $V showvminfo $VM --machinereadable 2>&1
 if($s -match "running"){Write-Host "  already running" -ForegroundColor Green}
-else{& $V startvm $VM 2>&1|Out-Null;Write-Host "  started" -ForegroundColor Cyan}
+else{
+    Write-Host "  launching VM GUI..." -ForegroundColor Cyan
+    $startOut = & $V startvm $VM 2>&1
+    Write-Host "  $startOut" -ForegroundColor Cyan
+}
 
 Step "Wait SSH"
 $null=cmd /c "echo y | plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST exit" 2>&1
