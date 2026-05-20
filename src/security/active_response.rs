@@ -1045,6 +1045,7 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
         DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {target} until removed."),
     };
+    crate::notifier::send_firewall_event("Rule Added", &message);
     audit::record(
         "block_remote",
         "success",
@@ -1121,6 +1122,7 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {path} until removed."),
     };
+    crate::notifier::send_firewall_event("Process Blocked", &message);
     audit::record(
         "block_process",
         "success",
@@ -1245,6 +1247,10 @@ pub fn isolate_machine() -> Result<String, String> {
         Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
     }
 
+    crate::notifier::send_firewall_event(
+        "Network Isolated",
+        "Machine network access has been restricted by Vigil.",
+    );
     audit::record(
         "isolate_machine",
         if warnings.is_empty() {

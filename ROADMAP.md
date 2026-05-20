@@ -126,7 +126,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 - [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
 - [x] **Logging & audit** — structured tracing on every firewall rule add/delete/reapply. `audit::record()` on all operations. Per-uninstall status summary with counts.
 - [ ] **Stealth mode** — drop inbound without RST/ICMP.
-- [ ] **Notification balloons** — tray notification on block events with undo.
+- [x] **Notification balloons** — desktop toast notifications on block_remote, block_process, and isolate_machine. Fire-and-forget via notify-rust fallback on all platforms.
 - [ ] **Performance counters** — per-rule match hit count, eval time.
 - [x] **Rule import/export** — `vigil --firewall export` emits full rule list as JSON (blocked IPs, processes, domains, suspended, profiles).
 
