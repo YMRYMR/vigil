@@ -338,9 +338,22 @@ pub fn run_cli(args: &[String]) -> i32 {
                 }
             }
         }
+        Some("help") => {
+            println!("Rule templates (common scenarios):");
+            println!("  Block remote IP:     vigil --firewall block-ip 10.0.0.1");
+            println!("  Block process:       vigil --firewall block-process /path/to/exe");
+            println!("  Block domain:        vigil --firewall block-domain evil.example.com");
+            println!("  Isolate machine:     vigil --firewall isolate");
+            println!("  Restore machine:     vigil --firewall restore");
+            println!("  Panic (emergency):   vigil --firewall panic");
+            println!("");
+            println!("Templates use the permanent block preset (no TTL).");
+            println!("Rules auto-reconcile on reboot via SQLite + JSON state store.");
+            0
+        }
         Some(other) => {
             eprintln!("Unknown firewall subcommand: {other}");
-            eprintln!("Usage: vigil --firewall <status|list|export|panic>");
+            eprintln!("Usage: vigil --firewall <status|list|export|panic|help>");
             1
         }
     }

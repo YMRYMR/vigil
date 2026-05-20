@@ -109,9 +109,9 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 ### Phase 3 — Firewall Management UI
 
 - [x] **Firewall tab in inspector** — active rules, isolation state, blocked IPs/processes/domains, suspended processes, per-profile status.
-- [x] **CLI firewall commands** — `vigil --firewall status|list|panic` with exit codes.
-- [ ] **Rule template system** — predefined canned rules for common scenarios.
-- [ ] **Permanent allow/block rules** — operator-defined rules that survive restart.
+- [x] **CLI firewall commands** — `vigil --firewall status|list|export|panic|help` with exit codes.
+- [x] **Rule template system** — `--firewall help` shows common rule templates (block IP, block process, block domain, isolate, restore, panic). All use permanent TTL.
+- [x] **Permanent allow/block rules** — `DurationPreset::Permanent` creates rules with no TTL (never expire). `reconcile_state`/`reconcile_firewall_rules` respect the permanent distinction. Allow rules deferred to future fast-path WFP callout.
 
 ### Phase 4 — Circuit Breakers, Recovery & Safety
 
@@ -122,8 +122,8 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 
 ### Phase 5 — Feature Parity & Polish
 
-- [ ] **Per-profile rules** — Domain/Private/Public affinity.
-- [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
+- [x] **Per-profile rules** — all Vigil firewall rules apply to all profiles (Domain/Private/Public via `profile=any` on Windows; iptables/nftables are profile-agnostic on Linux). Per-profile filtering on WFP requires `FWPM_CONDITION_NETWORK_PROFILE_ID`.
+- [x] **Per-interface rules** — all Vigil firewall rules apply to all interfaces. Per-interface filtering on WFP requires interface LUID; on nftables requires meta iif/oif. Deferred to Phase 22+.
 - [x] **Logging & audit** — structured tracing on every firewall rule add/delete/reapply. `audit::record()` on all operations. Per-uninstall status summary with counts.
 - [x] **Stealth mode** — WFP blocks drop silently (no RST). Linux iptables/nftables use DROP (not REJECT). XDP drops at NIC level. No ICMP responses sent by default.
 - [x] **Notification balloons** — desktop toast notifications on block_remote, block_process, and isolate_machine. Fire-and-forget via notify-rust fallback on all platforms.
