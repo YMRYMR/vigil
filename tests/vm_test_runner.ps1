@@ -17,8 +17,8 @@ param(
 $ErrorActionPreference = "Stop"
 $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $VM = "vigil-linux"
-$SSH = "ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@localhost"
-$SCP = "scp -P 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+$SSH = "ssh -p 2222 -o StrictHostKeyChecking=no root@localhost"
+$SCP = "scp -P 2222 -o StrictHostKeyChecking=no"
 $BINARY = "target/release/vigil"
 $VM_BINARY = "/tmp/vigil"
 
@@ -41,21 +41,41 @@ if (-not $SkipBuild) {
 # ── Start VM ─────────────────────────────────────────────────────────
 
 Step "Starting VM: $VM"
-$state = & $VBox showvminfo $VM --machinereadable | Select-String "VMState="
+$state = & $VBox showvminfo $VM --machinereadable 2>&1 | Select-String "VMState="
 if ($state -match "running") {
     Write-Host "  VM already running" -ForegroundColor Green
 } else {
-    & $VBox startvm $VM --type headless 2>&1 | Out-Null
-    Write-Host "  Waiting for VM to boot..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 10
+    Write-Host "  Launching headless VM..." -ForegroundColor Cyan
+    $startOutput = & $VBox startvm $VM --type headless 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  VBoxManage startvm failed: $startOutput" -ForegroundColor Red
+        throw "VM start failed"
+    }
+    Write-Host "  VM started. Waiting for guest OS to boot..." -ForegroundColor Cyan
+    Start-Sleep -Seconds 15
 }
+
+# Verify VM is actually running
+$state = & $VBox showvminfo $VM --machinereadable 2>&1 | Select-String "VMState="
+if ($state -notmatch "running") {
+    throw "VM state is not running: $state"
+}
+Write-Host "  VM state confirmed: running" -ForegroundColor Green
+
+# Ensure SSH key exists (generate if needed)
+$sshKey = "$env:USERPROFILE\.ssh\id_ed25519"
+if (-not (Test-Path $sshKey)) {
+    Write-Host "  Generating SSH key pair..." -ForegroundColor Cyan
+    & ssh-keygen -t ed25519 -f $sshKey -N '""' 2>&1 | Out-Null
+}
+Write-Host "  SSH key: $sshKey"
 
 # ── Wait for SSH ─────────────────────────────────────────────────────
 
 Step "Waiting for SSH (port 2222)"
 $maxWait = 120
 for ($i = 0; $i -lt $maxWait; $i += 2) {
-    $result = & ssh -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=2 root@localhost "echo ok" 2>&1
+    $result = & ssh -p 2222 -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@localhost "echo ok" 2>&1
     if ($result -eq "ok") {
         Write-Host "  SSH ready after ${i}s" -ForegroundColor Green
         break
@@ -63,6 +83,19 @@ for ($i = 0; $i -lt $maxWait; $i += 2) {
     Start-Sleep -Seconds 2
 }
 if ($i -ge $maxWait) { throw "SSH not available after ${maxWait}s" }
+
+# Copy SSH public key to VM for passwordless access (if not already set up)
+$sshKeyPub = "$env:USERPROFILE\.ssh\id_ed25519.pub"
+if (Test-Path $sshKeyPub) {
+    $keyContent = Get-Content $sshKeyPub -Raw
+    $checkResult = Invoke-Expression "$SSH 'grep -F `"$keyContent`" /root/.ssh/authorized_keys 2>/dev/null'" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Installing SSH public key in VM..." -ForegroundColor Cyan
+        Invoke-Expression "$SSH 'mkdir -p /root/.ssh'" 2>&1 | Out-Null
+        & $SCP $sshKeyPub "root@localhost:/root/.ssh/authorized_keys" 2>&1 | Out-Null
+        Write-Host "  SSH key installed" -ForegroundColor Green
+    }
+}
 
 # ── Upload binary ────────────────────────────────────────────────────
 
