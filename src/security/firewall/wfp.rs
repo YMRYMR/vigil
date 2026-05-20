@@ -11,22 +11,7 @@ use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-// WFP filter action constants
-mod guid_consts {
-    use super::GUID;
-    pub const ALE_AUTH_CONNECT_V4: GUID = GUID {
-        Data1: 0x9b42e81e,
-        Data2: 0x12a6,
-        Data3: 0x4b4d,
-        Data4: [0x8d, 0x5b, 0x3c, 0xd2, 0xc4, 0xd9, 0x4a, 0xaf],
-    };
-    pub const ALE_AUTH_RECV_ACCEPT_V4: GUID = GUID {
-        Data1: 0xe1cdd7a0,
-        Data2: 0x43e2,
-        Data3: 0x4f6d,
-        Data4: [0x8b, 0x23, 0x3e, 0x7a, 0x9f, 0x5c, 0x6d, 0x4a],
-    };
-}
+// ── WFP engine types ────────────────────────────────────────────────────────
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -105,7 +90,7 @@ impl WfpDynamic {
 
 impl FirewallBackend for WfpBackend {
     fn label(&self) -> &'static str {
-        "WFP (stub)"
+        "WFP"
     }
 
     fn is_available(&self) -> bool {
