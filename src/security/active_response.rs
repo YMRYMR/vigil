@@ -777,6 +777,37 @@ fn reconcile_firewall_rules() {
         // be resurrected on boot.
         let blocked_before = state.blocked.len();
         let proc_blocked_before = state.blocked_processes.len();
+
+        // Delete live rules for expired entries BEFORE removing them
+        // from state. On a process restart (no reboot), iptables rules
+        // survive while Vigil was down — pruning state without deleting
+        // the live rule would orphan it permanently.
+        let expired_ips: Vec<String> = state
+            .blocked
+            .iter()
+            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
+            .map(|r| r.rule_name.clone())
+            .collect();
+        let expired_process_outbound: Vec<String> = state
+            .blocked_processes
+            .iter()
+            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
+            .map(|r| r.outbound_rule_name.clone())
+            .collect();
+        let expired_process_inbound: Vec<String> = state
+            .blocked_processes
+            .iter()
+            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
+            .map(|r| r.inbound_rule_name.clone())
+            .collect();
+        for name in expired_ips
+            .iter()
+            .chain(expired_process_outbound.iter())
+            .chain(expired_process_inbound.iter())
+        {
+            let _ = platform::delete_rule(name);
+        }
+
         state
             .blocked
             .retain(|rule| rule.expires_at_unix.is_none_or(|deadline| deadline > now));
@@ -786,8 +817,6 @@ fn reconcile_firewall_rules() {
         if state.blocked.len() != blocked_before
             || state.blocked_processes.len() != proc_blocked_before
         {
-            // We can't compare before/after since we just loaded, but if we
-            // changed anything the next load will reflect it.
             state_changed = true;
         }
 
