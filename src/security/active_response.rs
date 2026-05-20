@@ -903,6 +903,9 @@ fn reconcile_firewall_rules() {
             }
         }
 
+        if !state_changed && !reapplied {
+            return;
+        }
         if state_changed {
             if let Err(err) = save_state(&state) {
                 note_state_load_error_once("reconcile_firewall", &err);
@@ -911,6 +914,7 @@ fn reconcile_firewall_rules() {
         if reapplied {
             tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
         }
+        backend().save_boot_config();
     }
     #[cfg(windows)]
     {

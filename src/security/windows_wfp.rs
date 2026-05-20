@@ -119,7 +119,7 @@ impl WfpSession<'_> {
             name: PWSTR(name.as_mut_ptr()),
             description: PWSTR(description.as_mut_ptr()),
         };
-        sublayer.providerKey = std::ptr::addr_of!(VIGIL_WFP_SUBLAYER_KEY_REF) as _;
+        sublayer.providerKey = std::ptr::addr_of!(VIGIL_WFP_PROVIDER_KEY_REF) as _;
         sublayer.weight = VIGIL_WFP_SUBLAYER_WEIGHT;
         let status = unsafe { (self.api.sublayer_add)(self.handle, &sublayer, std::ptr::null()) };
         ok_or_already_exists(status, "register WFP sublayer")
