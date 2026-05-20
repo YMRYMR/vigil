@@ -1,62 +1,172 @@
-//! Firewall status dashboard — Phase 19 P3.
+//! Firewall rules tab — Phase 19 P3.
 //!
-//! Shows current firewall profile state, active Vigil rules,
-//! blocked targets/processes/domains, and isolation status.
-//! All data is read-only via the cached state — no firewall
-//! operations are performed during rendering.
-//!
-//! Actions (block, isolate, suspend) are performed from the
-//! process detail panel in Activity/Alerts tabs, or via the
-//! global header buttons.
+//! Interactive list of all active firewall rules. Click any row to
+//! see details and unblock/restore actions in the right panel.
+//! Follows the Activity/Alerts pattern: left list + right inspector.
 
+use super::{FirewallAction, FirewallSelection};
 use crate::ui::theme;
 use crate::{active_response, security::firewall};
 use egui::{Color32, RichText, Ui};
 
-/// Render the firewall tab panel.
-/// Called once per frame; data is cached via `load_state_for_query` (250ms TTL).
-pub fn show(ui: &mut Ui) {
+/// Render the firewall tab. Returns an action if the user clicked a
+/// button in the right panel.
+pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<FirewallAction> {
     let rules = active_response::list_rules();
+    let mut action: Option<FirewallAction> = None;
 
-    egui::ScrollArea::vertical()
-        .id_salt("firewall-scroll")
-        .show(ui, |ui| {
-            ui.add_space(8.0);
+    // ── Left panel: rule list ──────────────────────────────────────────
+    ui.horizontal(|ui| {
+        let left_width = if selected.is_some() {
+            ui.available_width() - 290.0
+        } else {
+            ui.available_width()
+        };
 
-            // ── Header ──────────────────────────────────────────────
-            ui.horizontal(|ui| {
-                ui.heading("Firewall");
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    backend_badge(ui);
+        egui::ScrollArea::vertical()
+            .id_salt("firewall-scroll")
+            .max_width(left_width)
+            .show(ui, |ui| {
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.heading("Firewall");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        backend_badge(ui);
+                    });
                 });
+                ui.label(
+                    RichText::new("Click any rule for details and actions")
+                        .color(theme::TEXT2)
+                        .size(10.5),
+                );
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(8.0);
+
+                profile_section(ui, &rules);
+                isolation_section(ui, &rules, selected);
+                blocked_ips_section(ui, &rules, selected);
+                blocked_processes_section(ui, &rules, selected);
+                blocked_domains_section(ui, &rules, selected);
+                suspended_processes_section(ui, &rules, selected);
+                ui.add_space(8.0);
             });
-            ui.label(
-                RichText::new("Status dashboard — use Activity or Alerts tabs to perform actions.")
-                    .color(theme::TEXT2)
-                    .size(10.5),
-            );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(8.0);
 
-            // ── Profile state ───────────────────────────────────────
-            profile_section(ui, &rules);
+        // ── Right panel: inspector ─────────────────────────────────────
+        if let Some(sel) = selected.as_ref() {
+            let is_actionable = sel.rule_type == "ip"
+                || sel.rule_type == "process"
+                || sel.rule_type == "domain"
+                || sel.rule_type == "isolation";
+            if is_actionable {
+                let mut clear_after = false;
+                egui::SidePanel::right("firewall_detail")
+                    .resizable(false)
+                    .min_width(280.0)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("Rule Detail").strong().size(14.0));
+                        ui.separator();
+                        ui.add_space(8.0);
 
-            // ── Isolation ────────────────────────────────────────────
-            isolation_section(ui, &rules);
+                        ui.label(RichText::new(&sel.target).size(13.0).monospace());
+                        ui.label(
+                            RichText::new(format!("Type: {}", sel.rule_type))
+                                .color(theme::TEXT2)
+                                .size(11.0),
+                        );
 
-            // ── Blocked IPs ──────────────────────────────────────────
-            blocked_ips_section(ui, &rules);
+                        ui.add_space(12.0);
 
-            // ── Blocked processes ────────────────────────────────────
-            blocked_processes_section(ui, &rules);
+                        match sel.rule_type.as_str() {
+                            "ip" => {
+                                if rules
+                                    .blocked_ips
+                                    .iter()
+                                    .any(|b| &b.rule_name == &sel.rule_name)
+                                {
+                                    if ui
+                                        .button(
+                                            RichText::new("Unblock IP")
+                                                .color(theme::DANGER)
+                                                .size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        clear_after = true;
+                                        action = Some(FirewallAction::UnblockIp {
+                                            rule_name: sel.rule_name.clone(),
+                                            target: sel.target.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            "process" => {
+                                if rules.blocked_processes.iter().any(|b| &b.path == &sel.path) {
+                                    if ui
+                                        .button(
+                                            RichText::new("Unblock Process")
+                                                .color(theme::DANGER)
+                                                .size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        clear_after = true;
+                                        action = Some(FirewallAction::UnblockProcess {
+                                            rule_name: sel.rule_name.clone(),
+                                            pid: sel.pid,
+                                            path: sel.path.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            "domain" => {
+                                if rules
+                                    .blocked_domains
+                                    .iter()
+                                    .any(|d| &d.domain == &sel.target)
+                                {
+                                    if ui
+                                        .button(
+                                            RichText::new("Clear Domain Block")
+                                                .color(theme::DANGER)
+                                                .size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        clear_after = true;
+                                        action = Some(FirewallAction::ClearDomainBlock {
+                                            domain: sel.target.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                            "isolation" => {
+                                if rules.isolated {
+                                    if ui
+                                        .button(
+                                            RichText::new("Restore Network")
+                                                .color(theme::ACCENT)
+                                                .size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        clear_after = true;
+                                        action = Some(FirewallAction::RestoreIsolation);
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    });
+                if clear_after {
+                    *selected = None;
+                }
+            }
+        }
+    });
 
-            // ── Blocked domains ──────────────────────────────────────
-            blocked_domains_section(ui, &rules);
-
-            // ── Suspended processes ──────────────────────────────────
-            suspended_processes_section(ui, &rules);
-        });
+    action
 }
 
 // ── Sections ─────────────────────────────────────────────────────────────────
@@ -79,11 +189,7 @@ fn profile_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
     ui.add_space(4.0);
 
     if rules.profiles.is_empty() {
-        ui.label(
-            RichText::new("No profile data available.")
-                .color(theme::TEXT2)
-                .size(12.0),
-        );
+        muted(ui, "No profile data available.");
         return;
     }
 
@@ -119,7 +225,11 @@ fn profile_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
     ui.add_space(4.0);
 }
 
-fn isolation_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
+fn isolation_section(
+    ui: &mut Ui,
+    rules: &active_response::FirewallRuleList,
+    selected: &mut Option<FirewallSelection>,
+) {
     let is_active = rules.isolated;
     let (color, status) = if is_active {
         (theme::DANGER, "ACTIVE")
@@ -129,7 +239,7 @@ fn isolation_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
 
     section_header(ui, "Network Isolation", "Full machine network isolation");
     ui.add_space(4.0);
-    ui.horizontal(|ui| {
+    let resp = ui.horizontal(|ui| {
         let badge = RichText::new(status)
             .color(color)
             .size(13.0)
@@ -147,14 +257,28 @@ fn isolation_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
             }
         }
     });
+    if is_active && resp.response.clicked() {
+        *selected = Some(FirewallSelection {
+            rule_name: "Network Isolation".into(),
+            target: "Entire machine".into(),
+            rule_type: "isolation".into(),
+            direction: "both".into(),
+            pid: 0,
+            path: String::new(),
+        });
+    }
     ui.add_space(8.0);
 }
 
-fn blocked_ips_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
+fn blocked_ips_section(
+    ui: &mut Ui,
+    rules: &active_response::FirewallRuleList,
+    selected: &mut Option<FirewallSelection>,
+) {
     section_header(
         ui,
         &format!("Blocked IPs ({})", rules.blocked_ips.len()),
-        "Remote IP addresses blocked by firewall rules",
+        "Remote IP addresses blocked by firewall rules — click to unblock",
     );
     ui.add_space(4.0);
 
@@ -164,7 +288,7 @@ fn blocked_ips_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
     }
 
     for entry in &rules.blocked_ips {
-        ui.horizontal(|ui| {
+        let resp = ui.horizontal(|ui| {
             ui.label(RichText::new(&entry.target).size(12.0).monospace());
             if let Some(expires) = entry.expires_at_unix {
                 let now = std::time::SystemTime::now()
@@ -181,15 +305,29 @@ fn blocked_ips_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
                 }
             }
         });
+        if resp.response.clicked() {
+            *selected = Some(FirewallSelection {
+                rule_name: entry.rule_name.clone(),
+                target: entry.target.clone(),
+                rule_type: "ip".into(),
+                direction: "out".into(),
+                pid: 0,
+                path: String::new(),
+            });
+        }
     }
     ui.add_space(4.0);
 }
 
-fn blocked_processes_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
+fn blocked_processes_section(
+    ui: &mut Ui,
+    rules: &active_response::FirewallRuleList,
+    selected: &mut Option<FirewallSelection>,
+) {
     section_header(
         ui,
         &format!("Blocked Processes ({})", rules.blocked_processes.len()),
-        "Processes with active firewall block rules",
+        "Processes with active firewall block rules — click to unblock",
     );
     ui.add_space(4.0);
 
@@ -199,23 +337,37 @@ fn blocked_processes_section(ui: &mut Ui, rules: &active_response::FirewallRuleL
     }
 
     for entry in &rules.blocked_processes {
-        ui.horizontal(|ui| {
-            let label = if entry.path.is_empty() {
-                format!("PID {}", entry.pid)
-            } else {
-                entry.path.clone()
-            };
-            ui.label(RichText::new(label).size(11.0).monospace());
+        let label = if entry.path.is_empty() {
+            format!("PID {}", entry.pid)
+        } else {
+            entry.path.clone()
+        };
+        let resp = ui.horizontal(|ui| {
+            ui.label(RichText::new(&label).size(11.0).monospace());
         });
+        if resp.response.clicked() {
+            *selected = Some(FirewallSelection {
+                rule_name: entry.outbound_rule_name.clone(),
+                target: label,
+                rule_type: "process".into(),
+                direction: "out".into(),
+                pid: entry.pid,
+                path: entry.path.clone(),
+            });
+        }
     }
     ui.add_space(4.0);
 }
 
-fn blocked_domains_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
+fn blocked_domains_section(
+    ui: &mut Ui,
+    rules: &active_response::FirewallRuleList,
+    selected: &mut Option<FirewallSelection>,
+) {
     section_header(
         ui,
         &format!("Blocked Domains ({})", rules.blocked_domains.len()),
-        "Domains redirected to 127.0.0.1 via hosts file",
+        "Domains redirected to 127.0.0.1 via hosts file — click to clear",
     );
     ui.add_space(4.0);
 
@@ -225,16 +377,30 @@ fn blocked_domains_section(ui: &mut Ui, rules: &active_response::FirewallRuleLis
     }
 
     for entry in &rules.blocked_domains {
-        ui.label(RichText::new(&entry.domain).size(12.0).monospace());
+        let resp = ui.label(RichText::new(&entry.domain).size(12.0).monospace());
+        if resp.clicked() {
+            *selected = Some(FirewallSelection {
+                rule_name: format!("domain-{}", entry.domain),
+                target: entry.domain.clone(),
+                rule_type: "domain".into(),
+                direction: "out".into(),
+                pid: 0,
+                path: String::new(),
+            });
+        }
     }
     ui.add_space(4.0);
 }
 
-fn suspended_processes_section(ui: &mut Ui, rules: &active_response::FirewallRuleList) {
+fn suspended_processes_section(
+    ui: &mut Ui,
+    rules: &active_response::FirewallRuleList,
+    selected: &mut Option<FirewallSelection>,
+) {
     section_header(
         ui,
         &format!("Suspended Processes ({})", rules.suspended_processes.len()),
-        "Processes suspended by Vigil",
+        "Processes suspended by Vigil — click to resume",
     );
     ui.add_space(4.0);
 
@@ -244,28 +410,24 @@ fn suspended_processes_section(ui: &mut Ui, rules: &active_response::FirewallRul
     }
 
     for entry in &rules.suspended_processes {
-        ui.horizontal(|ui| {
-            let label = if !entry.proc_name.is_empty() {
-                format!("{} (PID {})", entry.proc_name, entry.pid)
-            } else {
-                format!("PID {}", entry.pid)
-            };
-            ui.label(RichText::new(label).size(11.0).monospace());
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-            if let Some(elapsed) = now.checked_sub(entry.suspended_at_unix) {
-                let mins = elapsed / 60;
-                if mins > 0 {
-                    ui.label(
-                        RichText::new(format!("({mins} min ago)"))
-                            .color(theme::TEXT2)
-                            .size(10.0),
-                    );
-                }
-            }
+        let label = if !entry.proc_name.is_empty() {
+            format!("{} (PID {})", entry.proc_name, entry.pid)
+        } else {
+            format!("PID {}", entry.pid)
+        };
+        let resp = ui.horizontal(|ui| {
+            ui.label(RichText::new(&label).size(11.0).monospace());
         });
+        if resp.response.clicked() {
+            *selected = Some(FirewallSelection {
+                rule_name: format!("suspend-{}", entry.pid),
+                target: label,
+                rule_type: "process".into(),
+                direction: "both".into(),
+                pid: entry.pid,
+                path: entry.path.clone(),
+            });
+        }
     }
     ui.add_space(4.0);
 }

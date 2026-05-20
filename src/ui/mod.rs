@@ -276,6 +276,37 @@ pub struct ProcessSelection {
     pub selected_connection_reason_summary: Option<inspector::ReasonSummary>,
 }
 
+#[derive(Clone)]
+pub struct FirewallSelection {
+    pub rule_name: String,
+    pub target: String,
+    pub rule_type: String, // "ip", "process", "domain", "isolation"
+    pub direction: String, // "in", "out", "both"
+    pub pid: u32,
+    pub path: String,
+}
+
+#[derive(Clone)]
+pub enum FirewallAction {
+    UnblockIp {
+        rule_name: String,
+        target: String,
+    },
+    UnblockProcess {
+        rule_name: String,
+        pid: u32,
+        path: String,
+    },
+    ClearDomainBlock {
+        domain: String,
+    },
+    RestoreIsolation,
+    RestoreProcess {
+        pid: u32,
+        path: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct InspectorSnapshotKey {
     pid: u32,
@@ -383,6 +414,7 @@ pub struct VigilApp {
     alerts: VecDeque<ConnInfo>,
     selected_activity: Option<ProcessSelection>,
     selected_alert: Option<ProcessSelection>,
+    selected_firewall: Option<FirewallSelection>,
     active_tab: Tab,
     unseen_alerts: usize,
     ui_rx: mpsc::Receiver<UiMessage>,
@@ -566,6 +598,7 @@ impl VigilApp {
             alerts: VecDeque::new(),
             selected_activity: None,
             selected_alert: None,
+            selected_firewall: None,
             active_tab: persisted.active_tab,
             unseen_alerts: 0,
             ui_rx,
@@ -2111,7 +2144,47 @@ impl eframe::App for VigilApp {
                         }
                     }
                 }
-                Tab::Firewall => firewall::show(ui),
+                Tab::Firewall => {
+                    if let Some(fw_action) = firewall::show(ui, &mut self.selected_firewall) {
+                        let msg = match fw_action {
+                            FirewallAction::UnblockIp { rule_name, target } => {
+                                self.start_network_operation(NetworkOperationKind::Restore);
+                                match active_response::unblock_remote(&target) {
+                                    Ok(msg) => msg,
+                                    Err(e) => format!("Unblock failed: {e}")
+                                }
+                            }
+                            FirewallAction::UnblockProcess { rule_name: _, pid, path } => {
+                                match active_response::unblock_process(pid, &path) {
+                                    Ok(msg) => msg,
+                                    Err(e) => format!("Unblock failed: {e}")
+                                }
+                            }
+                            FirewallAction::ClearDomainBlock { domain } => {
+                                match active_response::unblock_domain(&domain) {
+                                    Ok(msg) => msg,
+                                    Err(e) => format!("Clear domain block failed: {e}")
+                                }
+                            }
+                            FirewallAction::RestoreIsolation => {
+                                match active_response::restore_machine() {
+                                    Ok(msg) => msg,
+                                    Err(e) => format!("Restore failed: {e}")
+                                }
+                            }
+                            FirewallAction::RestoreProcess { pid, path } => {
+                                match active_response::resume_process(pid, &path) {
+                                    Ok(msg) => msg,
+                                    Err(e) => format!("Resume failed: {e}")
+                                }
+                            }
+                        };
+                        self.push_notification(
+                            if msg.contains("failed") || msg.contains("No ") { NotificationKind::Error } else { NotificationKind::Success },
+                            msg,
+                        );
+                    }
+                }
                 Tab::Help => help::show(ui),
             });
         self.show_notifications_overlay(&ctx);
