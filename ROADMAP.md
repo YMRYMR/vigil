@@ -90,7 +90,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 
 - [x] **Windows WFP user-mode API wrapper** — `Fwpuclnt.dll` via `LoadLibrary`/`GetProcAddress`. `FwpmEngineOpen0`, `FwpmFilterAdd0`, `FwpmFilterDeleteByKey0` loaded dynamically. Provider/sublayer registration. Correct struct layouts matching Windows SDK.
 - [x] **Linux nftables backend activation** — `nft` added to `command_paths.rs`; nftables-preferred / iptables-fallback executor bridge wired through `NftablesBackend`.
-- [ ] **Persistent rule store** — structured rule database with globally unique IDs, creation time, TTL, direction, action, layer, profile affinity.
+- [x] **Persistent rule store** — SQLite `firewall_rule` table with HMAC integrity via existing `StorageDb`. Synced on every `save_state()`: all blocked IPs, processes, and domains written with rule type, direction, timestamps.
 - [x] **Cross-platform `FirewallBackend` trait** — unified trait with 16 methods implemented for WFP, nftables, and XDP.
 
 ### Phase 1 — Core Firewall Engine

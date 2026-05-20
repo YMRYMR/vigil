@@ -1888,6 +1888,7 @@ fn save_state(state: &State) -> Result<(), String> {
     match crate::security::policy::save_json_with_integrity(&path, &data) {
         Ok(()) => {
             update_query_state_cache(&path, state);
+            sync_firewall_rules_to_db(state);
             Ok(())
         }
         Err(err) => {
@@ -1896,6 +1897,71 @@ fn save_state(state: &State) -> Result<(), String> {
         }
     }
 }
+
+#[cfg(not(windows))]
+fn sync_firewall_rules_to_db(state: &State) {
+    let now = unix_now();
+    let rows: Vec<crate::storage::db::FirewallRuleRow> = state
+        .blocked
+        .iter()
+        .map(|b| crate::storage::db::FirewallRuleRow {
+            rule_name: b.rule_name.clone(),
+            rule_type: "ip".into(),
+            target: b.target.clone(),
+            direction: "out".into(),
+            pid: 0,
+            path: String::new(),
+            created_unix: now,
+            expires_unix: b.expires_at_unix,
+        })
+        .chain(state.blocked_processes.iter().flat_map(|b| {
+            let out = crate::storage::db::FirewallRuleRow {
+                rule_name: b.outbound_rule_name.clone(),
+                rule_type: "process".into(),
+                target: String::new(),
+                direction: "out".into(),
+                pid: b.pid,
+                path: b.path.clone(),
+                created_unix: now,
+                expires_unix: b.expires_at_unix,
+            };
+            let in_rule = crate::storage::db::FirewallRuleRow {
+                rule_name: b.inbound_rule_name.clone(),
+                rule_type: "process".into(),
+                target: String::new(),
+                direction: "in".into(),
+                pid: b.pid,
+                path: b.path.clone(),
+                created_unix: now,
+                expires_unix: b.expires_at_unix,
+            };
+            [out, in_rule]
+        }))
+        .chain(
+            state
+                .blocked_domains
+                .iter()
+                .map(|d| crate::storage::db::FirewallRuleRow {
+                    rule_name: format!("domain-{}", d.domain),
+                    rule_type: "domain".into(),
+                    target: d.domain.clone(),
+                    direction: "out".into(),
+                    pid: 0,
+                    path: String::new(),
+                    created_unix: now,
+                    expires_unix: None,
+                }),
+        )
+        .collect();
+    if let Ok(db) = crate::storage::db::StorageDb::global() {
+        if let Err(e) = db.save_firewall_rules(&rows) {
+            tracing::warn!("sync firewall rules to db: {e}");
+        }
+    }
+}
+
+#[cfg(windows)]
+fn sync_firewall_rules_to_db(_state: &State) {}
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
     let existed = path.exists();
