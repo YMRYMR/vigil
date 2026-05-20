@@ -76,27 +76,12 @@ fn nft_table_exists(runner: &impl LinuxCommandRunner) -> bool {
         .unwrap_or(false)
 }
 
-fn selected_setup_commands(
-    runner: &impl LinuxCommandRunner,
-    backend: LinuxFirewallBackend,
-) -> Vec<LinuxCommand> {
-    match backend {
-        LinuxFirewallBackend::Nftables if nft_table_exists(runner) => Vec::new(),
-        _ => firewall_backend_setup_plan(backend),
-    }
-}
-
 #[allow(dead_code)]
 pub fn execute_selected_setup_plan(
     runner: &impl LinuxCommandRunner,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    execute_firewall_plan(
-        runner,
-        backend,
-        selected_setup_commands(runner, backend),
-        None,
-    )
+    execute_firewall_plan(runner, backend, firewall_backend_setup_plan(backend), None)
 }
 
 pub fn execute_selected_isolate_plan(
@@ -114,7 +99,7 @@ pub fn execute_selected_isolate_plan(
         commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
         commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
     } else {
-        commands.extend(selected_setup_commands(runner, backend));
+        commands.extend(firewall_backend_setup_plan(backend));
     }
     commands.extend(firewall_backend_isolate_plan(backend, rule_name));
     for command in &commands {
@@ -146,7 +131,7 @@ pub fn execute_selected_remote_block_plan(
     target: &str,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    let mut commands = selected_setup_commands(runner, backend);
+    let mut commands = firewall_backend_setup_plan(backend);
     commands.extend(firewall_backend_block_remote_plan(
         backend, rule_name, target,
     ));
@@ -160,7 +145,7 @@ pub fn execute_selected_uid_block_plan(
     uid: u32,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    let mut commands = selected_setup_commands(runner, backend);
+    let mut commands = firewall_backend_setup_plan(backend);
     commands.extend(firewall_backend_block_uid_plan(
         backend, rule_name, direction, uid,
     ));
@@ -398,17 +383,18 @@ mod tests {
     }
 
     #[test]
-    fn remote_block_skips_setup_when_nft_table_already_exists() {
+    fn remote_block_replays_setup_when_nft_table_already_exists() {
         let runner = RecordingRunner::new(true);
         let executed =
             execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
                 .unwrap();
         assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
-        assert_eq!(executed.commands.len(), 1);
-        assert_eq!(executed.commands[0].program, "nft");
-        assert_eq!(executed.commands[0].args[4], "output");
-        assert_eq!(executed.commands[0].args[5], "ip6");
-        assert_eq!(executed.commands[0].args[6], "daddr");
+        assert_eq!(executed.commands.len(), 11);
+        assert_eq!(
+            executed.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
+        assert_eq!(executed.commands.last().unwrap().args[4], "output");
     }
 
     #[test]
@@ -435,7 +421,11 @@ mod tests {
         let nft_runner = RecordingRunner::new(true);
         let nft = execute_selected_uid_block_plan(&nft_runner, "uid", "out", 1000).unwrap();
         assert_eq!(nft.backend, LinuxFirewallBackend::Nftables);
-        assert_eq!(nft.commands.len(), 1);
+        assert_eq!(nft.commands.len(), 11);
+        assert_eq!(
+            nft.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
         assert!(nft
             .commands
             .last()
