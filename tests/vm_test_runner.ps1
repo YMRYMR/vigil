@@ -85,9 +85,13 @@ $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $VM = "vigil-linux"
 
 # Auto-detect best SSH client for password auth
-$SSH_TYPE = if (Get-Command plink -ErrorAction SilentlyContinue) { "plink" }
-            elseif (Get-Command sshpass -ErrorAction SilentlyContinue) { "sshpass" }
-            else { "ssh" }
+if (Get-Command plink -ErrorAction SilentlyContinue) {
+    $SSH_TYPE = "plink"
+} elseif (Get-Command sshpass -ErrorAction SilentlyContinue) {
+    $SSH_TYPE = "sshpass"
+} else {
+    $SSH_TYPE = "ssh"
+}
 if ($SSH_TYPE -eq "plink") {
     $SSH = "plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST"
     $SCP = "pscp -P $VM_PORT -pw $VM_PASSWORD"
