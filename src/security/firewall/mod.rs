@@ -32,6 +32,7 @@ pub enum Action {
     Allow,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Filter {
     RemoteIp(IpAddr),
@@ -39,6 +40,7 @@ pub enum Filter {
     All,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Profile {
     Domain,
@@ -64,8 +66,9 @@ pub struct FirewallSnapshot {
 /// The core firewall engine trait.
 ///
 /// Each platform implements this trait using its native API:
-/// - **Windows**: `WfpBackend` — direct WFP user-mode API (`fwpmu.dll`)
-/// - **Linux**: `NftablesBackend` — nftables via `nft` CLI (with iptables fallback pub trait FirewallBackend {
+/// - **Windows**: `WfpBackend` - direct WFP user-mode API (`fwpmu.dll`)
+/// - **Linux**: `NftablesBackend` - nftables via `nft` CLI (with iptables fallback pub trait FirewallBackend {
+#[allow(dead_code)]
 pub trait FirewallBackend: Send + Sync {
     /// Unique label for this backend (e.g. "WFP", "nftables", "iptables").
     fn label(&self) -> &'static str;
@@ -225,7 +228,7 @@ pub fn run_cli(args: &[String]) -> i32 {
                 }
             }
             if had_error {
-                eprintln!("Panic completed with warnings — network may not be fully restored.");
+                eprintln!("Panic completed with warnings - network may not be fully restored.");
                 1
             } else {
                 println!("Panic complete. Network restored to OS defaults.");
