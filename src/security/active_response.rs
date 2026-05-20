@@ -817,6 +817,7 @@ fn reconcile_firewall_rules() {
             let out_ok = b.delete_rule(&rule.outbound_rule_name).is_ok();
             let in_ok = b.delete_rule(&rule.inbound_rule_name).is_ok();
             if out_ok && in_ok {
+                deleted_count += 2;
                 deleted_process_paths.insert(rule.path.clone());
             }
         }
@@ -874,6 +875,7 @@ fn reconcile_firewall_rules() {
                     if b.add_block_program_rule(&rule.outbound_rule_name, pid, &rule.path, "out")
                         .is_ok()
                     {
+                        reapply_count += 1;
                         reapplied = true;
                     }
                 }
@@ -881,6 +883,7 @@ fn reconcile_firewall_rules() {
                     if b.add_block_program_rule(&rule.inbound_rule_name, pid, &rule.path, "in")
                         .is_ok()
                     {
+                        reapply_count += 1;
                         reapplied = true;
                     }
                 }
@@ -893,6 +896,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.add_domain_block(&domain.domain, &domain.marker).is_ok() {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
@@ -903,6 +907,7 @@ fn reconcile_firewall_rules() {
                 .unwrap_or(false)
                 && b.apply_isolation("Vigil Isolate").is_ok()
             {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
