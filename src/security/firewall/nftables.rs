@@ -5,8 +5,8 @@
 
 use super::{FirewallBackend, FirewallProfileState, FirewallSnapshot};
 use crate::security::linux_command_plan::{
-    resolvectl_flush_caches, ss_kill_tcp_connection, systemd_resolve_flush_caches, LinuxCommand,
-    LinuxCommandRunner, StdLinuxCommandRunner,
+    resolvectl_flush_caches, ss_kill_tcp_connection, systemd_resolve_flush_caches,
+    LinuxCommand, LinuxCommandRunner, StdLinuxCommandRunner,
 };
 use crate::security::linux_firewall_backend::{
     capture_iptables_policy_snapshot, select_firewall_backend, LinuxFirewallBackend,
@@ -203,10 +203,7 @@ impl FirewallBackend for NftablesBackend {
         let runner = self.runner();
         // Enumerate ESTABLISHED connections via ss and kill each.
         let ss_output = runner
-            .stdout(&LinuxCommand::new(
-                "ss",
-                ["-t", "-n", "state", "established"],
-            ))
+            .stdout(&LinuxCommand::new("ss", ["-t", "-n", "state", "established"]))
             .unwrap_or_default();
         let mut killed = 0usize;
         for line in ss_output.lines() {
