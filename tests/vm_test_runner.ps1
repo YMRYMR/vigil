@@ -159,7 +159,7 @@ Write-Host "  SSH key: $sshKey"
 
 # ── Wait for SSH ─────────────────────────────────────────────────────
 
-Step "Waiting for SSH (port 2222 → guest:22)"
+Step "Waiting for SSH (port 2222 -> guest:22)"
 $maxWait = 180
 $sshStarted = $false
 for ($i = 0; $i -lt $maxWait; $i += 5) {
