@@ -1898,7 +1898,6 @@ fn save_state(state: &State) -> Result<(), String> {
     }
 }
 
-#[cfg(not(windows))]
 fn sync_firewall_rules_to_db(state: &State) {
     let now = unix_now();
     let rows: Vec<crate::storage::db::FirewallRuleRow> = state
@@ -1959,9 +1958,6 @@ fn sync_firewall_rules_to_db(state: &State) {
         }
     }
 }
-
-#[cfg(windows)]
-fn sync_firewall_rules_to_db(_state: &State) {}
 
 fn load_state_from_path(path: &std::path::Path) -> Result<State, String> {
     let existed = path.exists();

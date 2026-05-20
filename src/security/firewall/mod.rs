@@ -261,8 +261,14 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
             let status = crate::security::active_response::status();
             println!("Performance:");
-            println!("  Blocked IPs: {}", status.blocked_rules);
-            println!("  Blocked processes: {}", status.blocked_processes);
+            println!(
+                "  Active rules: {} ({} IP + {} process)",
+                status.blocked_rules,
+                status
+                    .blocked_rules
+                    .saturating_sub(status.blocked_processes),
+                status.blocked_processes
+            );
             println!("  Blocked domains: {}", status.blocked_domains);
             println!("  Suspended processes: {}", status.suspended_processes);
             println!("  Autoruns frozen: {}", status.frozen_autoruns);
@@ -318,8 +324,14 @@ pub fn run_cli(args: &[String]) -> i32 {
         Some("list") => {
             let status = crate::security::active_response::status();
             println!("Firewall rules (managed by active_response state):");
-            println!("  Blocked IPs: {}", status.blocked_rules);
-            println!("  Blocked processes: {}", status.blocked_processes);
+            println!(
+                "  Active rules: {} ({} IP + {} process)",
+                status.blocked_rules,
+                status
+                    .blocked_rules
+                    .saturating_sub(status.blocked_processes),
+                status.blocked_processes
+            );
             println!("  Blocked domains: {}", status.blocked_domains);
             println!("  Suspended processes: {}", status.suspended_processes);
             println!("  Isolated: {}", status.isolated);
