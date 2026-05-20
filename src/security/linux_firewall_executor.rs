@@ -65,10 +65,13 @@ fn capture_restore_state(
 fn nft_table_exists(runner: &impl LinuxCommandRunner) -> bool {
     runner
         .stdout(&nft_list_ruleset())
-        .map(|s| {
-            s.lines()
-                .map(str::trim)
-                .any(|line| line == "table inet vigil")
+        .map(|ruleset| {
+            ruleset.lines().any(|line| {
+                let mut parts = line.split_whitespace();
+                matches!(parts.next(), Some("table"))
+                    && matches!(parts.next(), Some("inet"))
+                    && matches!(parts.next(), Some("vigil"))
+            })
         })
         .unwrap_or(false)
 }
@@ -412,7 +415,7 @@ mod tests {
     fn remote_block_does_not_skip_setup_for_different_table_name() {
         let runner = RecordingRunner {
             nft_available: true,
-            nft_ruleset_output: "table inet vigil2",
+            nft_ruleset_output: "table inet vigil2 {",
             fail_program: None,
             commands: RefCell::new(Vec::new()),
         };
