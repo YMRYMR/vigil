@@ -62,12 +62,29 @@ fn capture_restore_state(
     })
 }
 
+fn nft_table_exists(runner: &impl LinuxCommandRunner) -> bool {
+    runner
+        .stdout(&nft_list_ruleset())
+        .map(|s| s.contains("table inet vigil"))
+        .unwrap_or(false)
+}
+
+fn selected_setup_commands(
+    runner: &impl LinuxCommandRunner,
+    backend: LinuxFirewallBackend,
+) -> Vec<LinuxCommand> {
+    match backend {
+        LinuxFirewallBackend::Nftables if nft_table_exists(runner) => Vec::new(),
+        _ => firewall_backend_setup_plan(backend),
+    }
+}
+
 #[allow(dead_code)]
 pub fn execute_selected_setup_plan(
     runner: &impl LinuxCommandRunner,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    execute_firewall_plan(runner, backend, firewall_backend_setup_plan(backend), None)
+    execute_firewall_plan(runner, backend, selected_setup_commands(runner, backend), None)
 }
 
 pub fn execute_selected_isolate_plan(
@@ -80,20 +97,12 @@ pub fn execute_selected_isolate_plan(
         Err(e) => return Err((e, None)),
     };
     let mut commands = Vec::new();
-    if backend == LinuxFirewallBackend::Nftables {
-        let table_exists = runner
-            .stdout(&nft_list_ruleset())
-            .map(|s| s.contains("table inet vigil"))
-            .unwrap_or(false);
-        if table_exists {
-            commands.push(nft_flush_chain(NFT_ISOL_IN_CHAIN));
-            commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
-            commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
-        } else {
-            commands.extend(firewall_backend_setup_plan(backend));
-        }
+    if backend == LinuxFirewallBackend::Nftables && nft_table_exists(runner) {
+        commands.push(nft_flush_chain(NFT_ISOL_IN_CHAIN));
+        commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
+        commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
     } else {
-        commands.extend(firewall_backend_setup_plan(backend));
+        commands.extend(selected_setup_commands(runner, backend));
     }
     commands.extend(firewall_backend_isolate_plan(backend, rule_name));
     for command in &commands {
@@ -125,7 +134,7 @@ pub fn execute_selected_remote_block_plan(
     target: &str,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    let mut commands = firewall_backend_setup_plan(backend);
+    let mut commands = selected_setup_commands(runner, backend);
     commands.extend(firewall_backend_block_remote_plan(
         backend, rule_name, target,
     ));
@@ -139,7 +148,7 @@ pub fn execute_selected_uid_block_plan(
     uid: u32,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    let mut commands = firewall_backend_setup_plan(backend);
+    let mut commands = selected_setup_commands(runner, backend);
     commands.extend(firewall_backend_block_uid_plan(
         backend, rule_name, direction, uid,
     ));
@@ -236,6 +245,7 @@ mod tests {
 
     struct RecordingRunner {
         nft_available: bool,
+        nft_ruleset_output: &'static str,
         fail_program: Option<&'static str>,
         commands: RefCell<Vec<LinuxCommand>>,
     }
@@ -244,6 +254,16 @@ mod tests {
         fn new(nft_available: bool) -> Self {
             Self {
                 nft_available,
+                nft_ruleset_output: if nft_available { "table inet vigil" } else { "" },
+                fail_program: None,
+                commands: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn nft_without_table() -> Self {
+            Self {
+                nft_available: true,
+                nft_ruleset_output: "",
                 fail_program: None,
                 commands: RefCell::new(Vec::new()),
             }
@@ -252,6 +272,7 @@ mod tests {
         fn failing(nft_available: bool, fail_program: &'static str) -> Self {
             Self {
                 nft_available,
+                nft_ruleset_output: if nft_available { "table inet vigil" } else { "" },
                 fail_program: Some(fail_program),
                 commands: RefCell::new(Vec::new()),
             }
@@ -270,7 +291,7 @@ mod tests {
 
         fn stdout(&self, command: &LinuxCommand) -> Result<String, String> {
             if command.program == "nft" && self.nft_available {
-                Ok("table inet vigil".to_string())
+                Ok(self.nft_ruleset_output.to_string())
             } else if command.program == "iptables" {
                 Ok(
                     "Chain INPUT (policy ACCEPT)\nChain FORWARD (policy DROP)\nChain OUTPUT (policy ACCEPT)\n"
@@ -340,8 +361,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_block_runs_setup_before_block_rule() {
-        let runner = RecordingRunner::new(true);
+    fn remote_block_runs_setup_before_first_nft_rule() {
+        let runner = RecordingRunner::nft_without_table();
         let executed =
             execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
                 .unwrap();
@@ -357,10 +378,25 @@ mod tests {
     }
 
     #[test]
+    fn remote_block_skips_setup_when_nft_table_already_exists() {
+        let runner = RecordingRunner::new(true);
+        let executed =
+            execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
+                .unwrap();
+        assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(executed.commands.len(), 1);
+        assert_eq!(executed.commands[0].program, "nft");
+        assert_eq!(executed.commands[0].args[4], "output");
+        assert_eq!(executed.commands[0].args[5], "ip6");
+        assert_eq!(executed.commands[0].args[6], "daddr");
+    }
+
+    #[test]
     fn uid_block_uses_backend_specific_command() {
         let nft_runner = RecordingRunner::new(true);
         let nft = execute_selected_uid_block_plan(&nft_runner, "uid", "out", 1000).unwrap();
         assert_eq!(nft.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(nft.commands.len(), 1);
         assert!(nft
             .commands
             .last()
