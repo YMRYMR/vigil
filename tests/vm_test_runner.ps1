@@ -71,10 +71,20 @@ Step "Setup VM"
 $setupScript = @'
 #!/bin/bash
 set -e
-echo "vigil" | sudo -S apt update -qq
-echo "vigil" | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3
+PW="vigil"
+echo "SETUP-START"
+
+# Wait for any other apt/dpkg processes to finish
+for i in $(seq 1 30); do
+    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1; then break; fi
+    echo "Waiting for apt lock... ($i)"
+    sleep 2
+done
+
+echo $PW | sudo -S apt update -qq || true
+echo $PW | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3
 echo "vigil ALL=(ALL) NOPASSWD:ALL" | sudo -S tee /etc/sudoers.d/vigil >/dev/null
-sudo -S chmod 440 /etc/sudoers.d/vigil < /dev/null
+echo $PW | sudo -S chmod 440 /etc/sudoers.d/vigil
 echo "SETUP-OK"
 '@
 Set-Content -Path "$env:TEMP\vigil_vm_setup.sh" -Value $setupScript -Encoding ASCII
