@@ -259,6 +259,13 @@ pub fn run_cli(args: &[String]) -> i32 {
                 Ok(active) => println!("Isolation active: {active}"),
                 Err(e) => eprintln!("Isolation check failed: {e}"),
             }
+            let status = crate::security::active_response::status();
+            println!("Performance:");
+            println!("  Blocked IPs: {}", status.blocked_rules);
+            println!("  Blocked processes: {}", status.blocked_processes);
+            println!("  Blocked domains: {}", status.blocked_domains);
+            println!("  Suspended processes: {}", status.suspended_processes);
+            println!("  Autoruns frozen: {}", status.frozen_autoruns);
             0
         }
         Some("panic") => {

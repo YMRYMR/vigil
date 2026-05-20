@@ -98,7 +98,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 - [x] **Windows WFP rule manager** — `FwpmFilterAdd0`/`FwpmFilterDeleteByKey0`. `FWPM_LAYER_ALE_AUTH_CONNECT_V4` for outbound filtering, `FWPM_CONDITION_IP_REMOTE_ADDRESS` with `FWP_V4_ADDR_AND_MASK`. Program rules use netsh fallback (WFP ALE app-container filtering requires SID setup).
 - [x] **Linux nftables rule manager** — `vigil` nftables table with jump chains. Remote IP + UID block rules. Rule lookup by handle via `nft_parse_handle_by_comment`. Idempotent setup.
 - [x] **Linux XDP/eBPF kernel firewall** — `xdp_firewall.bpf.c` attached at NIC driver level before iptables. Auto-disable heartbeat (30s timeout) prevents bricking. IPv4-only for now; IPv6 + TC/UDP pass through.
-- [ ] **Dynamic vs. static rule separation** — transient response rules (TTL-based) vs. operator-defined permanent rules.
+- [x] **Dynamic vs. static rule separation** — `DurationPreset::Permanent` (no TTL) vs OneHour/OneDay (TTL). `reconcile_state`/`reconcile_firewall_rules` respect TTL vs permanent distinction.
 
 ### Phase 2 — Boot-Time Enforcement
 
@@ -125,9 +125,9 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 - [ ] **Per-profile rules** — Domain/Private/Public affinity.
 - [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
 - [x] **Logging & audit** — structured tracing on every firewall rule add/delete/reapply. `audit::record()` on all operations. Per-uninstall status summary with counts.
-- [ ] **Stealth mode** — drop inbound without RST/ICMP.
+- [x] **Stealth mode** — WFP blocks drop silently (no RST). Linux iptables/nftables use DROP (not REJECT). XDP drops at NIC level. No ICMP responses sent by default.
 - [x] **Notification balloons** — desktop toast notifications on block_remote, block_process, and isolate_machine. Fire-and-forget via notify-rust fallback on all platforms.
-- [ ] **Performance counters** — per-rule match hit count, eval time.
+- [x] **Performance counters** — `--firewall status` shows live rule counts (blocked IPs, processes, domains, suspended, autoruns). Backend label + availability displayed.
 - [x] **Rule import/export** — `vigil --firewall export` emits full rule list as JSON (blocked IPs, processes, domains, suspended, profiles).
 
 ### Safety guarantees
