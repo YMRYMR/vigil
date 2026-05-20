@@ -786,6 +786,8 @@ fn reconcile_firewall_rules() {
         let b = backend();
         let mut reapplied = false;
         let mut state_changed = false;
+        let mut deleted_count = 0usize;
+        let mut reapply_count = 0usize;
 
         let blocked_before = state.blocked.len();
         let proc_blocked_before = state.blocked_processes.len();
@@ -804,6 +806,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.delete_rule(&rule.rule_name).is_ok() {
+                deleted_count += 1;
                 deleted_blocked.insert(rule.target.clone());
             }
         }
@@ -838,6 +841,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.add_block_rule(&rule.rule_name, &rule.target).is_ok() {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
@@ -912,7 +916,11 @@ fn reconcile_firewall_rules() {
             }
         }
         if reapplied {
-            tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
+            tracing::info!(
+                deleted = deleted_count,
+                reapplied = reapply_count,
+                "reconcile_firewall_rules: startup reconciliation complete"
+            );
         }
         backend().save_boot_config();
     }

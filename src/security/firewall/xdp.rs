@@ -30,8 +30,8 @@
 
 use super::{FirewallBackend, FirewallProfileState, FirewallSnapshot};
 use crate::security::linux_command_plan::{
-    LinuxCommandRunner, StdLinuxCommandRunner, resolvectl_flush_caches, ss_kill_tcp_connection,
-    systemd_resolve_flush_caches,
+    resolvectl_flush_caches, ss_kill_tcp_connection, systemd_resolve_flush_caches,
+    LinuxCommandRunner, StdLinuxCommandRunner,
 };
 use crate::security::linux_firewall_backend::{
     capture_iptables_policy_snapshot, select_firewall_backend, LinuxFirewallBackend,
