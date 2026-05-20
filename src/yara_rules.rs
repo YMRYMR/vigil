@@ -26,6 +26,7 @@ pub struct RuleLoadReport {
     pub verified: usize,
     pub warnings: usize,
     pub failures: usize,
+    pub sidecars: usize,
     pub skipped: usize,
     pub files: Vec<VerifiedRuleFile>,
     pub errors: Vec<String>,
@@ -50,6 +51,7 @@ pub fn run_status_cli() -> Result<(), String> {
     println!("Verified rules: {}", report.verified);
     println!("Warnings: {}", report.warnings);
     println!("Failures: {}", report.failures);
+    println!("Rule sidecars: {}", report.sidecars);
     println!("Skipped non-rule files: {}", report.skipped);
 
     for file in &report.files {
@@ -200,6 +202,10 @@ fn collect_rule_files(
             report.skipped += 1;
             continue;
         }
+        if is_rule_sidecar_file(&path) {
+            report.sidecars += 1;
+            continue;
+        }
         if is_rule_file(&path) {
             out.push(path);
         } else {
@@ -212,6 +218,19 @@ fn collect_rule_files(
 fn is_rule_file(path: &Path) -> bool {
     matches!(
         path.extension().and_then(|ext| ext.to_str()),
+        Some("yar") | Some("yara")
+    )
+}
+
+fn is_rule_sidecar_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("sha256")
+    ) && matches!(
+        path.file_stem()
+            .map(Path::new)
+            .and_then(|stem| stem.extension())
+            .and_then(|ext| ext.to_str()),
         Some("yar") | Some("yara")
     )
 }
@@ -241,6 +260,7 @@ mod tests {
         let report = load_verified_rules_with_registry(&dir, &registry).unwrap();
         assert_eq!(report.verified, 0);
         assert_eq!(report.failures, 0);
+        assert_eq!(report.sidecars, 0);
         assert!(report.files.is_empty());
 
         let _ = fs::remove_dir_all(dir);
@@ -264,12 +284,16 @@ mod tests {
         assert_eq!(report.verified, 1);
         assert_eq!(report.warnings, 1);
         assert_eq!(report.failures, 0);
+        assert_eq!(report.sidecars, 1);
+        assert_eq!(report.skipped, 0);
         assert_eq!(report.files[0].source_text, body);
 
         let report = load_verified_rules_with_registry(&dir, &registry).unwrap();
         assert_eq!(report.verified, 1);
         assert_eq!(report.warnings, 0);
         assert_eq!(report.failures, 0);
+        assert_eq!(report.sidecars, 1);
+        assert!(report.skipped >= 1);
 
         let _ = fs::remove_dir_all(dir);
     }
@@ -290,6 +314,7 @@ mod tests {
         let report = load_verified_rules_with_registry(&dir, &registry).unwrap();
         assert_eq!(report.verified, 0);
         assert_eq!(report.failures, 1);
+        assert_eq!(report.sidecars, 1);
         assert_eq!(report.files.len(), 0);
 
         let _ = fs::remove_dir_all(dir);
@@ -304,7 +329,24 @@ mod tests {
 
         let report = load_verified_rules_with_registry(&dir, &registry).unwrap();
         assert_eq!(report.verified, 0);
+        assert_eq!(report.sidecars, 0);
         assert_eq!(report.skipped, 1);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn orphaned_rule_sidecars_are_not_counted_as_skipped_files() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let registry = dir.join("operator-file-provenance.json");
+        fs::write(dir.join("orphan.yar.sha256"), "deadbeef\n").unwrap();
+
+        let report = load_verified_rules_with_registry(&dir, &registry).unwrap();
+        assert_eq!(report.verified, 0);
+        assert_eq!(report.failures, 0);
+        assert_eq!(report.sidecars, 1);
+        assert_eq!(report.skipped, 0);
 
         let _ = fs::remove_dir_all(dir);
     }

@@ -1,6 +1,8 @@
+#[allow(clippy::collapsible_if, dead_code, unused_imports)]
 pub mod active_response;
 pub mod auto_response;
 pub mod file_quarantine;
+#[allow(clippy::println_empty_string, dead_code, unused_must_use)]
 pub mod firewall;
 pub mod integrity;
 #[cfg(any(target_os = "linux", test))]
