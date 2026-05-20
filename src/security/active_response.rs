@@ -5,6 +5,7 @@
 //! and isolating the machine. The module persists a tiny state file so rules
 //! can be reconciled and the UI can reflect the current status after restarts.
 
+use crate::security::firewall::{self, FirewallBackend};
 use crate::{audit, quarantine, types::ConnInfo};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -25,6 +26,10 @@ const ISOLATION_ACTIVATION_GRACE_SECS: u64 = 20;
 const PROCESS_RULE_PREFIX_LEN: usize = 48;
 const PROCESS_RULE_FINGERPRINT_LEN: usize = 16;
 const QUERY_STATE_CACHE_TTL: Duration = Duration::from_millis(250);
+
+fn backend() -> &'static dyn FirewallBackend {
+    firewall::get_backend()
+}
 
 #[path = "active_response_platform.rs"]
 mod platform;
@@ -539,7 +544,9 @@ pub fn kill_connection(conn: &ConnInfo) -> Result<String, SocketKillError> {
         return Err(SocketKillError::PermissionDenied);
     }
     let target = socket_kill_target(conn)?;
-    platform::kill_tcp_connection(&target)?;
+    backend()
+        .kill_tcp_connection(&target.local.to_string(), &target.remote.to_string())
+        .map_err(SocketKillError::OsError)?;
     let message = format!(
         "Killed TCP connection {} -> {}.",
         target.local, target.remote
@@ -612,7 +619,7 @@ pub fn block_domain(domain: &str) -> Result<String, String> {
     ensure_modifiable()?;
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
-    platform::add_domain_block(&domain, &marker)?;
+    backend().add_domain_block(&domain, &marker)?;
     let mut state = load_state()?;
     state.blocked_domains.retain(|entry| entry.domain != domain);
     state.blocked_domains.push(BlockedDomain {
@@ -631,7 +638,7 @@ pub fn unblock_domain(domain: &str) -> Result<String, String> {
     ensure_modifiable()?;
     let domain = normalise_domain(domain)?;
     let marker = domain_marker(&domain);
-    platform::remove_domain_block(&domain, &marker)?;
+    backend().remove_domain_block(&domain, &marker)?;
     let mut state = load_state()?;
     let before = state.blocked_domains.len();
     state.blocked_domains.retain(|entry| entry.domain != domain);
@@ -761,6 +768,19 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
 /// persisted state against the live backend and re-applies any that are
 /// missing. On Windows, WFP filters survive reboots natively, so this is
 /// a no-op (the kernel persists Vigil's filters across restarts).
+fn is_domain_in_hosts(domain: &str, marker: &str) -> bool {
+    #[cfg(not(windows))]
+    {
+        std::fs::read_to_string("/etc/hosts")
+            .map(|c| c.lines().any(|l| l.contains(domain) && l.contains(marker)))
+            .unwrap_or(false)
+    }
+    #[cfg(windows)]
+    {
+        false
+    }
+}
+
 fn reconcile_firewall_rules() {
     #[cfg(not(windows))]
     {
@@ -769,35 +789,27 @@ fn reconcile_firewall_rules() {
             Err(_) => return,
         };
         let now = unix_now();
+        let b = backend();
         let mut reapplied = false;
         let mut state_changed = false;
 
-        // Remove expired entries from state and skip re-adding them.
-        // Blocks that expired while the machine was down should not
-        // be resurrected on boot.
         let blocked_before = state.blocked.len();
         let proc_blocked_before = state.blocked_processes.len();
 
-        // Delete live rules for expired entries BEFORE removing them
-        // from state. On a process restart (no reboot), iptables rules
-        // survive while Vigil was down — pruning state without deleting
-        // the live rule would orphan it permanently.
-        //
-        // Only remove from state when deletion succeeds. If delete fails
-        // (permissions, backend error), keep the state entry so the
-        // regular reconcile flow can retry.
+        // Delete live rules for expired entries before removing from state.
+        // On a process restart (no reboot), iptables rules survive while
+        // Vigil was down — pruning state without deleting the live rule
+        // orphans it. Only remove from state when deletion succeeds.
         let mut deleted_blocked: std::collections::HashSet<String> =
             std::collections::HashSet::new();
-        let mut deleted_process_out: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut deleted_process_in: std::collections::HashSet<String> =
+        let mut deleted_process_paths: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
         for rule in &state.blocked {
             if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
                 continue;
             }
-            if platform::delete_rule(&rule.rule_name).is_ok() {
+            if b.delete_rule(&rule.rule_name).is_ok() {
                 deleted_blocked.insert(rule.target.clone());
             }
         }
@@ -805,24 +817,20 @@ fn reconcile_firewall_rules() {
             if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
                 continue;
             }
-            let out_ok = platform::delete_rule(&rule.outbound_rule_name).is_ok();
-            let in_ok = platform::delete_rule(&rule.inbound_rule_name).is_ok();
+            let out_ok = b.delete_rule(&rule.outbound_rule_name).is_ok();
+            let in_ok = b.delete_rule(&rule.inbound_rule_name).is_ok();
             if out_ok && in_ok {
-                // Use target+path as a unique key for process blocks.
-                deleted_process_out.insert(rule.path.clone());
-                deleted_process_in.insert(rule.path.clone());
+                deleted_process_paths.insert(rule.path.clone());
             }
         }
 
-        // Only remove state entries whose live rules were successfully
-        // deleted. Entries whose deletes failed stay in state for retry.
         state.blocked.retain(|rule| {
             rule.expires_at_unix.is_none_or(|deadline| deadline > now)
                 || !deleted_blocked.contains(&rule.target)
         });
         state.blocked_processes.retain(|rule| {
             rule.expires_at_unix.is_none_or(|deadline| deadline > now)
-                || !deleted_process_out.contains(&rule.path)
+                || !deleted_process_paths.contains(&rule.path)
         });
         if state.blocked.len() != blocked_before
             || state.blocked_processes.len() != proc_blocked_before
@@ -832,20 +840,17 @@ fn reconcile_firewall_rules() {
 
         // Re-apply IP blocks.
         for rule in &state.blocked {
-            if platform::rule_present(&rule.rule_name).unwrap_or(false) {
+            if b.rule_present(&rule.rule_name).unwrap_or(false) {
                 continue;
             }
-            if platform::add_block_rule(&rule.rule_name, &rule.target).is_ok() {
+            if b.add_block_rule(&rule.rule_name, &rule.target).is_ok() {
                 reapplied = true;
             }
         }
 
         // Re-apply process blocks by looking up the current PID from
-        // the saved executable path. After reboot the old PID is stale,
-        // but the process is likely still running with the same path.
-        // Note: if multiple users run the same binary, the first match
-        // may resolve to a different UID than the original block.
-        if state.blocked_processes.iter().any(|b| !b.path.is_empty()) {
+        // the saved executable path.
+        if state.blocked_processes.iter().any(|bp| !bp.path.is_empty()) {
             use sysinfo::{Pid, ProcessesToUpdate, System};
             let mut sys = System::new();
             sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -853,8 +858,8 @@ fn reconcile_firewall_rules() {
                 if rule.path.is_empty() {
                     continue;
                 }
-                if platform::rule_present(&rule.outbound_rule_name).unwrap_or(false)
-                    && platform::rule_present(&rule.inbound_rule_name).unwrap_or(false)
+                if b.rule_present(&rule.outbound_rule_name).unwrap_or(false)
+                    && b.rule_present(&rule.inbound_rule_name).unwrap_or(false)
                 {
                     continue;
                 }
@@ -866,29 +871,17 @@ fn reconcile_firewall_rules() {
                         None
                     }
                 });
-                let Some(pid) = live_pid else {
-                    continue;
-                };
-                if !platform::rule_present(&rule.outbound_rule_name).unwrap_or(false) {
-                    if platform::add_block_program_rule(
-                        &rule.outbound_rule_name,
-                        pid,
-                        &rule.path,
-                        "out",
-                    )
-                    .is_ok()
+                let Some(pid) = live_pid else { continue };
+                if !b.rule_present(&rule.outbound_rule_name).unwrap_or(false) {
+                    if b.add_block_program_rule(&rule.outbound_rule_name, pid, &rule.path, "out")
+                        .is_ok()
                     {
                         reapplied = true;
                     }
                 }
-                if !platform::rule_present(&rule.inbound_rule_name).unwrap_or(false) {
-                    if platform::add_block_program_rule(
-                        &rule.inbound_rule_name,
-                        pid,
-                        &rule.path,
-                        "in",
-                    )
-                    .is_ok()
+                if !b.rule_present(&rule.inbound_rule_name).unwrap_or(false) {
+                    if b.add_block_program_rule(&rule.inbound_rule_name, pid, &rule.path, "in")
+                        .is_ok()
                     {
                         reapplied = true;
                     }
@@ -896,10 +889,21 @@ fn reconcile_firewall_rules() {
             }
         }
 
+        // Re-apply domain blocks that may have been lost from the hosts file.
+        for domain in &state.blocked_domains {
+            if is_domain_in_hosts(&domain.domain, &domain.marker) {
+                continue;
+            }
+            if b.add_domain_block(&domain.domain, &domain.marker).is_ok() {
+                reapplied = true;
+            }
+        }
+
         if state.isolated {
-            if !platform::rule_present(crate::security::active_response::ISOLATE_RULE_IN)
+            if !b
+                .rule_present(crate::security::active_response::ISOLATE_RULE_IN)
                 .unwrap_or(false)
-                && platform::apply_firewall_isolation().is_ok()
+                && b.apply_isolation("Vigil Isolate").is_ok()
             {
                 reapplied = true;
             }
@@ -987,7 +991,7 @@ pub fn reconcile() {
         }
     }
     let changed = reconcile_state(&mut state, now, |rule_name| {
-        platform::delete_rule(rule_name).is_ok()
+        backend().delete_rule(rule_name).is_ok()
     });
     if changed {
         if let Err(err) = save_state(&state) {
@@ -1015,8 +1019,8 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
     let expires_at_unix = preset
         .ttl()
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
-    let _ = platform::delete_rule(&rule_name);
-    platform::add_block_rule(&rule_name, &target)?;
+    let _ = backend().delete_rule(&rule_name);
+    backend().add_block_rule(&rule_name, &target)?;
     let mut state = load_state()?;
     state.blocked.retain(|rule| rule.target != target);
     state.blocked.push(BlockedTarget {
@@ -1046,7 +1050,7 @@ pub fn unblock_remote(target: &str) -> Result<String, String> {
     let mut delete_failed = false;
     for rule in state.blocked.drain(..) {
         if rule.target == target {
-            if platform::delete_rule(&rule.rule_name).is_ok() {
+            if backend().delete_rule(&rule.rule_name).is_ok() {
                 removed += 1;
             } else {
                 delete_failed = true;
@@ -1082,11 +1086,11 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
     let expires_at_unix = preset
         .ttl()
         .map(|ttl| unix_now().saturating_add(ttl.as_secs()));
-    let _ = platform::delete_rule(&outbound_rule_name);
-    let _ = platform::delete_rule(&inbound_rule_name);
-    platform::add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
-    if let Err(err) = platform::add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
-        let _ = platform::delete_rule(&outbound_rule_name);
+    let _ = backend().delete_rule(&outbound_rule_name);
+    let _ = backend().delete_rule(&inbound_rule_name);
+    backend().add_block_program_rule(&outbound_rule_name, pid, &path, "out")?;
+    if let Err(err) = backend().add_block_program_rule(&inbound_rule_name, pid, &path, "in") {
+        let _ = backend().delete_rule(&outbound_rule_name);
         return Err(err);
     }
     let mut state = load_state()?;
@@ -1122,8 +1126,8 @@ pub fn unblock_process(pid: u32, path: &str) -> Result<String, String> {
     let mut delete_failed = false;
     for rule in state.blocked_processes.drain(..) {
         if process_block_matches(&rule, &path) {
-            let inbound_deleted = platform::delete_rule(&rule.inbound_rule_name).is_ok();
-            let outbound_deleted = platform::delete_rule(&rule.outbound_rule_name).is_ok();
+            let inbound_deleted = backend().delete_rule(&rule.inbound_rule_name).is_ok();
+            let outbound_deleted = backend().delete_rule(&rule.outbound_rule_name).is_ok();
             if inbound_deleted && outbound_deleted {
                 removed += 1;
             } else {
@@ -1300,8 +1304,8 @@ pub fn restore_machine() -> Result<String, String> {
         ));
     }
     let mut critical_failure = false;
-    let in_deleted = platform::delete_rule(ISOLATE_RULE_IN).is_ok();
-    let out_deleted = platform::delete_rule(ISOLATE_RULE_OUT).is_ok();
+    let in_deleted = backend().delete_rule(ISOLATE_RULE_IN).is_ok();
+    let out_deleted = backend().delete_rule(ISOLATE_RULE_OUT).is_ok();
     if !(in_deleted || out_deleted) {
         if let Some(snapshot) = firewall_snapshot.as_ref() {
             if let Err(err) = platform::restore_firewall(snapshot) {
@@ -1351,8 +1355,8 @@ pub fn restore_machine() -> Result<String, String> {
         }
         Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
     }
-    let _ = platform::delete_rule(ISOLATE_RULE_IN);
-    let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+    let _ = backend().delete_rule(ISOLATE_RULE_IN);
+    let _ = backend().delete_rule(ISOLATE_RULE_OUT);
     state.isolated = false;
     state.firewall_snapshot = None;
     state.network_snapshot = None;

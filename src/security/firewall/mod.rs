@@ -109,6 +109,12 @@ pub trait FirewallBackend: Send + Sync {
         firewall_snapshot: Option<&FirewallSnapshot>,
     ) -> Result<bool, String>;
 
+    /// Whether the platform supports outbound blocking (as opposed to inbound-only).
+    /// Returns None if the capability cannot be determined.
+    fn outbound_block_supported(&self) -> Option<bool> {
+        Some(true)
+    }
+
     /// Kill a live TCP connection by address/port.
     fn kill_tcp_connection(&self, local: &str, remote: &str) -> Result<(), String>;
 
