@@ -149,7 +149,7 @@ Add signature-based malware detection alongside the existing behavioural heurist
 - [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match.
 - [ ] **Memory region scan** — scan selected process memory (e.g., `--dump` target) for in-memory malware that hides from disk scanning.
 - [ ] **YARA rule management UI** — show matched rules in the inspector, allow operators to toggle rule categories, and view rule metadata (author, description, reference).
-- [ ] **Custom rule import** — let operators drop their own `.yar` files alongside blocklists, verified by `.sha256` sidecar (same integrity model as response rules).
+- [ ] **Custom rule import** — let operators drop their own `.yar` files alongside blocklists, verified by `.sha256` sidecar (same integrity model as response rules). Intake/status foundation is now exposed through `vigil --yara-rule-status`.
 
 ---
 
