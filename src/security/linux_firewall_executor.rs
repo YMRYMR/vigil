@@ -84,7 +84,12 @@ pub fn execute_selected_setup_plan(
     runner: &impl LinuxCommandRunner,
 ) -> Result<ExecutedLinuxFirewallPlan, String> {
     let backend = select_firewall_backend(runner);
-    execute_firewall_plan(runner, backend, selected_setup_commands(runner, backend), None)
+    execute_firewall_plan(
+        runner,
+        backend,
+        selected_setup_commands(runner, backend),
+        None,
+    )
 }
 
 pub fn execute_selected_isolate_plan(
@@ -254,7 +259,11 @@ mod tests {
         fn new(nft_available: bool) -> Self {
             Self {
                 nft_available,
-                nft_ruleset_output: if nft_available { "table inet vigil" } else { "" },
+                nft_ruleset_output: if nft_available {
+                    "table inet vigil"
+                } else {
+                    ""
+                },
                 fail_program: None,
                 commands: RefCell::new(Vec::new()),
             }
@@ -272,7 +281,11 @@ mod tests {
         fn failing(nft_available: bool, fail_program: &'static str) -> Self {
             Self {
                 nft_available,
-                nft_ruleset_output: if nft_available { "table inet vigil" } else { "" },
+                nft_ruleset_output: if nft_available {
+                    "table inet vigil"
+                } else {
+                    ""
+                },
                 fail_program: Some(fail_program),
                 commands: RefCell::new(Vec::new()),
             }
