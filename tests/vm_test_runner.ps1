@@ -2,23 +2,85 @@
 # Vigil VM Integration Test Runner
 # Deploys and tests Vigil firewall in the "vigil-linux" VirtualBox VM.
 #
-# Usage: ./tests/vm_test_runner.ps1 [-NoCleanup] [-SkipBuild]
+# Self-sufficient: auto-installs missing dependencies (PuTTY, etc.)
+# so the script works on any fresh Windows machine.
 #
-# Prerequisites:
-#   - VirtualBox with "vigil-linux" VM (Ubuntu, SSH forwarded to 2222)
-#   - SSH key auth or passwordless sudo inside VM
-#   - Rust toolchain installed on host for building
+# Usage: ./tests/vm_test_runner.ps1 [-NoCleanup] [-SkipBuild]
 
 param(
     [switch]$NoCleanup,  # Leave VM running after tests
     [switch]$SkipBuild   # Skip cargo build (use existing binary)
 )
+
+$ErrorActionPreference = "Stop"
+
+function Step($msg) { Write-Host "--- $msg ---" -ForegroundColor Yellow }
+
+# ═══════════════════════════════════════════════════════════════════════
+# Auto-install missing dependencies
+# ═══════════════════════════════════════════════════════════════════════
+
+function Ensure-Dependencies {
+    Step "Checking dependencies"
+
+    # -- VirtualBox ------------------------------------------------------
+    if (-not (Test-Path "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe")) {
+        Write-Host "  VirtualBox not found. Install from https://www.virtualbox.org/" -ForegroundColor Red
+        throw "VirtualBox required"
+    }
+    Write-Host "  VirtualBox: OK" -ForegroundColor Green
+
+    # -- PuTTY (plink + pscp for password SSH) ---------------------------
+    $plinkPath = Get-Command plink -ErrorAction SilentlyContinue
+    $pscpPath  = Get-Command pscp -ErrorAction SilentlyContinue
+    if (-not $plinkPath -or -not $pscpPath) {
+        Write-Host "  PuTTY not found. Attempting auto-install via winget..." -ForegroundColor Cyan
+        try {
+            $install = winget install --id PuTTY.PuTTY --silent --accept-package-agreements --accept-source-agreements 2>&1
+            Write-Host "  $install"
+            # Refresh PATH
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" +
+                        [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $plinkPath = Get-Command plink -ErrorAction SilentlyContinue
+            if (-not $plinkPath) {
+                # Try common install location
+                $puttyDir = "C:\Program Files\PuTTY"
+                if (Test-Path "$puttyDir\plink.exe") {
+                    $env:Path = "$env:Path;$puttyDir"
+                    $plinkPath = "$puttyDir\plink.exe"
+                }
+            }
+        } catch {
+            Write-Host "  winget install failed: $_" -ForegroundColor Yellow
+        }
+        if (-not $plinkPath) {
+            Write-Host "  Auto-install failed. Please install PuTTY manually:" -ForegroundColor Yellow
+            Write-Host "    winget install PuTTY.PuTTY" -ForegroundColor Yellow
+            Write-Host "  Will fall back to interactive SSH." -ForegroundColor Yellow
+        }
+    }
+    if ($plinkPath) { Write-Host "  plink: $plinkPath" -ForegroundColor Green }
+    if ($pscpPath)  { Write-Host "  pscp:  $pscpPath" -ForegroundColor Green }
+
+    # -- Rust / cargo ----------------------------------------------------
+    $cargo = Get-Command cargo -ErrorAction SilentlyContinue
+    if (-not $cargo) {
+        Write-Host "  Rust not found. Install from https://rustup.rs/" -ForegroundColor Red
+        throw "Rust toolchain required"
+    }
+    Write-Host "  cargo: $($cargo.Source)" -ForegroundColor Green
+}
+
+Ensure-Dependencies
+
+# ═══════════════════════════════════════════════════════════════════════
+# Configuration
+# ═══════════════════════════════════════════════════════════════════════
+
 $VM_USER = "vigil"
 $VM_HOST = "localhost"
 $VM_PORT = 2222
 $VM_PASSWORD = "vigil"
-
-$ErrorActionPreference = "Stop"
 $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $VM = "vigil-linux"
 
@@ -34,8 +96,8 @@ if ($SSH_TYPE -eq "plink") {
     $SCP = "sshpass -p $VM_PASSWORD scp -P $VM_PORT -o StrictHostKeyChecking=no"
 } else {
     Write-Host "  WARNING: No password-capable SSH client found." -ForegroundColor Yellow
-    Write-Host "  Install PuTTY (plink/pscp) or sshpass for automated password auth." -ForegroundColor Yellow
-    Write-Host "  Falling back to interactive SSH - you'll need to type the password." -ForegroundColor Yellow
+    Write-Host "  Install PuTTY (plink/pscp) for automated password auth." -ForegroundColor Yellow
+    Write-Host "  Falling back to interactive SSH — you'll need to type the password." -ForegroundColor Yellow
     $SSH = "ssh -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST"
     $SCP = "scp -P $VM_PORT -o StrictHostKeyChecking=no"
 }
@@ -119,10 +181,20 @@ for ($i = 0; $i -lt $maxWait; $i += 5) {
 }
 if (-not $sshStarted) {
     Write-Host "  SSH not available after ${maxWait}s. Check:" -ForegroundColor Red
-    Write-Host "    1. Is the VM logged in as root?" -ForegroundColor Red
+    Write-Host "    1. Is the VM logged in as vigil user?" -ForegroundColor Red
     Write-Host "    2. Is sshd running? (systemctl status sshd)" -ForegroundColor Red
     Write-Host "    3. Is port forwarding active? (VBoxManage showvminfo $VM | grep Forwarding)" -ForegroundColor Red
     throw "SSH timeout"
+}
+
+# Verify sudo access (needed for integration tests)
+Step "Checking sudo access"
+$sudoCheck = Invoke-Expression "$SSH 'echo $VM_PASSWORD | sudo -S whoami 2>&1'" 2>&1
+if ($sudoCheck -match "root") {
+    Write-Host "  sudo: OK (vigil can sudo)" -ForegroundColor Green
+} else {
+    Write-Host "  WARNING: sudo check returned: $sudoCheck" -ForegroundColor Yellow
+    Write-Host "  Integration tests that need root will be skipped." -ForegroundColor Yellow
 }
 
 # Copy SSH public key to VM for passwordless access (if not already set up)
