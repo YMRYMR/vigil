@@ -3,23 +3,19 @@
 //! Routes through the existing executor bridge in `linux_firewall_executor.rs`
 //! which handles nftables-preferred / iptables-fallback selection.
 
-use super::{
-    Action, Direction, Filter, FirewallBackend, FirewallProfileState, FirewallSnapshot, Profile,
-};
+use super::{FirewallBackend, FirewallProfileState, FirewallSnapshot};
 use crate::security::linux_command_plan::{
-    ip_link_set, ip_link_show, resolvectl_flush_caches, ss_kill_tcp_connection,
-    systemd_resolve_flush_caches, StdLinuxCommandRunner,
+    resolvectl_flush_caches, ss_kill_tcp_connection, systemd_resolve_flush_caches,
+    LinuxCommand, LinuxCommandRunner, StdLinuxCommandRunner,
 };
 use crate::security::linux_firewall_backend::{
-    capture_iptables_policy_snapshot, firewall_backend_restore_plan, select_firewall_backend,
-    LinuxFirewallBackend,
+    capture_iptables_policy_snapshot, select_firewall_backend, LinuxFirewallBackend,
 };
 use crate::security::linux_firewall_executor::{
     execute_selected_delete_plan, execute_selected_isolate_plan,
     execute_selected_remote_block_plan, execute_selected_uid_block_plan,
-    execute_system_isolate_plan, execute_system_restore_plan, LinuxFirewallRestoreState,
+    execute_system_restore_plan, LinuxFirewallRestoreState,
 };
-use std::cell::RefCell;
 use std::sync::Mutex;
 
 pub struct NftablesBackend {
@@ -205,17 +201,9 @@ impl FirewallBackend for NftablesBackend {
 
     fn terminate_active_connections(&self) -> Result<usize, String> {
         let runner = self.runner();
-        let output = runner.stdout(
-            &crate::security::linux_command_plan::ss_kill_tcp_connection(
-                "0.0.0.0", 0, "0.0.0.0", 0,
-            ),
-        );
         // Enumerate ESTABLISHED connections via ss and kill each.
         let ss_output = runner
-            .stdout(&crate::security::linux_command_plan::LinuxCommand::new(
-                "ss",
-                ["-t", "-n", "state", "established"],
-            ))
+            .stdout(&LinuxCommand::new("ss", ["-t", "-n", "state", "established"]))
             .unwrap_or_default();
         let mut killed = 0usize;
         for line in ss_output.lines() {
@@ -242,11 +230,7 @@ impl FirewallBackend for NftablesBackend {
                 Err(_) => continue,
             };
             if runner
-                .status(
-                    &crate::security::linux_command_plan::ss_kill_tcp_connection(
-                        lip, lport, rip, rport,
-                    ),
-                )
+                .status(&ss_kill_tcp_connection(lip, lport, rip, rport))
                 .is_ok()
             {
                 killed += 1;
