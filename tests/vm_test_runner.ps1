@@ -1,4 +1,4 @@
-param([switch]$NoCleanup,[switch]$SkipBuild)
+param([switch]$SkipBuild)
 $VM_USER="vigil";$VM_HOST="localhost";$VM_PORT=2222;$VM_PASSWORD="vigil"
 $VBox="C:\Program Files\Oracle\VirtualBox\VBoxManage.exe";$VM="vigil-linux"
 $BINARY="target/release/vigil";$VM_BINARY="/tmp/vigil"
@@ -7,10 +7,7 @@ function Step($m) { Write-Host "-- $m --" -ForegroundColor Yellow }
 
 # Uses plink for password auth. Auto-installed via winget if missing.
 function SshExec($c) {
-    # Use & to invoke plink directly (escaping cmd /c pipe issues).
-    # The remote command is wrapped in double quotes so bash metacharacters
-    # like | and > are passed through, not interpreted by the host shell.
-    & plink -P $VM_PORT -pw $VM_PASSWORD -batch $VM_USER@$VM_HOST " $c" 2>&1
+    & plink -P $VM_PORT -pw $VM_PASSWORD -batch $VM_USER@$VM_HOST "$c" 2>&1
 }
 function ScpUpload($local, $remote) {
     pscp -P $VM_PORT -pw $VM_PASSWORD $local "$VM_USER@$VM_HOST`:$remote" 2>&1
@@ -34,12 +31,24 @@ Write-Host "  cargo OK" -ForegroundColor Green
 
 # ── Build ────────────────────────────────────────────────────────────
 if (-not $SkipBuild) {
-    Step "Building vigil"
-    cargo build --release --bin vigil 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Build failed" }
+    Step "Building vigil (release — can take several minutes on first run)"
+    $buildOutput = cargo build --release --bin vigil 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  Build FAILED. Last errors:" -ForegroundColor Red
+        $buildOutput | Select-Object -Last 15 | ForEach-Object { Write-Host "  $_" }
+        throw "Build failed"
+    }
+    Write-Host "  build complete" -ForegroundColor Green
+} else {
+    Write-Host "  Build skipped (-SkipBuild)" -ForegroundColor Cyan
 }
-if (-not (Test-Path $BINARY)) { throw "Binary not found. Use cargo build --release or remove -SkipBuild" }
-Write-Host "  binary: $BINARY" -ForegroundColor Green
+if (-not (Test-Path $BINARY)) {
+    Write-Host "  Binary not found: $BINARY" -ForegroundColor Red
+    Write-Host "  Build with: cargo build --release" -ForegroundColor Yellow
+    Write-Host "  Then rerun with: powershell -File .\tests\vm_test_runner.ps1 -SkipBuild" -ForegroundColor Yellow
+    throw "Binary missing"
+}
+Write-Host "  binary OK" -ForegroundColor Green
 
 # ── Start VM ─────────────────────────────────────────────────────────
 Step "Starting VM: $VM"
@@ -93,11 +102,11 @@ Step "Running integration test"
 $r = SshExec "sudo -n VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh"
 Write-Host $r
 
-# ── Cleanup ──────────────────────────────────────────────────────────
-if (-not $NoCleanup) {
-    Step "Cleanup"
-    SshExec "rm -f $VM_BINARY /tmp/firewall_*.sh" | Out-Null
-    & $VBox controlvm $VM poweroff 2>&1 | Out-Null
-    Write-Host "  VM powered off" -ForegroundColor Green
-}
-Write-Host "Complete" -ForegroundColor Cyan
+Step "Test complete"
+SshExec "rm -f $VM_BINARY /tmp/firewall_*.sh" | Out-Null
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host " Tests complete. VM is still running on" -ForegroundColor Cyan
+Write-Host " port $VM_PORT (user: $VM_USER / pwd: $VM_PASSWORD)." -ForegroundColor Cyan
+Write-Host " Connect: plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
