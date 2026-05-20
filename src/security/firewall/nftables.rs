@@ -281,6 +281,7 @@ impl FirewallBackend for NftablesBackend {
     }
 }
 
+#[allow(dead_code)]
 fn read_uid_for_pid(pid: u32) -> Result<u32, String> {
     let status_path = format!("/proc/{pid}/status");
     let content = std::fs::read_to_string(&status_path)
