@@ -166,6 +166,13 @@ fn spawn_bootstrap(
             );
             advisory::log_cache_status();
             advisory_history::log_cache_status();
+            #[cfg(windows)]
+            if let Err(err) = security::windows_wfp::ensure_foundation() {
+                tracing::warn!(
+                    %err,
+                    "windows WFP foundation unavailable; continuing with netsh firewall fallback"
+                );
+            }
 
             active_response::reconcile_firewall_rules_once();
             active_response::reconcile();
