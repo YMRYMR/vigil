@@ -153,13 +153,15 @@ if ($state -notmatch "running") {
 }
 Write-Host "  VM state confirmed: running" -ForegroundColor Green
 
-# Ensure SSH key exists (generate if needed)
+# Ensure SSH key exists (generate if needed) — only for interactive SSH mode
 $sshKey = "$env:USERPROFILE\.ssh\id_ed25519"
-if (-not (Test-Path $sshKey)) {
+if ($SSH_TYPE -eq "ssh" -and -not (Test-Path $sshKey)) {
     Write-Host "  Generating SSH key pair..." -ForegroundColor Cyan
-    & ssh-keygen -t ed25519 -f $sshKey -N '""' 2>&1 | Out-Null
+        # ssh-keygen -N needs empty passphrase; use escaped double-quotes
+        $emptyPass = '""'
+        & ssh-keygen -t ed25519 -f $sshKey -N $emptyPass 2>&1 | Out-Null
 }
-Write-Host "  SSH key: $sshKey"
+if (Test-Path $sshKey) { Write-Host "  SSH key: $sshKey" -ForegroundColor Green }
 
 # ── Wait for SSH ─────────────────────────────────────────────────────
 
