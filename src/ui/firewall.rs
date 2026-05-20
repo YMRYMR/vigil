@@ -242,13 +242,12 @@ fn suspended_processes_section(ui: &mut Ui, rules: &active_response::FirewallRul
                 format!("PID {}", entry.pid)
             };
             ui.label(RichText::new(label).size(11.0).monospace());
-            if let Some(remaining) = entry.suspended_at_unix.checked_sub(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-            ) {
-                let mins = remaining / 60;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            if let Some(elapsed) = now.checked_sub(entry.suspended_at_unix) {
+                let mins = elapsed / 60;
                 if mins > 0 {
                     ui.label(
                         RichText::new(format!("({mins} min ago)"))
