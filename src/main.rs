@@ -12,6 +12,7 @@
     windows_subsystem = "windows"
 )]
 
+#[allow(clippy::redundant_closure)]
 mod advisory;
 mod advisory_history;
 mod advisory_ioc;
