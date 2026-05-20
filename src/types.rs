@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Transport protocol for a connection or event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum TransportProtocol {
+    #[default]
     Tcp,
     Udp,
 }
@@ -15,12 +16,6 @@ impl TransportProtocol {
             Self::Tcp => "TCP",
             Self::Udp => "UDP",
         }
-    }
-}
-
-impl Default for TransportProtocol {
-    fn default() -> Self {
-        Self::Tcp
     }
 }
 
