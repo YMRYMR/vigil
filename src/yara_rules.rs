@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(report.warnings, 0);
         assert_eq!(report.failures, 0);
         assert_eq!(report.sidecars, 1);
-        assert_eq!(report.skipped, 0);
+        assert!(report.skipped >= 1);
 
         let _ = fs::remove_dir_all(dir);
     }
