@@ -168,6 +168,7 @@ fn spawn_bootstrap(
             advisory_history::log_cache_status();
 
             active_response::reconcile();
+            active_response::reconcile_firewall_rules_once();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             if !pre_login_service_mode {
                 let _ = std::thread::Builder::new()

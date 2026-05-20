@@ -769,42 +769,74 @@ fn reconcile_firewall_rules() {
         };
         let mut reapplied = false;
 
-        // Use the same platform::* functions as the rest of active
-        // response lifecycle. First delete any stale rule, then
-        // re-add — this is idempotent and avoids duplicates.
+        // Add-only strategy: never delete first. If the rule already
+        // exists, the add will create a harmless duplicate iptables
+        // entry (Linux) or fail harmlessly (Windows netsh rejects
+        // duplicate names). This avoids a window where a delete
+        // succeeds but the re-add fails, leaving the rule permanently
+        // absent.
 
         for rule in &state.blocked {
-            let _ = platform::delete_rule(&rule.rule_name);
             if platform::add_block_rule(&rule.rule_name, &rule.target).is_ok() {
                 reapplied = true;
             }
         }
 
-        // Process blocks are intentionally NOT re-applied on Linux.
-        // The outbound direction requires a UID from /proc/<pid>/status,
-        // but after reboot the saved PID is stale and /proc/<pid> doesn't
-        // exist. There is no reliable way to derive the UID from a path
-        // alone. The operator must re-block the process after reboot.
+        // Re-apply process blocks by looking up the current PID from
+        // the saved executable path. After reboot the old PID is stale,
+        // but the process is likely still running with the same path.
+        if state.blocked_processes.iter().any(|b| !b.path.is_empty()) {
+            use sysinfo::{Pid, ProcessesToUpdate, System};
+            let mut sys = System::new();
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            for rule in &state.blocked_processes {
+                if rule.path.is_empty() {
+                    continue;
+                }
+                // Find the live PID for this executable path.
+                let live_pid = sys.processes().iter().find_map(|(pid, proc)| {
+                    let exe = proc.exe()?;
+                    if exe.to_string_lossy().as_ref() == rule.path.as_str() {
+                        Some(pid.as_u32())
+                    } else {
+                        None
+                    }
+                });
+                let Some(pid) = live_pid else {
+                    // Process isn't running — nothing to block.
+                    continue;
+                };
+                if platform::add_block_program_rule(
+                    &rule.outbound_rule_name,
+                    pid,
+                    &rule.path,
+                    "out",
+                )
+                .is_ok()
+                {
+                    reapplied = true;
+                }
+                if platform::add_block_program_rule(&rule.inbound_rule_name, pid, &rule.path, "in")
+                    .is_ok()
+                {
+                    reapplied = true;
+                }
+            }
+        }
 
         if state.isolated {
-            let _ = platform::delete_rule(ISOLATE_RULE_IN);
-            let _ = platform::delete_rule(ISOLATE_RULE_OUT);
             if platform::apply_firewall_isolation().is_ok() {
                 reapplied = true;
             }
         }
 
         if reapplied {
-            tracing::info!(
-                "reconcile_firewall_rules: reapplied missing firewall rules after reboot"
-            );
+            tracing::info!("reconcile_firewall_rules: reapplied firewall rules on startup");
         }
     }
     #[cfg(windows)]
     {
-        // WFP filters persist in the kernel across reboots automatically.
-        // No re-application needed — the filters survive as long as the
-        // WFP provider/sublayer registration exists.
+        // WFP filters persist in the kernel across reboots.
     }
 }
 
@@ -882,9 +914,18 @@ pub fn reconcile() {
             note_state_load_error_once("reconcile_save", &err);
         }
     }
-    // Phase 19 P2: re-apply any firewall rules that should exist but
-    // may have been lost on reboot (WFP filters survive, but nftables
-    // / iptables rules do not unless explicitly persisted).
+}
+
+/// Phase 19 P2: startup-only firewall rule reconciliation.
+///
+/// Re-applies IP-block and isolation rules that may have been lost on
+/// reboot (Linux nftables/iptables are in-memory). Windows WFP filters
+/// persist natively, so this is a no-op there.
+///
+/// Must be called EXACTLY ONCE at boot, NOT from the per-second
+/// reconcile() loop. Uses add-only (never deletes first) so a failed
+/// add does not leave a gap in protection.
+pub fn reconcile_firewall_rules_once() {
     reconcile_firewall_rules();
 }
 pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
