@@ -318,9 +318,22 @@ pub fn run_cli(args: &[String]) -> i32 {
             println!("  Isolated: {}", status.isolated);
             0
         }
+        Some("export") => {
+            let rules = crate::security::active_response::list_rules();
+            match serde_json::to_string_pretty(&rules) {
+                Ok(json) => {
+                    println!("{json}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("Failed to serialize firewall rules: {e}");
+                    1
+                }
+            }
+        }
         Some(other) => {
             eprintln!("Unknown firewall subcommand: {other}");
-            eprintln!("Usage: vigil --firewall <status|list|panic>");
+            eprintln!("Usage: vigil --firewall <status|list|export|panic>");
             1
         }
     }
