@@ -754,6 +754,172 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
     Ok(message)
 }
 
+/// Phase 19 P2: re-apply firewall rules that may have been lost on reboot.
+///
+/// On Linux, nftables/iptables rules are in-memory and disappear after a
+/// reboot. This function checks each blocked IP/process/domain from the
+/// persisted state against the live backend and re-applies any that are
+/// missing. On Windows, WFP filters survive reboots natively, so this is
+/// a no-op (the kernel persists Vigil's filters across restarts).
+fn reconcile_firewall_rules() {
+    #[cfg(not(windows))]
+    {
+        let mut state = match load_state() {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let now = unix_now();
+        let mut reapplied = false;
+        let mut state_changed = false;
+
+        // Remove expired entries from state and skip re-adding them.
+        // Blocks that expired while the machine was down should not
+        // be resurrected on boot.
+        let blocked_before = state.blocked.len();
+        let proc_blocked_before = state.blocked_processes.len();
+
+        // Delete live rules for expired entries BEFORE removing them
+        // from state. On a process restart (no reboot), iptables rules
+        // survive while Vigil was down — pruning state without deleting
+        // the live rule would orphan it permanently.
+        //
+        // Only remove from state when deletion succeeds. If delete fails
+        // (permissions, backend error), keep the state entry so the
+        // regular reconcile flow can retry.
+        let mut deleted_blocked: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut deleted_process_out: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut deleted_process_in: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for rule in &state.blocked {
+            if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
+                continue;
+            }
+            if platform::delete_rule(&rule.rule_name).is_ok() {
+                deleted_blocked.insert(rule.target.clone());
+            }
+        }
+        for rule in &state.blocked_processes {
+            if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
+                continue;
+            }
+            let out_ok = platform::delete_rule(&rule.outbound_rule_name).is_ok();
+            let in_ok = platform::delete_rule(&rule.inbound_rule_name).is_ok();
+            if out_ok && in_ok {
+                // Use target+path as a unique key for process blocks.
+                deleted_process_out.insert(rule.path.clone());
+                deleted_process_in.insert(rule.path.clone());
+            }
+        }
+
+        // Only remove state entries whose live rules were successfully
+        // deleted. Entries whose deletes failed stay in state for retry.
+        state.blocked.retain(|rule| {
+            rule.expires_at_unix.is_none_or(|deadline| deadline > now)
+                || !deleted_blocked.contains(&rule.target)
+        });
+        state.blocked_processes.retain(|rule| {
+            rule.expires_at_unix.is_none_or(|deadline| deadline > now)
+                || !deleted_process_out.contains(&rule.path)
+        });
+        if state.blocked.len() != blocked_before
+            || state.blocked_processes.len() != proc_blocked_before
+        {
+            state_changed = true;
+        }
+
+        // Re-apply IP blocks.
+        for rule in &state.blocked {
+            if platform::rule_present(&rule.rule_name).unwrap_or(false) {
+                continue;
+            }
+            if platform::add_block_rule(&rule.rule_name, &rule.target).is_ok() {
+                reapplied = true;
+            }
+        }
+
+        // Re-apply process blocks by looking up the current PID from
+        // the saved executable path. After reboot the old PID is stale,
+        // but the process is likely still running with the same path.
+        // Note: if multiple users run the same binary, the first match
+        // may resolve to a different UID than the original block.
+        if state.blocked_processes.iter().any(|b| !b.path.is_empty()) {
+            use sysinfo::{Pid, ProcessesToUpdate, System};
+            let mut sys = System::new();
+            sys.refresh_processes(ProcessesToUpdate::All, true);
+            for rule in &state.blocked_processes {
+                if rule.path.is_empty() {
+                    continue;
+                }
+                if platform::rule_present(&rule.outbound_rule_name).unwrap_or(false)
+                    && platform::rule_present(&rule.inbound_rule_name).unwrap_or(false)
+                {
+                    continue;
+                }
+                let live_pid = sys.processes().iter().find_map(|(pid, proc)| {
+                    let exe = proc.exe()?;
+                    if exe.to_string_lossy().as_ref() == rule.path.as_str() {
+                        Some(pid.as_u32())
+                    } else {
+                        None
+                    }
+                });
+                let Some(pid) = live_pid else {
+                    continue;
+                };
+                if !platform::rule_present(&rule.outbound_rule_name).unwrap_or(false) {
+                    if platform::add_block_program_rule(
+                        &rule.outbound_rule_name,
+                        pid,
+                        &rule.path,
+                        "out",
+                    )
+                    .is_ok()
+                    {
+                        reapplied = true;
+                    }
+                }
+                if !platform::rule_present(&rule.inbound_rule_name).unwrap_or(false) {
+                    if platform::add_block_program_rule(
+                        &rule.inbound_rule_name,
+                        pid,
+                        &rule.path,
+                        "in",
+                    )
+                    .is_ok()
+                    {
+                        reapplied = true;
+                    }
+                }
+            }
+        }
+
+        if state.isolated {
+            if !platform::rule_present(crate::security::active_response::ISOLATE_RULE_IN)
+                .unwrap_or(false)
+                && platform::apply_firewall_isolation().is_ok()
+            {
+                reapplied = true;
+            }
+        }
+
+        if state_changed {
+            if let Err(err) = save_state(&state) {
+                note_state_load_error_once("reconcile_firewall", &err);
+            }
+        }
+        if reapplied {
+            tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
+        }
+    }
+    #[cfg(windows)]
+    {
+        // WFP filters persist in the kernel across reboots.
+    }
+}
+
 pub fn reconcile() {
     if !platform::is_elevated() {
         return;
@@ -828,6 +994,19 @@ pub fn reconcile() {
             note_state_load_error_once("reconcile_save", &err);
         }
     }
+}
+
+/// Phase 19 P2: startup-only firewall rule reconciliation.
+///
+/// Re-applies IP-block and isolation rules that may have been lost on
+/// reboot (Linux nftables/iptables are in-memory). Windows WFP filters
+/// persist natively, so this is a no-op there.
+///
+/// Must be called EXACTLY ONCE at boot, NOT from the per-second
+/// reconcile() loop. Uses add-only (never deletes first) so a failed
+/// add does not leave a gap in protection.
+pub fn reconcile_firewall_rules_once() {
+    reconcile_firewall_rules();
 }
 pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, String> {
     ensure_modifiable()?;

@@ -167,6 +167,7 @@ fn spawn_bootstrap(
             advisory::log_cache_status();
             advisory_history::log_cache_status();
 
+            active_response::reconcile_firewall_rules_once();
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             if !pre_login_service_mode {

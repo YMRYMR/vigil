@@ -263,7 +263,7 @@ mod imp {
         Ok(())
     }
     pub fn isolation_controls_active(state: &State) -> Result<bool, String> {
-        if firewall_rule_present(ISOLATE_RULE_IN)? || firewall_rule_present(ISOLATE_RULE_OUT)? {
+        if rule_present(ISOLATE_RULE_IN)? || rule_present(ISOLATE_RULE_OUT)? {
             return Ok(true);
         }
         let current_profiles = snapshot_firewall_profiles()?;
@@ -676,7 +676,7 @@ mod imp {
             Err(format!("failed to delete firewall rule {rule_name}"))
         }
     }
-    fn firewall_rule_present(rule_name: &str) -> Result<bool, String> {
+    pub fn rule_present(rule_name: &str) -> Result<bool, String> {
         let output = hidden_command("netsh")?
             .args([
                 "advfirewall",
@@ -1299,6 +1299,37 @@ mod imp {
         {
             let _ = (rule_name, _path, dir);
             Err("Active response is not implemented on this platform.".into())
+        }
+    }
+    pub fn rule_present(rule_name: &str) -> Result<bool, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let comment = format!("{IPTABLES_COMMENT_PREFIX}{rule_name}");
+            // Check each chain; rule exists if any chain has it.
+            for chain in &["INPUT", "OUTPUT", "FORWARD"] {
+                let result = command_status(
+                    "iptables",
+                    &[
+                        "-C",
+                        chain,
+                        "-m",
+                        "comment",
+                        "--comment",
+                        &comment,
+                        "-j",
+                        "DROP",
+                    ],
+                );
+                if result.is_ok() {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = rule_name;
+            Ok(false)
         }
     }
     pub fn delete_rule(rule_name: &str) -> Result<(), String> {
