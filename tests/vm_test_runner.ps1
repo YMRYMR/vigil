@@ -108,12 +108,16 @@ if ($SSH_TYPE -eq "plink") {
 $BINARY = "target/release/vigil"
 $VM_BINARY = "/tmp/vigil"
 
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host " Vigil VM Integration Test Runner" -ForegroundColor Cyan
-Write-Host "=========================================" -ForegroundColor Cyan
-Write-Host ""
-
-function Step($msg) { Write-Host "--- $msg ---" -ForegroundColor Yellow }
+# Helper: execute a command via SSH, bypassing PowerShell parser issues
+function SshExec($remoteCmd) {
+    # Use cmd /c to avoid PowerShell parsing && or other bash syntax
+    # inside the SSH command string on older PS versions.
+    if ($SSH_TYPE -eq "plink") {
+        cmd /c "$SSH $remoteCmd" 2>&1
+    } else {
+        cmd /c "$SSH '$remoteCmd'" 2>&1
+    }
+}
 
 # ── Build ────────────────────────────────────────────────────────────
 
@@ -193,7 +197,7 @@ if (-not $sshStarted) {
 
 # Verify sudo access (needed for integration tests)
 Step "Checking sudo access"
-$sudoCheck = Invoke-Expression "$SSH 'echo $VM_PASSWORD | sudo -S whoami 2>&1'" 2>&1
+$sudoCheck = SshExec "echo $VM_PASSWORD | sudo -S whoami 2>&1"
 if ($sudoCheck -match "root") {
     Write-Host "  sudo: OK (vigil can sudo)" -ForegroundColor Green
 } else {
@@ -214,10 +218,10 @@ if (Test-Path $sshKeyPub) {
     } else {
         # Manual key install — write to ~/.ssh/authorized_keys
         Write-Host "  Ensuring .ssh directory exists..." -ForegroundColor Cyan
-        $null = Invoke-Expression "$SSH 'mkdir -p ~/.ssh && chmod 700 ~/.ssh'" 2>&1
-        $escapedKey = $keyContent -replace '"', '""'
-        $cmd = "echo '$escapedKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
-        $null = Invoke-Expression "$SSH '$cmd'" 2>&1
+        $null = SshExec "mkdir -p ~/.ssh; chmod 700 ~/.ssh"
+        $escapedKey = $keyContent -replace "'", "'\''"
+        $cmd = "echo '$escapedKey' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys"
+        $null = SshExec $cmd
     }
     Write-Host "  SSH key setup complete" -ForegroundColor Green
 }
@@ -231,7 +235,7 @@ if ($SSH_TYPE -eq "plink") {
     & $SCP $BINARY "$VM_USER@${VM_HOST}:$VM_BINARY" 2>&1
 }
 if ($LASTEXITCODE -ne 0) { throw "SCP upload failed" }
-Invoke-Expression "$SSH 'chmod +x $VM_BINARY'"
+SshExec "chmod +x $VM_BINARY" | Out-Null
 Write-Host "  Binary uploaded to $VM_BINARY" -ForegroundColor Green
 
 # ── Upload test script ───────────────────────────────────────────────
@@ -250,26 +254,26 @@ if ($SSH_TYPE -eq "plink") {
 # ── Run tests ───────────────────────────────────────────────────────
 
 Step "Running CLI smoke test (no root)"
-$result = Invoke-Expression "$SSH 'VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_cli_smoke_test.sh'" 2>&1
+$result = SshExec "VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_cli_smoke_test.sh"
 Write-Host $result
 if ($LASTEXITCODE -ne 0) { Write-Host "  CLI smoke test FAILED" -ForegroundColor Red }
 
 Step "Running firewall integration test (needs sudo)"
 $cmd = "echo $VM_PASSWORD | sudo -S VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh"
-$result = Invoke-Expression "$SSH '$cmd'" 2>&1
+$result = SshExec $cmd
 Write-Host $result
 if ($LASTEXITCODE -ne 0) { Write-Host "  Integration test FAILED" -ForegroundColor Red }
 
 # ── Check DB ─────────────────────────────────────────────────────────
 
 Step "Checking SQLite state"
-Invoke-Expression "$SSH 'sqlite3 /home/$VM_USER/.vigil-data/vigil-state.db .tables 2>&1 || echo no-db'"
+SshExec "sqlite3 /home/$VM_USER/.vigil-data/vigil-state.db .tables 2>&1 || echo no-db"
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 
 if (-not $NoCleanup) {
     Step "Cleaning up VM"
-    Invoke-Expression "$SSH 'rm -f $VM_BINARY /tmp/firewall_*.sh'"
+    SshExec "rm -f $VM_BINARY /tmp/firewall_*.sh" | Out-Null
     & $VBox controlvm $VM poweroff 2>&1 | Out-Null
     Write-Host "  VM powered off" -ForegroundColor Green
 } else {
