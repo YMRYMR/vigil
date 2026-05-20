@@ -74,7 +74,7 @@ set -e
 PW="vigil"
 echo "SETUP-START"
 
-# Wait for any other apt/dpkg processes to finish
+# Wait for apt locks
 for i in $(seq 1 30); do
     if ! fuser /var/lib/dpkg/lock-frontend /var/lib/apt/lists/lock >/dev/null 2>&1; then break; fi
     echo "Waiting for apt lock... ($i)"
@@ -82,9 +82,15 @@ for i in $(seq 1 30); do
 done
 
 echo $PW | sudo -S apt update -qq || true
-echo $PW | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3
+echo $PW | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3 curl build-essential pkg-config libssl-dev
 echo "vigil ALL=(ALL) NOPASSWD:ALL" | sudo -S tee /etc/sudoers.d/vigil >/dev/null
 echo $PW | sudo -S chmod 440 /etc/sudoers.d/vigil
+
+# Install Rust (non-interactive)
+if ! command -v cargo &>/dev/null; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+    source "$HOME/.cargo/env"
+fi
 echo "SETUP-OK"
 '@
 Set-Content -Path "$env:TEMP\vigil_vm_setup.sh" -Value $setupScript -Encoding ASCII
@@ -100,9 +106,17 @@ $sc=Ssh "sudo -n whoami"
 if("$sc" -match "root"){Write-Host "  sudo OK" -ForegroundColor Green}
 else{throw "sudo still needs password - VM setup failed"}  # Added fallback
 
-Step "Upload"
-Upload $BIN $VBIN
-Ssh "chmod +x $VBIN"|Out-Null
+Step "Source + build"
+Write-Host "  Creating tarball..." -ForegroundColor Cyan
+$tarPath="$env:TEMP\vigil_src.tar.gz"
+cmd /c "tar -czf $tarPath --exclude=target --exclude=.git -C $PWD ." 2>&1|Out-Null
+if($LASTEXITCODE -ne 0){git archive --format=tar.gz -o "$tarPath" HEAD}
+Upload "$tarPath" "/tmp/vigil_src.tar.gz"
+Write-Host "  Building inside VM (~5-10 min)..." -ForegroundColor Cyan
+$buildOut=Ssh "cd /tmp && rm -rf vs && mkdir vs && cd vs && tar -xzf ../vigil_src.tar.gz && source ~/.cargo/env && cargo build --release --bin vigil 2>&1 && cp target/release/vigil /tmp/vigil && echo BUILD-OK"
+Write-Host $buildOut
+if("$buildOut" -notmatch "BUILD-OK"){throw "Build in VM failed"}
+$VBIN="/tmp/vigil"
 Upload "tests/firewall_cli_smoke_test.sh" "/tmp/firewall_cli_smoke_test.sh"
 Upload "tests/firewall_integration_test.sh" "/tmp/firewall_integration_test.sh"
 Write-Host "  done" -ForegroundColor Green
