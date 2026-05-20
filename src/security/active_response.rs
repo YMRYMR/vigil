@@ -764,15 +764,34 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
 fn reconcile_firewall_rules() {
     #[cfg(not(windows))]
     {
-        let Ok(state) = load_state() else {
-            return;
+        let mut state = match load_state() {
+            Ok(s) => s,
+            Err(_) => return,
         };
+        let now = unix_now();
         let mut reapplied = false;
+        let mut state_changed = false;
 
-        // Check-Then-Add: skip rules that already exist in the kernel.
-        // For a plain process restart (no reboot), iptables rules survive
-        // and re-adding would create duplicates that can't be cleaned up.
+        // Remove expired entries from state and skip re-adding them.
+        // Blocks that expired while the machine was down should not
+        // be resurrected on boot.
+        let blocked_before = state.blocked.len();
+        let proc_blocked_before = state.blocked_processes.len();
+        state
+            .blocked
+            .retain(|rule| rule.expires_at_unix.is_none_or(|deadline| deadline > now));
+        state
+            .blocked_processes
+            .retain(|rule| rule.expires_at_unix.is_none_or(|deadline| deadline > now));
+        if state.blocked.len() != blocked_before
+            || state.blocked_processes.len() != proc_blocked_before
+        {
+            // We can't compare before/after since we just loaded, but if we
+            // changed anything the next load will reflect it.
+            state_changed = true;
+        }
 
+        // Re-apply IP blocks.
         for rule in &state.blocked {
             if platform::rule_present(&rule.rule_name).unwrap_or(false) {
                 continue;
@@ -847,6 +866,11 @@ fn reconcile_firewall_rules() {
             }
         }
 
+        if state_changed {
+            if let Err(err) = save_state(&state) {
+                note_state_load_error_once("reconcile_firewall", &err);
+            }
+        }
         if reapplied {
             tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
         }
