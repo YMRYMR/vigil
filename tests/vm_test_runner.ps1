@@ -93,11 +93,11 @@ Ssh "chmod +x /tmp/vigil_vm_setup.sh" | Out-Null
 Write-Host "  Running VM setup script..." -ForegroundColor Cyan
 $setupOut = Ssh "bash /tmp/vigil_vm_setup.sh"
 Write-Host $setupOut
-if($setupOut -notmatch "SETUP-OK"){throw "VM setup failed"}
+if("$setupOut" -notmatch "SETUP-OK"){throw "VM setup failed"}
 Ssh "rm -f /tmp/vigil_vm_setup.sh" | Out-Null
 Remove-Item "$env:TEMP\vigil_vm_setup.sh" -ErrorAction SilentlyContinue
 $sc=Ssh "sudo -n whoami"
-if($sc -match "root"){Write-Host "  sudo OK" -ForegroundColor Green}
+if("$sc" -match "root"){Write-Host "  sudo OK" -ForegroundColor Green}
 else{throw "sudo still needs password - VM setup failed"}  # Added fallback
 
 Step "Upload"
