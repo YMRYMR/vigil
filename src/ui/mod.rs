@@ -928,6 +928,12 @@ impl VigilApp {
                             NotificationKind::Success,
                             format!("Trusted {}", info.proc_name),
                         );
+                        // Clear selection so UI refreshes with new trust state
+                        match self.active_tab {
+                            Tab::Activity => self.selected_activity = None,
+                            Tab::Alerts => self.selected_alert = None,
+                            _ => {}
+                        }
                     }
                 }
             }
@@ -940,7 +946,13 @@ impl VigilApp {
                         .parent()
                         .unwrap_or_else(|| Path::new(&info.proc_path))
                         .to_path_buf();
-                    // Spawn on a background thread — open::that blocks
+                    if !open_target.exists() {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            format!("Location no longer exists: {}", open_target.display()),
+                        );
+                        return;
+                    }
                     std::thread::spawn(move || {
                         if let Err(err) = open::that(&open_target) {
                             tracing::warn!(

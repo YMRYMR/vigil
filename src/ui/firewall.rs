@@ -4,6 +4,10 @@
 //! blocked targets/processes/domains, and isolation status.
 //! All data is read-only via the cached state — no firewall
 //! operations are performed during rendering.
+//!
+//! Actions (block, isolate, suspend) are performed from the
+//! process detail panel in Activity/Alerts tabs, or via the
+//! global header buttons.
 
 use crate::ui::theme;
 use crate::{active_response, security::firewall};
@@ -26,6 +30,11 @@ pub fn show(ui: &mut Ui) {
                     backend_badge(ui);
                 });
             });
+            ui.label(
+                RichText::new("Status dashboard — use Activity or Alerts tabs to perform actions.")
+                    .color(theme::TEXT2)
+                    .size(10.5),
+            );
             ui.add_space(4.0);
             ui.separator();
             ui.add_space(8.0);
