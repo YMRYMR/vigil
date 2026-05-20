@@ -58,6 +58,117 @@ pub struct InspectorSnapshot {
     pub domain_modifiable: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FirewallRuleList {
+    pub blocked_ips: Vec<BlockedIpEntry>,
+    pub blocked_processes: Vec<BlockedProcessEntry>,
+    pub blocked_domains: Vec<BlockedDomainEntry>,
+    pub suspended_processes: Vec<SuspendedProcessEntry>,
+    pub profiles: Vec<FirewallProfileEntry>,
+    pub isolated: bool,
+    pub isolation_remaining_secs: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedIpEntry {
+    pub target: String,
+    pub rule_name: String,
+    pub expires_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedProcessEntry {
+    pub pid: u32,
+    pub path: String,
+    pub inbound_rule_name: String,
+    pub outbound_rule_name: String,
+    pub expires_at_unix: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockedDomainEntry {
+    pub domain: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SuspendedProcessEntry {
+    pub pid: u32,
+    pub path: String,
+    pub proc_name: String,
+    pub suspended_at_unix: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FirewallProfileEntry {
+    pub name: String,
+    pub enabled: bool,
+    pub inbound_action: String,
+    pub outbound_action: String,
+}
+
+/// Load the current firewall rule list for the UI tab.
+/// Uses the same caching as `status()` — safe to call every frame.
+pub fn list_rules() -> FirewallRuleList {
+    let mut result = FirewallRuleList::default();
+    let state = match load_state_for_query("list_rules") {
+        Some(s) => s,
+        None => return result,
+    };
+    let now = unix_now();
+    result.blocked_ips = state
+        .blocked
+        .into_iter()
+        .map(|b| BlockedIpEntry {
+            target: b.target,
+            rule_name: b.rule_name,
+            expires_at_unix: b.expires_at_unix,
+        })
+        .collect();
+    result.blocked_processes = state
+        .blocked_processes
+        .into_iter()
+        .map(|b| BlockedProcessEntry {
+            pid: b.pid,
+            path: b.path,
+            inbound_rule_name: b.inbound_rule_name,
+            outbound_rule_name: b.outbound_rule_name,
+            expires_at_unix: b.expires_at_unix,
+        })
+        .collect();
+    result.blocked_domains = state
+        .blocked_domains
+        .into_iter()
+        .map(|b| BlockedDomainEntry { domain: b.domain })
+        .collect();
+    result.suspended_processes = state
+        .suspended_processes
+        .into_iter()
+        .map(|s| SuspendedProcessEntry {
+            pid: s.pid,
+            path: s.path,
+            proc_name: s.proc_name,
+            suspended_at_unix: s.suspended_at_unix,
+        })
+        .collect();
+    result.isolated = state.isolated;
+    if let Some(expires) = state.isolation_expires_unix {
+        result.isolation_remaining_secs = expires.checked_sub(now);
+    }
+    if let Some(snapshot) = state.firewall_snapshot {
+        result.profiles = snapshot
+            .profiles
+            .into_iter()
+            .map(|p| FirewallProfileEntry {
+                name: p.name,
+                enabled: p.enabled,
+                inbound_action: p.inbound_action,
+                outbound_action: p.outbound_action,
+            })
+            .collect();
+    }
+    result
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct State {
     blocked: Vec<BlockedTarget>,

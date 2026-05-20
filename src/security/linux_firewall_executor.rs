@@ -62,6 +62,20 @@ fn capture_restore_state(
     })
 }
 
+fn nft_table_exists(runner: &impl LinuxCommandRunner) -> bool {
+    runner
+        .stdout(&nft_list_ruleset())
+        .map(|ruleset| {
+            ruleset.lines().any(|line| {
+                let mut parts = line.split_whitespace();
+                matches!(parts.next(), Some("table"))
+                    && matches!(parts.next(), Some("inet"))
+                    && matches!(parts.next(), Some("vigil"))
+            })
+        })
+        .unwrap_or(false)
+}
+
 #[allow(dead_code)]
 pub fn execute_selected_setup_plan(
     runner: &impl LinuxCommandRunner,
@@ -80,18 +94,10 @@ pub fn execute_selected_isolate_plan(
         Err(e) => return Err((e, None)),
     };
     let mut commands = Vec::new();
-    if backend == LinuxFirewallBackend::Nftables {
-        let table_exists = runner
-            .stdout(&nft_list_ruleset())
-            .map(|s| s.contains("table inet vigil"))
-            .unwrap_or(false);
-        if table_exists {
-            commands.push(nft_flush_chain(NFT_ISOL_IN_CHAIN));
-            commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
-            commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
-        } else {
-            commands.extend(firewall_backend_setup_plan(backend));
-        }
+    if backend == LinuxFirewallBackend::Nftables && nft_table_exists(runner) {
+        commands.push(nft_flush_chain(NFT_ISOL_IN_CHAIN));
+        commands.push(nft_flush_chain(NFT_ISOL_FORWARD_CHAIN));
+        commands.push(nft_flush_chain(NFT_ISOL_OUT_CHAIN));
     } else {
         commands.extend(firewall_backend_setup_plan(backend));
     }
@@ -198,7 +204,7 @@ pub fn execute_selected_delete_plan(
             ] {
                 let output = match runner.stdout(&nft_list_chain_handles(chain)) {
                     Ok(o) => o,
-                    // Chain may not exist yet (first isolation) — skip.
+                    // Chain may not exist yet (first isolation) - skip.
                     Err(_) => continue,
                 };
                 if let Some(handle) = nft_parse_handle_by_comment(&output, rule_name) {
@@ -241,6 +247,7 @@ mod tests {
 
     struct RecordingRunner {
         nft_available: bool,
+        nft_ruleset_output: &'static str,
         fail_program: Option<&'static str>,
         commands: RefCell<Vec<LinuxCommand>>,
     }
@@ -249,6 +256,20 @@ mod tests {
         fn new(nft_available: bool) -> Self {
             Self {
                 nft_available,
+                nft_ruleset_output: if nft_available {
+                    "table inet vigil"
+                } else {
+                    ""
+                },
+                fail_program: None,
+                commands: RefCell::new(Vec::new()),
+            }
+        }
+
+        fn nft_without_table() -> Self {
+            Self {
+                nft_available: true,
+                nft_ruleset_output: "",
                 fail_program: None,
                 commands: RefCell::new(Vec::new()),
             }
@@ -257,6 +278,11 @@ mod tests {
         fn failing(nft_available: bool, fail_program: &'static str) -> Self {
             Self {
                 nft_available,
+                nft_ruleset_output: if nft_available {
+                    "table inet vigil"
+                } else {
+                    ""
+                },
                 fail_program: Some(fail_program),
                 commands: RefCell::new(Vec::new()),
             }
@@ -275,7 +301,7 @@ mod tests {
 
         fn stdout(&self, command: &LinuxCommand) -> Result<String, String> {
             if command.program == "nft" && self.nft_available {
-                Ok("table inet vigil".to_string())
+                Ok(self.nft_ruleset_output.to_string())
             } else if command.program == "iptables" {
                 Ok(
                     "Chain INPUT (policy ACCEPT)\nChain FORWARD (policy DROP)\nChain OUTPUT (policy ACCEPT)\n"
@@ -345,8 +371,8 @@ mod tests {
     }
 
     #[test]
-    fn remote_block_runs_setup_before_block_rule() {
-        let runner = RecordingRunner::new(true);
+    fn remote_block_runs_setup_before_first_nft_rule() {
+        let runner = RecordingRunner::nft_without_table();
         let executed =
             execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
                 .unwrap();
@@ -362,10 +388,49 @@ mod tests {
     }
 
     #[test]
+    fn remote_block_replays_setup_when_nft_table_already_exists() {
+        let runner = RecordingRunner::new(true);
+        let executed =
+            execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
+                .unwrap();
+        assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(executed.commands.len(), 11);
+        assert_eq!(
+            executed.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
+        assert_eq!(executed.commands.last().unwrap().args[4], "output");
+    }
+
+    #[test]
+    fn remote_block_does_not_skip_setup_for_different_table_name() {
+        let runner = RecordingRunner {
+            nft_available: true,
+            nft_ruleset_output: "table inet vigil2 {",
+            fail_program: None,
+            commands: RefCell::new(Vec::new()),
+        };
+        let executed =
+            execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
+                .unwrap();
+        assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(executed.commands.len(), 11);
+        assert_eq!(
+            executed.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
+    }
+
+    #[test]
     fn uid_block_uses_backend_specific_command() {
         let nft_runner = RecordingRunner::new(true);
         let nft = execute_selected_uid_block_plan(&nft_runner, "uid", "out", 1000).unwrap();
         assert_eq!(nft.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(nft.commands.len(), 11);
+        assert_eq!(
+            nft.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
         assert!(nft
             .commands
             .last()

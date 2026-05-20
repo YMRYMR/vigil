@@ -6,6 +6,7 @@
 
 pub mod activity;
 pub mod alerts;
+pub mod firewall;
 pub mod help;
 pub mod inspector;
 pub mod process_list;
@@ -2089,6 +2090,7 @@ impl eframe::App for VigilApp {
                         }
                     }
                 }
+                Tab::Firewall => firewall::show(ui),
                 Tab::Help => help::show(ui),
             });
         self.show_notifications_overlay(&ctx);
