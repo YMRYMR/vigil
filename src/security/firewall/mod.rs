@@ -351,16 +351,16 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
         }
         Some("help") => {
-            println!("Rule templates (common scenarios):");
-            println!("  Block remote IP:     vigil --firewall block-ip 10.0.0.1");
-            println!("  Block process:       vigil --firewall block-process /path/to/exe");
-            println!("  Block domain:        vigil --firewall block-domain evil.example.com");
-            println!("  Isolate machine:     vigil --firewall isolate");
-            println!("  Restore machine:     vigil --firewall restore");
-            println!("  Panic (emergency):   vigil --firewall panic");
+            println!("Vigil firewall commands:");
+            println!("  status    Show backend, profiles, isolation state");
+            println!("  list      Show active rules summary (IPs, processes, domains)");
+            println!("  export    Dump full firewall state as JSON");
+            println!("  panic     Emergency restore — drop all Vigil rules");
             println!("");
-            println!("Templates use the permanent block preset (no TTL).");
-            println!("Rules auto-reconcile on reboot via SQLite + JSON state store.");
+            println!("Firewall rules are managed through the GUI Inspector tab");
+            println!("or the auto-response engine (block_remote, block_process,");
+            println!("isolate_machine, etc.). Use --uninstall-firewall to");
+            println!("clean up all rules before removing Vigil.");
             0
         }
         Some(other) => {

@@ -1899,7 +1899,6 @@ fn save_state(state: &State) -> Result<(), String> {
 }
 
 fn sync_firewall_rules_to_db(state: &State) {
-    let now = unix_now();
     let rows: Vec<crate::storage::db::FirewallRuleRow> = state
         .blocked
         .iter()
@@ -1910,7 +1909,7 @@ fn sync_firewall_rules_to_db(state: &State) {
             direction: "out".into(),
             pid: 0,
             path: String::new(),
-            created_unix: now,
+            created_unix: 0,
             expires_unix: b.expires_at_unix,
         })
         .chain(state.blocked_processes.iter().flat_map(|b| {
@@ -1921,7 +1920,7 @@ fn sync_firewall_rules_to_db(state: &State) {
                 direction: "out".into(),
                 pid: b.pid,
                 path: b.path.clone(),
-                created_unix: now,
+                created_unix: 0,
                 expires_unix: b.expires_at_unix,
             };
             let in_rule = crate::storage::db::FirewallRuleRow {
@@ -1931,7 +1930,7 @@ fn sync_firewall_rules_to_db(state: &State) {
                 direction: "in".into(),
                 pid: b.pid,
                 path: b.path.clone(),
-                created_unix: now,
+                created_unix: 0,
                 expires_unix: b.expires_at_unix,
             };
             [out, in_rule]
@@ -1947,7 +1946,7 @@ fn sync_firewall_rules_to_db(state: &State) {
                     direction: "out".into(),
                     pid: 0,
                     path: String::new(),
-                    created_unix: now,
+                    created_unix: 0,
                     expires_unix: None,
                 }),
         )
