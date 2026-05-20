@@ -1955,6 +1955,9 @@ fn sync_firewall_rules_to_db(state: &State) {
         if let Err(e) = db.save_firewall_rules(&rows) {
             tracing::warn!("sync firewall rules to db: {e}");
         }
+        if let Err(e) = db.checkpoint() {
+            tracing::warn!("checkpoint after firewall sync: {e}");
+        }
     }
 }
 
