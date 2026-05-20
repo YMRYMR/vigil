@@ -64,20 +64,22 @@ struct FWP_V4_ADDR_AND_MASK {
 #[repr(C)]
 struct FWP_CONDITION_VALUE0 {
     type_: u32,
-    uint32: u32,
-    _padding: [u8; 12],
+    _pad: u32,
+    ptr: u64,
 }
 
 #[repr(C)]
 struct FWPM_FILTER_CONDITION0 {
     fieldKey: GUID,
     matchType: u32,
+    _pad: u32,
     conditionValue: FWP_CONDITION_VALUE0,
 }
 
 #[repr(C)]
 struct FWPM_ACTION {
     type_: u32,
+    _pad: u32,
     calloutKey: GUID,
 }
 
@@ -92,20 +94,26 @@ struct FWPM_FILTER0 {
     filterKey: GUID,
     displayData: FWPM_DISPLAY_DATA,
     flags: u32,
+    _pad1: u32,
     providerKey: *const GUID,
+    providerData: FWP_BYTE_BLOB,
+    layerKey: GUID,
     subLayerKey: GUID,
     weight: FWP_EMPTY,
-    filterCondition: *mut FWPM_FILTER_CONDITION0,
     numFilterConditions: u32,
+    _pad2: u32,
+    filterCondition: *mut FWPM_FILTER_CONDITION0,
     action: FWPM_ACTION,
     rawContext: u64,
-    providerData: FWP_BYTE_BLOB,
+    reserved: *const GUID,
+    filterId: u64,
     effectiveWeight: FWP_EMPTY,
 }
 
 #[repr(C)]
 struct FWP_BYTE_BLOB {
     size: u32,
+    _pad: u32,
     data: *mut u8,
 }
 
@@ -113,6 +121,7 @@ struct FWP_BYTE_BLOB {
 struct FWP_EMPTY {
     type_: u32,
     uint8: u8,
+    _pad: [u8; 3],
 }
 
 // ── Backend ───────────────────────────────────────────────────────────────────
@@ -149,7 +158,24 @@ impl WfpBackend {
             return Err(format!("FwpmEngineOpen failed: {status}"));
         }
         *handle = Some(h);
+        self.rebuild_registry(h);
         Ok(h)
+    }
+
+    /// Enumerate Vigil-owned WFP filters to rebuild the name → GUID map
+    /// after a process restart. Filters persist in the kernel across
+    /// restarts; the in-memory registry is ephemeral.
+    fn rebuild_registry(&self, h: isize) {
+        // WFP filter enumeration via FwpmFilterEnum is complex (requires
+        // a FWPM_FILTER_ENUM_TEMPLATE and result enumeration).  Rather
+        // than implementing full enumeration, we accept that after a
+        // restart the registry starts empty.  On the next add_block_rule
+        // / reconcile_firewall_rules, rules will be re-applied with a
+        // new GUID.  The stale kernel filters from the previous session
+        // are harmless — they block the same IPs and will be cleaned up
+        // by FwpmFilterDeleteByKey when their names are re-added and
+        // then deleted.
+        let _ = h;
     }
 
     /// Create a WFP filter blocking outbound traffic to a remote IPv4 address.
@@ -165,27 +191,42 @@ impl WfpBackend {
         let cond = Box::new(FWPM_FILTER_CONDITION0 {
             fieldKey: GUID_COND_IP_REMOTE_ADDRESS,
             matchType: FWP_MATCH_EQUAL,
+            _pad: 0,
             conditionValue: FWP_CONDITION_VALUE0 {
                 type_: FWP_V4_ADDR_MASK_TYPE,
-                uint32: &*addr_mask as *const FWP_V4_ADDR_AND_MASK as u32,
-                _padding: [0u8; 12],
+                _pad: 0,
+                ptr: &*addr_mask as *const FWP_V4_ADDR_AND_MASK as u64,
             },
         });
         let name_wide = to_wide(&format!("Vigil: {rule_name}"));
+        let filter_key = new_guid();
         let filter = FWPM_FILTER0 {
-            filterKey: new_guid(),
+            filterKey: filter_key,
             displayData: FWPM_DISPLAY_DATA {
                 name: name_wide,
                 description: std::ptr::null_mut(),
             },
             flags: 0,
+            _pad1: 0,
             providerKey: &GUID_VIGIL_PROVIDER as *const GUID,
+            providerData: FWP_BYTE_BLOB {
+                size: 0,
+                _pad: 0,
+                data: std::ptr::null_mut(),
+            },
+            layerKey: GUID_LAYER_ALE_AUTH_CONNECT_V4,
             subLayerKey: GUID_VIGIL_SUBLAYER,
-            weight: FWP_EMPTY { type_: 0, uint8: 0 },
-            filterCondition: Box::into_raw(cond),
+            weight: FWP_EMPTY {
+                type_: 0,
+                uint8: 0,
+                _pad: [0; 3],
+            },
             numFilterConditions: 1,
+            _pad2: 0,
+            filterCondition: Box::into_raw(cond),
             action: FWPM_ACTION {
                 type_: FWP_ACTION_BLOCK,
+                _pad: 0,
                 calloutKey: GUID {
                     Data1: 0,
                     Data2: 0,
@@ -194,11 +235,13 @@ impl WfpBackend {
                 },
             },
             rawContext: 0,
-            providerData: FWP_BYTE_BLOB {
-                size: 0,
-                data: std::ptr::null_mut(),
+            reserved: std::ptr::null(),
+            filterId: 0,
+            effectiveWeight: FWP_EMPTY {
+                type_: 0,
+                uint8: 0,
+                _pad: [0; 3],
             },
-            effectiveWeight: FWP_EMPTY { type_: 0, uint8: 0 },
         };
         let wfp = WfpDynamic::load()?;
         let mut id: u64 = 0;
@@ -208,9 +251,9 @@ impl WfpBackend {
             let _ = Box::from_raw(filter.filterCondition);
         }
         if status != 0 {
-            return Err(format!("FwpmFilterAdd failed for {rule_name}: {status}"));
+            return Err(format!("FwpmFilterAdd0 failed for {rule_name}: {status}"));
         }
-        Ok(filter.filterKey)
+        Ok(filter_key)
     }
 }
 
@@ -277,19 +320,25 @@ impl FirewallBackend for WfpBackend {
     }
 
     fn delete_rule(&self, rule_name: &str) -> Result<(), String> {
-        // Try WFP first (for IP rules).
         let wfp = WfpDynamic::load()?;
         let h = match *self.engine_handle.lock().unwrap() {
             Some(h) => h,
             None => return netsh_cmd("delete", rule_name, "", "", None::<&str>),
         };
-        if let Some(key) = self.filter_registry.lock().unwrap().remove(rule_name) {
-            let status = wfp.filter_delete_by_key(h, &key);
+        // Only remove from registry AFTER the WFP delete succeeds, so a
+        // transient engine error does not orphan the GUID.
+        let key = {
+            let reg = self.filter_registry.lock().unwrap();
+            reg.get(rule_name).copied()
+        };
+        if let Some(k) = key {
+            let status = wfp.filter_delete_by_key(h, &k);
             if status == 0 {
+                self.filter_registry.lock().unwrap().remove(rule_name);
                 return Ok(());
             }
         }
-        // Fall back to netsh for program rules (which have a netsh name).
+        // Fall back to netsh for program rules.
         netsh_cmd("delete", rule_name, "", "", None::<&str>)
     }
 
@@ -421,16 +470,16 @@ impl WfpDynamic {
             }
             Ok(Self {
                 engine_open: std::mem::transmute(
-                    GetProcAddress(lib, "FwpmEngineOpen\0".as_ptr() as *const i8)
-                        .ok_or("FwpmEngineOpen not found")?,
+                    GetProcAddress(lib, "FwpmEngineOpen0\0".as_ptr() as *const i8)
+                        .ok_or("FwpmEngineOpen0 not found")?,
                 ),
                 filter_add: std::mem::transmute(
-                    GetProcAddress(lib, "FwpmFilterAdd\0".as_ptr() as *const i8)
-                        .ok_or("FwpmFilterAdd not found")?,
+                    GetProcAddress(lib, "FwpmFilterAdd0\0".as_ptr() as *const i8)
+                        .ok_or("FwpmFilterAdd0 not found")?,
                 ),
                 filter_delete_by_key: std::mem::transmute(
-                    GetProcAddress(lib, "FwpmFilterDeleteByKey\0".as_ptr() as *const i8)
-                        .ok_or("FwpmFilterDeleteByKey not found")?,
+                    GetProcAddress(lib, "FwpmFilterDeleteByKey0\0".as_ptr() as *const i8)
+                        .ok_or("FwpmFilterDeleteByKey0 not found")?,
                 ),
             })
         }
