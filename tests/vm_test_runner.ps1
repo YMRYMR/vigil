@@ -13,12 +13,16 @@ param(
     [switch]$NoCleanup,  # Leave VM running after tests
     [switch]$SkipBuild   # Skip cargo build (use existing binary)
 )
+$VM_USER = "vigil"
+$VM_HOST = "localhost"
+$VM_PORT = 2222
 
 $ErrorActionPreference = "Stop"
 $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $VM = "vigil-linux"
-$SSH = "ssh -p 2222 -o StrictHostKeyChecking=no root@localhost"
-$SCP = "scp -P 2222 -o StrictHostKeyChecking=no"
+$SSH = "ssh -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST"
+$SCP = "scp -P $VM_PORT -o StrictHostKeyChecking=no"
+$SUDO = "echo vigil | sudo -S"
 $BINARY = "target/release/vigil"
 $VM_BINARY = "/tmp/vigil"
 
@@ -77,7 +81,7 @@ Step "Waiting for SSH (port 2222 → guest:22)"
 $maxWait = 180
 $sshStarted = $false
 for ($i = 0; $i -lt $maxWait; $i += 5) {
-    $result = & ssh -p 2222 -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=yes root@localhost "echo ok" 2>&1
+    $result = & ssh -p $VM_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=no $VM_USER@$VM_HOST "echo ok" 2>&1
     if ($result -eq "ok") {
         Write-Host "  SSH ready after ${i}s" -ForegroundColor Green
         $sshStarted = $true
@@ -110,14 +114,13 @@ if (Test-Path $sshKeyPub) {
     $sshCopyId = Get-Command ssh-copy-id -ErrorAction SilentlyContinue
     if ($sshCopyId) {
         Write-Host "  Installing SSH key via ssh-copy-id..." -ForegroundColor Cyan
-        & ssh-copy-id -p 2222 -o StrictHostKeyChecking=no root@localhost 2>&1 | Out-Null
+        & ssh-copy-id -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST 2>&1 | Out-Null
     } else {
-        # Manual key install
-        Write-Host "  Ensuring root has .ssh directory..." -ForegroundColor Cyan
-        $null = Invoke-Expression "$SSH 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'" 2>&1
-        # Write the key content to authorized_keys via SSH
+        # Manual key install — write to ~/.ssh/authorized_keys
+        Write-Host "  Ensuring .ssh directory exists..." -ForegroundColor Cyan
+        $null = Invoke-Expression "$SSH 'mkdir -p ~/.ssh && chmod 700 ~/.ssh'" 2>&1
         $escapedKey = $keyContent -replace '"', '""'
-        $cmd = "echo '$escapedKey' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+        $cmd = "echo '$escapedKey' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
         $null = Invoke-Expression "$SSH '$cmd'" 2>&1
     }
     Write-Host "  SSH key setup complete" -ForegroundColor Green
@@ -126,7 +129,7 @@ if (Test-Path $sshKeyPub) {
 # ── Upload binary ────────────────────────────────────────────────────
 
 Step "Uploading vigil binary to VM"
-& $SCP $BINARY "root@localhost:$VM_BINARY" 2>&1
+& $SCP $BINARY "$VM_USER@${VM_HOST}:$VM_BINARY" 2>&1
 if ($LASTEXITCODE -ne 0) { throw "SCP upload failed" }
 Invoke-Expression "$SSH 'chmod +x $VM_BINARY'"
 Write-Host "  Binary uploaded to $VM_BINARY" -ForegroundColor Green
@@ -136,8 +139,8 @@ Write-Host "  Binary uploaded to $VM_BINARY" -ForegroundColor Green
 Step "Uploading test scripts"
 $testScript = "tests/firewall_integration_test.sh"
 $cliTestScript = "tests/firewall_cli_smoke_test.sh"
-& $SCP $testScript "root@localhost:/tmp/firewall_integration_test.sh" 2>&1
-& $SCP $cliTestScript "root@localhost:/tmp/firewall_cli_smoke_test.sh" 2>&1
+& $SCP $testScript "$VM_USER@${VM_HOST}:/tmp/firewall_integration_test.sh" 2>&1
+& $SCP $cliTestScript "$VM_USER@${VM_HOST}:/tmp/firewall_cli_smoke_test.sh" 2>&1
 
 # ── Run CLI smoke test ───────────────────────────────────────────────
 
@@ -148,8 +151,8 @@ if ($LASTEXITCODE -ne 0) { Write-Host "  CLI smoke test FAILED" -ForegroundColor
 
 # ── Run integration test ─────────────────────────────────────────────
 
-Step "Running firewall integration test (root)"
-$result = Invoke-Expression "$SSH 'VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh'" 2>&1
+Step "Running firewall integration test (needs sudo)"
+$result = Invoke-Expression "$SSH 'echo vigil | sudo -S VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh'" 2>&1
 Write-Host $result
 if ($LASTEXITCODE -ne 0) { Write-Host "  Integration test FAILED" -ForegroundColor Red }
 
