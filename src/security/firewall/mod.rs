@@ -139,7 +139,11 @@ pub use wfp::WfpBackend;
 #[cfg(target_os = "linux")]
 mod nftables;
 #[cfg(target_os = "linux")]
+mod xdp;
+#[cfg(target_os = "linux")]
 pub use nftables::NftablesBackend;
+#[cfg(target_os = "linux")]
+pub use xdp::XdpBackend;
 
 /// Global firewall backend instance, lazily created on first access.
 pub fn get_backend() -> &'static dyn FirewallBackend {
@@ -153,6 +157,10 @@ pub fn get_backend() -> &'static dyn FirewallBackend {
             }
             #[cfg(target_os = "linux")]
             {
+                let xdp = Box::new(XdpBackend::new());
+                if xdp.is_available() {
+                    return xdp;
+                }
                 Box::new(NftablesBackend::new())
             }
             #[cfg(not(any(windows, target_os = "linux")))]

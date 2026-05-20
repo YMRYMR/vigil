@@ -768,17 +768,11 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
 /// persisted state against the live backend and re-applies any that are
 /// missing. On Windows, WFP filters survive reboots natively, so this is
 /// a no-op (the kernel persists Vigil's filters across restarts).
+#[cfg(not(windows))]
 fn is_domain_in_hosts(domain: &str, marker: &str) -> bool {
-    #[cfg(not(windows))]
-    {
-        std::fs::read_to_string("/etc/hosts")
-            .map(|c| c.lines().any(|l| l.contains(domain) && l.contains(marker)))
-            .unwrap_or(false)
-    }
-    #[cfg(windows)]
-    {
-        false
-    }
+    std::fs::read_to_string("/etc/hosts")
+        .map(|c| c.lines().any(|l| l.contains(domain) && l.contains(marker)))
+        .unwrap_or(false)
 }
 
 fn reconcile_firewall_rules() {
