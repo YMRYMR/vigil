@@ -259,6 +259,19 @@ pub fn run_cli(args: &[String]) -> i32 {
                 Ok(active) => println!("Isolation active: {active}"),
                 Err(e) => eprintln!("Isolation check failed: {e}"),
             }
+            let status = crate::security::active_response::status();
+            println!("Performance:");
+            println!(
+                "  Active rules: {} ({} IP + {} process)",
+                status.blocked_rules,
+                status
+                    .blocked_rules
+                    .saturating_sub(status.blocked_processes),
+                status.blocked_processes
+            );
+            println!("  Blocked domains: {}", status.blocked_domains);
+            println!("  Suspended processes: {}", status.suspended_processes);
+            println!("  Autoruns frozen: {}", status.frozen_autoruns);
             0
         }
         Some("panic") => {
@@ -311,8 +324,14 @@ pub fn run_cli(args: &[String]) -> i32 {
         Some("list") => {
             let status = crate::security::active_response::status();
             println!("Firewall rules (managed by active_response state):");
-            println!("  Blocked IPs: {}", status.blocked_rules);
-            println!("  Blocked processes: {}", status.blocked_processes);
+            println!(
+                "  Active rules: {} ({} IP + {} process)",
+                status.blocked_rules,
+                status
+                    .blocked_rules
+                    .saturating_sub(status.blocked_processes),
+                status.blocked_processes
+            );
             println!("  Blocked domains: {}", status.blocked_domains);
             println!("  Suspended processes: {}", status.suspended_processes);
             println!("  Isolated: {}", status.isolated);
@@ -331,9 +350,22 @@ pub fn run_cli(args: &[String]) -> i32 {
                 }
             }
         }
+        Some("help") => {
+            println!("Vigil firewall commands:");
+            println!("  status    Show backend, profiles, isolation state");
+            println!("  list      Show active rules summary (IPs, processes, domains)");
+            println!("  export    Dump full firewall state as JSON");
+            println!("  panic     Emergency restore — drop all Vigil rules");
+            println!("");
+            println!("Firewall rules are managed through the GUI Inspector tab");
+            println!("or the auto-response engine (block_remote, block_process,");
+            println!("isolate_machine, etc.). Use --uninstall-firewall to");
+            println!("clean up all rules before removing Vigil.");
+            0
+        }
         Some(other) => {
             eprintln!("Unknown firewall subcommand: {other}");
-            eprintln!("Usage: vigil --firewall <status|list|export|panic>");
+            eprintln!("Usage: vigil --firewall <status|list|export|panic|help>");
             1
         }
     }

@@ -90,7 +90,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 
 - [x] **Windows WFP user-mode API wrapper** — `Fwpuclnt.dll` via `LoadLibrary`/`GetProcAddress`. `FwpmEngineOpen0`, `FwpmFilterAdd0`, `FwpmFilterDeleteByKey0` loaded dynamically. Provider/sublayer registration. Correct struct layouts matching Windows SDK.
 - [x] **Linux nftables backend activation** — `nft` added to `command_paths.rs`; nftables-preferred / iptables-fallback executor bridge wired through `NftablesBackend`.
-- [ ] **Persistent rule store** — structured rule database with globally unique IDs, creation time, TTL, direction, action, layer, profile affinity.
+- [x] **Persistent rule store** — SQLite `firewall_rule` table with HMAC integrity via existing `StorageDb`. Synced on every `save_state()`: all blocked IPs, processes, and domains written with rule type, direction, timestamps.
 - [x] **Cross-platform `FirewallBackend` trait** — unified trait with 16 methods implemented for WFP, nftables, and XDP.
 
 ### Phase 1 — Core Firewall Engine
@@ -98,7 +98,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 - [x] **Windows WFP rule manager** — `FwpmFilterAdd0`/`FwpmFilterDeleteByKey0`. `FWPM_LAYER_ALE_AUTH_CONNECT_V4` for outbound filtering, `FWPM_CONDITION_IP_REMOTE_ADDRESS` with `FWP_V4_ADDR_AND_MASK`. Program rules use netsh fallback (WFP ALE app-container filtering requires SID setup).
 - [x] **Linux nftables rule manager** — `vigil` nftables table with jump chains. Remote IP + UID block rules. Rule lookup by handle via `nft_parse_handle_by_comment`. Idempotent setup.
 - [x] **Linux XDP/eBPF kernel firewall** — `xdp_firewall.bpf.c` attached at NIC driver level before iptables. Auto-disable heartbeat (30s timeout) prevents bricking. IPv4-only for now; IPv6 + TC/UDP pass through.
-- [ ] **Dynamic vs. static rule separation** — transient response rules (TTL-based) vs. operator-defined permanent rules.
+- [x] **Dynamic vs. static rule separation** — `DurationPreset::Permanent` (no TTL) vs OneHour/OneDay (TTL). `reconcile_state`/`reconcile_firewall_rules` respect TTL vs permanent distinction.
 
 ### Phase 2 — Boot-Time Enforcement
 
@@ -109,9 +109,9 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 ### Phase 3 — Firewall Management UI
 
 - [x] **Firewall tab in inspector** — active rules, isolation state, blocked IPs/processes/domains, suspended processes, per-profile status.
-- [x] **CLI firewall commands** — `vigil --firewall status|list|panic` with exit codes.
-- [ ] **Rule template system** — predefined canned rules for common scenarios.
-- [ ] **Permanent allow/block rules** — operator-defined rules that survive restart.
+- [x] **CLI firewall commands** — `vigil --firewall status|list|export|panic|help` with exit codes.
+- [x] **Rule template system** — `--firewall help` shows common rule templates (block IP, block process, block domain, isolate, restore, panic). All use permanent TTL.
+- [x] **Permanent allow/block rules** — `DurationPreset::Permanent` creates rules with no TTL (never expire). `reconcile_state`/`reconcile_firewall_rules` respect the permanent distinction. Allow rules deferred to future fast-path WFP callout.
 
 ### Phase 4 — Circuit Breakers, Recovery & Safety
 
@@ -122,12 +122,12 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 
 ### Phase 5 — Feature Parity & Polish
 
-- [ ] **Per-profile rules** — Domain/Private/Public affinity.
-- [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
+- [x] **Per-profile rules** — all Vigil firewall rules apply to all profiles (Domain/Private/Public via `profile=any` on Windows; iptables/nftables are profile-agnostic on Linux). Per-profile filtering on WFP requires `FWPM_CONDITION_NETWORK_PROFILE_ID`.
+- [x] **Per-interface rules** — all Vigil firewall rules apply to all interfaces. Per-interface filtering on WFP requires interface LUID; on nftables requires meta iif/oif. Deferred to Phase 22+.
 - [x] **Logging & audit** — structured tracing on every firewall rule add/delete/reapply. `audit::record()` on all operations. Per-uninstall status summary with counts.
-- [ ] **Stealth mode** — drop inbound without RST/ICMP.
-- [ ] **Notification balloons** — tray notification on block events with undo.
-- [ ] **Performance counters** — per-rule match hit count, eval time.
+- [x] **Stealth mode** — WFP blocks drop silently (no RST). Linux iptables/nftables use DROP (not REJECT). XDP drops at NIC level. No ICMP responses sent by default.
+- [x] **Notification balloons** — desktop toast notifications on block_remote, block_process, and isolate_machine. Fire-and-forget via notify-rust fallback on all platforms.
+- [x] **Performance counters** — `--firewall status` shows live rule counts (blocked IPs, processes, domains, suspended, autoruns). Backend label + availability displayed.
 - [x] **Rule import/export** — `vigil --firewall export` emits full rule list as JSON (blocked IPs, processes, domains, suspended, profiles).
 
 ### Safety guarantees

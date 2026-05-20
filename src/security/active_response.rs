@@ -1045,6 +1045,7 @@ pub fn block_remote(target: &str, preset: DurationPreset) -> Result<String, Stri
         DurationPreset::OneDay => format!("Blocked {target} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {target} until removed."),
     };
+    crate::notifier::send_firewall_event("Rule Added", &message);
     audit::record(
         "block_remote",
         "success",
@@ -1121,6 +1122,7 @@ pub fn block_process(pid: u32, path: &str, preset: DurationPreset) -> Result<Str
         DurationPreset::OneDay => format!("Blocked {path} for 24 hours."),
         DurationPreset::Permanent => format!("Blocked {path} until removed."),
     };
+    crate::notifier::send_firewall_event("Process Blocked", &message);
     audit::record(
         "block_process",
         "success",
@@ -1245,6 +1247,10 @@ pub fn isolate_machine() -> Result<String, String> {
         Err(err) => warnings.push(format!("watchdog configuration load failed: {err}")),
     }
 
+    crate::notifier::send_firewall_event(
+        "Network Isolated",
+        "Machine network access has been restricted by Vigil.",
+    );
     audit::record(
         "isolate_machine",
         if warnings.is_empty() {
@@ -1882,11 +1888,75 @@ fn save_state(state: &State) -> Result<(), String> {
     match crate::security::policy::save_json_with_integrity(&path, &data) {
         Ok(()) => {
             update_query_state_cache(&path, state);
+            sync_firewall_rules_to_db(state);
             Ok(())
         }
         Err(err) => {
             clear_query_state_cache();
             Err(err)
+        }
+    }
+}
+
+fn sync_firewall_rules_to_db(state: &State) {
+    let rows: Vec<crate::storage::db::FirewallRuleRow> = state
+        .blocked
+        .iter()
+        .map(|b| crate::storage::db::FirewallRuleRow {
+            rule_name: b.rule_name.clone(),
+            rule_type: "ip".into(),
+            target: b.target.clone(),
+            direction: "out".into(),
+            pid: 0,
+            path: String::new(),
+            created_unix: 0,
+            expires_unix: b.expires_at_unix,
+        })
+        .chain(state.blocked_processes.iter().flat_map(|b| {
+            let out = crate::storage::db::FirewallRuleRow {
+                rule_name: b.outbound_rule_name.clone(),
+                rule_type: "process".into(),
+                target: String::new(),
+                direction: "out".into(),
+                pid: b.pid,
+                path: b.path.clone(),
+                created_unix: 0,
+                expires_unix: b.expires_at_unix,
+            };
+            let in_rule = crate::storage::db::FirewallRuleRow {
+                rule_name: b.inbound_rule_name.clone(),
+                rule_type: "process".into(),
+                target: String::new(),
+                direction: "in".into(),
+                pid: b.pid,
+                path: b.path.clone(),
+                created_unix: 0,
+                expires_unix: b.expires_at_unix,
+            };
+            [out, in_rule]
+        }))
+        .chain(
+            state
+                .blocked_domains
+                .iter()
+                .map(|d| crate::storage::db::FirewallRuleRow {
+                    rule_name: format!("domain-{}", d.domain),
+                    rule_type: "domain".into(),
+                    target: d.domain.clone(),
+                    direction: "out".into(),
+                    pid: 0,
+                    path: String::new(),
+                    created_unix: 0,
+                    expires_unix: None,
+                }),
+        )
+        .collect();
+    if let Ok(db) = crate::storage::db::StorageDb::global() {
+        if let Err(e) = db.save_firewall_rules(&rows) {
+            tracing::warn!("sync firewall rules to db: {e}");
+        }
+        if let Err(e) = db.checkpoint() {
+            tracing::warn!("checkpoint after firewall sync: {e}");
         }
     }
 }

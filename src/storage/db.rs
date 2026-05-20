@@ -40,6 +40,18 @@ pub struct StorageDb {
     manifest_path: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+pub struct FirewallRuleRow {
+    pub rule_name: String,
+    pub rule_type: String,
+    pub target: String,
+    pub direction: String,
+    pub pid: u32,
+    pub path: String,
+    pub created_unix: u64,
+    pub expires_unix: Option<u64>,
+}
+
 #[allow(dead_code)]
 impl StorageDb {
     /// Returns a reference to the global singleton database instance
@@ -156,6 +168,21 @@ impl StorageDb {
 
             CREATE INDEX IF NOT EXISTS idx_inventory_path
                 ON software_inventory(executable_path);
+
+            CREATE TABLE IF NOT EXISTS firewall_rule (
+                rule_name       TEXT PRIMARY KEY NOT NULL,
+                rule_type       TEXT NOT NULL DEFAULT 'ip',
+                target          TEXT NOT NULL DEFAULT '',
+                direction       TEXT NOT NULL DEFAULT 'out',
+                pid             INTEGER NOT NULL DEFAULT 0,
+                path            TEXT NOT NULL DEFAULT '',
+                created_unix    INTEGER NOT NULL DEFAULT 0,
+                expires_unix    INTEGER,
+                removed         INTEGER NOT NULL DEFAULT 0
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_firewall_rule_type
+                ON firewall_rule(rule_type, removed);
             ",
         )
         .map_err(|e| format!("bootstrap schema: {e}"))?;
@@ -543,6 +570,82 @@ impl StorageDb {
         let mut result = Vec::new();
         for row in rows {
             result.push(row.map_err(|e| format!("read count row: {e}"))?);
+        }
+        Ok(result)
+    }
+
+    // ── Firewall rule helpers ─────────────────────────────────────────
+
+    pub fn save_firewall_rules(&self, rules: &[FirewallRuleRow]) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("begin firewall_rule transaction: {e}"))?;
+        let result = (|| -> Result<(), String> {
+            conn.execute("DELETE FROM firewall_rule WHERE removed = 0", [])
+                .map_err(|e| format!("clear active firewall rules: {e}"))?;
+            let mut stmt = conn
+                .prepare(
+                    "INSERT OR REPLACE INTO firewall_rule
+                     (rule_name, rule_type, target, direction, pid, path,
+                      created_unix, expires_unix, removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(|e| format!("prepare firewall_rule insert: {e}"))?;
+            for rule in rules {
+                stmt.execute(rusqlite::params![
+                    rule.rule_name,
+                    rule.rule_type,
+                    rule.target,
+                    rule.direction,
+                    rule.pid,
+                    rule.path,
+                    rule.created_unix,
+                    rule.expires_unix,
+                    0i32,
+                ])
+                .map_err(|e| format!("insert firewall rule {}: {e}", rule.rule_name))?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT;")
+                    .map_err(|e| format!("commit firewall_rule: {e}"))?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
+        }
+    }
+
+    pub fn load_firewall_rules(&self) -> Result<Vec<FirewallRuleRow>, String> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT rule_name, rule_type, target, direction, pid, path,
+                        created_unix, expires_unix
+                 FROM firewall_rule WHERE removed = 0 ORDER BY rule_name",
+            )
+            .map_err(|e| format!("prepare firewall_rule select: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(FirewallRuleRow {
+                    rule_name: row.get(0)?,
+                    rule_type: row.get(1)?,
+                    target: row.get(2)?,
+                    direction: row.get(3)?,
+                    pid: row.get(4)?,
+                    path: row.get(5)?,
+                    created_unix: row.get(6)?,
+                    expires_unix: row.get(7)?,
+                })
+            })
+            .map_err(|e| format!("query firewall rules: {e}"))?;
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row.map_err(|e| format!("read firewall rule: {e}"))?);
         }
         Ok(result)
     }
