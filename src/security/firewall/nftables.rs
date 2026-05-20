@@ -44,6 +44,10 @@ impl FirewallBackend for NftablesBackend {
             || crate::platform::command_paths::resolve("iptables").is_ok()
     }
 
+    fn outbound_block_supported(&self) -> Option<bool> {
+        Some(true)
+    }
+
     fn snapshot_profiles(&self) -> Result<FirewallSnapshot, String> {
         let runner = self.runner();
         let backend = select_firewall_backend(&runner);
