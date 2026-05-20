@@ -769,14 +769,14 @@ fn reconcile_firewall_rules() {
         };
         let mut reapplied = false;
 
-        // Add-only strategy: never delete first. If the rule already
-        // exists, the add will create a harmless duplicate iptables
-        // entry (Linux) or fail harmlessly (Windows netsh rejects
-        // duplicate names). This avoids a window where a delete
-        // succeeds but the re-add fails, leaving the rule permanently
-        // absent.
+        // Check-Then-Add: skip rules that already exist in the kernel.
+        // For a plain process restart (no reboot), iptables rules survive
+        // and re-adding would create duplicates that can't be cleaned up.
 
         for rule in &state.blocked {
+            if platform::rule_present(&rule.rule_name).unwrap_or(false) {
+                continue;
+            }
             if platform::add_block_rule(&rule.rule_name, &rule.target).is_ok() {
                 reapplied = true;
             }
@@ -785,6 +785,8 @@ fn reconcile_firewall_rules() {
         // Re-apply process blocks by looking up the current PID from
         // the saved executable path. After reboot the old PID is stale,
         // but the process is likely still running with the same path.
+        // Note: if multiple users run the same binary, the first match
+        // may resolve to a different UID than the original block.
         if state.blocked_processes.iter().any(|b| !b.path.is_empty()) {
             use sysinfo::{Pid, ProcessesToUpdate, System};
             let mut sys = System::new();
@@ -793,7 +795,11 @@ fn reconcile_firewall_rules() {
                 if rule.path.is_empty() {
                     continue;
                 }
-                // Find the live PID for this executable path.
+                if platform::rule_present(&rule.outbound_rule_name).unwrap_or(false)
+                    && platform::rule_present(&rule.inbound_rule_name).unwrap_or(false)
+                {
+                    continue;
+                }
                 let live_pid = sys.processes().iter().find_map(|(pid, proc)| {
                     let exe = proc.exe()?;
                     if exe.to_string_lossy().as_ref() == rule.path.as_str() {
@@ -803,35 +809,46 @@ fn reconcile_firewall_rules() {
                     }
                 });
                 let Some(pid) = live_pid else {
-                    // Process isn't running — nothing to block.
                     continue;
                 };
-                if platform::add_block_program_rule(
-                    &rule.outbound_rule_name,
-                    pid,
-                    &rule.path,
-                    "out",
-                )
-                .is_ok()
-                {
-                    reapplied = true;
-                }
-                if platform::add_block_program_rule(&rule.inbound_rule_name, pid, &rule.path, "in")
+                if !platform::rule_present(&rule.outbound_rule_name).unwrap_or(false) {
+                    if platform::add_block_program_rule(
+                        &rule.outbound_rule_name,
+                        pid,
+                        &rule.path,
+                        "out",
+                    )
                     .is_ok()
-                {
-                    reapplied = true;
+                    {
+                        reapplied = true;
+                    }
+                }
+                if !platform::rule_present(&rule.inbound_rule_name).unwrap_or(false) {
+                    if platform::add_block_program_rule(
+                        &rule.inbound_rule_name,
+                        pid,
+                        &rule.path,
+                        "in",
+                    )
+                    .is_ok()
+                    {
+                        reapplied = true;
+                    }
                 }
             }
         }
 
         if state.isolated {
-            if platform::apply_firewall_isolation().is_ok() {
+            if !platform::rule_present(crate::security::active_response::ISOLATE_RULE_IN)
+                .unwrap_or(false)
+                && platform::apply_firewall_isolation().is_ok()
+            {
                 reapplied = true;
             }
         }
 
         if reapplied {
-            tracing::info!("reconcile_firewall_rules: reapplied firewall rules on startup");
+            tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
         }
     }
     #[cfg(windows)]
