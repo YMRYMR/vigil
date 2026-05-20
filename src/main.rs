@@ -175,6 +175,10 @@ fn spawn_bootstrap(
             }
 
             active_response::reconcile_firewall_rules_once();
+            {
+                let b = security::firewall::get_backend();
+                let _ = b.load_boot_config();
+            }
             active_response::reconcile();
             break_glass::start_heartbeat_loop(cfg_bootstrap.clone());
             if !pre_login_service_mode {
@@ -501,6 +505,11 @@ fn main() {
         match a.as_str() {
             "--install-service" => std::process::exit(service::run_cmd("install")),
             "--uninstall-service" => std::process::exit(service::run_cmd("uninstall")),
+            "--uninstall-firewall" => {
+                security::firewall::cleanup_on_uninstall();
+                println!("Firewall rules cleaned up.");
+                std::process::exit(0);
+            }
             "--break-glass-recover" => std::process::exit(break_glass::recover_if_stale()),
             service::SERVICE_MODE_FLAG => {
                 service_mode = true;

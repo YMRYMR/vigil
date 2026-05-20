@@ -84,86 +84,60 @@ Windows and Linux are the active support targets. This phase is about making tho
 
 ## Phase 19 — Native OS Firewall Engine 🚧 IN PROGRESS
 
-Replace the OS firewall with Vigil's own WFP (Windows) / nftables (Linux) engine. All existing Vigil core features (monitoring, scoring, active response, YARA, advisory) are preserved and enhanced by having direct kernel-level firewall control, sub-millisecond rule adds, persistent rule sets, and per-profile/interface filtering. The OS firewall APIs remain available as a safety net until Vigil's engine reaches parity.
+Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) engine. All existing Vigil core features are preserved and enhanced by having direct kernel-level firewall control. The OS firewall APIs remain available as a safety net until Vigil's engine reaches parity.
 
-### Phase 0 — Foundation (2–3 weeks)
+### Phase 0 — Foundation
 
-- [ ] **Windows WFP user-mode API wrapper** — dynamic `Fwpuclnt.dll` loading via `LoadLibrary`/`GetProcAddress`. Engine session open, provider/sublayer registration complete. Still needs `FwpmFilterAdd` wired for rule management (currently uses netsh fallback).
-- [x] **Linux nftables backend activation** — `nft` added to `command_paths.rs`; full nftables-preferred / iptables-fallback executor bridge wired through `NftablesBackend`.
-- [ ] **Persistent rule store** — structured rule database (integrity-protected JSON or SQLite) with globally unique IDs, creation time, TTL, direction, action, layer, profile affinity. Migrate current ad-hoc state tracking into this store.
-- [x] **Cross-platform `FirewallBackend` trait** — unified trait with 15 methods, implemented for both WFP and nftables.
+- [x] **Windows WFP user-mode API wrapper** — `Fwpuclnt.dll` via `LoadLibrary`/`GetProcAddress`. `FwpmEngineOpen0`, `FwpmFilterAdd0`, `FwpmFilterDeleteByKey0` loaded dynamically. Provider/sublayer registration. Correct struct layouts matching Windows SDK.
+- [x] **Linux nftables backend activation** — `nft` added to `command_paths.rs`; nftables-preferred / iptables-fallback executor bridge wired through `NftablesBackend`.
+- [ ] **Persistent rule store** — structured rule database with globally unique IDs, creation time, TTL, direction, action, layer, profile affinity.
+- [x] **Cross-platform `FirewallBackend` trait** — unified trait with 16 methods implemented for WFP, nftables, and XDP.
 
-### Phase 1 — Core Firewall Engine (4–6 weeks)
+### Phase 1 — Core Firewall Engine
 
-- [ ] **Windows WFP rule manager** — `FwpmFilterAdd`/`FwpmFilterDeleteById` wired via `WfpBackend`. `FWPM_LAYER_ALE_AUTH_CONNECT_V4/V6` and `FWPM_LAYER_ALE_AUTH_RECV_ACCEPT_V4/V6` filtering. Filter conditions for remote IP, port, protocol, user SID. AE for PID-based filtering.
-- [x] **Linux nftables rule manager** — `vigil` nftables table with jump chains. Remote IP blocks via `nft_insert_block_remote`, UID blocks via `nft_insert_block_uid`. Rule lookup by handle via `nft_parse_handle_by_comment`. Setup idempotent.
-- [ ] **Dynamic vs. static rule separation** — transient response rules (TTL-based) vs. operator-defined permanent allow/block rules.
-- [ ] **Rule ordering and priority** — filter weight / chain priority ensuring Vigil dynamic blocks override OS defaults.
+- [x] **Windows WFP rule manager** — `FwpmFilterAdd0`/`FwpmFilterDeleteByKey0`. `FWPM_LAYER_ALE_AUTH_CONNECT_V4` for outbound filtering, `FWPM_CONDITION_IP_REMOTE_ADDRESS` with `FWP_V4_ADDR_AND_MASK`. Program rules use netsh fallback (WFP ALE app-container filtering requires SID setup).
+- [x] **Linux nftables rule manager** — `vigil` nftables table with jump chains. Remote IP + UID block rules. Rule lookup by handle via `nft_parse_handle_by_comment`. Idempotent setup.
+- [x] **Linux XDP/eBPF kernel firewall** — `xdp_firewall.bpf.c` attached at NIC driver level before iptables. Auto-disable heartbeat (30s timeout) prevents bricking. IPv4-only for now; IPv6 + TC/UDP pass through.
+- [ ] **Dynamic vs. static rule separation** — transient response rules (TTL-based) vs. operator-defined permanent rules.
 
-### Phase 2 — Boot-Time Enforcement (2–3 weeks)
+### Phase 2 — Boot-Time Enforcement
 
-- [x] **Startup rule reconciliation** — `reconcile_firewall_rules()` re-applies blocked IP/process/domain rules to the live backend on every startup, ensuring rules survive reboot on Linux. WFP natively persists across reboots.
+- [x] **Startup rule reconciliation** — `reconcile_firewall_rules_once()` called at boot before `reconcile()`. Re-applies IP, process (sysinfo PID lookup), domain, and isolation rules. Expired entries deleted only when kernel rule removal succeeds.
 - [ ] **Linux boot persistence** — nftables config fragment written on shutdown, restored on startup via systemd `nftables.service`.
-- [ ] **Boot-time circuit breaker** — extend pre-login guard and break-glass recovery to cover firewall rules; stale Vigil filters cleared on heartbeat expiry.
+- [ ] **Boot-time circuit breaker** — extend break-glass recovery to cover firewall rules; stale filters cleared on heartbeat expiry.
 
-### Phase 3 — Firewall Management UI (3–4 weeks)
+### Phase 3 — Firewall Management UI
 
-- [x] **Firewall tab in inspector** — shows active rules, isolation state, blocked IPs/processes/domains, suspended processes.
+- [x] **Firewall tab in inspector** — active rules, isolation state, blocked IPs/processes/domains, suspended processes, per-profile status.
+- [x] **CLI firewall commands** — `vigil --firewall status|list|panic` with exit codes.
 - [ ] **Rule template system** — predefined canned rules for common scenarios.
-- [x] **OS firewall profile visibility** — per-profile enabled/disabled, inbound/outbound actions shown in firewall tab.
 - [ ] **Permanent allow/block rules** — operator-defined rules that survive restart.
-- [x] **CLI firewall commands** — `vigil --firewall status`, `--firewall list`, `--firewall panic` with exit codes.
 
-### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
+### Phase 4 — Circuit Breakers, Recovery & Safety
 
-- [ ] **Crash-safe filter lifecycle** — WFP filters persist across process restarts; stale filter cleanup on startup. nftables rules survive process crash; reconcile detects zombie rules.
+- [x] **Panic button** — `vigil --firewall panic` calls `restore_machine()` with brute-force fallback (delete all Vigil rules, set profiles to allow).
 - [ ] **Graceful uninstall** — `vigil --uninstall` removes all Vigil-owned WFP filters / nftables chains, restores OS firewall defaults.
-- [ ] **Panic button hardening** — `vigil --firewall panic` calls `restore_machine()` with brute-force fallback.
-- [ ] **Safe-mode watchdog** — break-glass heartbeat mechanism auto-clears Vigil's filters on repeated engine crashes.
+- [ ] **Crash-safe filter lifecycle** — WFP filters persist across process restarts; startup reconciles detects zombies. XDP auto-disables on heartbeat expiry.
+- [ ] **Safe-mode watchdog** — break-glass heartbeat auto-clears Vigil's filters on repeated engine crashes.
 
-### Phase 5 — Feature Parity & Polish (4–6 weeks)
+### Phase 5 — Feature Parity & Polish
 
-- [ ] **Per-profile rules** — WFP `FWPM_CONDITION_NETWORK_PROFILE_ID` for Domain/Private/Public affinity.
-- [ ] **Per-interface rules** — filter by interface index/LUID (WFP) or interface name (nftables).
-- [ ] **Logging & audit** — WFP built-in logging per-filter. nftables counter rules with log prefix.
+- [ ] **Per-profile rules** — Domain/Private/Public affinity.
+- [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
+- [ ] **Logging & audit** — per-filter logging, audit trail integration.
 - [ ] **Stealth mode** — drop inbound without RST/ICMP.
-- [ ] **Notification balloons** — Windows tray notification on block events, with undo action.
-- [ ] **Performance counters** — per-rule match hit count, average evaluation time, last match timestamp.
-- [ ] **Rule import/export** — JSON export of all Vigil firewall rules for backup or migration.
+- [ ] **Notification balloons** — tray notification on block events with undo.
+- [ ] **Performance counters** — per-rule match hit count, eval time.
+- [ ] **Rule import/export** — JSON export for backup/migration.
 
-### Safety guarantees throughout
+### Safety guarantees
 
-- A fresh Vigil install with no rules configured does **nothing** — the OS firewall continues handling traffic.
-- An upgrade preserves all active filters across process restarts (WFP kernel persistence) or reapplies them on startup (nftables).
-- An uninstall or crash restores the OS firewall to its pre-Vigil state.
-- Every rule has an operator-visible owner, creation time, and TTL. No hidden or orphaned state.
-- The current break-glass + reconcile + pre-login guard system covers the firewall rule lifecycle.
-
-### Phase 4 — Circuit Breakers, Recovery & Safety (1–2 weeks)
-
-- [ ] **Crash-safe filter lifecycle** — on Vigil startup, `FwpmEngineOpen` binds to a new session. Filters with provider GUID persist; stale filters from old sessions are cleaned up. Linux: nftables rules survive process crash (they're kernel-level); reconcile detects zombie rules.
-- [ ] **Graceful uninstall** — `vigil --uninstall` removes all Vigil-owned WFP filters / nftables chains and restores OS firewall to its pre-Vigil state. Preserves operator-defined permanent rules for reinstall.
-- [ ] **Panic button** — `Ctrl+Alt+V` or `vigil firewall panic` drops all Vigil firewall rules immediately, restores OS default profiles.
-- [ ] **Safe-mode watchdog** — if Vigil's rule engine crashes repeatedly, the existing break-glass heartbeat mechanism auto-clears Vigil's filters and disables boot start.
-
-### Phase 5 — Feature Parity & Polish (4–6 weeks)
-
-- [ ] **Per-profile rules** — WFP `FWPM_CONDITION_NETWORK_PROFILE_ID` for Domain/Private/Public affinity. nftables sets match.
-- [ ] **Per-interface rules** — filter by interface index/LUID (WFP) or interface name (nftables).
-- [ ] **Logging & audit** — WFP built-in logging per-filter (`FWPM_FILTER_FLAG_CLEAR_ACTION_RIGHT`). nftables counter rules with log prefix. Audit trail integration.
-- [ ] **Stealth mode** — WFP built-in; nftables drop inbound without RST/ICMP.
-- [ ] **Notification balloons** — Windows tray notification on block events, with undo action.
-- [ ] **Performance counters** — per-rule match hit count, average evaluation time, last match timestamp.
-- [ ] **Rule import/export** — JSON export of all Vigil firewall rules for backup or migration.
-- [ ] **Connection security / IPsec foundations** — WFP callout driver scaffolding for future IPsec policy management. Not yet feature-complete.
-
-### Safety guarantees throughout
-
-- A fresh Vigil install with no rules configured does **nothing** — the OS firewall continues handling traffic.
-- An upgrade preserves all active filters across process restarts (WFP kernel persistence) or reapplies them on startup (nftables).
-- An uninstall or crash restores the OS firewall to its pre-Vigil state.
-- Every rule has an operator-visible owner, creation time, and TTL. No hidden or orphaned state.
-- The current break-glass + reconcile + pre-login guard system covers the firewall rule lifecycle.
+- Fresh install does nothing — OS firewall continues handling traffic.
+- Upgrade preserves active filters across process restarts (WFP kernel persistence) or reapplies on startup.
+- Uninstall or crash restores OS firewall to pre-Vigil state.
+- Every rule has an operator-visible owner, creation time, and TTL.
+- Break-glass + reconcile + pre-login guard covers firewall rule lifecycle.
+- XDP auto-disables after 30s without heartbeat — cannot brick the machine.
 
 ---
 

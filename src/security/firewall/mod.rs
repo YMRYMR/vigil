@@ -129,6 +129,16 @@ pub trait FirewallBackend: Send + Sync {
 
     /// Flush DNS cache.
     fn flush_dns(&self) -> Result<(), String>;
+
+    /// Save current firewall rules to a boot-persistent config.
+    /// Default: no-op. Implemented by nftables backend.
+    fn save_boot_config(&self) {}
+
+    /// Load persisted firewall rules from boot config.
+    /// Default: no-op. Implemented by nftables backend.
+    fn load_boot_config(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[cfg(windows)]
@@ -169,6 +179,48 @@ pub fn get_backend() -> &'static dyn FirewallBackend {
             }
         })
         .as_ref()
+}
+
+/// Remove all Vigil-owned firewall rules during uninstall.
+/// Called from --uninstall-service and the GUI uninstall flow.
+/// Best-effort: logs failures but does not block the uninstall.
+pub fn cleanup_on_uninstall() {
+    let b = get_backend();
+    if !b.is_available() {
+        return;
+    }
+    tracing::info!("cleaning up firewall rules on uninstall");
+
+    // Delete known isolation rules
+    let _ = b.delete_rule("Vigil Isolate In");
+    let _ = b.delete_rule("Vigil Isolate Out");
+
+    // Restore OS firewall profiles to defaults
+    match b.snapshot_profiles() {
+        Ok(snapshot) => {
+            let defaults: Vec<_> = snapshot
+                .profiles
+                .iter()
+                .map(|p| FirewallProfileState {
+                    name: p.name.clone(),
+                    enabled: p.enabled,
+                    inbound_action: "Allow".into(),
+                    outbound_action: "Allow".into(),
+                })
+                .collect();
+            if let Err(e) = b.restore_profiles(&FirewallSnapshot { profiles: defaults }) {
+                tracing::warn!("uninstall profile restore: {e}");
+            }
+        }
+        Err(e) => tracing::warn!("uninstall profile snapshot: {e}"),
+    }
+
+    // Clean up any remaining state from active_response
+    let status = crate::security::active_response::status();
+    tracing::info!(
+        "uninstall: {} blocked IPs, {} blocked processes, {} blocked domains remaining after rule cleanup",
+        status.blocked_rules, status.blocked_processes, status.blocked_domains
+    );
 }
 
 /// CLI firewall subcommand dispatcher. Returns an exit code (0 = success).
