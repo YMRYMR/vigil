@@ -787,19 +787,29 @@ fn reconcile_firewall_rules() {
             }
         }
 
-        // Re-apply any missing process block rules.
+        // Re-apply any missing process block rules (both directions).
         for rule in &state.blocked_processes {
-            if backend
+            if !backend
                 .rule_present(&rule.outbound_rule_name)
                 .unwrap_or(false)
             {
-                continue;
+                if backend
+                    .add_block_program_rule(&rule.outbound_rule_name, rule.pid, &rule.path, "out")
+                    .is_ok()
+                {
+                    reapplied = true;
+                }
             }
-            if backend
-                .add_block_program_rule(&rule.outbound_rule_name, rule.pid, &rule.path, "out")
-                .is_ok()
+            if !backend
+                .rule_present(&rule.inbound_rule_name)
+                .unwrap_or(false)
             {
-                reapplied = true;
+                if backend
+                    .add_block_program_rule(&rule.inbound_rule_name, rule.pid, &rule.path, "in")
+                    .is_ok()
+                {
+                    reapplied = true;
+                }
             }
         }
 
