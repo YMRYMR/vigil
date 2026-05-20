@@ -7,6 +7,10 @@ function Step($m){Write-Host "-- $m --" -ForegroundColor Yellow}
 function Ssh($c){& plink -P $VM_PORT -pw $VM_PASSWORD -batch $VM_USER@$VM_HOST $c 2>&1}
 function Upload($l,$r){& pscp -P $VM_PORT -pw $VM_PASSWORD $l "$VM_USER@$VM_HOST`:${r}" 2>&1}
 
+function Step($m){Write-Host "-- $m --" -ForegroundColor Yellow}
+function Ssh($c){& plink -P $VM_PORT -pw $VM_PASSWORD -batch $VM_USER@$VM_HOST $c 2>&1}
+function Upload($l,$r){& pscp -P $VM_PORT -pw $VM_PASSWORD $l "$VM_USER@$VM_HOST`:${r}" 2>&1}
+
 Step "Dependencies"
 if(-not(Test-Path "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe")){throw "VirtualBox missing"}
 if(-not(Get-Command plink -ErrorAction SilentlyContinue)){
@@ -22,22 +26,23 @@ if(-not $SkipBuild){
     Step "Build"
     $out=cargo build --release --bin vigil 2>&1
     if($LASTEXITCODE -ne 0){
-        Write-Host "  Build FAILED. Trying debug build..." -ForegroundColor Yellow
+        Write-Host "  Release build failed, trying debug..." -ForegroundColor Yellow
         $out = cargo build --bin vigil 2>&1
         if($LASTEXITCODE -ne 0){$out|Select -Last 10|%{Write-Host $_};throw "Build failed"}
         $BIN="target/debug/vigil"
     }
     Write-Host "  built $BIN" -ForegroundColor Green
 }
-if(-not(Test-Path $BIN)){
-    # Try debug build as fallback
-    $BIN="target/debug/vigil"
-    if(-not(Test-Path $BIN)){
-        Write-Host "  No binary found. Trying: cargo build" -ForegroundColor Yellow
-        $out = cargo build --bin vigil 2>&1
-        if($LASTEXITCODE -ne 0){$out|Select -Last 10|%{Write-Host $_};throw "Build failed"}
-        Write-Host "  built debug" -ForegroundColor Green
-    }
+# Windows .exe fix
+if(Test-Path "target/release/vigil.exe"){$BIN="target/release/vigil.exe"}
+elseif(Test-Path "target/debug/vigil.exe"){$BIN="target/debug/vigil.exe"}
+elseif(Test-Path "target/release/vigil"){}
+elseif(Test-Path "target/debug/vigil"){$BIN="target/debug/vigil"}
+else{
+    Write-Host "  No binary found. Trying: cargo build --bin vigil" -ForegroundColor Yellow
+    $out = cargo build --bin vigil 2>&1
+    if($LASTEXITCODE -ne 0){$out|Select -Last 10|%{Write-Host $_};throw "Build failed"}
+    $BIN="target/debug/vigil.exe"
 }
 Write-Host "  binary: $BIN" -ForegroundColor Green
 
@@ -61,8 +66,11 @@ for($i=0;$i -lt 180;$i+=5){
 if($r -ne "ok"){throw "SSH timeout"}
 
 Step "Setup VM"
+Write-Host "  Installing packages (this downloads ~50MB)..." -ForegroundColor Cyan
 Ssh "echo $VM_PASSWORD | sudo -S apt update -qq"|Out-Null
 Ssh "echo $VM_PASSWORD | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3"|Out-Null
+Write-Host "  Packages installed" -ForegroundColor Green
+Write-Host "  Configuring passwordless sudo..." -ForegroundColor Cyan
 Ssh "echo $VM_PASSWORD | sudo -S sh -c 'echo $VM_USER ALL=(ALL) NOPASSWD:ALL > /etc/sudoers.d/vigil'"|Out-Null
 Ssh "echo $VM_PASSWORD | sudo -S chmod 440 /etc/sudoers.d/vigil"|Out-Null
 $sc=Ssh "sudo -n whoami"
