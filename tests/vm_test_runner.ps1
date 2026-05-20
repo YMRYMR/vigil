@@ -205,25 +205,15 @@ if ($sudoCheck -match "root") {
     Write-Host "  Integration tests that need root will be skipped." -ForegroundColor Yellow
 }
 
-# Copy SSH public key to VM for passwordless access (if not already set up)
-$sshKeyPub = "$env:USERPROFILE\.ssh\id_ed25519.pub"
-if (Test-Path $sshKeyPub) {
-    $keyContent = Get-Content $sshKeyPub -Raw
-    $keyContent = $keyContent.Trim()
-    # Use ssh-copy-id to install the key (if available) or do it manually
+# SSH key setup: only needed for ssh-copy-id; plink uses password directly
+if ($SSH_TYPE -ne "plink" -and $SSH_TYPE -ne "sshpass") {
+    $sshKeyPub = "$env:USERPROFILE\.ssh\id_ed25519.pub"
     $sshCopyId = Get-Command ssh-copy-id -ErrorAction SilentlyContinue
-    if ($sshCopyId) {
+    if ($sshCopyId -and (Test-Path $sshKeyPub)) {
         Write-Host "  Installing SSH key via ssh-copy-id..." -ForegroundColor Cyan
         & ssh-copy-id -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST 2>&1 | Out-Null
-    } else {
-        # Manual key install — write to ~/.ssh/authorized_keys
-        Write-Host "  Ensuring .ssh directory exists..." -ForegroundColor Cyan
-        $null = SshExec "mkdir -p ~/.ssh; chmod 700 ~/.ssh"
-        $escapedKey = $keyContent -replace "'", "'\''"
-        $cmd = "echo '$escapedKey' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys"
-        $null = SshExec $cmd
+        Write-Host "  SSH key installed" -ForegroundColor Green
     }
-    Write-Host "  SSH key setup complete" -ForegroundColor Green
 }
 
 # ── Upload binary ────────────────────────────────────────────────────
