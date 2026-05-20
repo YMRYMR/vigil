@@ -63,7 +63,7 @@ pub struct InspectorSnapshot {
     pub domain_modifiable: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FirewallRuleList {
     pub blocked_ips: Vec<BlockedIpEntry>,
     pub blocked_processes: Vec<BlockedProcessEntry>,
@@ -74,14 +74,14 @@ pub struct FirewallRuleList {
     pub isolation_remaining_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedIpEntry {
     pub target: String,
     pub rule_name: String,
     pub expires_at_unix: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedProcessEntry {
     pub pid: u32,
     pub path: String,
@@ -90,12 +90,12 @@ pub struct BlockedProcessEntry {
     pub expires_at_unix: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedDomainEntry {
     pub domain: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SuspendedProcessEntry {
     pub pid: u32,
     pub path: String,
@@ -103,7 +103,7 @@ pub struct SuspendedProcessEntry {
     pub suspended_at_unix: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FirewallProfileEntry {
     pub name: String,
     pub enabled: bool,
@@ -786,6 +786,8 @@ fn reconcile_firewall_rules() {
         let b = backend();
         let mut reapplied = false;
         let mut state_changed = false;
+        let mut deleted_count = 0usize;
+        let mut reapply_count = 0usize;
 
         let blocked_before = state.blocked.len();
         let proc_blocked_before = state.blocked_processes.len();
@@ -804,6 +806,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.delete_rule(&rule.rule_name).is_ok() {
+                deleted_count += 1;
                 deleted_blocked.insert(rule.target.clone());
             }
         }
@@ -814,6 +817,7 @@ fn reconcile_firewall_rules() {
             let out_ok = b.delete_rule(&rule.outbound_rule_name).is_ok();
             let in_ok = b.delete_rule(&rule.inbound_rule_name).is_ok();
             if out_ok && in_ok {
+                deleted_count += 2;
                 deleted_process_paths.insert(rule.path.clone());
             }
         }
@@ -838,6 +842,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.add_block_rule(&rule.rule_name, &rule.target).is_ok() {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
@@ -870,6 +875,7 @@ fn reconcile_firewall_rules() {
                     if b.add_block_program_rule(&rule.outbound_rule_name, pid, &rule.path, "out")
                         .is_ok()
                     {
+                        reapply_count += 1;
                         reapplied = true;
                     }
                 }
@@ -877,6 +883,7 @@ fn reconcile_firewall_rules() {
                     if b.add_block_program_rule(&rule.inbound_rule_name, pid, &rule.path, "in")
                         .is_ok()
                     {
+                        reapply_count += 1;
                         reapplied = true;
                     }
                 }
@@ -889,6 +896,7 @@ fn reconcile_firewall_rules() {
                 continue;
             }
             if b.add_domain_block(&domain.domain, &domain.marker).is_ok() {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
@@ -899,6 +907,7 @@ fn reconcile_firewall_rules() {
                 .unwrap_or(false)
                 && b.apply_isolation("Vigil Isolate").is_ok()
             {
+                reapply_count += 1;
                 reapplied = true;
             }
         }
@@ -912,7 +921,11 @@ fn reconcile_firewall_rules() {
             }
         }
         if reapplied {
-            tracing::info!("reconcile_firewall_rules: reapplied missing firewall rules on startup");
+            tracing::info!(
+                deleted = deleted_count,
+                reapplied = reapply_count,
+                "reconcile_firewall_rules: startup reconciliation complete"
+            );
         }
         backend().save_boot_config();
     }

@@ -189,7 +189,14 @@ pub fn cleanup_on_uninstall() {
     if !b.is_available() {
         return;
     }
-    tracing::info!("cleaning up firewall rules on uninstall");
+    let status = crate::security::active_response::status();
+    tracing::info!(
+        blocked_ips = status.blocked_rules,
+        blocked_processes = status.blocked_processes,
+        blocked_domains = status.blocked_domains,
+        isolated = status.isolated,
+        "cleanup_on_uninstall: starting firewall rule removal"
+    );
 
     // Delete known isolation rules
     let _ = b.delete_rule("Vigil Isolate In");
@@ -311,9 +318,22 @@ pub fn run_cli(args: &[String]) -> i32 {
             println!("  Isolated: {}", status.isolated);
             0
         }
+        Some("export") => {
+            let rules = crate::security::active_response::list_rules();
+            match serde_json::to_string_pretty(&rules) {
+                Ok(json) => {
+                    println!("{json}");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("Failed to serialize firewall rules: {e}");
+                    1
+                }
+            }
+        }
         Some(other) => {
             eprintln!("Unknown firewall subcommand: {other}");
-            eprintln!("Usage: vigil --firewall <status|list|panic>");
+            eprintln!("Usage: vigil --firewall <status|list|export|panic>");
             1
         }
     }
