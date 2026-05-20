@@ -63,8 +63,6 @@ pub enum Action {
     UnblockRemote,
     UnblockDomain,
     UnblockProcess,
-    IsolateMachine,
-    RestoreNetwork,
     KillConfirmed,
     KillCancelled,
 }

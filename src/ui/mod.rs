@@ -1083,12 +1083,6 @@ impl VigilApp {
                     });
                 }
             }
-            inspector::Action::IsolateMachine => {
-                self.response_confirm = Some(PendingResponse::IsolateMachine);
-            }
-            inspector::Action::RestoreNetwork => {
-                self.response_confirm = Some(PendingResponse::RestoreNetwork);
-            }
             inspector::Action::KillConfirmed => {
                 if let Some(info) = selected_info {
                     self.kill_selected_process(&info);
