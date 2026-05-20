@@ -57,8 +57,8 @@ struct WfpApi {
 
 impl WfpApi {
     unsafe fn load() -> Result<Self, String> {
-        let module = LoadLibraryW(w!("Fwpuclnt.dll"))
-            .map_err(|err| format!("load Fwpuclnt.dll: {err}"))?;
+        let module =
+            LoadLibraryW(w!("Fwpuclnt.dll")).map_err(|err| format!("load Fwpuclnt.dll: {err}"))?;
         Ok(Self {
             module,
             engine_open: load_symbol(module, b"FwpmEngineOpen0\0")?,
