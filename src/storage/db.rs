@@ -578,31 +578,46 @@ impl StorageDb {
 
     pub fn save_firewall_rules(&self, rules: &[FirewallRuleRow]) -> Result<(), String> {
         let conn = self.conn()?;
-        conn.execute("DELETE FROM firewall_rule WHERE removed = 0", [])
-            .map_err(|e| format!("clear active firewall rules: {e}"))?;
-        let mut stmt = conn
-            .prepare(
-                "INSERT OR REPLACE INTO firewall_rule
-                 (rule_name, rule_type, target, direction, pid, path,
-                  created_unix, expires_unix, removed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            )
-            .map_err(|e| format!("prepare firewall_rule insert: {e}"))?;
-        for rule in rules {
-            stmt.execute(rusqlite::params![
-                rule.rule_name,
-                rule.rule_type,
-                rule.target,
-                rule.direction,
-                rule.pid,
-                rule.path,
-                rule.created_unix,
-                rule.expires_unix,
-                0i32,
-            ])
-            .map_err(|e| format!("insert firewall rule {}: {e}", rule.rule_name))?;
+        conn.execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("begin firewall_rule transaction: {e}"))?;
+        let result = (|| -> Result<(), String> {
+            conn.execute("DELETE FROM firewall_rule WHERE removed = 0", [])
+                .map_err(|e| format!("clear active firewall rules: {e}"))?;
+            let mut stmt = conn
+                .prepare(
+                    "INSERT OR REPLACE INTO firewall_rule
+                     (rule_name, rule_type, target, direction, pid, path,
+                      created_unix, expires_unix, removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                )
+                .map_err(|e| format!("prepare firewall_rule insert: {e}"))?;
+            for rule in rules {
+                stmt.execute(rusqlite::params![
+                    rule.rule_name,
+                    rule.rule_type,
+                    rule.target,
+                    rule.direction,
+                    rule.pid,
+                    rule.path,
+                    rule.created_unix,
+                    rule.expires_unix,
+                    0i32,
+                ])
+                .map_err(|e| format!("insert firewall rule {}: {e}", rule.rule_name))?;
+            }
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT;")
+                    .map_err(|e| format!("commit firewall_rule: {e}"))?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-        Ok(())
     }
 
     pub fn load_firewall_rules(&self) -> Result<Vec<FirewallRuleRow>, String> {
