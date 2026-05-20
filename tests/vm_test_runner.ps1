@@ -16,13 +16,29 @@ param(
 $VM_USER = "vigil"
 $VM_HOST = "localhost"
 $VM_PORT = 2222
+$VM_PASSWORD = "vigil"
 
 $ErrorActionPreference = "Stop"
 $VBox = "C:\Program Files\Oracle\VirtualBox\VBoxManage.exe"
 $VM = "vigil-linux"
-$SSH = "ssh -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST"
-$SCP = "scp -P $VM_PORT -o StrictHostKeyChecking=no"
-$SUDO = "echo vigil | sudo -S"
+
+# Auto-detect best SSH client for password auth
+$SSH_TYPE = if (Get-Command plink -ErrorAction SilentlyContinue) { "plink" }
+            elseif (Get-Command sshpass -ErrorAction SilentlyContinue) { "sshpass" }
+            else { "ssh" }
+if ($SSH_TYPE -eq "plink") {
+    $SSH = "plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST"
+    $SCP = "pscp -P $VM_PORT -pw $VM_PASSWORD"
+} elseif ($SSH_TYPE -eq "sshpass") {
+    $SSH = "sshpass -p $VM_PASSWORD ssh -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST"
+    $SCP = "sshpass -p $VM_PASSWORD scp -P $VM_PORT -o StrictHostKeyChecking=no"
+} else {
+    Write-Host "  WARNING: No password-capable SSH client found." -ForegroundColor Yellow
+    Write-Host "  Install PuTTY (plink/pscp) or sshpass for automated password auth." -ForegroundColor Yellow
+    Write-Host "  Falling back to interactive SSH - you'll need to type the password." -ForegroundColor Yellow
+    $SSH = "ssh -p $VM_PORT -o StrictHostKeyChecking=no $VM_USER@$VM_HOST"
+    $SCP = "scp -P $VM_PORT -o StrictHostKeyChecking=no"
+}
 $BINARY = "target/release/vigil"
 $VM_BINARY = "/tmp/vigil"
 
@@ -81,7 +97,11 @@ Step "Waiting for SSH (port 2222 → guest:22)"
 $maxWait = 180
 $sshStarted = $false
 for ($i = 0; $i -lt $maxWait; $i += 5) {
-    $result = & ssh -p $VM_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=no $VM_USER@$VM_HOST "echo ok" 2>&1
+    if ($SSH_TYPE -eq "plink") {
+        $result = & plink -P $VM_PORT -pw $VM_PASSWORD -batch $VM_USER@$VM_HOST "echo ok" 2>&1
+    } else {
+        $result = & ssh -p $VM_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=no $VM_USER@$VM_HOST "echo ok" 2>&1
+    }
     if ($result -eq "ok") {
         Write-Host "  SSH ready after ${i}s" -ForegroundColor Green
         $sshStarted = $true
@@ -129,7 +149,11 @@ if (Test-Path $sshKeyPub) {
 # ── Upload binary ────────────────────────────────────────────────────
 
 Step "Uploading vigil binary to VM"
-& $SCP $BINARY "$VM_USER@${VM_HOST}:$VM_BINARY" 2>&1
+if ($SSH_TYPE -eq "plink") {
+    & pscp -P $VM_PORT -pw $VM_PASSWORD $BINARY "$VM_USER@${VM_HOST}:$VM_BINARY" 2>&1
+} else {
+    & $SCP $BINARY "$VM_USER@${VM_HOST}:$VM_BINARY" 2>&1
+}
 if ($LASTEXITCODE -ne 0) { throw "SCP upload failed" }
 Invoke-Expression "$SSH 'chmod +x $VM_BINARY'"
 Write-Host "  Binary uploaded to $VM_BINARY" -ForegroundColor Green
@@ -139,27 +163,31 @@ Write-Host "  Binary uploaded to $VM_BINARY" -ForegroundColor Green
 Step "Uploading test scripts"
 $testScript = "tests/firewall_integration_test.sh"
 $cliTestScript = "tests/firewall_cli_smoke_test.sh"
-& $SCP $testScript "$VM_USER@${VM_HOST}:/tmp/firewall_integration_test.sh" 2>&1
-& $SCP $cliTestScript "$VM_USER@${VM_HOST}:/tmp/firewall_cli_smoke_test.sh" 2>&1
+if ($SSH_TYPE -eq "plink") {
+    & pscp -P $VM_PORT -pw $VM_PASSWORD $testScript "$VM_USER@${VM_HOST}:/tmp/firewall_integration_test.sh" 2>&1
+    & pscp -P $VM_PORT -pw $VM_PASSWORD $cliTestScript "$VM_USER@${VM_HOST}:/tmp/firewall_cli_smoke_test.sh" 2>&1
+} else {
+    & $SCP $testScript "$VM_USER@${VM_HOST}:/tmp/firewall_integration_test.sh" 2>&1
+    & $SCP $cliTestScript "$VM_USER@${VM_HOST}:/tmp/firewall_cli_smoke_test.sh" 2>&1
+}
 
-# ── Run CLI smoke test ───────────────────────────────────────────────
+# ── Run tests ───────────────────────────────────────────────────────
 
 Step "Running CLI smoke test (no root)"
 $result = Invoke-Expression "$SSH 'VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_cli_smoke_test.sh'" 2>&1
 Write-Host $result
 if ($LASTEXITCODE -ne 0) { Write-Host "  CLI smoke test FAILED" -ForegroundColor Red }
 
-# ── Run integration test ─────────────────────────────────────────────
-
 Step "Running firewall integration test (needs sudo)"
-$result = Invoke-Expression "$SSH 'echo vigil | sudo -S VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh'" 2>&1
+$cmd = "echo $VM_PASSWORD | sudo -S VIGIL_BINARY=$VM_BINARY bash /tmp/firewall_integration_test.sh"
+$result = Invoke-Expression "$SSH '$cmd'" 2>&1
 Write-Host $result
 if ($LASTEXITCODE -ne 0) { Write-Host "  Integration test FAILED" -ForegroundColor Red }
 
 # ── Check DB ─────────────────────────────────────────────────────────
 
 Step "Checking SQLite state"
-Invoke-Expression "$SSH 'sqlite3 /root/.vigil-data/vigil-state.db \".tables\" 2>&1 || echo no-db'"
+Invoke-Expression "$SSH 'sqlite3 /home/$VM_USER/.vigil-data/vigil-state.db .tables 2>&1 || echo no-db'"
 
 # ── Cleanup ──────────────────────────────────────────────────────────
 
