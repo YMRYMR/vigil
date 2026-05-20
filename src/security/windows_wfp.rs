@@ -11,8 +11,7 @@ use windows::Win32::System::LibraryLoader::{FreeLibrary, GetProcAddress, LoadLib
 
 const FWP_E_ALREADY_EXISTS_STATUS: u32 = 0x8032_0009;
 const VIGIL_WFP_PROVIDER_KEY: GUID = GUID::from_u128(0x3b6f3d34_6150_4e3c_9169_7df0c5f1cb52);
-const VIGIL_WFP_SUBLAYER_KEY: GUID =
-    GUID::from_u128(0xe7fae0d0_3af1_4b9f_88ea_ee11e08c9c4a);
+const VIGIL_WFP_SUBLAYER_KEY: GUID = GUID::from_u128(0xe7fae0d0_3af1_4b9f_88ea_ee11e08c9c4a);
 const VIGIL_WFP_SUBLAYER_WEIGHT: u16 = 0x7000;
 
 type FwpmEngineOpen0Fn = unsafe extern "system" fn(
@@ -76,7 +75,9 @@ impl WfpApi {
             (self.engine_open)(PCWSTR::null(), 0, std::ptr::null(), &session, &mut handle)
         };
         if status != 0 {
-            return Err(format!("open WFP engine session failed with 0x{status:08x}"));
+            return Err(format!(
+                "open WFP engine session failed with 0x{status:08x}"
+            ));
         }
         Ok(WfpSession { api: self, handle })
     }
