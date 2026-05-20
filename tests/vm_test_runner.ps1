@@ -45,14 +45,15 @@ $state = & $VBox showvminfo $VM --machinereadable 2>&1 | Select-String "VMState=
 if ($state -match "running") {
     Write-Host "  VM already running" -ForegroundColor Green
 } else {
-    Write-Host "  Launching headless VM..." -ForegroundColor Cyan
-    $startOutput = & $VBox startvm $VM --type headless 2>&1
+    Write-Host "  Launching VM with GUI (so you can see it)..." -ForegroundColor Cyan
+    $startOutput = & $VBox startvm $VM 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  VBoxManage startvm failed: $startOutput" -ForegroundColor Red
         throw "VM start failed"
     }
-    Write-Host "  VM started. Waiting for guest OS to boot..." -ForegroundColor Cyan
-    Start-Sleep -Seconds 15
+    Write-Host "  VM started. Waiting for guest OS to boot (this can take 30-60s)..." -ForegroundColor Cyan
+    Write-Host "  If the VM login screen appears, log in as root to speed up boot." -ForegroundColor DarkYellow
+    Start-Sleep -Seconds 30
 }
 
 # Verify VM is actually running
@@ -72,29 +73,54 @@ Write-Host "  SSH key: $sshKey"
 
 # ── Wait for SSH ─────────────────────────────────────────────────────
 
-Step "Waiting for SSH (port 2222)"
-$maxWait = 120
-for ($i = 0; $i -lt $maxWait; $i += 2) {
-    $result = & ssh -p 2222 -o StrictHostKeyChecking=no -o ConnectTimeout=2 root@localhost "echo ok" 2>&1
+Step "Waiting for SSH (port 2222 → guest:22)"
+$maxWait = 180
+$sshStarted = $false
+for ($i = 0; $i -lt $maxWait; $i += 5) {
+    $result = & ssh -p 2222 -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o BatchMode=yes root@localhost "echo ok" 2>&1
     if ($result -eq "ok") {
         Write-Host "  SSH ready after ${i}s" -ForegroundColor Green
+        $sshStarted = $true
         break
     }
-    Start-Sleep -Seconds 2
+    # Show connection status every 15s
+    if ($i % 15 -eq 0) {
+        $status = if ($result -match "Connection refused") { "connection refused (SSH daemon not ready yet)" }
+                  elseif ($result -match "timed out") { "timeout (guest still booting)" }
+                  elseif ($result -match "Permission denied") { "permission denied (auth issue)" }
+                  else { "waiting..." }
+        Write-Host "  [${i}s] $status" -ForegroundColor DarkYellow
+    }
+    Start-Sleep -Seconds 5
 }
-if ($i -ge $maxWait) { throw "SSH not available after ${maxWait}s" }
+if (-not $sshStarted) {
+    Write-Host "  SSH not available after ${maxWait}s. Check:" -ForegroundColor Red
+    Write-Host "    1. Is the VM logged in as root?" -ForegroundColor Red
+    Write-Host "    2. Is sshd running? (systemctl status sshd)" -ForegroundColor Red
+    Write-Host "    3. Is port forwarding active? (VBoxManage showvminfo $VM | grep Forwarding)" -ForegroundColor Red
+    throw "SSH timeout"
+}
 
 # Copy SSH public key to VM for passwordless access (if not already set up)
 $sshKeyPub = "$env:USERPROFILE\.ssh\id_ed25519.pub"
 if (Test-Path $sshKeyPub) {
     $keyContent = Get-Content $sshKeyPub -Raw
-    $checkResult = Invoke-Expression "$SSH 'grep -F `"$keyContent`" /root/.ssh/authorized_keys 2>/dev/null'" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  Installing SSH public key in VM..." -ForegroundColor Cyan
-        Invoke-Expression "$SSH 'mkdir -p /root/.ssh'" 2>&1 | Out-Null
-        & $SCP $sshKeyPub "root@localhost:/root/.ssh/authorized_keys" 2>&1 | Out-Null
-        Write-Host "  SSH key installed" -ForegroundColor Green
+    $keyContent = $keyContent.Trim()
+    # Use ssh-copy-id to install the key (if available) or do it manually
+    $sshCopyId = Get-Command ssh-copy-id -ErrorAction SilentlyContinue
+    if ($sshCopyId) {
+        Write-Host "  Installing SSH key via ssh-copy-id..." -ForegroundColor Cyan
+        & ssh-copy-id -p 2222 -o StrictHostKeyChecking=no root@localhost 2>&1 | Out-Null
+    } else {
+        # Manual key install
+        Write-Host "  Ensuring root has .ssh directory..." -ForegroundColor Cyan
+        $null = Invoke-Expression "$SSH 'mkdir -p /root/.ssh && chmod 700 /root/.ssh'" 2>&1
+        # Write the key content to authorized_keys via SSH
+        $escapedKey = $keyContent -replace '"', '""'
+        $cmd = "echo '$escapedKey' >> /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys"
+        $null = Invoke-Expression "$SSH '$cmd'" 2>&1
     }
+    Write-Host "  SSH key setup complete" -ForegroundColor Green
 }
 
 # ── Upload binary ────────────────────────────────────────────────────
