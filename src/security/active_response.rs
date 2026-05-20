@@ -780,25 +780,11 @@ fn reconcile_firewall_rules() {
             }
         }
 
-        // Re-apply path-only process blocks (no PID — after reboot,
-        // the saved PID is stale and /proc/<pid> won't resolve).
-        for rule in &state.blocked_processes {
-            if rule.pid != 0 {
-                continue;
-            }
-            let _ = platform::delete_rule(&rule.outbound_rule_name);
-            if platform::add_block_program_rule(&rule.outbound_rule_name, 0, &rule.path, "out")
-                .is_ok()
-            {
-                reapplied = true;
-            }
-            let _ = platform::delete_rule(&rule.inbound_rule_name);
-            if platform::add_block_program_rule(&rule.inbound_rule_name, 0, &rule.path, "in")
-                .is_ok()
-            {
-                reapplied = true;
-            }
-        }
+        // Process blocks are intentionally NOT re-applied on Linux.
+        // The outbound direction requires a UID from /proc/<pid>/status,
+        // but after reboot the saved PID is stale and /proc/<pid> doesn't
+        // exist. There is no reliable way to derive the UID from a path
+        // alone. The operator must re-block the process after reboot.
 
         if state.isolated {
             let _ = platform::delete_rule(ISOLATE_RULE_IN);
