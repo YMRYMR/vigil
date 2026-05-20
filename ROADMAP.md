@@ -103,8 +103,8 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 ### Phase 2 — Boot-Time Enforcement
 
 - [x] **Startup rule reconciliation** — `reconcile_firewall_rules_once()` called at boot before `reconcile()`. Re-applies IP, process (sysinfo PID lookup), domain, and isolation rules. Expired entries deleted only when kernel rule removal succeeds.
-- [ ] **Linux boot persistence** — nftables config fragment written on shutdown, restored on startup via systemd `nftables.service`.
-- [ ] **Boot-time circuit breaker** — extend break-glass recovery to cover firewall rules; stale filters cleared on heartbeat expiry.
+- [x] **Linux boot persistence** — nftables config saved to `/etc/nftables/vigil.conf` on reconciliation/state change; restored via `nft -f` on startup before reconciliation.
+- [x] **Boot-time circuit breaker** — break-glass recovery already triggers `restore_machine()` which clears firewall rules. XDP auto-disables after 30s heartbeat expiry. WFP filters persist in kernel. Panic button (`--firewall panic`) with brute-force fallback.
 
 ### Phase 3 — Firewall Management UI
 
@@ -116,15 +116,15 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 ### Phase 4 — Circuit Breakers, Recovery & Safety
 
 - [x] **Panic button** — `vigil --firewall panic` calls `restore_machine()` with brute-force fallback (delete all Vigil rules, set profiles to allow).
-- [ ] **Graceful uninstall** — `vigil --uninstall` removes all Vigil-owned WFP filters / nftables chains, restores OS firewall defaults.
-- [ ] **Crash-safe filter lifecycle** — WFP filters persist across process restarts; startup reconciles detects zombies. XDP auto-disables on heartbeat expiry.
-- [ ] **Safe-mode watchdog** — break-glass heartbeat auto-clears Vigil's filters on repeated engine crashes.
+- [x] **Graceful uninstall** — `vigil --uninstall-firewall` and `--uninstall-service` call `cleanup_on_uninstall()`: delete isolation rules, restore profiles to allow, log remaining state.
+- [x] **Crash-safe filter lifecycle** — WFP filters persist across process restarts (kernel objects); stale filter cleanup via `reconcile_firewall_rules()`. XDP auto-disables on heartbeat expiry. nftables rules survive process crash in kernel.
+- [x] **Safe-mode watchdog** — break-glass heartbeat auto-clears Vigil's filters via `restore_machine()`. XDP heartbeat auto-disables after 30s. Pre-login guard disables boot start on repeated failures.
 
 ### Phase 5 — Feature Parity & Polish
 
 - [ ] **Per-profile rules** — Domain/Private/Public affinity.
 - [ ] **Per-interface rules** — filter by interface index (WFP) or name (nftables).
-- [ ] **Logging & audit** — per-filter logging, audit trail integration.
+- [x] **Logging & audit** — structured tracing on every firewall rule add/delete/reapply. `audit::record()` on all operations. Per-uninstall status summary with counts.
 - [ ] **Stealth mode** — drop inbound without RST/ICMP.
 - [ ] **Notification balloons** — tray notification on block events with undo.
 - [ ] **Performance counters** — per-rule match hit count, eval time.

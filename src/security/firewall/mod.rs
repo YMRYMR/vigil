@@ -189,7 +189,14 @@ pub fn cleanup_on_uninstall() {
     if !b.is_available() {
         return;
     }
-    tracing::info!("cleaning up firewall rules on uninstall");
+    let status = crate::security::active_response::status();
+    tracing::info!(
+        blocked_ips = status.blocked_rules,
+        blocked_processes = status.blocked_processes,
+        blocked_domains = status.blocked_domains,
+        isolated = status.isolated,
+        "cleanup_on_uninstall: starting firewall rule removal"
+    );
 
     // Delete known isolation rules
     let _ = b.delete_rule("Vigil Isolate In");
