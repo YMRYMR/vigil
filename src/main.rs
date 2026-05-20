@@ -15,6 +15,7 @@
 #[allow(clippy::redundant_closure)]
 mod advisory;
 mod advisory_history;
+#[allow(dead_code)]
 mod advisory_ioc;
 mod advisory_match;
 mod advisory_match_status;
@@ -26,6 +27,7 @@ mod artifact_provenance;
 mod audit;
 mod baseline;
 mod beacon;
+#[allow(dead_code)]
 mod blocklist;
 mod config;
 mod detection_depth;
