@@ -194,6 +194,26 @@ To verify an update manifest offline:
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
 
+## Local YARA rule intake
+
+Vigil's current Phase 20 YARA work is limited to trusted local rule intake. It does not run YARA scans yet, but it already lets you stage custom rules using the same integrity and provenance model as other operator-managed inputs.
+
+1. Run `vigil --yara-rule-status` if you want Vigil to print the exact `yara-rules/` directory path it expects on your machine.
+2. Place each `.yar` or `.yara` file under that directory with a matching `.sha256` sidecar beside it. For example, `sample.yar` should have `sample.yar.sha256`.
+3. Re-run the status command:
+
+```bash
+vigil --yara-rule-status
+```
+
+4. Treat the results conservatively:
+- `new` means Vigil accepted the rule and recorded it as a first-seen operator file.
+- `verified` means the rule and sidecar still match the last recorded trusted version.
+- `changed` means the rule was accepted, but its contents changed since the last recorded trusted version.
+- any failure means Vigil did not accept that rule because the sidecar is missing, unreadable, or mismatched.
+
+Warnings on first load or after an intentional rule edit are expected because Vigil records provenance instead of silently treating every local change as corruption.
+
 ## Advisory snapshot imports
 
 Vigil can also extend its protected local advisory cache with operator-supplied public-source snapshots. This is useful when you want advisory context to stay available offline from the last trusted local cache.
