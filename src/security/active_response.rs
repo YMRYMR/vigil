@@ -63,7 +63,7 @@ pub struct InspectorSnapshot {
     pub domain_modifiable: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FirewallRuleList {
     pub blocked_ips: Vec<BlockedIpEntry>,
     pub blocked_processes: Vec<BlockedProcessEntry>,
@@ -74,14 +74,14 @@ pub struct FirewallRuleList {
     pub isolation_remaining_secs: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedIpEntry {
     pub target: String,
     pub rule_name: String,
     pub expires_at_unix: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedProcessEntry {
     pub pid: u32,
     pub path: String,
@@ -90,12 +90,12 @@ pub struct BlockedProcessEntry {
     pub expires_at_unix: Option<u64>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BlockedDomainEntry {
     pub domain: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SuspendedProcessEntry {
     pub pid: u32,
     pub path: String,
@@ -103,7 +103,7 @@ pub struct SuspendedProcessEntry {
     pub suspended_at_unix: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct FirewallProfileEntry {
     pub name: String,
     pub enabled: bool,

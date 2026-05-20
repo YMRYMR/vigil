@@ -128,7 +128,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 - [ ] **Stealth mode** — drop inbound without RST/ICMP.
 - [ ] **Notification balloons** — tray notification on block events with undo.
 - [ ] **Performance counters** — per-rule match hit count, eval time.
-- [ ] **Rule import/export** — JSON export for backup/migration.
+- [x] **Rule import/export** — `vigil --firewall export` emits full rule list as JSON (blocked IPs, processes, domains, suspended, profiles).
 
 ### Safety guarantees
 
