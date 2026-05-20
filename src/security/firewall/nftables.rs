@@ -8,7 +8,7 @@ use super::{
 };
 use crate::security::linux_command_plan::{
     ip_link_set, ip_link_show, resolvectl_flush_caches, ss_kill_tcp_connection,
-    systemd_resolve_flush_caches, StdLinuxCommandRunner,
+    systemd_resolve_flush_caches, LinuxCommandRunner, StdLinuxCommandRunner,
 };
 use crate::security::linux_firewall_backend::{
     capture_iptables_policy_snapshot, firewall_backend_restore_plan, select_firewall_backend,
