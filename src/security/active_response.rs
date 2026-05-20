@@ -764,62 +764,46 @@ pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> 
 fn reconcile_firewall_rules() {
     #[cfg(not(windows))]
     {
-        use crate::security::firewall::{self, FirewallBackend};
-        let backend = firewall::get_backend();
-        if !backend.is_available() {
-            return;
-        }
         let Ok(state) = load_state() else {
             return;
         };
         let mut reapplied = false;
 
-        // Re-apply any missing IP block rules.
+        // Use the same platform::* functions as the rest of active
+        // response lifecycle. First delete any stale rule, then
+        // re-add — this is idempotent and avoids duplicates.
+
         for rule in &state.blocked {
-            if backend.rule_present(&rule.rule_name).unwrap_or(false) {
+            let _ = platform::delete_rule(&rule.rule_name);
+            if platform::add_block_rule(&rule.rule_name, &rule.target).is_ok() {
+                reapplied = true;
+            }
+        }
+
+        // Re-apply path-only process blocks (no PID — after reboot,
+        // the saved PID is stale and /proc/<pid> won't resolve).
+        for rule in &state.blocked_processes {
+            if rule.pid != 0 {
                 continue;
             }
-            if backend
-                .add_block_rule(&rule.rule_name, &rule.target)
+            let _ = platform::delete_rule(&rule.outbound_rule_name);
+            if platform::add_block_program_rule(&rule.outbound_rule_name, 0, &rule.path, "out")
+                .is_ok()
+            {
+                reapplied = true;
+            }
+            let _ = platform::delete_rule(&rule.inbound_rule_name);
+            if platform::add_block_program_rule(&rule.inbound_rule_name, 0, &rule.path, "in")
                 .is_ok()
             {
                 reapplied = true;
             }
         }
 
-        // Re-apply any missing process block rules (both directions).
-        for rule in &state.blocked_processes {
-            if !backend
-                .rule_present(&rule.outbound_rule_name)
-                .unwrap_or(false)
-            {
-                if backend
-                    .add_block_program_rule(&rule.outbound_rule_name, rule.pid, &rule.path, "out")
-                    .is_ok()
-                {
-                    reapplied = true;
-                }
-            }
-            if !backend
-                .rule_present(&rule.inbound_rule_name)
-                .unwrap_or(false)
-            {
-                if backend
-                    .add_block_program_rule(&rule.inbound_rule_name, rule.pid, &rule.path, "in")
-                    .is_ok()
-                {
-                    reapplied = true;
-                }
-            }
-        }
-
-        // Re-apply isolation rules if state says isolated.
         if state.isolated {
-            if !backend
-                .rule_present(crate::security::active_response::ISOLATE_RULE_IN)
-                .unwrap_or(false)
-            {
-                let _ = backend.apply_isolation("Vigil Isolate");
+            let _ = platform::delete_rule(ISOLATE_RULE_IN);
+            let _ = platform::delete_rule(ISOLATE_RULE_OUT);
+            if platform::apply_firewall_isolation().is_ok() {
                 reapplied = true;
             }
         }
