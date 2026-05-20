@@ -35,10 +35,12 @@ pub struct StorageManifest {
 
 pub struct StorageDb {
     conn: Mutex<Connection>,
+    #[allow(dead_code)]
     path: PathBuf,
     manifest_path: PathBuf,
 }
 
+#[allow(dead_code)]
 impl StorageDb {
     /// Returns a reference to the global singleton database instance
     /// (initialising it on first call) or an error.
