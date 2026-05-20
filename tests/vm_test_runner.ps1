@@ -117,6 +117,10 @@ $buildOut=Ssh "cd /tmp && rm -rf vs && mkdir vs && cd vs && tar -xzf ../vigil_sr
 Write-Host $buildOut
 if("$buildOut" -notmatch "BUILD-OK"){throw "Build in VM failed"}
 $VBIN="/tmp/vigil"
+Write-Host "  Installing to /usr/local/bin..." -ForegroundColor Cyan
+Ssh "echo vigil | sudo -S cp /tmp/vs/target/release/vigil /usr/local/bin/vigil && echo vigil | sudo -S chmod 755 /usr/local/bin/vigil" | Out-Null
+Ssh "echo vigil | sudo -S setcap cap_net_admin,cap_net_raw,cap_bpf+ep /usr/local/bin/vigil" | Out-Null
+Write-Host "  vigil installed system-wide" -ForegroundColor Green
 Upload "tests/firewall_cli_smoke_test.sh" "/tmp/firewall_cli_smoke_test.sh"
 Upload "tests/firewall_integration_test.sh" "/tmp/firewall_integration_test.sh"
 Write-Host "  done" -ForegroundColor Green
@@ -129,6 +133,7 @@ $o=Ssh "sudo -n VIGIL_BINARY=$VBIN bash /tmp/firewall_integration_test.sh"
 Write-Host "  Integration:"
 Write-Host $o
 
-Ssh "rm -f $VBIN /tmp/firewall_*.sh"|Out-Null
+Ssh "rm -f /tmp/firewall_*.sh"|Out-Null
 Write-Host "Done - VM running on port $VM_PORT" -ForegroundColor Cyan
+Write-Host "In the VM, run: sudo vigil" -ForegroundColor Cyan
 Write-Host "Connect: plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST" -ForegroundColor Cyan
