@@ -65,7 +65,11 @@ fn capture_restore_state(
 fn nft_table_exists(runner: &impl LinuxCommandRunner) -> bool {
     runner
         .stdout(&nft_list_ruleset())
-        .map(|s| s.contains("table inet vigil"))
+        .map(|s| {
+            s.lines()
+                .map(str::trim)
+                .any(|line| line == "table inet vigil")
+        })
         .unwrap_or(false)
 }
 
@@ -208,7 +212,7 @@ pub fn execute_selected_delete_plan(
             ] {
                 let output = match runner.stdout(&nft_list_chain_handles(chain)) {
                     Ok(o) => o,
-                    // Chain may not exist yet (first isolation) — skip.
+                    // Chain may not exist yet (first isolation) - skip.
                     Err(_) => continue,
                 };
                 if let Some(handle) = nft_parse_handle_by_comment(&output, rule_name) {
@@ -402,6 +406,25 @@ mod tests {
         assert_eq!(executed.commands[0].args[4], "output");
         assert_eq!(executed.commands[0].args[5], "ip6");
         assert_eq!(executed.commands[0].args[6], "daddr");
+    }
+
+    #[test]
+    fn remote_block_does_not_skip_setup_for_different_table_name() {
+        let runner = RecordingRunner {
+            nft_available: true,
+            nft_ruleset_output: "table inet vigil2",
+            fail_program: None,
+            commands: RefCell::new(Vec::new()),
+        };
+        let executed =
+            execute_selected_remote_block_plan(&runner, "block-v6", "2606:4700:4700::1111")
+                .unwrap();
+        assert_eq!(executed.backend, LinuxFirewallBackend::Nftables);
+        assert_eq!(executed.commands.len(), 11);
+        assert_eq!(
+            executed.commands.first(),
+            Some(&LinuxCommand::new("nft", ["add", "table", "inet", "vigil"]))
+        );
     }
 
     #[test]
