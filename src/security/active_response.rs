@@ -782,38 +782,48 @@ fn reconcile_firewall_rules() {
         // from state. On a process restart (no reboot), iptables rules
         // survive while Vigil was down — pruning state without deleting
         // the live rule would orphan it permanently.
-        let expired_ips: Vec<String> = state
-            .blocked
-            .iter()
-            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
-            .map(|r| r.rule_name.clone())
-            .collect();
-        let expired_process_outbound: Vec<String> = state
-            .blocked_processes
-            .iter()
-            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
-            .map(|r| r.outbound_rule_name.clone())
-            .collect();
-        let expired_process_inbound: Vec<String> = state
-            .blocked_processes
-            .iter()
-            .filter(|rule| rule.expires_at_unix.is_some_and(|deadline| deadline <= now))
-            .map(|r| r.inbound_rule_name.clone())
-            .collect();
-        for name in expired_ips
-            .iter()
-            .chain(expired_process_outbound.iter())
-            .chain(expired_process_inbound.iter())
-        {
-            let _ = platform::delete_rule(name);
+        //
+        // Only remove from state when deletion succeeds. If delete fails
+        // (permissions, backend error), keep the state entry so the
+        // regular reconcile flow can retry.
+        let mut deleted_blocked: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut deleted_process_out: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut deleted_process_in: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for rule in &state.blocked {
+            if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
+                continue;
+            }
+            if platform::delete_rule(&rule.rule_name).is_ok() {
+                deleted_blocked.insert(rule.target.clone());
+            }
+        }
+        for rule in &state.blocked_processes {
+            if rule.expires_at_unix.is_none_or(|deadline| deadline > now) {
+                continue;
+            }
+            let out_ok = platform::delete_rule(&rule.outbound_rule_name).is_ok();
+            let in_ok = platform::delete_rule(&rule.inbound_rule_name).is_ok();
+            if out_ok && in_ok {
+                // Use target+path as a unique key for process blocks.
+                deleted_process_out.insert(rule.path.clone());
+                deleted_process_in.insert(rule.path.clone());
+            }
         }
 
-        state
-            .blocked
-            .retain(|rule| rule.expires_at_unix.is_none_or(|deadline| deadline > now));
-        state
-            .blocked_processes
-            .retain(|rule| rule.expires_at_unix.is_none_or(|deadline| deadline > now));
+        // Only remove state entries whose live rules were successfully
+        // deleted. Entries whose deletes failed stay in state for retry.
+        state.blocked.retain(|rule| {
+            rule.expires_at_unix.is_none_or(|deadline| deadline > now)
+                || !deleted_blocked.contains(&rule.target)
+        });
+        state.blocked_processes.retain(|rule| {
+            rule.expires_at_unix.is_none_or(|deadline| deadline > now)
+                || !deleted_process_out.contains(&rule.path)
+        });
         if state.blocked.len() != blocked_before
             || state.blocked_processes.len() != proc_blocked_before
         {
