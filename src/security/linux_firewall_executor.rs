@@ -125,6 +125,7 @@ pub fn execute_restore_plan(
     execute_firewall_plan(runner, restore_state.backend, commands, None)
 }
 
+#[allow(dead_code)]
 pub fn execute_selected_remote_block_plan(
     runner: &impl LinuxCommandRunner,
     rule_name: &str,
@@ -138,6 +139,7 @@ pub fn execute_selected_remote_block_plan(
     execute_firewall_plan(runner, backend, commands, None)
 }
 
+#[allow(dead_code)]
 pub fn execute_selected_uid_block_plan(
     runner: &impl LinuxCommandRunner,
     rule_name: &str,
@@ -165,6 +167,7 @@ pub fn execute_system_restore_plan(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn execute_system_remote_block_plan(
     rule_name: &str,
     target: &str,
@@ -173,6 +176,7 @@ pub fn execute_system_remote_block_plan(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn execute_system_uid_block_plan(
     rule_name: &str,
     direction: &str,
@@ -231,6 +235,7 @@ pub fn execute_selected_delete_plan(
 }
 
 #[cfg(target_os = "linux")]
+#[allow(dead_code)]
 pub fn execute_system_delete_plan(rule_name: &str) -> Result<(), String> {
     execute_selected_delete_plan(&StdLinuxCommandRunner, rule_name)
 }

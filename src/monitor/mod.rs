@@ -39,6 +39,7 @@ use tokio::time::{sleep, Duration};
 /// Shared handler for RawConn events from any real-time source (ETW/eBPF).
 /// Deduplicates the new-connection / terminal-state / process_conn logic
 /// that was previously duplicated between the ETW and eBPF branches.
+#[allow(clippy::too_many_arguments)]
 fn handle_realtime_event(
     raw_conn: RawConn,
     known: &mut HashMap<ConnKey, ConnInfo>,
@@ -279,7 +280,7 @@ impl Monitor {
             );
         }
         if using_ebpf {
-            tracing::info!("eBPF tracepoint active — real-time TCP monitoring on Linux");
+            tracing::info!("eBPF tracepoint active - real-time TCP monitoring on Linux");
         }
 
         let realtime_active = using_etw || using_ebpf;
@@ -287,7 +288,7 @@ impl Monitor {
         if realtime_active {
             tracing::info!("real-time monitoring active (ETW or eBPF)");
         } else {
-            tracing::info!("real-time monitoring unavailable — falling back to polling");
+            tracing::info!("real-time monitoring unavailable - falling back to polling");
         }
         let threshold = config.read().unwrap().alert_threshold;
         registry::win::spawn(tx.clone(), threshold);
@@ -589,7 +590,7 @@ fn process_conn(
         || known.values().filter(|c| c.pid == raw_conn.pid).any(|c| {
             if c.status == "LISTEN" || c.remote_addr == "LISTEN" {
                 // Check for wildcard listeners: 0.0.0.0:port (IPv4) or
-                // :::port (IPv6 unspecified — three colons because the
+                // :::port (IPv6 unspecified - three colons because the
                 // address is "::" and the port separator adds another ":").
                 c.local_addr.starts_with("0.0.0.0:")
                     || c.local_addr.starts_with(":::")
@@ -735,7 +736,7 @@ fn is_remote_public(addr: &str) -> bool {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
             let cgnat = o[0] == 100 && (64..=127).contains(&o[1]);
-            let benchmarking = (o[0] == 198 && o[1] == 18) || (o[0] == 198 && o[1] == 19);
+            let benchmarking = (o[1] == 18 || o[1] == 19) && o[0] == 198;
             let iana_reserved = o[0] == 192 && o[1] == 0 && o[2] == 0;
             let deprecated_relay = o[0] == 192 && o[1] == 88 && o[2] == 99;
             let documentation = matches!(
