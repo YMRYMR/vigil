@@ -66,16 +66,29 @@ for($i=0;$i -lt 180;$i+=5){
 if($r -ne "ok"){throw "SSH timeout"}
 
 Step "Setup VM"
-Write-Host "  Installing packages (this downloads ~50MB)..." -ForegroundColor Cyan
-Ssh "echo $VM_PASSWORD | sudo -S apt update -qq"|Out-Null
-Ssh "echo $VM_PASSWORD | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3"|Out-Null
-Write-Host "  Packages installed" -ForegroundColor Green
-Write-Host "  Configuring passwordless sudo..." -ForegroundColor Cyan
-Ssh "echo $VM_PASSWORD | sudo -S sh -c 'echo $VM_USER ALL=(ALL) NOPASSWD:ALL > /etc/sudoers.d/vigil'"|Out-Null
-Ssh "echo $VM_PASSWORD | sudo -S chmod 440 /etc/sudoers.d/vigil"|Out-Null
+# Write a helper script that runs sudo with password, upload it, execute it.
+# This avoids PowerShell pipe-quoting issues entirely.
+$setupScript = @'
+#!/bin/bash
+set -e
+echo "vigil" | sudo -S apt update -qq
+echo "vigil" | sudo -S apt install -y -qq openssh-server nftables iptables sqlite3
+echo "vigil ALL=(ALL) NOPASSWD:ALL" | sudo -S tee /etc/sudoers.d/vigil >/dev/null
+sudo -S chmod 440 /etc/sudoers.d/vigil < /dev/null
+echo "SETUP-OK"
+'@
+Set-Content -Path "$env:TEMP\vigil_vm_setup.sh" -Value $setupScript -Encoding ASCII
+Upload "$env:TEMP\vigil_vm_setup.sh" "/tmp/vigil_vm_setup.sh"
+Ssh "chmod +x /tmp/vigil_vm_setup.sh" | Out-Null
+Write-Host "  Running VM setup script..." -ForegroundColor Cyan
+$setupOut = Ssh "bash /tmp/vigil_vm_setup.sh"
+Write-Host $setupOut
+if($setupOut -notmatch "SETUP-OK"){throw "VM setup failed"}
+Ssh "rm -f /tmp/vigil_vm_setup.sh" | Out-Null
+Remove-Item "$env:TEMP\vigil_vm_setup.sh" -ErrorAction SilentlyContinue
 $sc=Ssh "sudo -n whoami"
 if($sc -match "root"){Write-Host "  sudo OK" -ForegroundColor Green}
-else{throw "sudo failed: $sc"}
+else{throw "sudo still needs password - VM setup failed"}  # Added fallback
 
 Step "Upload"
 Upload $BIN $VBIN
@@ -84,12 +97,12 @@ Upload "tests/firewall_cli_smoke_test.sh" "/tmp/firewall_cli_smoke_test.sh"
 Upload "tests/firewall_integration_test.sh" "/tmp/firewall_integration_test.sh"
 Write-Host "  done" -ForegroundColor Green
 
-Step "CLI smoke"
+Step "Tests"
 $o=Ssh "sudo -n VIGIL_BINARY=$VBIN bash /tmp/firewall_cli_smoke_test.sh"
+Write-Host "  CLI smoke:"
 Write-Host $o
-
-Step "Integration"
 $o=Ssh "sudo -n VIGIL_BINARY=$VBIN bash /tmp/firewall_integration_test.sh"
+Write-Host "  Integration:"
 Write-Host $o
 
 Ssh "rm -f $VBIN /tmp/firewall_*.sh"|Out-Null
