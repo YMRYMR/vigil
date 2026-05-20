@@ -913,10 +913,21 @@ impl VigilApp {
                         );
                         return;
                     }
-                    let mut cfg = self.cfg.write().unwrap();
-                    if cfg.add_trusted(&info.proc_name) {
-                        cfg.save();
-                        self.settings = settings::SettingsDraft::from_config(&cfg);
+                    let trusted = {
+                        let mut cfg = self.cfg.write().unwrap();
+                        let added = cfg.add_trusted(&info.proc_name);
+                        if added {
+                            cfg.save();
+                        }
+                        added
+                    };
+                    if trusted {
+                        self.settings =
+                            settings::SettingsDraft::from_config(&self.cfg.read().unwrap());
+                        self.push_notification(
+                            NotificationKind::Success,
+                            format!("Trusted {}", info.proc_name),
+                        );
                     }
                 }
             }
@@ -927,13 +938,17 @@ impl VigilApp {
                     }
                     let open_target = Path::new(&info.proc_path)
                         .parent()
-                        .unwrap_or_else(|| Path::new(&info.proc_path));
-                    if let Err(err) = open::that(open_target) {
-                        self.push_notification(
-                            NotificationKind::Error,
-                            format!("Could not open location {}: {err}", open_target.display()),
-                        );
-                    }
+                        .unwrap_or_else(|| Path::new(&info.proc_path))
+                        .to_path_buf();
+                    // Spawn on a background thread — open::that blocks
+                    std::thread::spawn(move || {
+                        if let Err(err) = open::that(&open_target) {
+                            tracing::warn!(
+                                "Could not open location {}: {err}",
+                                open_target.display()
+                            );
+                        }
+                    });
                 }
             }
             inspector::Action::RequestAdmin => {
