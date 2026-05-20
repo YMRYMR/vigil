@@ -32,6 +32,12 @@ pub fn send_alert(
     platform::send(info, show_window, pending_nav);
 }
 
+/// Fire a simple desktop notification with a title and body.
+/// Used for firewall action confirmations (block, isolate, etc.).
+pub fn send_firewall_event(title: &str, body: &str) {
+    platform::send_firewall(title, body);
+}
+
 // ── Windows ───────────────────────────────────────────────────────────────────
 
 #[cfg(windows)]
@@ -121,6 +127,30 @@ mod platform {
             .replace('"', "&quot;")
             .replace('\'', "&apos;")
     }
+
+    pub fn send_firewall(title: &str, body: &str) {
+        let title = xml_escape(title);
+        let body_escaped = xml_escape(body);
+        let xml = format!(
+            r#"<toast><visual><binding template="ToastGeneric"><text>{title}</text><text>{body_escaped}</text></binding></visual></toast>"#
+        );
+        let result = (|| -> windows::core::Result<()> {
+            let aumid = &windows::core::HSTRING::from("Vigil.App.1");
+            let notifier = ToastNotificationManager::CreateToastNotifierWithId(aumid)?;
+            let doc = XmlDocument::new()?;
+            doc.LoadXml(&windows::core::HSTRING::from(xml.as_str()))?;
+            let toast = ToastNotification::CreateToastNotification(&doc)?;
+            notifier.Show(&toast)?;
+            Ok(())
+        })();
+        if let Err(e) = result {
+            tracing::warn!("WinRT firewall notification failed: {e}; falling back to notify-rust");
+            let _ = notify_rust::Notification::new()
+                .summary(&format!("\u{1F6E1} Vigil — {title}"))
+                .body(&body_escaped)
+                .show();
+        }
+    }
 }
 
 // ── Linux / other Unix fallback ───────────────────────────────────────────────
@@ -148,6 +178,16 @@ mod platform {
             .show()
         {
             tracing::warn!("notify-rust failed: {e}");
+        }
+    }
+
+    pub fn send_firewall(title: &str, body: &str) {
+        if let Err(e) = notify_rust::Notification::new()
+            .summary(&format!("\u{1F6E1} Vigil — {title}"))
+            .body(body)
+            .show()
+        {
+            tracing::warn!("notify-rust firewall notification failed: {e}");
         }
     }
 }
