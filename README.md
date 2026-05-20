@@ -68,6 +68,24 @@ vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-up
 
 ---
 
+## Local YARA Rule Intake
+
+Phase 20's first safe foundation is integrity-checked local YARA rule intake.
+Operators can stage `.yar` or `.yara` files under the Vigil data directory in
+`yara-rules/`, with a matching `.sha256` sidecar beside each rule file.
+
+Verify those local rule files and record provenance with:
+
+```bash
+vigil --yara-rule-status
+```
+
+This command does not run YARA scans yet. It verifies trusted intake for future
+process and memory scanning work and fails closed on missing or mismatched
+sidecars.
+
+---
+
 ## What Vigil does
 
 ### Detect and surface suspicious activity
