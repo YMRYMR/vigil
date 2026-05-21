@@ -457,3 +457,4 @@ fn section_header(ui: &mut Ui, title: &str, tooltip: &str) {
 fn muted(ui: &mut Ui, text: &str) {
     ui.label(RichText::new(text).color(theme::TEXT2).size(12.0));
 }
+
