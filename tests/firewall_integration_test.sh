@@ -113,13 +113,12 @@ assert_contains "export has profiles" "$output" 'profiles'
 output=$("$BINARY" --firewall help 2>&1)
 assert_contains "help shows commands" "$output" "Vigil firewall commands"
 
-output=$("$BINARY" --firewall unknown_subcommand_xyz 2>&1)
-if [ $? -ne 0 ]; then
-    echo "  PASS: unknown subcommand exits non-zero"
-    PASS=$((PASS + 1))
-else
+if output=$("$BINARY" --firewall unknown_subcommand_xyz 2>&1); then
     echo "  FAIL: unknown subcommand exited 0 when it should have failed"
     FAIL=$((FAIL + 1))
+else
+    echo "  PASS: unknown subcommand exits non-zero"
+    PASS=$((PASS + 1))
 fi
 
 # ── Firewall rule CRUD ───────────────────────────────────────────────
