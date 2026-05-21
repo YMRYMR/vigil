@@ -448,7 +448,6 @@ fn suspended_processes_section(
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
 fn section_header(ui: &mut Ui, title: &str, tooltip: &str) {
     ui.label(RichText::new(title).size(13.0).strong())
         .on_hover_text(tooltip);
