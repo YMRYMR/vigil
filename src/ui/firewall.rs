@@ -102,7 +102,16 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                                 }
                             }
                             "process" => {
-                                if rules.blocked_processes.iter().any(|b| &b.path == &sel.path) {
+                                let is_blocked = rules
+                                    .blocked_processes
+                                    .iter()
+                                    .any(|b| b.pid == sel.pid && b.path == sel.path);
+                                let is_suspended = rules
+                                    .suspended_processes
+                                    .iter()
+                                    .any(|p| p.pid == sel.pid && p.path == sel.path);
+
+                                if is_blocked {
                                     if ui
                                         .button(
                                             RichText::new("Unblock Process")
@@ -114,6 +123,21 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                                         clear_after = true;
                                         action = Some(FirewallAction::UnblockProcess {
                                             rule_name: sel.rule_name.clone(),
+                                            pid: sel.pid,
+                                            path: sel.path.clone(),
+                                        });
+                                    }
+                                } else if is_suspended {
+                                    if ui
+                                        .button(
+                                            RichText::new("Resume Process")
+                                                .color(theme::ACCENT)
+                                                .size(12.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        clear_after = true;
+                                        action = Some(FirewallAction::RestoreProcess {
                                             pid: sel.pid,
                                             path: sel.path.clone(),
                                         });
