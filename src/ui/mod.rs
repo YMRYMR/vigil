@@ -2147,8 +2147,7 @@ impl eframe::App for VigilApp {
                 Tab::Firewall => {
                     if let Some(fw_action) = firewall::show(ui, &mut self.selected_firewall) {
                         let msg = match fw_action {
-                            FirewallAction::UnblockIp { rule_name, target } => {
-                                self.start_network_operation(NetworkOperationKind::Restore);
+                            FirewallAction::UnblockIp { rule_name: _, target } => {
                                 match active_response::unblock_remote(&target) {
                                     Ok(msg) => msg,
                                     Err(e) => format!("Unblock failed: {e}")
