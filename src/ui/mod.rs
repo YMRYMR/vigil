@@ -673,11 +673,9 @@ impl VigilApp {
         }
     }
     fn history_caps(&self) -> (usize, usize) {
-        let cfg = self.cfg.read().unwrap();
-        (
-            cfg.sanitised_activity_history_cap(),
-            cfg.sanitised_alerts_history_cap(),
-        )
+        let activity_cap = self.settings.activity_history_cap.max(250).min(5000);
+        let alerts_cap = self.settings.alert_history_cap.max(100).min(5000);
+        (activity_cap, alerts_cap)
     }
     fn trim_history_buffers(&mut self) {
         let (activity_cap, alerts_cap) = self.history_caps();
@@ -1000,95 +998,44 @@ impl VigilApp {
                 }
             }
             inspector::Action::RequestAdmin => {
-                if !crate::autostart::is_elevated() {
-                    match crate::autostart::relaunch_as_admin() {
-                        Ok(()) => {
-                            std::process::exit(0);
-                        }
-                        Err(err) => {
-                            self.push_notification(
-                                NotificationKind::Error,
-                                format!("Could not relaunch Vigil with Admin Mode: {err}"),
-                            );
-                        }
+                match crate::autostart::relaunch_as_admin() {
+                    Ok(()) => {
+                        std::process::exit(0);
+                    }
+                    Err(err) => {
+                        self.push_notification(
+                            NotificationKind::Error,
+                            format!("Could not elevate: {err}"),
+                        );
                     }
                 }
             }
-            inspector::Action::Kill => {
-                self.kill_confirm = true;
+            inspector::Action::PauseResume => {
+                self.paused = !self.paused;
+                self.paused_flag.store(self.paused, Ordering::Relaxed);
             }
             inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
-                            self.response_confirm =
-                                Some(PendingResponse::BlockRemote { target, preset });
-                        }
-                    }
-                }
-            }
-            inspector::Action::UnblockRemote => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection.as_ref() {
-                        if let Some(target) =
-                            active_response::extract_remote_target(&conn.remote_addr)
-                        {
-                            self.response_confirm = Some(PendingResponse::UnblockRemote(target));
-                        }
-                    }
+                    self.response_confirm = Some(PendingResponse::BlockRemote {
+                        target: info.remote_addr.clone(),
+                        preset,
+                    });
                 }
             }
             inspector::Action::BlockDomain => {
                 if let Some(info) = selected_info {
-                    let domain = info
-                        .selected_connection
-                        .as_ref()
-                        .and_then(|c| c.hostname.clone());
-                    if let Some(domain) = domain {
+                    if let Some(domain) = info.selected_connection.as_ref().and_then(|c| c.hostname.clone()) {
                         self.response_confirm = Some(PendingResponse::BlockDomain { domain });
-                    }
-                }
-            }
-            inspector::Action::UnblockDomain => {
-                if let Some(info) = selected_info {
-                    let domain = info
-                        .selected_connection
-                        .as_ref()
-                        .and_then(|c| c.hostname.clone());
-                    if let Some(domain) = domain {
-                        self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
                     }
                 }
             }
             inspector::Action::BlockProcess(preset) => {
                 if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::BlockProcess {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                            preset,
-                        });
-                    }
-                }
-            }
-            inspector::Action::UnblockProcess => {
-                if let Some(info) = selected_info {
-                    if has_known_location(&info) {
-                        self.response_confirm = Some(PendingResponse::UnblockProcess {
-                            pid: info.pid,
-                            path: info.proc_path.clone(),
-                        });
-                    }
-                }
-            }
-            inspector::Action::KillConnection => {
-                if let Some(info) = selected_info {
-                    if let Some(conn) = info.selected_connection {
-                        self.response_confirm =
-                            Some(PendingResponse::KillConnection(Box::new(conn)));
-                    }
+                    self.response_confirm = Some(PendingResponse::BlockProcess {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                        preset,
+                    });
                 }
             }
             inspector::Action::SuspendProcess => {
@@ -1130,6 +1077,39 @@ impl VigilApp {
                         path: info.proc_path.clone(),
                     });
                 }
+            }
+            inspector::Action::KillConnection => {
+                if let Some(info) = selected_info.as_ref() {
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        self.response_confirm = Some(PendingResponse::KillConnection(Box::new(conn.clone())));
+                    }
+                }
+            }
+            inspector::Action::UnblockRemote => {
+                if let Some(info) = selected_info {
+                    self.response_confirm = Some(PendingResponse::UnblockRemote(info.remote_addr.clone()));
+                }
+            }
+            inspector::Action::UnblockDomain => {
+                if let Some(info) = selected_info.as_ref() {
+                    if let Some(domain) = info.selected_connection.as_ref().and_then(|c| c.hostname.clone()) {
+                        self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
+                    }
+                }
+            }
+            inspector::Action::UnblockProcess => {
+                if let Some(info) = selected_info {
+                    self.response_confirm = Some(PendingResponse::UnblockProcess {
+                        pid: info.pid,
+                        path: info.proc_path.clone(),
+                    });
+                }
+            }
+            inspector::Action::IsolateMachine => {
+                self.response_confirm = Some(PendingResponse::IsolateMachine);
+            }
+            inspector::Action::RestoreNetwork => {
+                self.response_confirm = Some(PendingResponse::RestoreNetwork);
             }
             inspector::Action::KillConfirmed => {
                 if let Some(info) = selected_info {
@@ -1414,46 +1394,40 @@ impl VigilApp {
 
         action
     }
-
     fn show_response_confirm_window(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.response_confirm.clone() else {
             return;
         };
+
         let (title, body, confirm_label) = match &pending {
-            PendingResponse::BlockRemote { target, preset } => (
+            PendingResponse::BlockRemote { target, .. } => (
                 "Confirm Remote Block",
-                format!(
-                    "Block outbound network access to {target} for the {} duration?",
-                    preset.label()
-                ),
+                format!("Block outbound traffic to {target}?"),
                 "Block",
             ),
             PendingResponse::BlockDomain { domain } => (
                 "Confirm Domain Block",
-                format!("Block domain {domain} until you remove it from Active Response?"),
+                format!("Block outbound connections to {domain}?"),
                 "Block",
             ),
-            PendingResponse::BlockProcess { path, preset, .. } => (
+            PendingResponse::BlockProcess { path, .. } => (
                 "Confirm Process Block",
-                format!(
-                    "Block process path {path} for the {} duration?",
-                    preset.label()
-                ),
+                format!("Block network access for {path}?"),
                 "Block",
             ),
             PendingResponse::SuspendProcess { pid, proc_name, .. } => (
                 "Confirm Process Suspend",
-                format!("Suspend {proc_name} (PID {pid}) until you resume it?"),
+                format!("Suspend {proc_name} (PID {pid}) now?"),
                 "Suspend",
             ),
             PendingResponse::ResumeProcess { pid, .. } => (
                 "Confirm Process Resume",
-                format!("Resume PID {pid} if it is currently suspended?"),
+                format!("Resume suspended process PID {pid}?"),
                 "Resume",
             ),
             PendingResponse::FreezeAutoruns => (
                 "Confirm Autorun Freeze",
-                "Temporarily disable startup persistence entries until you revert them?".into(),
+                "Temporarily disable startup persistence entries?".into(),
                 "Freeze",
             ),
             PendingResponse::RevertAutoruns => (
@@ -1744,40 +1718,22 @@ impl VigilApp {
                                 ui.label(
                                     egui::RichText::new(label)
                                         .color(theme::TEXT)
-                                        .size(11.8)
+                                        .size(12.0)
                                         .strong(),
                                 );
                                 ui.label(
-                                    egui::RichText::new("Applying controls in background.")
+                                    egui::RichText::new("Please wait while the network action completes.")
                                         .color(theme::TEXT3)
-                                        .size(10.4),
+                                        .size(10.5),
                                 );
                             });
                         });
                     });
             });
     }
-    fn push_notification(&mut self, kind: NotificationKind, text: impl Into<String>) {
-        let now = std::time::Instant::now();
-        self.notifications.push_back(Notification {
-            id: self.next_notification_id,
-            kind,
-            text: text.into(),
-            expires_at: now + NOTIFICATION_TTL,
-        });
-        self.next_notification_id = self.next_notification_id.saturating_add(1);
-        while self.notifications.len() > 8 {
-            self.notifications.pop_front();
-        }
-    }
-    fn kind_from_message(text: &str) -> NotificationKind {
-        let lower = text.to_ascii_lowercase();
-        if lower.contains("enabled with warnings")
-            || lower.contains("removed with warnings")
-            || lower.contains("with warnings:")
-        {
-            NotificationKind::Warning
-        } else if lower.contains("could not")
+    fn kind_from_message(message: &str) -> NotificationKind {
+        let lower = message.to_ascii_lowercase();
+        if lower.contains("could not")
             || lower.contains("failed")
             || lower.contains("error")
             || lower.contains("denied")
@@ -2149,42 +2105,54 @@ impl eframe::App for VigilApp {
                 }
                 Tab::Firewall => {
                     if let Some(fw_action) = firewall::show(ui, &mut self.selected_firewall) {
-                        let msg = match fw_action {
-                            FirewallAction::UnblockIp { rule_name: _, target } => {
+                        let message = match fw_action {
+                            FirewallAction::UnblockIp { rule_name: _, target } => Some(
                                 match active_response::unblock_remote(&target) {
                                     Ok(msg) => msg,
-                                    Err(e) => format!("Unblock failed: {e}")
-                                }
-                            }
+                                    Err(e) => format!("Unblock failed: {e}"),
+                                },
+                            ),
                             FirewallAction::UnblockProcess { rule_name: _, pid, path } => {
-                                match active_response::unblock_process(pid, &path) {
+                                Some(match active_response::unblock_process(pid, &path) {
                                     Ok(msg) => msg,
-                                    Err(e) => format!("Unblock failed: {e}")
-                                }
+                                    Err(e) => format!("Unblock failed: {e}"),
+                                })
                             }
-                            FirewallAction::ClearDomainBlock { domain } => {
+                            FirewallAction::ClearDomainBlock { domain } => Some(
                                 match active_response::unblock_domain(&domain) {
                                     Ok(msg) => msg,
-                                    Err(e) => format!("Clear domain block failed: {e}")
-                                }
-                            }
+                                    Err(e) => format!("Clear domain block failed: {e}"),
+                                },
+                            ),
                             FirewallAction::RestoreIsolation => {
-                                match active_response::restore_machine() {
-                                    Ok(msg) => msg,
-                                    Err(e) => format!("Restore failed: {e}")
+                                if self.start_network_operation(NetworkOperationKind::Restore) {
+                                    None
+                                } else if self.network_operation.is_some() {
+                                    Some(
+                                        "Restore failed: another network action is already in progress."
+                                            .to_string(),
+                                    )
+                                } else {
+                                    None
                                 }
                             }
-                            FirewallAction::RestoreProcess { pid, path } => {
+                            FirewallAction::RestoreProcess { pid, path } => Some(
                                 match active_response::resume_process(pid, &path) {
                                     Ok(msg) => msg,
-                                    Err(e) => format!("Resume failed: {e}")
-                                }
-                            }
+                                    Err(e) => format!("Resume failed: {e}"),
+                                },
+                            ),
                         };
-                        self.push_notification(
-                            if msg.contains("failed") || msg.contains("No ") { NotificationKind::Error } else { NotificationKind::Success },
-                            msg,
-                        );
+                        if let Some(msg) = message {
+                            self.push_notification(
+                                if msg.contains("failed") || msg.contains("No ") {
+                                    NotificationKind::Error
+                                } else {
+                                    NotificationKind::Success
+                                },
+                                msg,
+                            );
+                        }
                     }
                 }
                 Tab::Help => help::show(ui),
