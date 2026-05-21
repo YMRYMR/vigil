@@ -281,6 +281,7 @@ pub struct FirewallSelection {
     pub rule_name: String,
     pub target: String,
     pub rule_type: String, // "ip", "process", "domain", "isolation"
+    #[allow(dead_code)]
     pub direction: String, // "in", "out", "both"
     pub pid: u32,
     pub path: String,
@@ -289,10 +290,12 @@ pub struct FirewallSelection {
 #[derive(Clone)]
 pub enum FirewallAction {
     UnblockIp {
+        #[allow(dead_code)]
         rule_name: String,
         target: String,
     },
     UnblockProcess {
+        #[allow(dead_code)]
         rule_name: String,
         pid: u32,
         path: String,
