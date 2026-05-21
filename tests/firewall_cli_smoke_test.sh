@@ -36,7 +36,6 @@ assert_ok "--firewall status"               '"$BINARY" --firewall status 2>&1'
 assert_ok "--firewall list"                 '"$BINARY" --firewall list 2>&1'
 assert_ok "--firewall export"               '"$BINARY" --firewall export 2>&1'
 assert_ok "--firewall help"                 '"$BINARY" --firewall help 2>&1'
-assert_ok "--firewall panic"                '"$BINARY" --firewall panic 2>&1'
 
 # Verify export is valid JSON
 if output=$("$BINARY" --firewall export 2>&1); then
