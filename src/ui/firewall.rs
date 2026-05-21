@@ -109,23 +109,24 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                                     .iter()
                                     .any(|p| p.pid == sel.pid && p.path == sel.path);
 
-                                if is_blocked {
-                                    if ui
+                                if is_blocked
+                                    && ui
                                         .button(
                                             RichText::new("Unblock Process")
                                                 .color(theme::DANGER)
                                                 .size(12.0),
                                         )
                                         .clicked()
-                                    {
-                                        clear_after = true;
-                                        action = Some(FirewallAction::UnblockProcess {
-                                            rule_name: sel.rule_name.clone(),
-                                            pid: sel.pid,
-                                            path: sel.path.clone(),
-                                        });
-                                    }
-                                } else if is_suspended
+                                {
+                                    clear_after = true;
+                                    action = Some(FirewallAction::UnblockProcess {
+                                        rule_name: sel.rule_name.clone(),
+                                        pid: sel.pid,
+                                        path: sel.path.clone(),
+                                    });
+                                }
+
+                                if is_suspended
                                     && ui
                                         .button(
                                             RichText::new("Resume Process")
