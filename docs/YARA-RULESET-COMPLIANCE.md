@@ -56,6 +56,10 @@ For every bundled rule file or generated pack, preserve at least:
 That provenance must travel with both compile-time embedded packs and future
 signed update artifacts.
 
+The concrete schema for that pack metadata now lives in
+`docs/YARA-PACK-MANIFEST.md`, with an example payload in
+`docs/YARA-PACK-MANIFEST.example.json`.
+
 ## Redistribution rules
 
 Vigil should treat community YARA text conservatively:
@@ -117,7 +121,8 @@ pack refresh never overwrites operator-managed files.
 
 ## Safest next implementation step
 
-This contract makes the next unfinished Phase 20 item more concrete. The next
-safe code slice is to add a pack manifest format and build-time importer for one
-explicitly approved upstream community ruleset, while preserving the provenance,
+This contract makes the next unfinished Phase 20 item more concrete. The
+manifest-format foundation now exists in `docs/YARA-PACK-MANIFEST.md`. The next
+safe code slice is a build-time importer for one explicitly approved upstream
+community ruleset that emits that manifest while preserving the provenance,
 redistribution, and signed-update rules above.
