@@ -60,9 +60,9 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                 || sel.rule_type == "isolation";
             if is_actionable {
                 let mut clear_after = false;
-                egui::SidePanel::right("firewall_detail")
+                egui::Panel::right("firewall_detail")
                     .resizable(false)
-                    .min_width(280.0)
+                    .exact_size(280.0)
                     .show_inside(ui, |ui| {
                         ui.add_space(8.0);
                         ui.label(RichText::new("Rule Detail").strong().size(14.0));
@@ -80,25 +80,20 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
 
                         match sel.rule_type.as_str() {
                             "ip" => {
-                                if rules
-                                    .blocked_ips
-                                    .iter()
-                                    .any(|b| &b.rule_name == &sel.rule_name)
-                                {
-                                    if ui
+                                if rules.blocked_ips.iter().any(|b| b.rule_name == sel.rule_name)
+                                    && ui
                                         .button(
                                             RichText::new("Unblock IP")
                                                 .color(theme::DANGER)
                                                 .size(12.0),
                                         )
                                         .clicked()
-                                    {
-                                        clear_after = true;
-                                        action = Some(FirewallAction::UnblockIp {
-                                            rule_name: sel.rule_name.clone(),
-                                            target: sel.target.clone(),
-                                        });
-                                    }
+                                {
+                                    clear_after = true;
+                                    action = Some(FirewallAction::UnblockIp {
+                                        rule_name: sel.rule_name.clone(),
+                                        target: sel.target.clone(),
+                                    });
                                 }
                             }
                             "process" => {
@@ -127,57 +122,50 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                                             path: sel.path.clone(),
                                         });
                                     }
-                                } else if is_suspended {
-                                    if ui
+                                } else if is_suspended
+                                    && ui
                                         .button(
                                             RichText::new("Resume Process")
                                                 .color(theme::ACCENT)
                                                 .size(12.0),
                                         )
                                         .clicked()
-                                    {
-                                        clear_after = true;
-                                        action = Some(FirewallAction::RestoreProcess {
-                                            pid: sel.pid,
-                                            path: sel.path.clone(),
-                                        });
-                                    }
+                                {
+                                    clear_after = true;
+                                    action = Some(FirewallAction::RestoreProcess {
+                                        pid: sel.pid,
+                                        path: sel.path.clone(),
+                                    });
                                 }
                             }
                             "domain" => {
-                                if rules
-                                    .blocked_domains
-                                    .iter()
-                                    .any(|d| &d.domain == &sel.target)
-                                {
-                                    if ui
+                                if rules.blocked_domains.iter().any(|d| d.domain == sel.target)
+                                    && ui
                                         .button(
                                             RichText::new("Clear Domain Block")
                                                 .color(theme::DANGER)
                                                 .size(12.0),
                                         )
                                         .clicked()
-                                    {
-                                        clear_after = true;
-                                        action = Some(FirewallAction::ClearDomainBlock {
-                                            domain: sel.target.clone(),
-                                        });
-                                    }
+                                {
+                                    clear_after = true;
+                                    action = Some(FirewallAction::ClearDomainBlock {
+                                        domain: sel.target.clone(),
+                                    });
                                 }
                             }
                             "isolation" => {
-                                if rules.isolated {
-                                    if ui
+                                if rules.isolated
+                                    && ui
                                         .button(
                                             RichText::new("Restore Network")
                                                 .color(theme::ACCENT)
                                                 .size(12.0),
                                         )
                                         .clicked()
-                                    {
-                                        clear_after = true;
-                                        action = Some(FirewallAction::RestoreIsolation);
-                                    }
+                                {
+                                    clear_after = true;
+                                    action = Some(FirewallAction::RestoreIsolation);
                                 }
                             }
                             _ => {}
