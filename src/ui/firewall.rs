@@ -80,7 +80,10 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
 
                         match sel.rule_type.as_str() {
                             "ip" => {
-                                if rules.blocked_ips.iter().any(|b| b.rule_name == sel.rule_name)
+                                if rules
+                                    .blocked_ips
+                                    .iter()
+                                    .any(|b| b.rule_name == sel.rule_name)
                                     && ui
                                         .button(
                                             RichText::new("Unblock IP")
@@ -139,7 +142,10 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
                                 }
                             }
                             "domain" => {
-                                if rules.blocked_domains.iter().any(|d| d.domain == sel.target)
+                                if rules
+                                    .blocked_domains
+                                    .iter()
+                                    .any(|d| d.domain == sel.target)
                                     && ui
                                         .button(
                                             RichText::new("Clear Domain Block")
