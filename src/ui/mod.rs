@@ -280,9 +280,9 @@ pub struct ProcessSelection {
 pub struct FirewallSelection {
     pub rule_name: String,
     pub target: String,
-    pub rule_type: String, // "ip", "process", "domain", "isolation"
+    pub rule_type: String,
     #[allow(dead_code)]
-    pub direction: String, // "in", "out", "both"
+    pub direction: String,
     pub pid: u32,
     pub path: String,
 }
@@ -449,20 +449,13 @@ pub struct VigilApp {
     last_applied_pixels_per_point: Option<f32>,
     activity_table: TableState,
     alerts_table: TableState,
-    /// Monotonically increasing version counter for activity/alerts data.
-    /// Incremented when new events are drained. Used to invalidate UI caches.
     data_version: u64,
-    /// Cached group view for the activity tab.
     activity_cache: Option<process_list::CachedGroupView>,
-    /// Cached group view for the alerts tab.
     alerts_cache: Option<process_list::CachedGroupView>,
-    /// Cached distinct process count for activity tab labels.
     cached_activity_process_count: usize,
-    /// Cached distinct process count for alerts tab labels.
     cached_alerts_process_count: usize,
 }
 const UI_EVENT_BUDGET: usize = 128;
-/// Maximum time spent draining events per frame (prevents frame stalls under burst load).
 const UI_EVENT_TIME_BUDGET: std::time::Duration = std::time::Duration::from_millis(5);
 const UI_IDLE_REPAINT: std::time::Duration = std::time::Duration::from_secs(1);
 const UI_BUSY_REPAINT: std::time::Duration = std::time::Duration::from_millis(100);
@@ -673,9 +666,11 @@ impl VigilApp {
         }
     }
     fn history_caps(&self) -> (usize, usize) {
-        let activity_cap = self.settings.activity_history_cap.max(250).min(5000);
-        let alerts_cap = self.settings.alert_history_cap.max(100).min(5000);
-        (activity_cap, alerts_cap)
+        let cfg = self.cfg.read().unwrap();
+        (
+            cfg.sanitised_activity_history_cap(),
+            cfg.sanitised_alerts_history_cap(),
+        )
     }
     fn trim_history_buffers(&mut self) {
         let (activity_cap, alerts_cap) = self.history_caps();
@@ -962,7 +957,6 @@ impl VigilApp {
                             NotificationKind::Success,
                             format!("Trusted {}", info.proc_name),
                         );
-                        // Clear selection so UI refreshes with new trust state
                         match self.active_tab {
                             Tab::Activity => self.selected_activity = None,
                             Tab::Alerts => self.selected_alert = None,
@@ -997,6 +991,9 @@ impl VigilApp {
                     });
                 }
             }
+            inspector::Action::Kill => {
+                self.kill_confirm = true;
+            }
             inspector::Action::RequestAdmin => {
                 match crate::autostart::relaunch_as_admin() {
                     Ok(()) => {
@@ -1010,21 +1007,25 @@ impl VigilApp {
                     }
                 }
             }
-            inspector::Action::PauseResume => {
-                self.paused = !self.paused;
-                self.paused_flag.store(self.paused, Ordering::Relaxed);
-            }
             inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::BlockRemote {
-                        target: info.remote_addr.clone(),
-                        preset,
-                    });
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm =
+                                Some(PendingResponse::BlockRemote { target, preset });
+                        }
+                    }
                 }
             }
             inspector::Action::BlockDomain => {
                 if let Some(info) = selected_info {
-                    if let Some(domain) = info.selected_connection.as_ref().and_then(|c| c.hostname.clone()) {
+                    if let Some(domain) = info
+                        .selected_connection
+                        .as_ref()
+                        .and_then(|c| c.hostname.clone())
+                    {
                         self.response_confirm = Some(PendingResponse::BlockDomain { domain });
                     }
                 }
@@ -1081,18 +1082,29 @@ impl VigilApp {
             inspector::Action::KillConnection => {
                 if let Some(info) = selected_info.as_ref() {
                     if let Some(conn) = info.selected_connection.as_ref() {
-                        self.response_confirm = Some(PendingResponse::KillConnection(Box::new(conn.clone())));
+                        self.response_confirm =
+                            Some(PendingResponse::KillConnection(Box::new(conn.clone())));
                     }
                 }
             }
             inspector::Action::UnblockRemote => {
                 if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::UnblockRemote(info.remote_addr.clone()));
+                    if let Some(conn) = info.selected_connection.as_ref() {
+                        if let Some(target) =
+                            active_response::extract_remote_target(&conn.remote_addr)
+                        {
+                            self.response_confirm = Some(PendingResponse::UnblockRemote(target));
+                        }
+                    }
                 }
             }
             inspector::Action::UnblockDomain => {
                 if let Some(info) = selected_info.as_ref() {
-                    if let Some(domain) = info.selected_connection.as_ref().and_then(|c| c.hostname.clone()) {
+                    if let Some(domain) = info
+                        .selected_connection
+                        .as_ref()
+                        .and_then(|c| c.hostname.clone())
+                    {
                         self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
                     }
                 }
@@ -1104,12 +1116,6 @@ impl VigilApp {
                         path: info.proc_path.clone(),
                     });
                 }
-            }
-            inspector::Action::IsolateMachine => {
-                self.response_confirm = Some(PendingResponse::IsolateMachine);
-            }
-            inspector::Action::RestoreNetwork => {
-                self.response_confirm = Some(PendingResponse::RestoreNetwork);
             }
             inspector::Action::KillConfirmed => {
                 if let Some(info) = selected_info {
@@ -1731,6 +1737,19 @@ impl VigilApp {
                     });
             });
     }
+    fn push_notification(&mut self, kind: NotificationKind, text: impl Into<String>) {
+        let now = std::time::Instant::now();
+        self.notifications.push_back(Notification {
+            id: self.next_notification_id,
+            kind,
+            text: text.into(),
+            expires_at: now + NOTIFICATION_TTL,
+        });
+        self.next_notification_id = self.next_notification_id.saturating_add(1);
+        while self.notifications.len() > 8 {
+            self.notifications.pop_front();
+        }
+    }
     fn kind_from_message(message: &str) -> NotificationKind {
         let lower = message.to_ascii_lowercase();
         if lower.contains("could not")
@@ -1745,6 +1764,7 @@ impl VigilApp {
             NotificationKind::Success
         }
     }
+
     fn show_notifications_overlay(&mut self, ctx: &egui::Context) {
         let now = std::time::Instant::now();
         self.notifications.retain(|n| n.expires_at > now);
