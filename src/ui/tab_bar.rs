@@ -25,7 +25,16 @@ impl Tab {
         match self {
             Tab::Activity => format!("Activity ({activity_count})"),
             Tab::Alerts => format!("Alerts ({alerts_count})"),
-            Tab::Firewall => "Firewall".into(),
+            Tab::Firewall => {
+                let status = crate::security::active_response::status();
+                let total =
+                    status.blocked_rules + status.blocked_domains + status.suspended_processes;
+                if total > 0 {
+                    format!("Firewall ({})", total)
+                } else {
+                    "Firewall".into()
+                }
+            }
             Tab::Settings => "Settings".into(),
             Tab::Help => "Help".into(),
         }
