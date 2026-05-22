@@ -147,6 +147,15 @@ impl YaraScanScheduler {
                 }
 
                 while let Ok(request) = queue_rx.recv() {
+                    let has_contexts = pending
+                        .get(&request.key)
+                        .map(|batch| !batch.contexts.is_empty())
+                        .unwrap_or(false);
+                    if !has_contexts {
+                        pending.remove(&request.key);
+                        continue;
+                    }
+
                     let result = if let Some(compiled_rules) = compiled.as_ref() {
                         match scan_target(compiled_rules, &request.key) {
                             Ok(verdict) => Some(verdict),
@@ -163,11 +172,6 @@ impl YaraScanScheduler {
                         None
                     };
 
-                    let pending_contexts = pending
-                        .remove(&request.key)
-                        .map(|(_, batch)| batch.contexts)
-                        .unwrap_or_default();
-
                     if let Some(verdict) = result {
                         cache.insert(request.key.clone(), verdict.clone());
                         if let Err(err) = persist_scan_result(&request.key, &verdict) {
@@ -177,6 +181,11 @@ impl YaraScanScheduler {
                                 "failed to persist YARA scan result"
                             );
                         }
+
+                        let pending_contexts = pending
+                            .remove(&request.key)
+                            .map(|(_, batch)| batch.contexts)
+                            .unwrap_or_default();
 
                         if !verdict.matched_rules.is_empty() {
                             for context in pending_contexts {
@@ -197,6 +206,8 @@ impl YaraScanScheduler {
                                 }
                             }
                         }
+                    } else {
+                        pending.remove(&request.key);
                     }
                 }
             })
