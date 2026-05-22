@@ -90,7 +90,12 @@ pub struct ConnInfo {
 pub enum ConnEvent {
     New(ConnInfo),
     Alert(ConnInfo),
-    Closed(ConnInfo),
+    Closed {
+        pid: u32,
+        local: String,
+        remote: String,
+        snapshot: Box<ConnInfo>,
+    },
 }
 
 #[allow(dead_code)]
