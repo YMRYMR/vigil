@@ -262,6 +262,7 @@ impl Monitor {
     pub fn start(self) -> tokio::task::JoinHandle<()> {
         let config = self.config.clone();
         let tx = self.tx.clone();
+        crate::yara_scan::ensure_started(tx.clone());
         let SourceSet {
             etw_rx,
             ebpf_rx,
@@ -612,6 +613,12 @@ fn process_conn(
         score_value = score_value.saturating_add(advisory_score.score_delta);
         reasons.extend(advisory_score.reasons);
     }
+    let _ = crate::yara_scan::apply_cached_verdict(
+        &proc.path,
+        &mut score_value,
+        &mut reasons,
+        &mut attack_tags,
+    );
     let t_scoring = t0.elapsed();
 
     let t0 = std::time::Instant::now();
@@ -708,6 +715,7 @@ fn process_conn(
 
     let key = ConnKey::from(raw_conn);
     known.insert(key, info.clone());
+    crate::yara_scan::enqueue_process_scan(info.clone(), threshold);
 
     let event = if score_value >= threshold {
         forensics::maybe_capture_process_dump(&info, &forensic_cfg);
