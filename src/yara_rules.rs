@@ -5,13 +5,26 @@
 //! integrity sidecars and provenance tracking so untrusted rules fail closed.
 
 use crate::security::{integrity, operator_provenance};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const RULE_DIR: &str = "yara-rules";
 const MAX_RULE_FILES: usize = 256;
 const MAX_RULE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 4;
+const BUNDLED_PACK_MANIFEST_JSON: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_manifest.json"));
+
+#[derive(Debug, Clone, Copy)]
+struct EmbeddedBundledRuleFile {
+    relative_path: &'static str,
+    source_text: &'static str,
+}
+
+include!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_files.rs"));
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedRuleFile {
@@ -32,6 +45,44 @@ pub struct RuleLoadReport {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundledPackStatus {
+    manifest: BundledPackManifest,
+    files: Vec<BundledPackFileStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BundledPackFileStatus {
+    relative_path: String,
+    rule_count: usize,
+    category: Option<String>,
+    source_reference: String,
+    source_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct BundledPackManifest {
+    schema_version: u32,
+    pack_name: String,
+    pack_version: String,
+    generated_at: String,
+    upstream_name: String,
+    upstream_source_url: String,
+    upstream_reference: String,
+    license: String,
+    files: Vec<BundledPackManifestFile>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+struct BundledPackManifestFile {
+    relative_path: String,
+    sha256: String,
+    rule_count: usize,
+    source_url: String,
+    source_reference: String,
+    category: Option<String>,
+}
+
 pub fn rule_dir() -> PathBuf {
     crate::config::data_dir().join(RULE_DIR)
 }
@@ -41,8 +92,11 @@ pub fn load_verified_rules() -> Result<RuleLoadReport, String> {
 }
 
 pub fn run_status_cli() -> Result<(), String> {
+    print_bundled_pack_status()?;
+    println!();
+
     let report = load_verified_rules()?;
-    println!("YARA rule directory: {}", report.root.display());
+    println!("Local YARA rule directory: {}", report.root.display());
     if !report.root.exists() {
         println!("No local YARA rule directory found yet.");
         return Ok(());
@@ -72,6 +126,149 @@ pub fn run_status_cli() -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn print_bundled_pack_status() -> Result<(), String> {
+    let Some(pack) = load_bundled_pack_status()? else {
+        println!("Bundled YARA pack: none");
+        return Ok(());
+    };
+
+    println!(
+        "Bundled YARA pack: {} {}",
+        pack.manifest.pack_name, pack.manifest.pack_version
+    );
+    println!("Generated at: {}", pack.manifest.generated_at);
+    println!(
+        "Upstream: {} ({})",
+        pack.manifest.upstream_name, pack.manifest.license
+    );
+    println!("Source URL: {}", pack.manifest.upstream_source_url);
+    println!("Source reference: {}", pack.manifest.upstream_reference);
+    println!("Bundled files: {}", pack.files.len());
+    for file in &pack.files {
+        let category = file.category.as_deref().unwrap_or("uncategorized");
+        println!(
+            "  [bundled] {} ({category}, {} rules)",
+            file.relative_path, file.rule_count
+        );
+    }
+
+    Ok(())
+}
+
+fn load_bundled_pack_status() -> Result<Option<BundledPackStatus>, String> {
+    if EMBEDDED_BUNDLED_RULE_FILES.is_empty() {
+        return Ok(None);
+    }
+    validate_bundled_pack(BUNDLED_PACK_MANIFEST_JSON, EMBEDDED_BUNDLED_RULE_FILES).map(Some)
+}
+
+fn validate_bundled_pack(
+    manifest_json: &str,
+    embedded_files: &[EmbeddedBundledRuleFile],
+) -> Result<BundledPackStatus, String> {
+    let manifest: BundledPackManifest = serde_json::from_str(manifest_json)
+        .map_err(|e| format!("failed to parse bundled YARA pack manifest: {e}"))?;
+    validate_bundled_pack_manifest(&manifest, embedded_files)
+}
+
+fn validate_bundled_pack_manifest(
+    manifest: &BundledPackManifest,
+    embedded_files: &[EmbeddedBundledRuleFile],
+) -> Result<BundledPackStatus, String> {
+    if manifest.schema_version != 1 {
+        return Err(format!(
+            "unsupported bundled YARA manifest schema version {}",
+            manifest.schema_version
+        ));
+    }
+    ensure_non_empty(&manifest.pack_name, "pack_name")?;
+    ensure_non_empty(&manifest.pack_version, "pack_version")?;
+    ensure_non_empty(&manifest.generated_at, "generated_at")?;
+    ensure_non_empty(&manifest.upstream_name, "upstream_name")?;
+    ensure_non_empty(&manifest.upstream_source_url, "upstream_source_url")?;
+    ensure_non_empty(&manifest.upstream_reference, "upstream_reference")?;
+    ensure_non_empty(&manifest.license, "license")?;
+    if manifest.files.is_empty() {
+        return Err("bundled YARA pack manifest must list at least one file".into());
+    }
+
+    let mut embedded_by_path = HashMap::with_capacity(embedded_files.len());
+    for file in embedded_files {
+        if embedded_by_path.insert(file.relative_path, file.source_text).is_some() {
+            return Err(format!(
+                "bundled YARA pack embeds duplicate relative path {}",
+                file.relative_path
+            ));
+        }
+    }
+
+    let mut seen_paths = HashSet::with_capacity(manifest.files.len());
+    let mut files = Vec::with_capacity(manifest.files.len());
+    for file in &manifest.files {
+        ensure_non_empty(&file.relative_path, "files[].relative_path")?;
+        ensure_normalized_relative_path(&file.relative_path, "files[].relative_path")?;
+        if !seen_paths.insert(file.relative_path.clone()) {
+            return Err(format!(
+                "bundled YARA pack manifest lists duplicate relative path {}",
+                file.relative_path
+            ));
+        }
+        ensure_lower_hex_sha256(&file.sha256, "files[].sha256")?;
+        if file.rule_count == 0 {
+            return Err(format!(
+                "bundled YARA pack file {} must have a positive rule_count",
+                file.relative_path
+            ));
+        }
+        ensure_non_empty(&file.source_url, "files[].source_url")?;
+        ensure_non_empty(&file.source_reference, "files[].source_reference")?;
+        if let Some(category) = &file.category {
+            ensure_non_empty(category, "files[].category")?;
+        }
+
+        let Some(source_text) = embedded_by_path.get(file.relative_path.as_str()) else {
+            return Err(format!(
+                "bundled YARA pack file {} is listed in the manifest but missing from the embedded file index",
+                file.relative_path
+            ));
+        };
+        let actual_sha = sha256_hex(source_text.as_bytes());
+        if actual_sha != file.sha256 {
+            return Err(format!(
+                "bundled YARA pack file {} failed SHA-256 verification",
+                file.relative_path
+            ));
+        }
+        let actual_rule_count = count_rule_definitions(source_text);
+        if actual_rule_count != file.rule_count {
+            return Err(format!(
+                "bundled YARA pack file {} advertises {} rules but contains {}",
+                file.relative_path, file.rule_count, actual_rule_count
+            ));
+        }
+
+        files.push(BundledPackFileStatus {
+            relative_path: file.relative_path.clone(),
+            rule_count: file.rule_count,
+            category: file.category.clone(),
+            source_reference: file.source_reference.clone(),
+            source_url: file.source_url.clone(),
+        });
+    }
+
+    if embedded_by_path.len() != seen_paths.len() {
+        return Err(
+            "bundled YARA embedded file index contains files that are missing from the manifest"
+                .into(),
+        );
+    }
+
+    Ok(BundledPackStatus {
+        manifest: manifest.clone(),
+        files,
+    })
 }
 
 fn load_verified_rules_with_registry(
@@ -245,10 +442,64 @@ fn observation_label(observation: &operator_provenance::Observation) -> &'static
     }
 }
 
+fn ensure_non_empty(value: &str, field_name: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{field_name} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_lower_hex_sha256(value: &str, field_name: &str) -> Result<(), String> {
+    if value.len() != 64 || !value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(format!("{field_name} must be exactly 64 lowercase hex characters"));
+    }
+    Ok(())
+}
+
+fn ensure_normalized_relative_path(path: &str, field_name: &str) -> Result<(), String> {
+    if path.contains('\\') {
+        return Err(format!("{field_name} must use slash-separated relative paths: {path}"));
+    }
+    let candidate = Path::new(path);
+    for component in candidate.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(format!(
+                    "{field_name} must stay normalized and relative: {path}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn count_rule_definitions(source_text: &str) -> usize {
+    source_text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("rule ")
+                || trimmed.starts_with("private rule ")
+                || trimmed.starts_with("global rule ")
+                || trimmed.starts_with("private global rule ")
+                || trimmed.starts_with("global private rule ")
+        })
+        .count()
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
@@ -351,12 +602,79 @@ mod tests {
         let _ = fs::remove_dir_all(dir);
     }
 
-    fn sha256_hex(data: &[u8]) -> String {
-        let digest = Sha256::digest(data);
-        digest
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
+    #[test]
+    fn bundled_pack_validation_rejects_traversal_paths() {
+        let manifest = BundledPackManifest {
+            schema_version: 1,
+            pack_name: "community-core".into(),
+            pack_version: "2026.05.22.1".into(),
+            generated_at: "2026-05-22T10:20:00Z".into(),
+            upstream_name: "InQuest yara-rules".into(),
+            upstream_source_url: "https://github.com/InQuest/yara-rules".into(),
+            upstream_reference: "fd87530863cca77384f37ae5485707a02207d715".into(),
+            license: "MIT".into(),
+            files: vec![BundledPackManifestFile {
+                relative_path: "../escape.rule".into(),
+                sha256: sha256_hex(b"rule sample { condition: true }\n"),
+                rule_count: 1,
+                source_url: "https://example.invalid/rule".into(),
+                source_reference: "abc123".into(),
+                category: Some("research".into()),
+            }],
+        };
+
+        let embedded = [EmbeddedBundledRuleFile {
+            relative_path: "../escape.rule",
+            source_text: "rule sample { condition: true }\n",
+        }];
+        let err = validate_bundled_pack_manifest(&manifest, &embedded).unwrap_err();
+        assert!(err.contains("normalized and relative"));
+    }
+
+    #[test]
+    fn bundled_pack_validation_rejects_hash_mismatch() {
+        let manifest = BundledPackManifest {
+            schema_version: 1,
+            pack_name: "community-core".into(),
+            pack_version: "2026.05.22.1".into(),
+            generated_at: "2026-05-22T10:20:00Z".into(),
+            upstream_name: "InQuest yara-rules".into(),
+            upstream_source_url: "https://github.com/InQuest/yara-rules".into(),
+            upstream_reference: "fd87530863cca77384f37ae5485707a02207d715".into(),
+            license: "MIT".into(),
+            files: vec![BundledPackManifestFile {
+                relative_path: "research/sample.rule".into(),
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+                    .into(),
+                rule_count: 1,
+                source_url: "https://example.invalid/rule".into(),
+                source_reference: "abc123".into(),
+                category: Some("research".into()),
+            }],
+        };
+
+        let embedded = [EmbeddedBundledRuleFile {
+            relative_path: "research/sample.rule",
+            source_text: "rule sample { condition: true }\n",
+        }];
+        let err = validate_bundled_pack_manifest(&manifest, &embedded).unwrap_err();
+        assert!(err.contains("SHA-256 verification"));
+    }
+
+    #[test]
+    fn count_rule_definitions_handles_private_and_global_rules() {
+        let source = r#"
+private rule hidden_sample {
+    condition:
+        true
+}
+
+global rule visible_sample {
+    condition:
+        true
+}
+"#;
+        assert_eq!(count_rule_definitions(source), 2);
     }
 
     fn unique_temp_dir() -> PathBuf {
