@@ -379,6 +379,12 @@ fn summarize_overall_state(subsystems: &[SubsystemStatus]) -> HealthState {
     {
         return HealthState::Unknown;
     }
+    if subsystems
+        .iter()
+        .any(|status| matches!(status.state, HealthState::DisabledByPolicy))
+    {
+        return HealthState::DisabledByPolicy;
+    }
     HealthState::Healthy
 }
 
@@ -497,6 +503,20 @@ mod tests {
             details: Vec::new(),
         }];
         assert_eq!(summarize_overall_state(&subsystems), HealthState::Unknown);
+    }
+
+    #[test]
+    fn disabled_subsystem_makes_overall_disabled_by_policy() {
+        let subsystems = vec![SubsystemStatus {
+            name: "response_policy",
+            state: HealthState::DisabledByPolicy,
+            summary: "dry-run only".into(),
+            details: Vec::new(),
+        }];
+        assert_eq!(
+            summarize_overall_state(&subsystems),
+            HealthState::DisabledByPolicy
+        );
     }
 
     #[test]
