@@ -1,5 +1,7 @@
 # Vigil
 
+**WARNING! Vigil is under development. Use at your own risk**
+
 [![CI](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/YMRYMR/vigil/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml/badge.svg?branch=master&event=push)](https://github.com/YMRYMR/vigil/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/YMRYMR/vigil/badge)](https://securityscorecards.dev/viewer/?uri=github.com/YMRYMR/vigil)
@@ -31,6 +33,7 @@ contract and startup-safety rule.
 - [OpenSSF Best Practices controls](docs/OPENSSF-BEST-PRACTICES.md) — repository controls and maintainer settings
 - [Codebase inventory](docs/CODEBASES.md) — repositories that are part of Vigil
 - [Advisory source compliance](docs/ADVISORY-SOURCE-COMPLIANCE.md) — attribution, caching, and reuse rules for public vulnerability and advisory feeds
+- [Bundled YARA ruleset contract](docs/YARA-RULESET-COMPLIANCE.md) — source-selection, redistribution, provenance, and signed-update rules for future community rule packs
 
 ---
 
@@ -65,6 +68,28 @@ Ed25519 public key. Verify it offline with:
 ```bash
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
+
+---
+
+## Local YARA Rule Intake
+
+Phase 20's first safe foundation is integrity-checked local YARA rule intake.
+Operators can stage `.yar` or `.yara` files under the Vigil data directory in
+`yara-rules/`, with a matching `.sha256` sidecar beside each rule file.
+
+Verify those local rule files and record provenance with:
+
+```bash
+vigil --yara-rule-status
+```
+
+This command does not run YARA scans yet. It verifies trusted intake for future
+process and memory scanning work and fails closed on missing or mismatched
+sidecars.
+
+The future bundled community-rules path also has an explicit compliance and
+signed-update contract in
+[`docs/YARA-RULESET-COMPLIANCE.md`](docs/YARA-RULESET-COMPLIANCE.md).
 
 ---
 

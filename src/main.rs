@@ -12,8 +12,10 @@
     windows_subsystem = "windows"
 )]
 
+#[allow(clippy::redundant_closure)]
 mod advisory;
 mod advisory_history;
+#[allow(dead_code)]
 mod advisory_ioc;
 mod advisory_match;
 mod advisory_match_status;
@@ -25,6 +27,7 @@ mod artifact_provenance;
 mod audit;
 mod baseline;
 mod beacon;
+#[allow(dead_code)]
 mod blocklist;
 mod config;
 mod detection_depth;
@@ -54,6 +57,7 @@ mod tls_artifacts;
 mod types;
 mod ui;
 mod version_compare;
+mod yara_rules;
 
 pub use platform::{autostart, break_glass, service, tray};
 pub use security::{
@@ -311,6 +315,16 @@ fn main() {
         }
     }
 
+    if args.iter().any(|a| a == "--yara-rule-status") {
+        match yara_rules::run_status_cli() {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if let Some(idx) = args.iter().position(|a| a == "--sync-nvd") {
         let force = args
             .iter()
@@ -533,7 +547,7 @@ fn main() {
                 i += 1;
             }
             "--help" | "-h" => {
-                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service              register Vigil as a boot-time service\n  --uninstall-service            remove the boot-time service\n  --break-glass-recover          watchdog entrypoint for network recovery\n  --verify-update-manifest       MANIFEST SIG\n                                 verify a signed release manifest against the embedded trust anchor\n  --import-nvd-snapshot          SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]           fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status        show advisory cache status and source health\n  --import-nvd-change-history    SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE change-history JSON snapshots into the protected change-history cache\n  --sync-nvd-change-history [--force]\n                                 fetch or incrementally refresh the protected NVD CVE change-history cache from the live API\n  --advisory-change-history-status\n                                 show NVD change-history cache status and source health\n  --advisory-match-status        join the protected software inventory with the advisory cache\n                                 and print explainable local matches\n  --import-euvd                  SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more operator-supplied EUVD JSON snapshots into the protected advisory cache\n  --import-jvn                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more JVN / JVN iPedia JSON or JVNDBRSS XML snapshots into the protected advisory cache\n  --import-ncsc                  SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more NCSC public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --import-bsi                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more BSI or CERT-Bund public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --service-mode                 internal headless service entrypoint\n  --data-dir PATH                override Vigil data/config directory\n  -h, --help                     show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
+                println!("Vigil v{} — real-time network threat monitor\n\nUsage:  vigil [flags]\n\nFlags:\n  --install-service              register Vigil as a boot-time service\n  --uninstall-service            remove the boot-time service\n  --break-glass-recover          watchdog entrypoint for network recovery\n  --verify-update-manifest       MANIFEST SIG\n                                 verify a signed release manifest against the embedded trust anchor\n  --yara-rule-status             verify local `.yar` / `.yara` files under the Vigil data directory\n                                 and report integrity/provenance intake status\n  --import-nvd-snapshot          SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE JSON snapshots into the protected advisory cache\n  --sync-nvd [--force]           fetch or incrementally refresh the protected NVD CVE cache from the live API\n  --advisory-cache-status        show advisory cache status and source health\n  --import-nvd-change-history    SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more NVD CVE change-history JSON snapshots into the protected change-history cache\n  --sync-nvd-change-history [--force]\n                                 fetch or incrementally refresh the protected NVD CVE change-history cache from the live API\n  --advisory-change-history-status\n                                 show NVD change-history cache status and source health\n  --advisory-match-status        join the protected software inventory with the advisory cache\n                                 and print explainable local matches\n  --import-euvd                  SNAPSHOT.json [MORE.json ...]\n                                 import or merge one or more operator-supplied EUVD JSON snapshots into the protected advisory cache\n  --import-jvn                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more JVN / JVN iPedia JSON or JVNDBRSS XML snapshots into the protected advisory cache\n  --import-ncsc                  SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more NCSC public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --import-bsi                   SNAPSHOT.json|RSS.xml [MORE ...]\n                                 import or merge one or more BSI or CERT-Bund public advisory RSS or mirrored JSON snapshots into the protected advisory cache\n  --service-mode                 internal headless service entrypoint\n  --data-dir PATH                override Vigil data/config directory\n  -h, --help                     show this help and exit\n\nRun with no flags to launch the GUI.", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {}

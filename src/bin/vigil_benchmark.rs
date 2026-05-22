@@ -34,8 +34,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use chrono;
-
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const DEFAULT_COUNT: usize = 50;
