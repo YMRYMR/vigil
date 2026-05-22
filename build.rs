@@ -9,6 +9,62 @@
 //   falls back to generating `assets/vigil.ico` (16 / 32 / 48 px).
 //   The selected .ico is embedded via `winres`.
 
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+#[derive(Debug, Deserialize)]
+struct ImportedPackMetadata {
+    pack_name: String,
+    pack_version: String,
+    generated_at: String,
+    upstream_name: String,
+    upstream_source_url: String,
+    upstream_reference: String,
+    license: String,
+    files: Vec<ImportedPackFileMetadata>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ImportedPackFileMetadata {
+    relative_path: String,
+    source_path: String,
+    source_url: String,
+    source_reference: String,
+    category: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratedPackManifest<'a> {
+    schema_version: u32,
+    pack_name: &'a str,
+    pack_version: &'a str,
+    generated_at: &'a str,
+    upstream_name: &'a str,
+    upstream_source_url: &'a str,
+    upstream_reference: &'a str,
+    license: &'a str,
+    files: Vec<GeneratedPackFileManifest<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct GeneratedPackFileManifest<'a> {
+    relative_path: &'a str,
+    sha256: String,
+    rule_count: usize,
+    source_url: &'a str,
+    source_reference: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    category: Option<&'a str>,
+}
+
+#[derive(Debug)]
+struct EmbeddedPackFile {
+    relative_path: String,
+    repo_path: String,
+}
+
 fn main() {
     // Regenerate resources when script or icon assets change.
     println!("cargo:rerun-if-changed=build.rs");
@@ -19,6 +75,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/vigil_tray_red.ico");
     println!("cargo:rerun-if-changed=assets/vigil.png");
     println!("cargo:rerun-if-changed=assets/vigil.ico");
+    println!("cargo:rerun-if-changed=third_party/yara/inquest-community-core");
 
     std::fs::create_dir_all("assets").expect("failed to create assets/");
 
@@ -54,6 +111,7 @@ fn main() {
     ensure_tray_ico("assets/vigil_tray_green.ico", 0x22, 0xC5, 0x5E);
     ensure_tray_ico("assets/vigil_tray_orange.ico", 0xF5, 0x9E, 0x0B);
     ensure_tray_ico("assets/vigil_tray_red.ico", 0xEF, 0x44, 0x44);
+    generate_bundled_yara_pack();
 
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default() == "windows" {
         embed_windows_icon();
@@ -81,6 +139,152 @@ fn ensure_tray_ico(path: &str, r: u8, g: u8, b: u8) {
     }
     let ico = make_ico(&[16, 32, 48], r, g, b);
     std::fs::write(path, &ico).unwrap_or_else(|e| panic!("failed to write {path}: {e}"));
+}
+
+fn generate_bundled_yara_pack() {
+    let pack_root = Path::new("third_party/yara/inquest-community-core");
+    let metadata_path = pack_root.join("pack-metadata.json");
+    let metadata: ImportedPackMetadata = serde_json::from_str(
+        &fs::read_to_string(&metadata_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", metadata_path.display())),
+    )
+    .unwrap_or_else(|e| panic!("failed to parse {}: {e}", metadata_path.display()));
+
+    assert_non_empty(&metadata.pack_name, "pack_name");
+    assert_non_empty(&metadata.pack_version, "pack_version");
+    assert_non_empty(&metadata.generated_at, "generated_at");
+    assert_non_empty(&metadata.upstream_name, "upstream_name");
+    assert_non_empty(&metadata.upstream_source_url, "upstream_source_url");
+    assert_non_empty(&metadata.upstream_reference, "upstream_reference");
+    assert_non_empty(&metadata.license, "license");
+    if metadata.files.is_empty() {
+        panic!("{} must list at least one bundled YARA rule file", metadata_path.display());
+    }
+
+    let mut manifest_files = Vec::with_capacity(metadata.files.len());
+    let mut embedded_files = Vec::with_capacity(metadata.files.len());
+    for file in &metadata.files {
+        assert_non_empty(&file.relative_path, "files[].relative_path");
+        assert_non_empty(&file.source_path, "files[].source_path");
+        assert_non_empty(&file.source_url, "files[].source_url");
+        assert_non_empty(&file.source_reference, "files[].source_reference");
+        if let Some(category) = &file.category {
+            assert_non_empty(category, "files[].category");
+        }
+        ensure_normalized_relative_path(&file.relative_path, "files[].relative_path");
+        ensure_normalized_relative_path(&file.source_path, "files[].source_path");
+
+        let source_fs_path = pack_root.join(&file.source_path);
+        let source_text = fs::read_to_string(&source_fs_path)
+            .unwrap_or_else(|e| panic!("failed to read {}: {e}", source_fs_path.display()));
+        let rule_count = count_rule_definitions(&source_text);
+        if rule_count == 0 {
+            panic!(
+                "bundled YARA file {} does not contain any rule definitions",
+                source_fs_path.display()
+            );
+        }
+        manifest_files.push(GeneratedPackFileManifest {
+            relative_path: &file.relative_path,
+            sha256: sha256_hex(source_text.as_bytes()),
+            rule_count,
+            source_url: &file.source_url,
+            source_reference: &file.source_reference,
+            category: file.category.as_deref(),
+        });
+        embedded_files.push(EmbeddedPackFile {
+            relative_path: file.relative_path.clone(),
+            repo_path: normalize_repo_path(&source_fs_path),
+        });
+    }
+
+    let manifest = GeneratedPackManifest {
+        schema_version: 1,
+        pack_name: &metadata.pack_name,
+        pack_version: &metadata.pack_version,
+        generated_at: &metadata.generated_at,
+        upstream_name: &metadata.upstream_name,
+        upstream_source_url: &metadata.upstream_source_url,
+        upstream_reference: &metadata.upstream_reference,
+        license: &metadata.license,
+        files: manifest_files,
+    };
+
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR missing"));
+    fs::write(
+        out_dir.join("bundled_yara_pack_manifest.json"),
+        serde_json::to_string_pretty(&manifest)
+            .expect("failed to serialize generated bundled YARA manifest"),
+    )
+    .expect("failed to write bundled YARA manifest");
+    fs::write(
+        out_dir.join("bundled_yara_pack_files.rs"),
+        render_embedded_file_index(&embedded_files),
+    )
+    .expect("failed to write bundled YARA embedded file index");
+}
+
+fn render_embedded_file_index(files: &[EmbeddedPackFile]) -> String {
+    let mut rendered = String::from("const EMBEDDED_BUNDLED_RULE_FILES: &[EmbeddedBundledRuleFile] = &[\n");
+    for file in files {
+        rendered.push_str(&format!(
+            "    EmbeddedBundledRuleFile {{ relative_path: {relative_path:?}, source_text: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{repo_path}\")) }},\n",
+            relative_path = file.relative_path,
+            repo_path = file.repo_path,
+        ));
+    }
+    rendered.push_str("];\n");
+    rendered
+}
+
+fn normalize_repo_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn assert_non_empty(value: &str, field_name: &str) {
+    if value.trim().is_empty() {
+        panic!("{field_name} must not be empty");
+    }
+}
+
+fn ensure_normalized_relative_path(path: &str, field_name: &str) {
+    if path.trim().is_empty() {
+        panic!("{field_name} must not be empty");
+    }
+    if path.contains('\\') {
+        panic!("{field_name} must use slash-separated relative paths: {path}");
+    }
+    let candidate = Path::new(path);
+    for component in candidate.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                panic!("{field_name} must stay normalized and relative: {path}");
+            }
+        }
+    }
+}
+
+fn count_rule_definitions(source_text: &str) -> usize {
+    source_text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("rule ")
+                || trimmed.starts_with("private rule ")
+                || trimmed.starts_with("global rule ")
+                || trimmed.starts_with("private global rule ")
+                || trimmed.starts_with("global private rule ")
+        })
+        .count()
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
 }
 
 // ── ICO generation ────────────────────────────────────────────────────────────
