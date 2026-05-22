@@ -60,12 +60,14 @@ fn handle_realtime_event(
             "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB"
         ) {
             if let Some(info) = known.remove(&key) {
+                let snapshot = finalize_closed_snapshot(info);
                 let _ = tx.send(ConnEvent::Closed {
-                    pid: info.pid,
-                    local: info.local_addr.clone(),
-                    remote: info.remote_addr.clone(),
-                    snapshot: Box::new(finalize_closed_snapshot(info)),
+                    pid: snapshot.pid,
+                    local: snapshot.local_addr.clone(),
+                    remote: snapshot.remote_addr.clone(),
+                    snapshot: Box::new(snapshot.clone()),
                 });
+                let _ = tx.send(ConnEvent::New(snapshot));
             }
         }
         return;
@@ -374,12 +376,14 @@ async fn poll_loop(
                 let stale: Vec<ConnKey> = known.keys().filter(|k| !current_keys.contains(*k)).cloned().collect();
                 for key in stale {
                     if let Some(info) = known.remove(&key) {
+                        let snapshot = finalize_closed_snapshot(info);
                         let _ = tx.send(ConnEvent::Closed {
-                            pid: info.pid,
-                            local: info.local_addr.clone(),
-                            remote: info.remote_addr.clone(),
-                            snapshot: Box::new(finalize_closed_snapshot(info)),
+                            pid: snapshot.pid,
+                            local: snapshot.local_addr.clone(),
+                            remote: snapshot.remote_addr.clone(),
+                            snapshot: Box::new(snapshot.clone()),
                         });
+                        let _ = tx.send(ConnEvent::New(snapshot));
                     }
                 }
                 let active_pids: HashSet<u32> = known.keys().map(|k| k.pid).collect();
