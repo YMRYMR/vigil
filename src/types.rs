@@ -42,6 +42,12 @@ pub struct ConnInfo {
     pub status: String,
     #[serde(default)]
     pub protocol: TransportProtocol,
+    #[serde(default)]
+    pub first_seen_unix: u64,
+    #[serde(default)]
+    pub closed_unix: Option<u64>,
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
 
     pub score: u8,
     pub reasons: Vec<String>,
@@ -88,6 +94,9 @@ pub enum ConnEvent {
         pid: u32,
         local: String,
         remote: String,
+        timestamp: String,
+        closed_unix: u64,
+        duration_secs: Option<u64>,
     },
 }
 
