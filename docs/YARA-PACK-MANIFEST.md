@@ -91,10 +91,20 @@ A future signed YARA update should therefore include both:
 See `docs/YARA-PACK-MANIFEST.example.json` for a concrete schema-version-1
 example.
 
+## Current foundation status
+
+The schema and validator are no longer just a paper design:
+
+- `vigil --validate-yara-pack-manifest` now validates schema-version-1 manifest
+  metadata offline
+- `build.rs` generates a bundled-pack manifest at compile time from reviewed
+  pack metadata under `third_party/yara/inquest-community-core/`
+- `vigil --yara-rule-status` validates the embedded bundled-pack manifest and
+  bundled file hashes before reporting operator-visible status
+
 ## Safest next implementation step
 
-The manifest validator now gives maintainers a safe offline gate for future
-bundle metadata. The next safe code slice remains a build-time importer for one
-explicitly approved upstream community ruleset that emits this manifest format
-while preserving the source-selection and redistribution rules in
-`docs/YARA-RULESET-COMPLIANCE.md`.
+The next safe Phase 20 slice is runtime scan integration on top of the existing
+trusted-pack foundation: use the already embedded and validated bundled pack for
+process-on-create scanning before expanding to memory scanning, richer UI, or
+broader category controls.

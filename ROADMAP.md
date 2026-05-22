@@ -141,15 +141,16 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 
 ---
 
-## Phase 20 — YARA Signature Integration (OPEN backlog)
+## Phase 20 — YARA Signature Integration 🚧 FOUNDATIONS IN PLACE
 
 Add signature-based malware detection alongside the existing behavioural heuristics. YARA scans new processes and selected memory regions on creation, catches known malware families that behavioural scoring alone misses, and feeds matches into the existing scoring pipeline with clear `YARA rule: <name>` reasons and ATT&CK tags.
 
-- [ ] **Binary embedding of community YARA rules** — bundle a curated ruleset (e.g. Valhalla, YARA Forge) at compile time, updated via signed auto-update (Phase 23).
+- [x] **Binary embedding of community YARA rules foundations** — one reviewed MIT-licensed InQuest snapshot is vendored under `third_party/yara/inquest-community-core/`; `build.rs` generates a bundled-pack manifest plus embedded file index at compile time, and `vigil --yara-rule-status` validates the bundled hashes and rule counts offline. Signed refresh still belongs to Phase 23.
 - [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match.
 - [ ] **Memory region scan** — scan selected process memory (e.g., `--dump` target) for in-memory malware that hides from disk scanning.
 - [ ] **YARA rule management UI** — show matched rules in the inspector, allow operators to toggle rule categories, and view rule metadata (author, description, reference).
-- [ ] **Custom rule import** — let operators drop their own `.yar` files alongside blocklists, verified by `.sha256` sidecar (same integrity model as response rules). Intake/status foundation is now exposed through `vigil --yara-rule-status`.
+- [x] **Custom rule import foundations** — operators can drop `.yar` files alongside blocklists, verified by `.sha256` sidecars (same integrity model as response rules); `vigil --yara-rule-status` records provenance, validates intake, and mirrors parsed rule metadata into the protected SQLite state catalog for later scan and UI work.
+- [x] **Pack manifest validation foundation** — `vigil --validate-yara-pack-manifest PATH/TO/manifest.json` validates schema-version-1 bundled-pack metadata so future reviewed imports and signed-update payloads share the same provenance contract.
 
 ---
 
@@ -297,7 +298,7 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 7.x | 17 | Protocol expansion | ✅ Complete |
 | 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
 | 9.x | 19 | Native OS firewall engine | 🚧 Foundations in place |
-| 10.x | 20 | YARA signature integration | 🔲 Backlog |
+| 10.x | 20 | YARA signature integration | 🚧 Foundations in place |
 | 11.x | 21 | Security posture dashboard | 🔲 Backlog |
 | 12.x | 22 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
 | 13.x | 23 | Signed auto-update channel | 🔲 Backlog |
