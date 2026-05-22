@@ -19,6 +19,7 @@ const RULE_DIR: &str = "yara-rules";
 const MAX_RULE_FILES: usize = 256;
 const MAX_RULE_FILE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SCAN_DEPTH: usize = 4;
+const PACK_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const LOCAL_SOURCE_KEY: &str = "operator-local";
 const LOCAL_SOURCE_KIND: &str = "operator_local";
 const BUNDLED_PACK_MANIFEST_JSON: &str =
@@ -73,6 +74,12 @@ pub struct RuleLoadReport {
 struct PersistSummary {
     mirrored_files: usize,
     mirrored_rules: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PackManifestSummary {
+    manifest: BundledPackManifest,
+    total_rules: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,6 +172,33 @@ pub fn run_status_cli() -> Result<(), String> {
             report.failures
         ));
     }
+    Ok(())
+}
+
+pub fn run_pack_manifest_cli(path: &Path) -> Result<(), String> {
+    let summary = validate_pack_manifest_path(path)?;
+    println!("YARA pack manifest: {}", path.display());
+    println!("Schema version: {}", summary.manifest.schema_version);
+    println!("Pack name: {}", summary.manifest.pack_name);
+    println!("Pack version: {}", summary.manifest.pack_version);
+    println!("Generated at: {}", summary.manifest.generated_at);
+    println!("Upstream name: {}", summary.manifest.upstream_name);
+    println!("Upstream source: {}", summary.manifest.upstream_source_url);
+    println!("Upstream reference: {}", summary.manifest.upstream_reference);
+    println!("License: {}", summary.manifest.license);
+    println!("Files: {}", summary.manifest.files.len());
+    println!("Declared rules: {}", summary.total_rules);
+
+    for file in &summary.manifest.files {
+        match file.category.as_deref() {
+            Some(category) => println!(
+                "  - {} ({category}, {} rules)",
+                file.relative_path, file.rule_count
+            ),
+            None => println!("  - {} ({} rules)", file.relative_path, file.rule_count),
+        }
+    }
+
     Ok(())
 }
 
@@ -326,7 +360,10 @@ fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<Persi
             .map_err(|e| format!("insert YARA rule file {}: {e}", file.relative_path))?;
 
         for rule in &file.parsed_rules {
-            let rule_key = stable_key("yara_rule", &format!("{}::{}", file.relative_path, rule.rule_name));
+            let rule_key = stable_key(
+                "yara_rule",
+                &format!("{}::{}", file.relative_path, rule.rule_name),
+            );
             let payload = json!({
                 "metadata": rule.metadata,
                 "tags": rule.tags,
@@ -385,6 +422,75 @@ fn print_bundled_pack_status() -> Result<(), String> {
     Ok(())
 }
 
+fn validate_pack_manifest_path(path: &Path) -> Result<PackManifestSummary, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("failed to read YARA pack manifest {}: {e}", path.display()))?;
+    validate_pack_manifest_json(&content)
+}
+
+fn validate_pack_manifest_json(content: &str) -> Result<PackManifestSummary, String> {
+    let manifest: BundledPackManifest = serde_json::from_str(content)
+        .map_err(|e| format!("invalid YARA pack manifest JSON: {e}"))?;
+    validate_pack_manifest_document(&manifest)
+}
+
+fn validate_pack_manifest_document(
+    manifest: &BundledPackManifest,
+) -> Result<PackManifestSummary, String> {
+    if manifest.schema_version != PACK_MANIFEST_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported YARA pack manifest schema version {}; expected {}",
+            manifest.schema_version, PACK_MANIFEST_SCHEMA_VERSION
+        ));
+    }
+    ensure_non_empty(&manifest.pack_name, "pack_name")?;
+    ensure_non_empty(&manifest.pack_version, "pack_version")?;
+    ensure_non_empty(&manifest.generated_at, "generated_at")?;
+    ensure_non_empty(&manifest.upstream_name, "upstream_name")?;
+    ensure_non_empty(&manifest.upstream_source_url, "upstream_source_url")?;
+    ensure_non_empty(&manifest.upstream_reference, "upstream_reference")?;
+    ensure_non_empty(&manifest.license, "license")?;
+    if manifest.files.is_empty() {
+        return Err("YARA pack manifest must include at least one file entry".into());
+    }
+
+    let mut seen_paths = HashSet::with_capacity(manifest.files.len());
+    let mut total_rules = 0usize;
+    for (idx, file) in manifest.files.iter().enumerate() {
+        validate_pack_manifest_file(idx, file)?;
+        if !seen_paths.insert(file.relative_path.clone()) {
+            return Err(format!(
+                "YARA pack manifest files[{idx}] reuses duplicate relative_path {}",
+                file.relative_path
+            ));
+        }
+        total_rules = total_rules.saturating_add(file.rule_count);
+    }
+
+    Ok(PackManifestSummary {
+        manifest: manifest.clone(),
+        total_rules,
+    })
+}
+
+fn validate_pack_manifest_file(idx: usize, file: &BundledPackManifestFile) -> Result<(), String> {
+    ensure_non_empty(&file.relative_path, &format!("files[{idx}].relative_path"))?;
+    ensure_normalized_relative_path(&file.relative_path, &format!("files[{idx}].relative_path"))?;
+    ensure_lower_hex_sha256(&file.sha256, &format!("files[{idx}].sha256"))?;
+    if file.rule_count == 0 {
+        return Err(format!("files[{idx}].rule_count must be greater than zero"));
+    }
+    ensure_non_empty(&file.source_url, &format!("files[{idx}].source_url"))?;
+    ensure_non_empty(
+        &file.source_reference,
+        &format!("files[{idx}].source_reference"),
+    )?;
+    if let Some(category) = &file.category {
+        ensure_non_empty(category, &format!("files[{idx}].category"))?;
+    }
+    Ok(())
+}
+
 fn load_bundled_pack_status() -> Result<Option<BundledPackStatus>, String> {
     if EMBEDDED_BUNDLED_RULE_FILES.is_empty() {
         return Ok(None);
@@ -405,22 +511,7 @@ fn validate_bundled_pack_manifest(
     manifest: &BundledPackManifest,
     embedded_files: &[EmbeddedBundledRuleFile],
 ) -> Result<BundledPackStatus, String> {
-    if manifest.schema_version != 1 {
-        return Err(format!(
-            "unsupported bundled YARA manifest schema version {}",
-            manifest.schema_version
-        ));
-    }
-    ensure_non_empty(&manifest.pack_name, "pack_name")?;
-    ensure_non_empty(&manifest.pack_version, "pack_version")?;
-    ensure_non_empty(&manifest.generated_at, "generated_at")?;
-    ensure_non_empty(&manifest.upstream_name, "upstream_name")?;
-    ensure_non_empty(&manifest.upstream_source_url, "upstream_source_url")?;
-    ensure_non_empty(&manifest.upstream_reference, "upstream_reference")?;
-    ensure_non_empty(&manifest.license, "license")?;
-    if manifest.files.is_empty() {
-        return Err("bundled YARA pack manifest must list at least one file".into());
-    }
+    validate_pack_manifest_document(manifest)?;
 
     let mut embedded_by_path = HashMap::with_capacity(embedded_files.len());
     for file in embedded_files {
@@ -432,30 +523,8 @@ fn validate_bundled_pack_manifest(
         }
     }
 
-    let mut seen_paths = HashSet::with_capacity(manifest.files.len());
     let mut files = Vec::with_capacity(manifest.files.len());
     for file in &manifest.files {
-        ensure_non_empty(&file.relative_path, "files[].relative_path")?;
-        ensure_normalized_relative_path(&file.relative_path, "files[].relative_path")?;
-        if !seen_paths.insert(file.relative_path.clone()) {
-            return Err(format!(
-                "bundled YARA pack manifest lists duplicate relative path {}",
-                file.relative_path
-            ));
-        }
-        ensure_lower_hex_sha256(&file.sha256, "files[].sha256")?;
-        if file.rule_count == 0 {
-            return Err(format!(
-                "bundled YARA pack file {} must have a positive rule_count",
-                file.relative_path
-            ));
-        }
-        ensure_non_empty(&file.source_url, "files[].source_url")?;
-        ensure_non_empty(&file.source_reference, "files[].source_reference")?;
-        if let Some(category) = &file.category {
-            ensure_non_empty(category, "files[].category")?;
-        }
-
         let Some(source_text) = embedded_by_path.get(file.relative_path.as_str()) else {
             return Err(format!(
                 "bundled YARA pack file {} is listed in the manifest but missing from the embedded file index",
@@ -486,7 +555,7 @@ fn validate_bundled_pack_manifest(
         });
     }
 
-    if embedded_by_path.len() != seen_paths.len() {
+    if embedded_by_path.len() != manifest.files.len() {
         return Err(
             "bundled YARA embedded file index contains files that are missing from the manifest"
                 .into(),
@@ -1125,6 +1194,104 @@ private rule suspicious_sample : malware c2 {
         assert_eq!(rule.reference.as_deref(), Some("https://example.invalid/rule"));
         assert_eq!(rule.tags, vec!["malware".to_string(), "c2".to_string()]);
         assert_eq!(rule.strings_count, 2);
+    }
+
+    #[test]
+    fn example_pack_manifest_validates() {
+        let summary =
+            validate_pack_manifest_json(include_str!("../docs/YARA-PACK-MANIFEST.example.json"))
+                .unwrap();
+        assert_eq!(summary.manifest.pack_name, "community-core");
+        assert_eq!(summary.manifest.files.len(), 2);
+        assert_eq!(summary.total_rules, 16);
+    }
+
+    #[test]
+    fn pack_manifest_rejects_duplicate_paths() {
+        let manifest = format!(
+            r#"{{
+  "schema_version": 1,
+  "pack_name": "community-core",
+  "pack_version": "2026.05.22.1",
+  "generated_at": "2026-05-22T00:00:00Z",
+  "upstream_name": "Example",
+  "upstream_source_url": "https://example.invalid/source",
+  "upstream_reference": "refs/tags/test",
+  "license": "Apache-2.0",
+  "files": [
+    {{
+      "relative_path": "malware/core.yar",
+      "sha256": "{sha}",
+      "rule_count": 1,
+      "source_url": "https://example.invalid/source/core.yar",
+      "source_reference": "refs/tags/test"
+    }},
+    {{
+      "relative_path": "malware/core.yar",
+      "sha256": "{sha}",
+      "rule_count": 2,
+      "source_url": "https://example.invalid/source/core-v2.yar",
+      "source_reference": "refs/tags/test"
+    }}
+  ]
+}}"#,
+            sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let err = validate_pack_manifest_json(&manifest).unwrap_err();
+        assert!(err.contains("duplicate relative_path"));
+    }
+
+    #[test]
+    fn pack_manifest_rejects_traversal_path() {
+        let manifest = format!(
+            r#"{{
+  "schema_version": 1,
+  "pack_name": "community-core",
+  "pack_version": "2026.05.22.1",
+  "generated_at": "2026-05-22T00:00:00Z",
+  "upstream_name": "Example",
+  "upstream_source_url": "https://example.invalid/source",
+  "upstream_reference": "refs/tags/test",
+  "license": "Apache-2.0",
+  "files": [
+    {{
+      "relative_path": "../escape.yar",
+      "sha256": "{sha}",
+      "rule_count": 1,
+      "source_url": "https://example.invalid/source/escape.yar",
+      "source_reference": "refs/tags/test"
+    }}
+  ]
+}}"#,
+            sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        let err = validate_pack_manifest_json(&manifest).unwrap_err();
+        assert!(err.contains("normalized and relative"));
+    }
+
+    #[test]
+    fn pack_manifest_rejects_uppercase_sha() {
+        let manifest = r#"{
+  "schema_version": 1,
+  "pack_name": "community-core",
+  "pack_version": "2026.05.22.1",
+  "generated_at": "2026-05-22T00:00:00Z",
+  "upstream_name": "Example",
+  "upstream_source_url": "https://example.invalid/source",
+  "upstream_reference": "refs/tags/test",
+  "license": "Apache-2.0",
+  "files": [
+    {
+      "relative_path": "malware/core.yar",
+      "sha256": "ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+      "rule_count": 1,
+      "source_url": "https://example.invalid/source/core.yar",
+      "source_reference": "refs/tags/test"
+    }
+  ]
+}"#;
+        let err = validate_pack_manifest_json(manifest).unwrap_err();
+        assert!(err.contains("64 lowercase hex characters"));
     }
 
     fn unique_temp_dir() -> PathBuf {
