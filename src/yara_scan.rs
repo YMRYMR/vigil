@@ -6,16 +6,15 @@
 
 use crate::storage::db::StorageDb;
 use crate::types::{ConnEvent, ConnInfo};
-use dashmap::DashMap;
+use dashmap::{mapref::entry::Entry, DashMap};
 use rusqlite::params;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
 use std::sync::mpsc::{self, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 use yara_x::{Compiler, Scanner, SourceCode};
@@ -41,14 +40,24 @@ include!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_files.rs"));
 struct ScanTargetKey {
     path: String,
     size_bytes: u64,
-    modified_unix: u64,
+    modified_unix_nanos: u64,
+    created_unix_nanos: u64,
 }
 
 #[derive(Debug, Clone)]
 struct ScanRequest {
     key: ScanTargetKey,
+}
+
+#[derive(Debug, Clone)]
+struct PendingScanContext {
     info: ConnInfo,
     threshold: u8,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PendingScanBatch {
+    contexts: Vec<PendingScanContext>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +88,7 @@ struct CompiledRuleSet {
 
 pub struct YaraScanScheduler {
     tx: SyncSender<ScanRequest>,
-    pending: Arc<Mutex<HashSet<ScanTargetKey>>>,
+    pending: Arc<DashMap<ScanTargetKey, PendingScanBatch>>,
     cache: Arc<DashMap<ScanTargetKey, CachedScanVerdict>>,
 }
 
@@ -115,7 +124,7 @@ pub fn enqueue_process_scan(info: ConnInfo, threshold: u8) {
 impl YaraScanScheduler {
     fn start(tx: broadcast::Sender<ConnEvent>) -> Arc<Self> {
         let (queue_tx, queue_rx) = mpsc::sync_channel::<ScanRequest>(SCAN_QUEUE_CAPACITY);
-        let pending = Arc::new(Mutex::new(HashSet::new()));
+        let pending = Arc::new(DashMap::new());
         let cache = Arc::new(DashMap::new());
         let scheduler = Arc::new(Self {
             tx: queue_tx,
@@ -138,6 +147,15 @@ impl YaraScanScheduler {
                 }
 
                 while let Ok(request) = queue_rx.recv() {
+                    let has_contexts = pending
+                        .get(&request.key)
+                        .map(|batch| !batch.contexts.is_empty())
+                        .unwrap_or(false);
+                    if !has_contexts {
+                        pending.remove(&request.key);
+                        continue;
+                    }
+
                     let result = if let Some(compiled_rules) = compiled.as_ref() {
                         match scan_target(compiled_rules, &request.key) {
                             Ok(verdict) => Some(verdict),
@@ -164,27 +182,32 @@ impl YaraScanScheduler {
                             );
                         }
 
+                        let pending_contexts = pending
+                            .remove(&request.key)
+                            .map(|(_, batch)| batch.contexts)
+                            .unwrap_or_default();
+
                         if !verdict.matched_rules.is_empty() {
-                            let mut updated = request.info.clone();
-                            let matched = apply_verdict_overlay(
-                                &mut updated.score,
-                                &mut updated.reasons,
-                                &mut updated.attack_tags,
-                                &verdict,
-                            );
-                            if matched {
-                                let event = if updated.score >= request.threshold {
-                                    ConnEvent::Alert(updated)
-                                } else {
-                                    ConnEvent::New(updated)
-                                };
-                                let _ = tx.send(event);
+                            for context in pending_contexts {
+                                let mut updated = context.info.clone();
+                                let matched = apply_verdict_overlay(
+                                    &mut updated.score,
+                                    &mut updated.reasons,
+                                    &mut updated.attack_tags,
+                                    &verdict,
+                                );
+                                if matched {
+                                    let event = if updated.score >= context.threshold {
+                                        ConnEvent::Alert(updated)
+                                    } else {
+                                        ConnEvent::New(updated)
+                                    };
+                                    let _ = tx.send(event);
+                                }
                             }
                         }
-                    }
-
-                    if let Ok(mut guard) = pending.lock() {
-                        guard.remove(&request.key);
+                    } else {
+                        pending.remove(&request.key);
                     }
                 }
             })
@@ -201,27 +224,23 @@ impl YaraScanScheduler {
             return;
         }
 
-        {
-            let Ok(mut pending) = self.pending.lock() else {
-                tracing::warn!("YARA scan queue lock poisoned");
-                return;
-            };
-            if !pending.insert(key.clone()) {
+        let request = match self.pending.entry(key.clone()) {
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().contexts.push(PendingScanContext { info, threshold });
                 return;
             }
-        }
-
-        let request = ScanRequest {
-            key: key.clone(),
-            info,
-            threshold,
+            Entry::Vacant(entry) => {
+                entry.insert(PendingScanBatch {
+                    contexts: vec![PendingScanContext { info, threshold }],
+                });
+                ScanRequest { key: key.clone() }
+            }
         };
+
         match self.tx.try_send(request) {
             Ok(()) => {}
             Err(TrySendError::Full(_)) => {
-                if let Ok(mut pending) = self.pending.lock() {
-                    pending.remove(&key);
-                }
+                self.pending.remove(&key);
                 tracing::warn!(
                     path = %key.path,
                     capacity = SCAN_QUEUE_CAPACITY,
@@ -229,9 +248,7 @@ impl YaraScanScheduler {
                 );
             }
             Err(TrySendError::Disconnected(_)) => {
-                if let Ok(mut pending) = self.pending.lock() {
-                    pending.remove(&key);
-                }
+                self.pending.remove(&key);
                 tracing::warn!("YARA scan worker unavailable; dropping scan request");
             }
         }
@@ -269,8 +286,9 @@ fn compile_runtime_rules() -> Result<Option<CompiledRuleSet>, String> {
         return Ok(None);
     }
 
+    let digest = hasher.finalize();
     Ok(Some(CompiledRuleSet {
-        digest: sha256_hex(&hasher.finalize()),
+        digest: hex_encode(digest.as_ref()),
         rules: compiler.build(),
     }))
 }
@@ -364,7 +382,8 @@ fn persist_scan_result(key: &ScanTargetKey, verdict: &CachedScanVerdict) -> Resu
 
         let payload = json!({
             "size_bytes": key.size_bytes,
-            "modified_unix": key.modified_unix,
+            "modified_unix_nanos": key.modified_unix_nanos,
+            "created_unix_nanos": key.created_unix_nanos,
             "matched_rules": verdict
                 .matched_rules
                 .iter()
@@ -485,16 +504,20 @@ fn scan_target_key(proc_path: &str) -> Option<ScanTargetKey> {
     if !metadata.is_file() || metadata.len() > MAX_SCAN_FILE_BYTES {
         return None;
     }
-    let modified_unix = metadata
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default();
+
     Some(ScanTargetKey {
         path: proc_path.to_string(),
         size_bytes: metadata.len(),
-        modified_unix,
+        modified_unix_nanos: metadata
+            .modified()
+            .ok()
+            .and_then(system_time_to_unix_nanos)
+            .unwrap_or_default(),
+        created_unix_nanos: metadata
+            .created()
+            .ok()
+            .and_then(system_time_to_unix_nanos)
+            .unwrap_or_default(),
     })
 }
 
@@ -542,19 +565,28 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         }
         hasher.update(&buffer[..read]);
     }
-    Ok(sha256_hex(&hasher.finalize()))
+    let digest = hasher.finalize();
+    Ok(hex_encode(digest.as_ref()))
 }
 
 fn stable_key(kind: &str, value: &str) -> String {
-    sha256_hex(format!("{kind}:{value}").as_bytes())
+    sha256_digest_hex(format!("{kind}:{value}").as_bytes())
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+fn sha256_digest_hex(data: &[u8]) -> String {
     let digest = Sha256::digest(data);
-    digest
-        .iter()
+    hex_encode(digest.as_ref())
+}
+
+fn hex_encode(data: &[u8]) -> String {
+    data.iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>()
+}
+
+fn system_time_to_unix_nanos(time: SystemTime) -> Option<u64> {
+    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(duration.as_nanos()).ok()
 }
 
 fn unix_now() -> u64 {
@@ -609,5 +641,27 @@ mod tests {
         assert!(reasons.iter().any(|reason| reason == "YARA rule: test_two"));
         assert_eq!(attack_tags.len(), 2);
         assert!(attack_tags.iter().any(|tag| tag == "ATT&CK:T1071"));
+    }
+
+    #[test]
+    fn sha256_file_returns_canonical_digest() {
+        let path = std::env::temp_dir().join(format!(
+            "vigil-yara-sha256-{}-{}.bin",
+            std::process::id(),
+            unix_now()
+        ));
+        fs::write(&path, b"abc").expect("write temp file");
+        let digest = sha256_file(&path).expect("hash file");
+        let _ = fs::remove_file(&path);
+        assert_eq!(
+            digest,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn system_time_to_unix_nanos_preserves_subsecond_precision() {
+        let time = UNIX_EPOCH + Duration::from_nanos(1_234_567_890);
+        assert_eq!(system_time_to_unix_nanos(time), Some(1_234_567_890));
     }
 }
