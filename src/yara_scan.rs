@@ -147,14 +147,6 @@ impl YaraScanScheduler {
                 }
 
                 while let Ok(request) = queue_rx.recv() {
-                    let pending_contexts = pending
-                        .remove(&request.key)
-                        .map(|(_, batch)| batch.contexts)
-                        .unwrap_or_default();
-                    if pending_contexts.is_empty() {
-                        continue;
-                    }
-
                     let result = if let Some(compiled_rules) = compiled.as_ref() {
                         match scan_target(compiled_rules, &request.key) {
                             Ok(verdict) => Some(verdict),
@@ -170,6 +162,11 @@ impl YaraScanScheduler {
                     } else {
                         None
                     };
+
+                    let pending_contexts = pending
+                        .remove(&request.key)
+                        .map(|(_, batch)| batch.contexts)
+                        .unwrap_or_default();
 
                     if let Some(verdict) = result {
                         cache.insert(request.key.clone(), verdict.clone());
