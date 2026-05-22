@@ -60,11 +60,14 @@ fn handle_realtime_event(
             "CLOSED" | "TIME_WAIT" | "CLOSE_WAIT" | "DELETE_TCB"
         ) {
             if let Some(info) = known.remove(&key) {
+                let snapshot = finalize_closed_snapshot(info);
                 let _ = tx.send(ConnEvent::Closed {
-                    pid: info.pid,
-                    local: info.local_addr.clone(),
-                    remote: info.remote_addr.clone(),
+                    pid: snapshot.pid,
+                    local: snapshot.local_addr.clone(),
+                    remote: snapshot.remote_addr.clone(),
+                    snapshot: Box::new(snapshot.clone()),
                 });
+                let _ = tx.send(ConnEvent::New(snapshot));
             }
         }
         return;
@@ -373,11 +376,14 @@ async fn poll_loop(
                 let stale: Vec<ConnKey> = known.keys().filter(|k| !current_keys.contains(*k)).cloned().collect();
                 for key in stale {
                     if let Some(info) = known.remove(&key) {
+                        let snapshot = finalize_closed_snapshot(info);
                         let _ = tx.send(ConnEvent::Closed {
-                            pid: info.pid,
-                            local: info.local_addr.clone(),
-                            remote: info.remote_addr.clone(),
+                            pid: snapshot.pid,
+                            local: snapshot.local_addr.clone(),
+                            remote: snapshot.remote_addr.clone(),
+                            snapshot: Box::new(snapshot.clone()),
                         });
+                        let _ = tx.send(ConnEvent::New(snapshot));
                     }
                 }
                 let active_pids: HashSet<u32> = known.keys().map(|k| k.pid).collect();
@@ -449,6 +455,9 @@ fn process_conn(
             },
             status: raw_conn.status.clone(),
             protocol: raw_conn.protocol,
+            first_seen_unix: unix_now(),
+            closed_unix: None,
+            duration_secs: None,
             score: 0,
             reasons: vec![],
             attack_tags: vec![],
@@ -476,6 +485,7 @@ fn process_conn(
         return;
     }
     let total_start = std::time::Instant::now();
+    let first_seen_unix = unix_now();
 
     let proc = process::collect(raw_conn.pid, svc_map);
     let t_process = total_start.elapsed();
@@ -694,6 +704,9 @@ fn process_conn(
         remote_addr,
         status: raw_conn.status.clone(),
         protocol: raw_conn.protocol,
+        first_seen_unix,
+        closed_unix: None,
+        duration_secs: None,
         score: score_value,
         reasons: reasons.clone(),
         attack_tags,
@@ -727,6 +740,22 @@ fn process_conn(
         return;
     };
     let _ = tx.send(event);
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
+fn finalize_closed_snapshot(mut info: ConnInfo) -> ConnInfo {
+    let closed_unix = unix_now();
+    info.timestamp = Local::now().format("%H:%M:%S").to_string();
+    info.status = "CLOSED".to_string();
+    info.closed_unix = Some(closed_unix);
+    info.duration_secs = Some(closed_unix.saturating_sub(info.first_seen_unix));
+    info
 }
 
 /// Returns `true` when an address string contains a publicly routable IP.
