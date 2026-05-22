@@ -119,10 +119,21 @@ Bundled rules and operator-imported rules must keep separate provenance so a
 local custom-rule edit never appears to be a vendor pack update, and a bundled
 pack refresh never overwrites operator-managed files.
 
+## Current foundation status
+
+The first safe bundled-pack slice is now in the tree:
+
+- one reviewed MIT-licensed InQuest snapshot is imported at build time under
+  `third_party/yara/inquest-community-core/`
+- compile-time manifest generation preserves upstream URL, pinned reference,
+  license, category, SHA-256, and rule-count metadata
+- `vigil --yara-rule-status` validates the embedded pack before surfacing it to
+  operators, keeping bundled provenance separate from operator-managed local
+  rules
+
 ## Safest next implementation step
 
-This contract makes the next unfinished Phase 20 item more concrete. The
-manifest-format foundation now exists in `docs/YARA-PACK-MANIFEST.md`. The next
-safe code slice is a build-time importer for one explicitly approved upstream
-community ruleset that emits that manifest while preserving the provenance,
-redistribution, and signed-update rules above.
+The next safe Phase 20 step is to use that already reviewed and validated pack
+for process-on-create scanning. Broader source expansion, category toggles, and
+memory scanning can stay behind that narrower execution path so Vigil does not
+skip ahead to a larger and less-auditable YARA integration all at once.
