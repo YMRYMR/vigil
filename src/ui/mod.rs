@@ -994,19 +994,17 @@ impl VigilApp {
             inspector::Action::Kill => {
                 self.kill_confirm = true;
             }
-            inspector::Action::RequestAdmin => {
-                match crate::autostart::relaunch_as_admin() {
-                    Ok(()) => {
-                        std::process::exit(0);
-                    }
-                    Err(err) => {
-                        self.push_notification(
-                            NotificationKind::Error,
-                            format!("Could not elevate: {err}"),
-                        );
-                    }
+            inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
+                Ok(()) => {
+                    std::process::exit(0);
                 }
-            }
+                Err(err) => {
+                    self.push_notification(
+                        NotificationKind::Error,
+                        format!("Could not elevate: {err}"),
+                    );
+                }
+            },
             inspector::Action::BlockRemote(preset) => {
                 if let Some(info) = selected_info {
                     if let Some(conn) = info.selected_connection.as_ref() {
@@ -1728,9 +1726,11 @@ impl VigilApp {
                                         .strong(),
                                 );
                                 ui.label(
-                                    egui::RichText::new("Please wait while the network action completes.")
-                                        .color(theme::TEXT3)
-                                        .size(10.5),
+                                    egui::RichText::new(
+                                        "Please wait while the network action completes.",
+                                    )
+                                    .color(theme::TEXT3)
+                                    .size(10.5),
                                 );
                             });
                         });
