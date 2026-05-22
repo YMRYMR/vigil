@@ -1,0 +1,18 @@
+{
+  "pack_name": "community-core",
+  "pack_version": "2026.05.22.1",
+  "generated_at": "2026-05-22T10:20:00Z",
+  "upstream_name": "InQuest yara-rules",
+  "upstream_source_url": "https://github.com/InQuest/yara-rules",
+  "upstream_reference": "fd87530863cca77384f37ae5485707a02207d715",
+  "license": "MIT",
+  "files": [
+    {
+      "relative_path": "research/Base64_Encoded_Powershell_Directives.rule",
+      "source_path": "Base64_Encoded_Powershell_Directives.rule",
+      "source_url": "https://github.com/InQuest/yara-rules/blob/master/Base64_Encoded_Powershell_Directives.rule",
+      "source_reference": "fd87530863cca77384f37ae5485707a02207d715",
+      "category": "research"
+    }
+  ]
+}
