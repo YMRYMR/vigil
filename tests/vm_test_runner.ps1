@@ -58,12 +58,12 @@ else{
 Step "Wait SSH"
 $null=cmd /c "echo y | plink -P $VM_PORT -pw $VM_PASSWORD $VM_USER@$VM_HOST exit" 2>&1
 for($i=0;$i -lt 180;$i+=5){
-    $r=cmd /c "ssh -p $VM_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=3 -o AddressFamily=inet $VM_USER@$VM_HOST echo ok" 2>&1
-    if($r -eq "ok"){Write-Host "  ready ${i}s" -ForegroundColor Green;break}
+    $r=Ssh "echo ok"
+    if("$r".Trim() -eq "ok"){Write-Host "  ready ${i}s" -ForegroundColor Green;break}
     if($i%15 -eq 0){Write-Host "  wait $i s" -ForegroundColor DarkYellow}
     sleep 5
 }
-if($r -ne "ok"){throw "SSH timeout"}
+if("$r".Trim() -ne "ok"){throw "SSH timeout"}
 
 Step "Setup VM"
 # Write a helper script that runs sudo with password, upload it, execute it.
