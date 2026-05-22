@@ -61,6 +61,15 @@ These rules are deliberately conservative because the manifest will eventually
 sit on the trust boundary between reviewed upstream rule text and operator
 systems.
 
+Validate a candidate manifest offline with:
+
+```bash
+vigil --validate-yara-pack-manifest PATH/TO/manifest.json
+```
+
+That CLI validates the manifest schema and provenance metadata only. It does not
+fetch upstream files, rebuild a pack, or execute YARA scans.
+
 ## Relationship to the signed update manifest
 
 This pack manifest does not replace Vigil's signed release manifest.
@@ -84,7 +93,8 @@ example.
 
 ## Safest next implementation step
 
-The next safe Phase 20 slice is a build-time importer for one explicitly
-approved upstream community ruleset that emits this manifest format while
-preserving the source-selection and redistribution rules in
+The manifest validator now gives maintainers a safe offline gate for future
+bundle metadata. The next safe code slice remains a build-time importer for one
+explicitly approved upstream community ruleset that emits this manifest format
+while preserving the source-selection and redistribution rules in
 `docs/YARA-RULESET-COMPLIANCE.md`.
