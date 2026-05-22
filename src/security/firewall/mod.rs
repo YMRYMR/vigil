@@ -67,7 +67,7 @@ pub struct FirewallSnapshot {
 ///
 /// Each platform implements this trait using its native API:
 /// - **Windows**: `WfpBackend` - direct WFP user-mode API (`fwpmu.dll`)
-/// - **Linux**: `NftablesBackend` - nftables via `nft` CLI (with iptables fallback pub trait FirewallBackend {
+/// - **Linux**: `NftablesBackend` - nftables via `nft` CLI (with iptables fallback)
 #[allow(dead_code)]
 pub trait FirewallBackend: Send + Sync {
     /// Unique label for this backend (e.g. "WFP", "nftables", "iptables").
