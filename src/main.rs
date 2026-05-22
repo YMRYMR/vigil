@@ -58,6 +58,7 @@ mod types;
 mod ui;
 mod version_compare;
 mod yara_rules;
+mod yara_scan;
 
 pub use platform::{autostart, break_glass, service, tray};
 pub use security::{
