@@ -146,7 +146,7 @@ Replace the OS firewall with Vigil's own WFP (Windows) / nftables/XDP (Linux) en
 Add signature-based malware detection alongside the existing behavioural heuristics. YARA scans new processes and selected memory regions on creation, catches known malware families that behavioural scoring alone misses, and feeds matches into the existing scoring pipeline with clear `YARA rule: <name>` reasons and ATT&CK tags.
 
 - [x] **Binary embedding of community YARA rules foundations** — one reviewed MIT-licensed InQuest snapshot is vendored under `third_party/yara/inquest-community-core/`; `build.rs` generates a bundled-pack manifest plus embedded file index at compile time, and `vigil --yara-rule-status` validates the bundled hashes and rule counts offline. Signed refresh still belongs to Phase 23.
-- [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match.
+- [ ] **Process scan on creation** — scan the executable path with YARA when a new process is detected; score bump on match. The first execution contract lives in `docs/YARA-PROCESS-SCAN.md`.
 - [ ] **Memory region scan** — scan selected process memory (e.g., `--dump` target) for in-memory malware that hides from disk scanning.
 - [ ] **YARA rule management UI** — show matched rules in the inspector, allow operators to toggle rule categories, and view rule metadata (author, description, reference).
 - [x] **Custom rule import foundations** — operators can drop `.yar` files alongside blocklists, verified by `.sha256` sidecars (same integrity model as response rules); `vigil --yara-rule-status` records provenance, validates intake, and mirrors parsed rule metadata into the protected SQLite state catalog for later scan and UI work.
