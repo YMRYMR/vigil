@@ -63,8 +63,6 @@ pub enum Action {
     UnblockRemote,
     UnblockDomain,
     UnblockProcess,
-    IsolateMachine,
-    RestoreNetwork,
     KillConfirmed,
     KillCancelled,
 }
@@ -392,29 +390,8 @@ fn show_detail(
             }
 
             if isolation_enabled {
-                let restoring = isolated;
-                action_cells.push(ActionCell {
-                    action: if isolated {
-                        Action::RestoreNetwork
-                    } else {
-                        Action::IsolateMachine
-                    },
-                    label: if isolated {
-                        "Restore network".into()
-                    } else {
-                        "Isolate network".into()
-                    },
-                    hover: if isolated {
-                        "Restore saved firewall and adapter state from before isolation.".into()
-                    } else {
-                        "Immediately isolate the machine network.".into()
-                    },
-                    tone: if restoring {
-                        ActionTone::Accent
-                    } else {
-                        ActionTone::Danger
-                    },
-                });
+                // Network Isolation / Restore is available in the global
+                // header bar — removing the redundant per-process button.
             }
 
             render_action_grid(ui, "active_response_actions", &action_cells, &mut action);
