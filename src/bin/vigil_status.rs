@@ -4,16 +4,6 @@
 //! CLI process can check without attaching to the live GUI/service runtime. Live
 //! runtime health will be layered on top of the same JSON contract later.
 
-#[path = "../security/policy.rs"]
-pub(crate) mod security_policy;
-
-mod security {
-    pub use crate::security_policy as policy;
-}
-
-#[path = "../config.rs"]
-mod config;
-
 #[path = "../status_report.rs"]
 mod status_report;
 
