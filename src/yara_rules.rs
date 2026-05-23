@@ -478,10 +478,7 @@ fn validate_pack_manifest_document(
 
 fn validate_pack_manifest_file(idx: usize, file: &BundledPackManifestFile) -> Result<(), String> {
     ensure_non_empty(&file.relative_path, &format!("files[{idx}].relative_path"))?;
-    ensure_normalized_relative_path(
-        &file.relative_path,
-        &format!("files[{idx}].relative_path"),
-    )?;
+    ensure_normalized_relative_path(&file.relative_path, &format!("files[{idx}].relative_path"))?;
     ensure_lower_hex_sha256(&file.sha256, &format!("files[{idx}].sha256"))?;
     if file.rule_count == 0 {
         return Err(format!("files[{idx}].rule_count must be greater than zero"));
