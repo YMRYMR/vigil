@@ -131,3 +131,4 @@ pub struct PipelineTimings {
     pub tamper_us: u64,
     pub total_us: u64,
 }
+
