@@ -795,12 +795,12 @@ impl VigilApp {
                         NotificationKind::Warning,
                         format!(
                             "Alert: {} ({}) → {}",
-                            info.proc_name,
-                            info.pid,
-                            info.remote_addr
+                            info.proc_name, info.pid, info.remote_addr
                         ),
                     );
-                    let _ = self.tray_tx.try_send(TrayCmd::Alert(Box::new(info.clone())));
+                    let _ = self
+                        .tray_tx
+                        .try_send(TrayCmd::Alert(Box::new(info.clone())));
                 }
                 ConnEvent::Closed { pid } => {
                     remove_pid(&mut self.activity, pid);
@@ -965,10 +965,8 @@ impl VigilApp {
                         if let Some(target) =
                             active_response::extract_remote_target(&conn.remote_addr)
                         {
-                            self.response_confirm = Some(PendingResponse::BlockRemote {
-                                target,
-                                preset,
-                            });
+                            self.response_confirm =
+                                Some(PendingResponse::BlockRemote { target, preset });
                         }
                     }
                 }
@@ -1034,9 +1032,8 @@ impl VigilApp {
             inspector::Action::KillConnection => {
                 if let Some(info) = selected_info {
                     if let Some(conn) = info.selected_connection.as_ref() {
-                        self.response_confirm = Some(PendingResponse::KillConnection(Box::new(
-                            conn.clone(),
-                        )));
+                        self.response_confirm =
+                            Some(PendingResponse::KillConnection(Box::new(conn.clone())));
                     }
                 }
             }
@@ -1169,11 +1166,7 @@ impl VigilApp {
                     .inner_margin(egui::Margin::symmetric(14, 12)),
             )
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(message)
-                        .color(theme::TEXT)
-                        .size(11.0),
-                );
+                ui.label(egui::RichText::new(message).color(theme::TEXT).size(11.0));
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     if ui
@@ -1654,9 +1647,7 @@ impl VigilApp {
     }
     fn refresh_active_response_state(&mut self) {
         let now = std::time::Instant::now();
-        if now.duration_since(self.last_response_reconcile)
-            >= std::time::Duration::from_secs(1)
-        {
+        if now.duration_since(self.last_response_reconcile) >= std::time::Duration::from_secs(1) {
             self.last_response_reconcile = now;
             self.response_status = active_response::status();
             self.inspector_snapshot.status = self.response_status;
