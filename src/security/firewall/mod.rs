@@ -409,6 +409,9 @@ mod tests {
 
     #[test]
     fn firewall_usage_lists_supported_subcommands() {
-        assert_eq!(FIREWALL_USAGE, "Usage: vigil --firewall <status|list|export|panic|help>");
+        assert_eq!(
+            FIREWALL_USAGE,
+            "Usage: vigil --firewall <status|list|export|panic|help>"
+        );
     }
 }

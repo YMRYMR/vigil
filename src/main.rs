@@ -326,7 +326,10 @@ fn main() {
         }
     }
 
-    if let Some(idx) = args.iter().position(|a| a == "--validate-yara-pack-manifest") {
+    if let Some(idx) = args
+        .iter()
+        .position(|a| a == "--validate-yara-pack-manifest")
+    {
         let manifest = args.get(idx + 1).unwrap_or_else(|| {
             eprintln!(
                 "Missing manifest path.\n\nUsage: vigil --validate-yara-pack-manifest PATH/TO/manifest.json"
