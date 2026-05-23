@@ -184,7 +184,10 @@ pub fn run_pack_manifest_cli(path: &Path) -> Result<(), String> {
     println!("Generated at: {}", summary.manifest.generated_at);
     println!("Upstream name: {}", summary.manifest.upstream_name);
     println!("Upstream source: {}", summary.manifest.upstream_source_url);
-    println!("Upstream reference: {}", summary.manifest.upstream_reference);
+    println!(
+        "Upstream reference: {}",
+        summary.manifest.upstream_reference
+    );
     println!("License: {}", summary.manifest.license);
     println!("Files: {}", summary.manifest.files.len());
     println!("Declared rules: {}", summary.total_rules);
@@ -475,7 +478,10 @@ fn validate_pack_manifest_document(
 
 fn validate_pack_manifest_file(idx: usize, file: &BundledPackManifestFile) -> Result<(), String> {
     ensure_non_empty(&file.relative_path, &format!("files[{idx}].relative_path"))?;
-    ensure_normalized_relative_path(&file.relative_path, &format!("files[{idx}].relative_path"))?;
+    ensure_normalized_relative_path(
+        &file.relative_path,
+        &format!("files[{idx}].relative_path"),
+    )?;
     ensure_lower_hex_sha256(&file.sha256, &format!("files[{idx}].sha256"))?;
     if file.rule_count == 0 {
         return Err(format!("files[{idx}].rule_count must be greater than zero"));
@@ -515,7 +521,10 @@ fn validate_bundled_pack_manifest(
 
     let mut embedded_by_path = HashMap::with_capacity(embedded_files.len());
     for file in embedded_files {
-        if embedded_by_path.insert(file.relative_path, file.source_text).is_some() {
+        if embedded_by_path
+            .insert(file.relative_path, file.source_text)
+            .is_some()
+        {
             return Err(format!(
                 "bundled YARA pack embeds duplicate relative path {}",
                 file.relative_path
@@ -942,21 +951,32 @@ fn ensure_non_empty(value: &str, field_name: &str) -> Result<(), String> {
 }
 
 fn ensure_lower_hex_sha256(value: &str, field_name: &str) -> Result<(), String> {
-    if value.len() != 64 || !value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
-        return Err(format!("{field_name} must be exactly 64 lowercase hex characters"));
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!(
+            "{field_name} must be exactly 64 lowercase hex characters"
+        ));
     }
     Ok(())
 }
 
 fn ensure_normalized_relative_path(path: &str, field_name: &str) -> Result<(), String> {
     if path.contains('\\') {
-        return Err(format!("{field_name} must use slash-separated relative paths: {path}"));
+        return Err(format!(
+            "{field_name} must use slash-separated relative paths: {path}"
+        ));
     }
     let candidate = Path::new(path);
     for component in candidate.components() {
         match component {
             Component::Normal(_) => {}
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(format!(
                     "{field_name} must stay normalized and relative: {path}"
                 ));
@@ -1134,8 +1154,7 @@ mod tests {
             license: "MIT".into(),
             files: vec![BundledPackManifestFile {
                 relative_path: "research/sample.rule".into(),
-                sha256: "0000000000000000000000000000000000000000000000000000000000000000"
-                    .into(),
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000".into(),
                 rule_count: 1,
                 source_url: "https://example.invalid/rule".into(),
                 source_reference: "abc123".into(),
@@ -1191,7 +1210,10 @@ private rule suspicious_sample : malware c2 {
         assert_eq!(rule.category.as_deref(), Some("research"));
         assert_eq!(rule.author.as_deref(), Some("analyst"));
         assert_eq!(rule.description.as_deref(), Some("suspicious sample"));
-        assert_eq!(rule.reference.as_deref(), Some("https://example.invalid/rule"));
+        assert_eq!(
+            rule.reference.as_deref(),
+            Some("https://example.invalid/rule")
+        );
         assert_eq!(rule.tags, vec!["malware".to_string(), "c2".to_string()]);
         assert_eq!(rule.strings_count, 2);
     }
