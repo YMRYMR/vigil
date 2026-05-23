@@ -4,6 +4,9 @@
 //! attaching to the live GUI/service runtime. Runtime-only protection facts stay
 //! `unknown` until the running monitor publishes live health.
 
+#[path = "security/policy.rs"]
+mod policy;
+
 use serde::Serialize;
 use serde_json::Value;
 use std::env;
@@ -46,6 +49,22 @@ pub struct ProtectionStatusReport {
     pub subsystems: Vec<SubsystemStatus>,
 }
 
+#[derive(Debug, Clone)]
+enum ConfigProbe {
+    Missing,
+    Loaded(Value),
+    Degraded { summary: String, details: Vec<String> },
+}
+
+impl ConfigProbe {
+    fn json(&self) -> Option<&Value> {
+        match self {
+            Self::Loaded(value) => Some(value),
+            Self::Missing | Self::Degraded { .. } => None,
+        }
+    }
+}
+
 pub fn print_json_or_exit() {
     let report = build_report();
     match serde_json::to_string_pretty(&report) {
@@ -60,13 +79,13 @@ pub fn print_json_or_exit() {
 pub fn build_report() -> ProtectionStatusReport {
     let data_dir = data_dir();
     let config_path = data_dir.join("vigil.json");
-    let config_json = read_json_file(&config_path);
+    let config = probe_config(&config_path);
 
     let mut subsystems = vec![
-        config_status(&config_path, config_json.as_ref()),
+        config_status(&config_path, &config),
         runtime_monitor_status(),
         firewall_status(),
-        response_policy_status(config_json.as_ref(), &data_dir),
+        response_policy_status(config.json(), &data_dir),
         active_response_status(&data_dir),
         storage_status(&data_dir),
         yara_status(&data_dir),
@@ -100,21 +119,47 @@ pub fn build_report() -> ProtectionStatusReport {
     }
 }
 
-fn config_status(path: &Path, json: Option<&Result<Value, String>>) -> SubsystemStatus {
-    match json {
-        Some(Ok(_)) => SubsystemStatus {
-            name: "configuration",
-            state: HealthState::Healthy,
-            summary: "configuration file is present and valid JSON".into(),
+fn probe_config(path: &Path) -> ConfigProbe {
+    if !path.exists() {
+        return ConfigProbe::Missing;
+    }
+
+    match policy::load_json_with_integrity(path) {
+        Ok(Some(bytes)) => match serde_json::from_slice::<Value>(&bytes) {
+            Ok(value) => ConfigProbe::Loaded(value),
+            Err(err) => ConfigProbe::Degraded {
+                summary: "configuration file passed integrity checks but could not be parsed as JSON"
+                    .into(),
+                details: vec![format!("path={}", path.display()), format!("parse: {err}")],
+            },
+        },
+        Ok(None) => ConfigProbe::Degraded {
+            summary: "configuration file failed integrity verification and no restorable backup was available"
+                .into(),
             details: vec![format!("path={}", path.display())],
         },
-        Some(Err(err)) => SubsystemStatus {
+        Err(err) => ConfigProbe::Degraded {
+            summary: "configuration file could not be loaded through the protected policy store".into(),
+            details: vec![format!("path={}", path.display()), err],
+        },
+    }
+}
+
+fn config_status(path: &Path, config: &ConfigProbe) -> SubsystemStatus {
+    match config {
+        ConfigProbe::Loaded(_) => SubsystemStatus {
+            name: "configuration",
+            state: HealthState::Healthy,
+            summary: "configuration file passed integrity verification and JSON parsing".into(),
+            details: vec![format!("path={}", path.display())],
+        },
+        ConfigProbe::Degraded { summary, details } => SubsystemStatus {
             name: "configuration",
             state: HealthState::Degraded,
-            summary: "configuration file could not be parsed as JSON".into(),
-            details: vec![format!("path={}", path.display()), err.clone()],
+            summary: summary.clone(),
+            details: details.clone(),
         },
-        None => SubsystemStatus {
+        ConfigProbe::Missing => SubsystemStatus {
             name: "configuration",
             state: HealthState::Healthy,
             summary: "configuration file is absent; Vigil will use compiled defaults on first launch".into(),
@@ -146,7 +191,8 @@ fn firewall_status() -> SubsystemStatus {
             return SubsystemStatus {
                 name: "firewall_backend",
                 state: HealthState::Unknown,
-                summary: "firewall tooling is present, but live backend health requires Vigil runtime checks".into(),
+                summary: "firewall tooling is present, but live backend health requires Vigil runtime checks"
+                    .into(),
                 details,
             };
         }
@@ -180,12 +226,13 @@ fn firewall_status() -> SubsystemStatus {
     }
 }
 
-fn response_policy_status(json: Option<&Result<Value, String>>, data_dir: &Path) -> SubsystemStatus {
-    let Some(Ok(config)) = json else {
+fn response_policy_status(config: Option<&Value>, data_dir: &Path) -> SubsystemStatus {
+    let Some(config) = config else {
         return SubsystemStatus {
             name: "response_policy",
             state: HealthState::DisabledByPolicy,
-            summary: "no readable config; disruptive response features default to off or dry-run".into(),
+            summary: "no readable protected config; disruptive response features default to off or dry-run"
+                .into(),
             details: Vec::new(),
         };
     };
@@ -230,12 +277,14 @@ fn response_policy_status(json: Option<&Result<Value, String>>, data_dir: &Path)
         }
     }
 
-    let disruptive_enabled = auto_response_enabled || allowlist_mode_enabled || scheduled_lockdown_enabled;
+    let disruptive_enabled =
+        auto_response_enabled || allowlist_mode_enabled || scheduled_lockdown_enabled;
     if !disruptive_enabled && !response_rules_enabled.unwrap_or(false) {
         return SubsystemStatus {
             name: "response_policy",
             state: HealthState::DisabledByPolicy,
-            summary: "automatic response, allowlist mode, scheduled lockdown, and response rules are disabled".into(),
+            summary: "automatic response, allowlist mode, scheduled lockdown, and response rules are disabled"
+                .into(),
             details,
         };
     }
@@ -266,7 +315,8 @@ fn active_response_status(data_dir: &Path) -> SubsystemStatus {
         SubsystemStatus {
             name: "active_response_state",
             state: HealthState::Unknown,
-            summary: "active-response state file exists; live reconciliation status requires Vigil runtime checks".into(),
+            summary: "active-response state file exists; live reconciliation status requires Vigil runtime checks"
+                .into(),
             details: vec![format!("path={}", path.display())],
         }
     } else {
@@ -286,26 +336,39 @@ fn storage_status(data_dir: &Path) -> SubsystemStatus {
         (true, true) => SubsystemStatus {
             name: "protected_storage",
             state: HealthState::Unknown,
-            summary: "state database and manifest exist; digest verification requires Vigil storage code".into(),
-            details: vec![format!("db={}", db.display()), format!("manifest={}", manifest.display())],
+            summary: "state database and manifest exist; digest verification requires Vigil storage code"
+                .into(),
+            details: vec![
+                format!("db={}", db.display()),
+                format!("manifest={}", manifest.display()),
+            ],
         },
         (true, false) => SubsystemStatus {
             name: "protected_storage",
             state: HealthState::Degraded,
             summary: "state database exists but its integrity manifest is missing".into(),
-            details: vec![format!("db={}", db.display()), format!("manifest={}", manifest.display())],
+            details: vec![
+                format!("db={}", db.display()),
+                format!("manifest={}", manifest.display()),
+            ],
         },
         (false, true) => SubsystemStatus {
             name: "protected_storage",
             state: HealthState::Degraded,
             summary: "state manifest exists but the state database is missing".into(),
-            details: vec![format!("db={}", db.display()), format!("manifest={}", manifest.display())],
+            details: vec![
+                format!("db={}", db.display()),
+                format!("manifest={}", manifest.display()),
+            ],
         },
         (false, false) => SubsystemStatus {
             name: "protected_storage",
             state: HealthState::Healthy,
             summary: "state database is not initialized yet".into(),
-            details: vec![format!("db={}", db.display()), format!("manifest={}", manifest.display())],
+            details: vec![
+                format!("db={}", db.display()),
+                format!("manifest={}", manifest.display()),
+            ],
         },
     }
 }
@@ -319,14 +382,16 @@ fn yara_status(data_dir: &Path) -> SubsystemStatus {
         SubsystemStatus {
             name: "yara_rules",
             state: HealthState::Unknown,
-            summary: "local YARA rule directory exists; run vigil --yara-rule-status for integrity details".into(),
+            summary: "local YARA rule directory exists; run vigil --yara-rule-status for integrity details"
+                .into(),
             details,
         }
     } else {
         SubsystemStatus {
             name: "yara_rules",
             state: HealthState::Unknown,
-            summary: "local YARA rule directory is absent; bundled-rule health requires Vigil runtime validation".into(),
+            summary: "local YARA rule directory is absent; bundled-rule health requires Vigil runtime validation"
+                .into(),
             details,
         }
     }
@@ -338,14 +403,16 @@ fn advisory_status(data_dir: &Path) -> SubsystemStatus {
         SubsystemStatus {
             name: "advisory_cache",
             state: HealthState::Unknown,
-            summary: "state database exists; advisory source freshness requires storage-backed cache inspection".into(),
+            summary: "state database exists; advisory source freshness requires storage-backed cache inspection"
+                .into(),
             details: vec![format!("db={}", db.display())],
         }
     } else {
         SubsystemStatus {
             name: "advisory_cache",
             state: HealthState::Unknown,
-            summary: "state database is not initialized; advisory cache may be empty until first import or sync".into(),
+            summary: "state database is not initialized; advisory cache may be empty until first import or sync"
+                .into(),
             details: vec![format!("db={}", db.display())],
         }
     }
@@ -355,8 +422,12 @@ fn update_trust_status() -> SubsystemStatus {
     SubsystemStatus {
         name: "update_trust",
         state: HealthState::Unknown,
-        summary: "release-manifest verification is available, but periodic signed threat-data updates are not implemented yet".into(),
-        details: vec!["use --verify-update-manifest MANIFEST.json MANIFEST.json.sig for offline release manifest checks".into()],
+        summary: "release-manifest verification is available, but periodic signed threat-data updates are not implemented yet"
+            .into(),
+        details: vec![
+            "use --verify-update-manifest MANIFEST.json MANIFEST.json.sig for offline release manifest checks"
+                .into(),
+        ],
     }
 }
 
@@ -419,17 +490,6 @@ fn data_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("vigil-data"))
 }
 
-fn read_json_file(path: &Path) -> Option<Result<Value, String>> {
-    if !path.exists() {
-        return None;
-    }
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(err) => return Some(Err(format!("read: {err}"))),
-    };
-    Some(serde_json::from_str::<Value>(&content).map_err(|err| format!("parse: {err}")))
-}
-
 fn bool_field(value: &Value, key: &str) -> Option<bool> {
     value.get(key).and_then(Value::as_bool)
 }
@@ -482,6 +542,7 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn degraded_subsystem_makes_overall_degraded() {
@@ -520,10 +581,45 @@ mod tests {
     }
 
     #[test]
+    fn unsigned_existing_config_is_reported_degraded() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vigil.json");
+        fs::write(&path, br#"{"auto_response_enabled":true}"#).unwrap();
+
+        let probe = probe_config(&path);
+        let status = config_status(&path, &probe);
+
+        assert_eq!(status.state, HealthState::Degraded);
+        assert!(status.summary.contains("protected policy store"));
+    }
+
+    #[test]
+    fn signed_existing_config_is_reported_healthy() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vigil.json");
+        policy::save_json_with_integrity(&path, br#"{"auto_response_enabled":true}"#).unwrap();
+
+        let probe = probe_config(&path);
+        let status = config_status(&path, &probe);
+
+        assert_eq!(status.state, HealthState::Healthy);
+    }
+
+    #[test]
     fn relative_policy_path_is_data_dir_relative() {
         assert_eq!(
             expand_data_relative(Path::new("/tmp/vigil"), "rules.yaml"),
             PathBuf::from("/tmp/vigil/rules.yaml")
         );
+    }
+
+    fn unique_temp_dir() -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("vigil-status-report-{nanos}"))
     }
 }
