@@ -53,7 +53,10 @@ pub struct ProtectionStatusReport {
 enum ConfigProbe {
     Missing,
     Loaded(Value),
-    Degraded { summary: String, details: Vec<String> },
+    Degraded {
+        summary: String,
+        details: Vec<String>,
+    },
 }
 
 impl ConfigProbe {
@@ -162,7 +165,9 @@ fn config_status(path: &Path, config: &ConfigProbe) -> SubsystemStatus {
         ConfigProbe::Missing => SubsystemStatus {
             name: "configuration",
             state: HealthState::Healthy,
-            summary: "configuration file is absent; Vigil will use compiled defaults on first launch".into(),
+            summary:
+                "configuration file is absent; Vigil will use compiled defaults on first launch"
+                    .into(),
             details: vec![format!("path={}", path.display())],
         },
     }
@@ -243,7 +248,8 @@ fn response_policy_status(config: Option<&Value>, data_dir: &Path) -> SubsystemS
     let auto_response_dry_run = bool_field(config, "auto_response_dry_run").unwrap_or(true);
     let allowlist_mode_enabled = bool_field(config, "allowlist_mode_enabled").unwrap_or(false);
     let allowlist_mode_dry_run = bool_field(config, "allowlist_mode_dry_run").unwrap_or(true);
-    let scheduled_lockdown_enabled = bool_field(config, "scheduled_lockdown_enabled").unwrap_or(false);
+    let scheduled_lockdown_enabled =
+        bool_field(config, "scheduled_lockdown_enabled").unwrap_or(false);
     let response_rules_path = string_field(config, "response_rules_path").unwrap_or_default();
 
     let mut details = vec![
@@ -251,7 +257,10 @@ fn response_policy_status(config: Option<&Value>, data_dir: &Path) -> SubsystemS
         format!("auto_response_dry_run={auto_response_dry_run}"),
         format!("allowlist_mode_enabled={allowlist_mode_enabled}"),
         format!("allowlist_mode_dry_run={allowlist_mode_dry_run}"),
-        format!("response_rules_enabled={}", response_rules_enabled.unwrap_or(false)),
+        format!(
+            "response_rules_enabled={}",
+            response_rules_enabled.unwrap_or(false)
+        ),
         format!("response_rules_dry_run={response_rules_dry_run}"),
         format!("scheduled_lockdown_enabled={scheduled_lockdown_enabled}"),
     ];
@@ -261,7 +270,8 @@ fn response_policy_status(config: Option<&Value>, data_dir: &Path) -> SubsystemS
             return SubsystemStatus {
                 name: "response_policy",
                 state: HealthState::Degraded,
-                summary: "response rules are enabled but no response_rules_path is configured".into(),
+                summary: "response rules are enabled but no response_rules_path is configured"
+                    .into(),
                 details,
             };
         }
@@ -336,8 +346,9 @@ fn storage_status(data_dir: &Path) -> SubsystemStatus {
         (true, true) => SubsystemStatus {
             name: "protected_storage",
             state: HealthState::Unknown,
-            summary: "state database and manifest exist; digest verification requires Vigil storage code"
-                .into(),
+            summary:
+                "state database and manifest exist; digest verification requires Vigil storage code"
+                    .into(),
             details: vec![
                 format!("db={}", db.display()),
                 format!("manifest={}", manifest.display()),
@@ -444,10 +455,12 @@ fn summarize_overall_state(subsystems: &[SubsystemStatus]) -> HealthState {
     {
         return HealthState::Degraded;
     }
-    if subsystems
-        .iter()
-        .any(|status| matches!(status.state, HealthState::NeedsElevation | HealthState::Unknown))
-    {
+    if subsystems.iter().any(|status| {
+        matches!(
+            status.state,
+            HealthState::NeedsElevation | HealthState::Unknown
+        )
+    }) {
         return HealthState::Unknown;
     }
     if subsystems
