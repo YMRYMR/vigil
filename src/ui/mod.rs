@@ -1465,11 +1465,11 @@ impl VigilApp {
         if !self.kill_confirm {
             return;
         }
-        let Some(sel) = match self.active_tab {
+        let Some(sel) = (match self.active_tab {
             Tab::Activity => self.selected_activity.as_ref(),
             Tab::Alerts => self.selected_alert.as_ref(),
             _ => None,
-        } else {
+        }) else {
             self.kill_confirm = false;
             return;
         };
