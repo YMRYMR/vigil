@@ -154,14 +154,15 @@ Add signature-based malware detection alongside the existing behavioural heurist
 
 ---
 
-## Phase 21 — Security Posture Dashboard (OPEN backlog)
+## Phase 21 — Security Posture Dashboard 🚧 FOUNDATIONS IN PLACE
 
 A single-panel view that answers "is Vigil actually protecting me?" without digging through logs.
 
+- [x] **CLI status foundations** — `src/bin/vigil_status.rs` and `src/status_report.rs` emit a conservative JSON protection-status report for configuration, runtime monitor, firewall backend, response policy, active-response state, protected storage, YARA rules, advisory cache, and update trust. Runtime-only facts remain `unknown` until the live GUI/service publishes health into protected local state. The current contract lives in `docs/PROTECTION-STATUS.md`.
 - [ ] **Health summary** — real-time monitoring status (ETW/eBPF/polling), blocklist engine state (loaded entries / empty / degraded), advisory cache freshness, response rules loaded, firewall isolation status, native firewall engine health.
 - [ ] **Threat dashboard** — current connection score distribution, top blocked targets, recent alerts over time, YARA matches summary, firewall rule hit counts.
 - [ ] **Tray indicator integration** — tray icon colour and tooltip reflects current protection status (green = healthy, yellow = degraded, red = stopped / no real-time).
-- [ ] **CLI status command** — `vigil status` emits JSON with all health signals for scripting and remote monitoring.
+- [ ] **CLI status command** — `vigil status --json` reuses the shared health model, adds live-runtime health once protected publishing lands, and becomes the main scripting entrypoint.
 
 ---
 
@@ -299,7 +300,7 @@ Two differentiators bundled together because each alone is narrow, but together 
 | 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
 | 9.x | 19 | Native OS firewall engine | 🚧 Foundations in place |
 | 10.x | 20 | YARA signature integration | 🚧 Foundations in place |
-| 11.x | 21 | Security posture dashboard | 🔲 Backlog |
+| 11.x | 21 | Security posture dashboard | 🚧 Foundations in place |
 | 12.x | 22 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
 | 13.x | 23 | Signed auto-update channel | 🔲 Backlog |
 | 14.x | 24 | File integrity monitoring | 🔲 Backlog |
