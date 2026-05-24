@@ -194,6 +194,30 @@ To verify an update manifest offline:
 vigil --verify-update-manifest Vigil-latest-update-manifest.json Vigil-latest-update-manifest.json.sig
 ```
 
+## Local YARA rule intake
+
+Vigil now uses the reviewed bundled rules plus any verified operator-local rules for bounded runtime executable scanning. When Vigil first sees a readable executable for a newly observed process, it can scan that on-disk executable in the background and surface matches through the normal score reasons as `YARA rule: <name>`.
+
+`vigil --yara-rule-status` remains the operator-facing intake command. The command itself does not run scans. It verifies which local rules under `yara-rules/` are trusted enough to join the runtime ruleset and records their provenance.
+
+1. Run `vigil --yara-rule-status` if you want Vigil to print the exact `yara-rules/` directory path it expects on your machine.
+2. Place each `.yar` or `.yara` file under that directory with a matching `.sha256` sidecar beside it. For example, `sample.yar` should have `sample.yar.sha256`.
+3. Re-run the status command:
+
+```bash
+vigil --yara-rule-status
+```
+
+4. Treat the results conservatively:
+- `new` means Vigil accepted the rule and recorded it as a first-seen operator file.
+- `verified` means the rule and sidecar still match the last recorded trusted version.
+- `changed` means the rule was accepted, but its contents changed since the last recorded trusted version.
+- any failure means Vigil did not accept that rule because the sidecar is missing, unreadable, or mismatched.
+
+Warnings on first load or after an intentional rule edit are expected because Vigil records provenance instead of silently treating every local change as corruption.
+
+The next YARA roadmap slice is still narrower than broad live-memory scanning. The safest follow-up remains selected-memory targets such as operator-visible or already-captured process dumps on supported platforms, while preserving the same fail-open behavior as the shipped executable scan path.
+
 ## Advisory snapshot imports
 
 Vigil can also extend its protected local advisory cache with operator-supplied public-source snapshots. This is useful when you want advisory context to stay available offline from the last trusted local cache.
