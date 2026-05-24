@@ -161,6 +161,7 @@ The executable-scan wiring described here now lives in `src/yara_scan.rs` and
 `src/monitor/mod.rs::process_conn()`.
 
 The safest next code change is therefore the next unchecked roadmap item:
-memory-region scanning, while preserving the same trust boundary, explainable
-match surfacing, and fail-open runtime behavior used by the shipped executable
-scan slice.
+selected-memory scanning that starts from operator-visible, already-captured
+process-dump targets on supported platforms, while preserving the same trust
+boundary, explainable match surfacing, and fail-open runtime behavior used by
+the shipped executable scan slice.
