@@ -226,7 +226,10 @@ impl YaraScanScheduler {
 
         let request = match self.pending.entry(key.clone()) {
             Entry::Occupied(mut entry) => {
-                entry.get_mut().contexts.push(PendingScanContext { info, threshold });
+                entry
+                    .get_mut()
+                    .contexts
+                    .push(PendingScanContext { info, threshold });
                 return;
             }
             Entry::Vacant(entry) => {

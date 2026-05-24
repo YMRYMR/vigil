@@ -158,7 +158,10 @@ fn generate_bundled_yara_pack() {
     assert_non_empty(&metadata.upstream_reference, "upstream_reference");
     assert_non_empty(&metadata.license, "license");
     if metadata.files.is_empty() {
-        panic!("{} must list at least one bundled YARA rule file", metadata_path.display());
+        panic!(
+            "{} must list at least one bundled YARA rule file",
+            metadata_path.display()
+        );
     }
 
     let mut manifest_files = Vec::with_capacity(metadata.files.len());
@@ -225,7 +228,8 @@ fn generate_bundled_yara_pack() {
 }
 
 fn render_embedded_file_index(files: &[EmbeddedPackFile]) -> String {
-    let mut rendered = String::from("const EMBEDDED_BUNDLED_RULE_FILES: &[EmbeddedBundledRuleFile] = &[\n");
+    let mut rendered =
+        String::from("const EMBEDDED_BUNDLED_RULE_FILES: &[EmbeddedBundledRuleFile] = &[\n");
     for file in files {
         rendered.push_str(&format!(
             "    EmbeddedBundledRuleFile {{ relative_path: {relative_path:?}, source_text: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/{repo_path}\")) }},\n",
@@ -258,7 +262,10 @@ fn ensure_normalized_relative_path(path: &str, field_name: &str) {
     for component in candidate.components() {
         match component {
             Component::Normal(_) => {}
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 panic!("{field_name} must stay normalized and relative: {path}");
             }
         }
