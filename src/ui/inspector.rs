@@ -65,6 +65,9 @@ pub enum Action {
     UnblockProcess,
     KillConfirmed,
     KillCancelled,
+    IsolateMachine,
+    RestoreNetwork,
+    Copy(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -459,12 +462,6 @@ fn show_detail(
             };
             kv(ui, "Protocol", proto_label);
             kv(ui, "Time", &conn.timestamp);
-            if let Some(duration_secs) = conn.duration_secs {
-                kv(ui, "Duration", &format_duration_secs(duration_secs));
-            }
-            if conn.closed_unix.is_some() {
-                kv(ui, "Ended", "yes");
-            }
             if !conn.attack_tags.is_empty() {
                 kv(ui, "ATT&CK", &conn.attack_tags.join(", "));
             }
@@ -1405,18 +1402,6 @@ fn warn_btn(text: &str) -> egui::Button<'_> {
         .fill(theme::WARN_BG)
         .stroke(egui::Stroke::new(1.0, theme::WARN))
         .corner_radius(6.0)
-}
-fn format_duration_secs(secs: u64) -> String {
-    let hours = secs / 3_600;
-    let mins = (secs % 3_600) / 60;
-    let secs = secs % 60;
-    if hours > 0 {
-        format!("{hours}h {mins:02}m {secs:02}s")
-    } else if mins > 0 {
-        format!("{mins}m {secs:02}s")
-    } else {
-        format!("{secs}s")
-    }
 }
 fn format_remaining(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();

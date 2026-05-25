@@ -273,7 +273,14 @@ fn isolation_section(
             }
         }
     });
-    if is_active && resp.response.clicked() {
+    let click = ui
+        .interact(
+            resp.response.rect,
+            ui.id().with("firewall-isolation-row"),
+            egui::Sense::click(),
+        )
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    if is_active && click.clicked() {
         *selected = Some(FirewallSelection {
             rule_name: "Network Isolation".into(),
             target: "Entire machine".into(),
@@ -321,7 +328,14 @@ fn blocked_ips_section(
                 }
             }
         });
-        if resp.response.clicked() {
+        let click = ui
+            .interact(
+                resp.response.rect,
+                ui.id().with(format!("firewall-blocked-ip-{}", entry.rule_name)),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if click.clicked() {
             *selected = Some(FirewallSelection {
                 rule_name: entry.rule_name.clone(),
                 target: entry.target.clone(),
@@ -361,7 +375,17 @@ fn blocked_processes_section(
         let resp = ui.horizontal(|ui| {
             ui.label(RichText::new(&label).size(11.0).monospace());
         });
-        if resp.response.clicked() {
+        let click = ui
+            .interact(
+                resp.response.rect,
+                ui.id().with(format!(
+                    "firewall-blocked-process-{}-{}",
+                    entry.pid, entry.path
+                )),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if click.clicked() {
             *selected = Some(FirewallSelection {
                 rule_name: entry.outbound_rule_name.clone(),
                 target: label,
@@ -394,7 +418,14 @@ fn blocked_domains_section(
 
     for entry in &rules.blocked_domains {
         let resp = ui.label(RichText::new(&entry.domain).size(12.0).monospace());
-        if resp.clicked() {
+        let click = ui
+            .interact(
+                resp.rect,
+                ui.id().with(format!("firewall-blocked-domain-{}", entry.domain)),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if click.clicked() {
             *selected = Some(FirewallSelection {
                 rule_name: format!("domain-{}", entry.domain),
                 target: entry.domain.clone(),
@@ -434,7 +465,17 @@ fn suspended_processes_section(
         let resp = ui.horizontal(|ui| {
             ui.label(RichText::new(&label).size(11.0).monospace());
         });
-        if resp.response.clicked() {
+        let click = ui
+            .interact(
+                resp.response.rect,
+                ui.id().with(format!(
+                    "firewall-suspended-process-{}-{}",
+                    entry.pid, entry.path
+                )),
+                egui::Sense::click(),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if click.clicked() {
             *selected = Some(FirewallSelection {
                 rule_name: format!("suspend-{}", entry.pid),
                 target: label,
