@@ -527,7 +527,10 @@ mod tests {
         cfg.add_trusted("testapp");
         assert!(!cfg.add_trusted("testapp"));
         assert_eq!(
-            cfg.trusted_processes.iter().filter(|t| *t == "testapp").count(),
+            cfg.trusted_processes
+                .iter()
+                .filter(|t| *t == "testapp")
+                .count(),
             1
         );
     }
