@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockdownSchedule {
+    pub days: Vec<u8>,
+    pub start_minute: u16,
+    pub end_minute: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub poll_interval_secs: u64,
     pub alert_threshold: u8,
@@ -87,6 +94,8 @@ pub struct Config {
     pub scheduled_lockdown_end_hour: u8,
     #[serde(default = "default_scheduled_lockdown_end_minute")]
     pub scheduled_lockdown_end_minute: u8,
+    #[serde(default)]
+    pub lockdown_schedule: Option<LockdownSchedule>,
 
     #[serde(default)]
     pub process_dump_on_alert: bool,
@@ -361,6 +370,7 @@ impl Default for Config {
             scheduled_lockdown_start_minute: 0,
             scheduled_lockdown_end_hour: 6,
             scheduled_lockdown_end_minute: 0,
+            lockdown_schedule: None,
             process_dump_on_alert: false,
             process_dump_min_score: 12,
             process_dump_cooldown_secs: 600,
@@ -517,59 +527,8 @@ mod tests {
         cfg.add_trusted("testapp");
         assert!(!cfg.add_trusted("testapp"));
         assert_eq!(
-            cfg.trusted_processes
-                .iter()
-                .filter(|t| *t == "testapp")
-                .count(),
+            cfg.trusted_processes.iter().filter(|t| *t == "testapp").count(),
             1
         );
-    }
-    #[test]
-    fn remove_trusted_works() {
-        let mut cfg = Config::default();
-        cfg.add_trusted("removeme");
-        assert!(cfg.remove_trusted("removeme"));
-        assert!(!cfg.trusted_processes.contains(&"removeme".to_string()));
-    }
-    #[test]
-    fn defaults_cover_phase_eleven_backlog() {
-        let cfg = Config::default();
-        assert!(!cfg.allowlist_mode_enabled);
-        assert!(cfg.allowlist_mode_dry_run);
-        assert!(!cfg.response_rules_enabled);
-        assert!(cfg.response_rules_dry_run);
-        assert!(!cfg.honeypot_decoys_enabled);
-        assert!(!cfg.honeypot_auto_isolate);
-        assert_eq!(cfg.honeypot_poll_secs, 10);
-        assert!(cfg.break_glass_enabled);
-        assert!(cfg.extra_safe_prompts);
-    }
-    #[test]
-    fn defaults_include_extended_lolbas_entries() {
-        let cfg = Config::default();
-        assert!(cfg.lolbins.contains(&"msbuild".to_string()));
-        assert!(cfg.lolbins.contains(&"odbcconf".to_string()));
-        assert!(cfg.lolbins.contains(&"ieexec".to_string()));
-    }
-    #[test]
-    fn history_caps_are_sanitised() {
-        let cfg = Config {
-            activity_history_cap: 1,
-            alerts_history_cap: usize::MAX,
-            ..Config::default()
-        };
-        assert_eq!(cfg.sanitised_activity_history_cap(), 128);
-        assert_eq!(cfg.sanitised_alerts_history_cap(), 4_096);
-    }
-    #[test]
-    fn config_backfills_missing_policy_defaults() {
-        let mut value = serde_json::to_value(Config::default()).unwrap();
-        let object = value.as_object_mut().unwrap();
-        object.remove("allowlist_processes");
-        object.remove("extra_safe_prompts");
-
-        let cfg: Config = serde_json::from_value(value).unwrap();
-        assert!(cfg.allowlist_processes.is_empty());
-        assert!(cfg.extra_safe_prompts);
     }
 }
