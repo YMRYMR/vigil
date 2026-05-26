@@ -331,7 +331,8 @@ fn blocked_ips_section(
         let click = ui
             .interact(
                 resp.response.rect,
-                ui.id().with(format!("firewall-blocked-ip-{}", entry.rule_name)),
+                ui.id()
+                    .with(format!("firewall-blocked-ip-{}", entry.rule_name)),
                 egui::Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -421,7 +422,8 @@ fn blocked_domains_section(
         let click = ui
             .interact(
                 resp.rect,
-                ui.id().with(format!("firewall-blocked-domain-{}", entry.domain)),
+                ui.id()
+                    .with(format!("firewall-blocked-domain-{}", entry.domain)),
                 egui::Sense::click(),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand);
