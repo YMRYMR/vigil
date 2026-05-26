@@ -752,16 +752,26 @@ impl VigilApp {
                             push_capped(&mut self.alerts, info, alerts_cap);
                             if self.active_tab != Tab::Alerts {
                                 self.unseen_alerts = self.unseen_alerts.saturating_add(1);
-                                let _ = self.tray_tx.try_send(TrayCmd::AlertCount(self.unseen_alerts));
+                                let _ = self
+                                    .tray_tx
+                                    .try_send(TrayCmd::AlertCount(self.unseen_alerts));
                             }
                         }
                         ConnEvent::Closed { pid, .. } => {
                             remove_pid(&mut self.activity, pid);
                             remove_pid(&mut self.alerts, pid);
-                            if self.selected_activity.as_ref().is_some_and(|sel| sel.pid == pid) {
+                            if self
+                                .selected_activity
+                                .as_ref()
+                                .is_some_and(|sel| sel.pid == pid)
+                            {
                                 self.selected_activity = None;
                             }
-                            if self.selected_alert.as_ref().is_some_and(|sel| sel.pid == pid) {
+                            if self
+                                .selected_alert
+                                .as_ref()
+                                .is_some_and(|sel| sel.pid == pid)
+                            {
                                 self.selected_alert = None;
                             }
                         }
@@ -780,15 +790,22 @@ impl VigilApp {
         }
         if any {
             self.invalidate_group_caches();
-            self.cached_activity_process_count = process_list::distinct_process_count(&self.activity);
+            self.cached_activity_process_count =
+                process_list::distinct_process_count(&self.activity);
             self.cached_alerts_process_count = process_list::distinct_process_count(&self.alerts);
         }
         any
     }
     fn current_inspector_request(&self) -> Option<InspectorSnapshotRequest> {
         match self.active_tab {
-            Tab::Activity => self.selected_activity.as_ref().map(InspectorSnapshotRequest::from_selection),
-            Tab::Alerts => self.selected_alert.as_ref().map(InspectorSnapshotRequest::from_selection),
+            Tab::Activity => self
+                .selected_activity
+                .as_ref()
+                .map(InspectorSnapshotRequest::from_selection),
+            Tab::Alerts => self
+                .selected_alert
+                .as_ref()
+                .map(InspectorSnapshotRequest::from_selection),
             _ => None,
         }
     }
@@ -869,7 +886,8 @@ impl VigilApp {
             }
             inspector::Action::BlockDomain => {
                 if let Some(info) = selected_info {
-                    if let Some(domain) = active_response::connection_domain(info.selected_connection.as_ref())
+                    if let Some(domain) =
+                        active_response::connection_domain(info.selected_connection.as_ref())
                     {
                         self.response_confirm = Some(PendingResponse::BlockDomain { domain });
                     }
@@ -925,18 +943,21 @@ impl VigilApp {
                 }
             }
             inspector::Action::KillConnection => {
-                if let Some(conn) = selected_info.and_then(|info| info.selected_connection.clone()) {
+                if let Some(conn) = selected_info.and_then(|info| info.selected_connection.clone())
+                {
                     self.response_confirm = Some(PendingResponse::KillConnection(Box::new(conn)));
                 }
             }
             inspector::Action::UnblockRemote => {
                 if let Some(info) = selected_info {
-                    self.response_confirm = Some(PendingResponse::UnblockRemote(info.remote_addr.clone()));
+                    self.response_confirm =
+                        Some(PendingResponse::UnblockRemote(info.remote_addr.clone()));
                 }
             }
             inspector::Action::UnblockDomain => {
                 if let Some(info) = selected_info {
-                    if let Some(domain) = active_response::connection_domain(info.selected_connection.as_ref())
+                    if let Some(domain) =
+                        active_response::connection_domain(info.selected_connection.as_ref())
                     {
                         self.response_confirm = Some(PendingResponse::UnblockDomain(domain));
                     }
@@ -1104,10 +1125,9 @@ impl VigilApp {
     fn execute_uninstall_from_settings(&mut self) {
         match uninstall::run() {
             Ok(message) => self.push_notification(NotificationKind::Success, message),
-            Err(err) => self.push_notification(
-                NotificationKind::Error,
-                format!("Uninstall failed: {err}"),
-            ),
+            Err(err) => {
+                self.push_notification(NotificationKind::Error, format!("Uninstall failed: {err}"))
+            }
         }
     }
     fn show_kill_confirm_window(&mut self, ctx: &egui::Context) {
@@ -1162,10 +1182,18 @@ impl VigilApp {
                         kill_process(info.pid);
                         remove_pid(&mut self.activity, info.pid);
                         remove_pid(&mut self.alerts, info.pid);
-                        if self.selected_activity.as_ref().is_some_and(|sel| sel.pid == info.pid) {
+                        if self
+                            .selected_activity
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == info.pid)
+                        {
                             self.selected_activity = None;
                         }
-                        if self.selected_alert.as_ref().is_some_and(|sel| sel.pid == info.pid) {
+                        if self
+                            .selected_alert
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == info.pid)
+                        {
                             self.selected_alert = None;
                         }
                         self.invalidate_group_caches();
@@ -1536,7 +1564,8 @@ impl VigilApp {
     }
     fn show_notifications_overlay(&mut self, ctx: &egui::Context) {
         let now = std::time::Instant::now();
-        self.notifications.retain(|notification| notification.expires_at > now);
+        self.notifications
+            .retain(|notification| notification.expires_at > now);
         if self.notifications.is_empty() {
             return;
         }
