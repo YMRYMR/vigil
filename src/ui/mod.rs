@@ -1477,7 +1477,7 @@ impl VigilApp {
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.global_style())
                     .fill(theme::SURFACE)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER)),
             )
@@ -1520,7 +1520,7 @@ impl VigilApp {
             .collapsible(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .frame(
-                egui::Frame::window(&ctx.style())
+                egui::Frame::window(&ctx.global_style())
                     .fill(theme::SURFACE)
                     .stroke(egui::Stroke::new(1.0, theme::BORDER)),
             )
@@ -1707,8 +1707,8 @@ impl VigilApp {
         if self.notifications.is_empty() {
             return;
         }
-        let max_height = (ctx.available_rect().height() * 0.45).max(140.0);
-        let width = 340.0_f32.min(ctx.available_rect().width() - 24.0);
+        let max_height = (ctx.content_rect().height() * 0.45).max(140.0);
+        let width = 340.0_f32.min(ctx.content_rect().width() - 24.0);
         egui::Area::new("notifications-overlay".into())
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -14.0))
             .show(ctx, |ui| {
