@@ -838,7 +838,8 @@ impl VigilApp {
                 }
                 let succeeded = !matches!(kind, NotificationKind::Error);
                 if op.scheduled && succeeded {
-                    self.scheduled_lockdown_active = matches!(op.kind, NetworkOperationKind::Isolate);
+                    self.scheduled_lockdown_active =
+                        matches!(op.kind, NetworkOperationKind::Isolate);
                 }
             }
             Err(mpsc::TryRecvError::Empty) => {
@@ -908,11 +909,13 @@ impl VigilApp {
         let schedule = {
             let cfg = self.cfg.read().unwrap();
             cfg.lockdown_schedule.clone().or_else(|| {
-                cfg.scheduled_lockdown_start_hour.map(|start_hour| active_response::LockdownSchedule {
-                    start_hour,
-                    start_minute: cfg.scheduled_lockdown_start_minute.unwrap_or(0),
-                    end_hour: cfg.scheduled_lockdown_end_hour.unwrap_or(start_hour),
-                    end_minute: cfg.scheduled_lockdown_end_minute.unwrap_or(0),
+                cfg.scheduled_lockdown_start_hour.map(|start_hour| {
+                    active_response::LockdownSchedule {
+                        start_hour,
+                        start_minute: cfg.scheduled_lockdown_start_minute.unwrap_or(0),
+                        end_hour: cfg.scheduled_lockdown_end_hour.unwrap_or(start_hour),
+                        end_minute: cfg.scheduled_lockdown_end_minute.unwrap_or(0),
+                    }
                 })
             })
         };
@@ -935,10 +938,10 @@ impl VigilApp {
                 }
             }
         }
-        let schedule_due = now.duration_since(self.last_schedule_check)
-            >= std::time::Duration::from_secs(30);
-        let reconcile_due = now.duration_since(self.last_response_reconcile)
-            >= std::time::Duration::from_secs(15);
+        let schedule_due =
+            now.duration_since(self.last_schedule_check) >= std::time::Duration::from_secs(30);
+        let reconcile_due =
+            now.duration_since(self.last_response_reconcile) >= std::time::Duration::from_secs(15);
         if schedule_due {
             self.last_schedule_check = now;
         }
@@ -948,11 +951,7 @@ impl VigilApp {
         }
         let scheduled_target = schedule.as_ref().map(|window| {
             let local = Local::now();
-            active_response::schedule_contains(
-                window,
-                local.hour() as u8,
-                local.minute() as u8,
-            )
+            active_response::schedule_contains(window, local.hour() as u8, local.minute() as u8)
         });
         self.scheduled_target = scheduled_target;
         if let Some(target) = scheduled_target {
@@ -989,7 +988,9 @@ impl VigilApp {
                 self.add_conn_to_activity(info.clone());
                 self.add_conn_to_alerts(info);
                 self.unseen_alerts = self.unseen_alerts.saturating_add(1);
-                let _ = self.tray_tx.try_send(TrayCmd::AlertCount(self.unseen_alerts));
+                let _ = self
+                    .tray_tx
+                    .try_send(TrayCmd::AlertCount(self.unseen_alerts));
                 self.trim_history_buffers();
                 self.cached_activity_process_count = process_list::process_count(&self.activity);
                 self.cached_alerts_process_count = process_list::process_count(&self.alerts);
@@ -1104,10 +1105,12 @@ impl VigilApp {
                     Err(e) => format!("Block failed: {e}"),
                 }
             }
-            PendingResponse::BlockDomain { domain } => match active_response::block_domain(&domain) {
-                Ok(msg) => msg,
-                Err(e) => format!("Block failed: {e}"),
-            },
+            PendingResponse::BlockDomain { domain } => {
+                match active_response::block_domain(&domain) {
+                    Ok(msg) => msg,
+                    Err(e) => format!("Block failed: {e}"),
+                }
+            }
             PendingResponse::BlockProcess { pid, path, preset } => {
                 match active_response::block_process(pid, &path, preset) {
                     Ok(msg) => msg,
@@ -1161,10 +1164,12 @@ impl VigilApp {
                     Err(e) => format!("Kill connection failed: {e}"),
                 }
             }
-            PendingResponse::UnblockRemote(target) => match active_response::unblock_remote(&target) {
-                Ok(msg) => msg,
-                Err(e) => format!("Unblock failed: {e}"),
-            },
+            PendingResponse::UnblockRemote(target) => {
+                match active_response::unblock_remote(&target) {
+                    Ok(msg) => msg,
+                    Err(e) => format!("Unblock failed: {e}"),
+                }
+            }
             PendingResponse::UnblockDomain(domain) => {
                 match active_response::unblock_domain(&domain) {
                     Ok(msg) => msg,
@@ -1246,7 +1251,11 @@ impl VigilApp {
             ),
             PendingResponse::ResumeProcess { pid, path } => (
                 "Resume Process".into(),
-                format!("Resume process {} (pid {})?", display_target_label(path, *pid), pid),
+                format!(
+                    "Resume process {} (pid {})?",
+                    display_target_label(path, *pid),
+                    pid
+                ),
             ),
             PendingResponse::FreezeAutoruns => (
                 "Freeze Autoruns".into(),
