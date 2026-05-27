@@ -714,13 +714,7 @@ impl VigilApp {
         });
         self.selected_firewall = self.selected_firewall.as_ref().and_then(|sel| {
             if active_response::list_rules().iter().any(|rule| {
-                firewall_matches_selection(
-                    rule,
-                    &sel.target,
-                    &sel.rule_type,
-                    sel.pid,
-                    &sel.path,
-                )
+                firewall_matches_selection(rule, &sel.target, &sel.rule_type, sel.pid, &sel.path)
             }) {
                 Some(sel.clone())
             } else {
@@ -755,7 +749,9 @@ impl VigilApp {
                 push_capped(&mut self.alerts, info.clone(), alerts_cap);
                 self.unseen_alerts = self.unseen_alerts.saturating_add(1);
                 self.settings.alert_count = self.settings.alert_count.saturating_add(1);
-                let _ = self.tray_tx.try_send(TrayCmd::AlertCount(self.unseen_alerts));
+                let _ = self
+                    .tray_tx
+                    .try_send(TrayCmd::AlertCount(self.unseen_alerts));
                 if let Some(sel) = self.selected_activity.as_ref() {
                     self.selected_activity = process_list::selection_for_pid(
                         &self.activity,
@@ -805,7 +801,11 @@ impl VigilApp {
                         process_list::Kind::Activity,
                     )
                     .or_else(|| {
-                        if self.selected_activity.as_ref().is_some_and(|sel| sel.pid == *pid) {
+                        if self
+                            .selected_activity
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == *pid)
+                        {
                             self.selected_activity.clone()
                         } else {
                             None
@@ -824,7 +824,11 @@ impl VigilApp {
                         process_list::Kind::Alerts,
                     )
                     .or_else(|| {
-                        if self.selected_alert.as_ref().is_some_and(|sel| sel.pid == *pid) {
+                        if self
+                            .selected_alert
+                            .as_ref()
+                            .is_some_and(|sel| sel.pid == *pid)
+                        {
                             self.selected_alert.clone()
                         } else {
                             None
@@ -915,15 +919,27 @@ impl VigilApp {
                     if ui
                         .add(
                             egui::Button::new(
-                                egui::RichText::new(if self.paused { " Resume Stream " } else { " Pause Stream " })
-                                    .color(theme::TEXT)
-                                    .size(11.0)
-                                    .strong(),
+                                egui::RichText::new(if self.paused {
+                                    " Resume Stream "
+                                } else {
+                                    " Pause Stream "
+                                })
+                                .color(theme::TEXT)
+                                .size(11.0)
+                                .strong(),
                             )
-                            .fill(if self.paused { theme::SURFACE2 } else { theme::ACCENT_BG })
+                            .fill(if self.paused {
+                                theme::SURFACE2
+                            } else {
+                                theme::ACCENT_BG
+                            })
                             .stroke(egui::Stroke::new(
                                 1.0,
-                                if self.paused { theme::BORDER } else { theme::ACCENT },
+                                if self.paused {
+                                    theme::BORDER
+                                } else {
+                                    theme::ACCENT
+                                },
                             ))
                             .corner_radius(4.0),
                         )
