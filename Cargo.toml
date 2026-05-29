@@ -41,6 +41,9 @@ getrandom = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 yara-x = "=1.16.0"
+yara-x-macros = "=1.16.0"
+yara-x-parser = "=1.16.0"
+yara-x-proto = "=1.16.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [
