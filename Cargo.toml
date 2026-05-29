@@ -39,7 +39,7 @@ hmac = "0.13"
 sha2 = "0.11"
 getrandom = "0.4"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 yara-x = "1.16"
 
 [target.'cfg(windows)'.dependencies]
