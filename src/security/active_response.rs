@@ -38,7 +38,7 @@ pub fn quarantine_profile(pid: u32, path: &str, proc_name: &str) -> Result<Strin
 }
 
 pub fn clear_quarantine_profile(pid: u32, path: &str) -> Result<String, String> {
-    imp::clear_quarantine_process_profile(pid, path)
+    imp::clear_quarantine_profile(pid, path)
 }
 
 pub fn suspend_process(pid: u32, path: &str) -> Result<String, String> {
