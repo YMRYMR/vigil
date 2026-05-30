@@ -465,7 +465,10 @@ fn ensure_normalized_relative_path(path: &str, field_name: &str) -> Result<(), S
     for component in candidate.components() {
         match component {
             Component::Normal(_) => {}
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
                 return Err(format!(
                     "{field_name} must stay normalized and relative: {path}"
                 ));
@@ -644,8 +647,7 @@ mod tests {
             license: "MIT".into(),
             files: vec![BundledPackManifestFile {
                 relative_path: "research/sample.rule".into(),
-                sha256: "0000000000000000000000000000000000000000000000000000000000000000"
-                    .into(),
+                sha256: "0000000000000000000000000000000000000000000000000000000000000000".into(),
                 rule_count: 1,
                 source_url: "https://example.invalid/rule".into(),
                 source_reference: "abc123".into(),
