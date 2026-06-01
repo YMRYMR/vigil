@@ -6,7 +6,7 @@ const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 
 pub use imp::*;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LockdownSchedule {
     pub start_hour: u8,
     pub start_minute: u8,
