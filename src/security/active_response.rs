@@ -10,7 +10,7 @@ pub use imp::{
     extract_domain_target, extract_remote_target, freeze_autoruns, has_frozen_autoruns, is_blocked,
     is_domain_blocked, is_process_blocked, is_process_suspended, isolate_machine, kill_connection,
     list_rules, process_block_remaining, reconcile, reconcile_firewall_rules_once,
-    remote_block_remaining, resume_process, restore_machine, status, unblock_domain,
+    remote_block_remaining, restore_machine, resume_process, status, unblock_domain,
     unblock_process, unblock_remote, BlockedDomainEntry, BlockedIpEntry, BlockedProcessEntry,
     DurationPreset, FirewallProfileEntry, FirewallRuleList, InspectorSnapshot, SocketKillError,
     Status, SuspendedProcessEntry,
