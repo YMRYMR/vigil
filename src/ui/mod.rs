@@ -567,18 +567,36 @@ impl ConfiguredLockdownSchedule {
         })
     }
 
-    fn contains(&self, local: chrono::DateTime<Local>) -> bool {
-        let today = local.weekday().number_from_monday() as u8;
-        let day_enabled = self
-            .days
+    fn day_matches(&self, day: u8) -> bool {
+        self.days
             .as_ref()
-            .is_none_or(|days| days.iter().any(|day| *day == today));
-        day_enabled
-            && active_response::schedule_contains(
-                &self.window,
-                local.hour() as u8,
-                local.minute() as u8,
-            )
+            .is_none_or(|days| days.iter().any(|configured| *configured == day))
+    }
+
+    fn contains(&self, local: chrono::DateTime<Local>) -> bool {
+        let current = local.hour() as u16 * 60 + local.minute() as u16;
+        let start =
+            self.window.start_hour.min(23) as u16 * 60 + self.window.start_minute.min(59) as u16;
+        let end = self.window.end_hour.min(23) as u16 * 60 + self.window.end_minute.min(59) as u16;
+        let today = local.weekday().number_from_monday() as u8;
+
+        if start <= end {
+            return self.day_matches(today)
+                && active_response::schedule_contains(
+                    &self.window,
+                    local.hour() as u8,
+                    local.minute() as u8,
+                );
+        }
+
+        if current >= start {
+            self.day_matches(today)
+        } else if current < end {
+            let previous_day = if today == 1 { 7 } else { today - 1 };
+            self.day_matches(previous_day)
+        } else {
+            false
+        }
     }
 }
 
