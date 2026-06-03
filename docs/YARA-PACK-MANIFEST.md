@@ -101,10 +101,14 @@ The schema and validator are no longer just a paper design:
   pack metadata under `third_party/yara/inquest-community-core/`
 - `vigil --yara-rule-status` validates the embedded bundled-pack manifest and
   bundled file hashes before reporting operator-visible status
+- `src/yara_scan.rs` uses the trusted bundled and verified operator-local rules
+  for bounded executable scans
+- `src/forensics.rs` uses the same trusted rule boundary for bounded
+  process-dump YARA scans after opt-in high-confidence dump capture
 
 ## Safest next implementation step
 
-The next safe Phase 20 slice is runtime scan integration on top of the existing
-trusted-pack foundation: use the already embedded and validated bundled pack for
-process-on-create scanning before expanding to memory scanning, richer UI, or
-broader category controls.
+The next safe Phase 20 slice is operator-visible surfacing for YARA scan
+results. Status and Inspector views should show executable and `process_dump`
+results clearly separately, before Vigil adds category toggles, broader live
+memory acquisition, or signed remote rule-pack refresh.
