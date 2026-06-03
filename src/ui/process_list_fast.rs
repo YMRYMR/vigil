@@ -31,6 +31,7 @@ pub enum Kind {
 struct RenderKey {
     kind: Kind,
     data_version: u64,
+    rows_signature: u64,
     filter_hash: u64,
     sort_col: usize,
     sort_asc: bool,
@@ -159,9 +160,11 @@ pub fn show(
     filter_bar(ui, rows.len(), state, kind);
 
     let filter_hash = calc_filter_hash(&state.filter);
+    let rows_signature = calc_rows_hash(rows);
     let key = RenderKey {
         kind,
         data_version,
+        rows_signature,
         filter_hash,
         sort_col: state.sort_col,
         sort_asc: state.sort_asc,
@@ -630,8 +633,8 @@ fn filter_bar(ui: &mut egui::Ui, total: usize, state: &mut TableState, kind: Kin
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Search").size(11.5).color(theme::TEXT3));
                 let hint = match kind {
-                    Kind::Activity => "filter by process, endpoint, state, reason, or TLS…",
-                    Kind::Alerts => "filter alerts by process, endpoint, state, reason, or TLS…",
+                    Kind::Activity => "filter by process, endpoint, state, reason, or TLS...",
+                    Kind::Alerts => "filter alerts by process, endpoint, state, reason, or TLS...",
                 };
                 ui.add(
                     egui::TextEdit::singleline(&mut state.filter)
@@ -1104,6 +1107,22 @@ fn fanout_bonus(conns: usize, ports: usize, remotes: usize, statuses: usize) -> 
         bonus += 1;
     }
     bonus.min(4)
+}
+
+fn calc_rows_hash(rows: &VecDeque<ConnInfo>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    rows.len().hash(&mut hasher);
+    for info in rows {
+        info.timestamp.hash(&mut hasher);
+        info.pid.hash(&mut hasher);
+        info.proc_name.hash(&mut hasher);
+        info.local_addr.hash(&mut hasher);
+        info.remote_addr.hash(&mut hasher);
+        info.status.hash(&mut hasher);
+        info.score.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 fn calc_filter_hash(filter: &str) -> u64 {
