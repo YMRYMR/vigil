@@ -17,6 +17,17 @@ pub use imp::{
     SuspendedProcessEntry,
 };
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_facade_exports_remain_available() {
+        let _: fn(u32, &str, &str) -> Result<String, String> = apply_quarantine_profile;
+        let _: fn() -> Result<String, String> = revert_frozen_autoruns;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LockdownSchedule {
     pub start_hour: u8,
