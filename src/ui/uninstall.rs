@@ -1,5 +1,11 @@
 use super::{NotificationKind, VigilApp};
 
+impl VigilApp {
+    pub(super) fn execute_uninstall_from_settings(&mut self) {
+        execute_from_settings(self);
+    }
+}
+
 pub(super) fn execute_from_settings(app: &mut VigilApp) {
     let autostart_removed = crate::autostart::disable();
 

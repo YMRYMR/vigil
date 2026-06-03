@@ -48,23 +48,52 @@ const MAX_INSPECTOR_ADVISORIES: usize = 3;
 pub enum Action {
     Trust,
     OpenLocation,
-    Kill,
-    SuspendProcess,
-    ResumeProcess,
+    KillProcess,
+    SuspendProcess {
+        pid: u32,
+        path: String,
+        proc_name: String,
+    },
+    ResumeProcess {
+        pid: u32,
+        path: String,
+    },
     FreezeAutoruns,
     RevertAutoruns,
-    QuarantineProfile,
-    ClearQuarantineProfile,
+    QuarantineProfile {
+        pid: u32,
+        path: String,
+        proc_name: String,
+    },
+    ClearQuarantineProfile {
+        pid: u32,
+        path: String,
+    },
     RequestAdmin,
-    BlockRemote(active_response::DurationPreset),
-    BlockDomain,
-    BlockProcess(active_response::DurationPreset),
-    KillConnection,
-    UnblockRemote,
-    UnblockDomain,
-    UnblockProcess,
+    BlockRemote {
+        target: String,
+        preset: active_response::DurationPreset,
+    },
+    BlockDomain {
+        domain: String,
+    },
+    BlockProcess {
+        pid: u32,
+        path: String,
+        preset: active_response::DurationPreset,
+    },
+    KillConnection(crate::types::ConnInfo),
+    UnblockRemote(String),
+    UnblockDomain(String),
+    UnblockProcess {
+        pid: u32,
+        path: String,
+    },
     KillConfirmed,
     KillCancelled,
+    IsolateMachine,
+    RestoreNetwork,
+    Copy(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -273,14 +302,21 @@ fn show_detail(
 
             if quarantine_active {
                 action_cells.push(ActionCell {
-                    action: Action::ClearQuarantineProfile,
+                    action: Action::ClearQuarantineProfile {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                    },
                     label: "Clear quarantine".into(),
                     hover: "Restore the network and undo the selected process containment steps where possible.".into(),
                     tone: ActionTone::Accent,
                 });
             } else if quarantine_ready {
                 action_cells.push(ActionCell {
-                    action: Action::QuarantineProfile,
+                    action: Action::QuarantineProfile {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                        proc_name: sel.proc_name.clone(),
+                    },
                     label: "Quarantine profile".into(),
                     hover: "Initial quarantine preset: isolate the network, block the executable path, and suspend the process when available.".into(),
                     tone: ActionTone::Danger,
@@ -293,20 +329,31 @@ fn show_detail(
                     None => "Unban process".to_string(),
                 };
                 action_cells.push(ActionCell {
-                    action: Action::UnblockProcess,
+                    action: Action::UnblockProcess {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                    },
                     label,
                     hover: "Remove temporary firewall rules for this executable path.".into(),
                     tone: ActionTone::Accent,
                 });
             } else if known_location {
                 action_cells.push(ActionCell {
-                    action: Action::BlockProcess(active_response::DurationPreset::OneDay),
+                    action: Action::BlockProcess {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                        preset: active_response::DurationPreset::OneDay,
+                    },
                     label: "Ban process 24h".into(),
                     hover: "Temporarily block inbound and outbound traffic for this executable path for 24 hours.".into(),
                     tone: ActionTone::Block(active_response::DurationPreset::OneDay),
                 });
                 action_cells.push(ActionCell {
-                    action: Action::BlockProcess(active_response::DurationPreset::Permanent),
+                    action: Action::BlockProcess {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                        preset: active_response::DurationPreset::Permanent,
+                    },
                     label: "Ban process permanent".into(),
                     hover: "Block inbound and outbound traffic for this executable path until removed.".into(),
                     tone: ActionTone::Block(active_response::DurationPreset::Permanent),
@@ -320,14 +367,17 @@ fn show_detail(
                         None => "Unban remote".to_string(),
                     };
                     action_cells.push(ActionCell {
-                        action: Action::UnblockRemote,
+                        action: Action::UnblockRemote(target.clone()),
                         label,
                         hover: format!("Remove temporary firewall rule for {target}."),
                         tone: ActionTone::Accent,
                     });
                 } else {
                     action_cells.push(ActionCell {
-                        action: Action::BlockRemote(active_response::DurationPreset::OneHour),
+                        action: Action::BlockRemote {
+                            target: target.clone(),
+                            preset: active_response::DurationPreset::OneHour,
+                        },
                         label: "Ban remote 1h".into(),
                         hover: format!("Temporarily block outbound traffic to {target} for 1 hour."),
                         tone: ActionTone::Block(active_response::DurationPreset::OneHour),
@@ -339,14 +389,16 @@ fn show_detail(
                 if let Some(domain) = domain_target.as_ref() {
                     if domain_blocked {
                         action_cells.push(ActionCell {
-                            action: Action::UnblockDomain,
+                            action: Action::UnblockDomain(domain.clone()),
                             label: "Unban domain".into(),
                             hover: format!("Remove local hosts-file block for {domain}."),
                             tone: ActionTone::Accent,
                         });
                     } else {
                         action_cells.push(ActionCell {
-                            action: Action::BlockDomain,
+                            action: Action::BlockDomain {
+                                domain: domain.clone(),
+                            },
                             label: "Ban domain".into(),
                             hover: format!("Redirect {domain} to localhost through the hosts file."),
                             tone: ActionTone::Warn,
@@ -356,24 +408,33 @@ fn show_detail(
             }
 
             if connection_kill_enabled {
-                action_cells.push(ActionCell {
-                    action: Action::KillConnection,
-                    label: "Kill connection".into(),
-                    hover: "Immediately terminate the selected live TCP connection.".into(),
-                    tone: ActionTone::Danger,
-                });
+                if let Some(conn) = sel.selected_connection.as_ref() {
+                    action_cells.push(ActionCell {
+                        action: Action::KillConnection(conn.clone()),
+                        label: "Kill connection".into(),
+                        hover: "Immediately terminate the selected live TCP connection.".into(),
+                        tone: ActionTone::Danger,
+                    });
+                }
             }
 
             if process_suspended {
                 action_cells.push(ActionCell {
-                    action: Action::ResumeProcess,
+                    action: Action::ResumeProcess {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                    },
                     label: "Resume process".into(),
                     hover: "Resume every suspended thread in this process.".into(),
                     tone: ActionTone::Accent,
                 });
             } else if suspend_enabled {
                 action_cells.push(ActionCell {
-                    action: Action::SuspendProcess,
+                    action: Action::SuspendProcess {
+                        pid: sel.pid,
+                        path: sel.proc_path.clone(),
+                        proc_name: sel.proc_name.clone(),
+                    },
                     label: "Suspend process".into(),
                     hover: "Freeze the process while you investigate.".into(),
                     tone: ActionTone::Warn,
@@ -382,7 +443,7 @@ fn show_detail(
 
             if kill_enabled {
                 action_cells.push(ActionCell {
-                    action: Action::Kill,
+                    action: Action::KillProcess,
                     label: "Kill process".into(),
                     hover: "Terminate this process after confirmation.".into(),
                     tone: ActionTone::Danger,
@@ -459,12 +520,6 @@ fn show_detail(
             };
             kv(ui, "Protocol", proto_label);
             kv(ui, "Time", &conn.timestamp);
-            if let Some(duration_secs) = conn.duration_secs {
-                kv(ui, "Duration", &format_duration_secs(duration_secs));
-            }
-            if conn.closed_unix.is_some() {
-                kv(ui, "Ended", "yes");
-            }
             if !conn.attack_tags.is_empty() {
                 kv(ui, "ATT&CK", &conn.attack_tags.join(", "));
             }
@@ -1405,18 +1460,6 @@ fn warn_btn(text: &str) -> egui::Button<'_> {
         .fill(theme::WARN_BG)
         .stroke(egui::Stroke::new(1.0, theme::WARN))
         .corner_radius(6.0)
-}
-fn format_duration_secs(secs: u64) -> String {
-    let hours = secs / 3_600;
-    let mins = (secs % 3_600) / 60;
-    let secs = secs % 60;
-    if hours > 0 {
-        format!("{hours}h {mins:02}m {secs:02}s")
-    } else if mins > 0 {
-        format!("{mins}m {secs:02}s")
-    } else {
-        format!("{secs}s")
-    }
 }
 fn format_remaining(duration: std::time::Duration) -> String {
     let secs = duration.as_secs();

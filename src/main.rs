@@ -25,6 +25,7 @@ mod advisory_runtime_score;
 mod advisory_status;
 mod artifact_provenance;
 mod audit;
+mod autoruns;
 mod baseline;
 mod beacon;
 #[allow(dead_code)]

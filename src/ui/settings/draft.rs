@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::config::{Config, LockdownSchedule};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RiskyEnableTarget {
@@ -99,6 +99,23 @@ pub struct SettingsDraft {
     pub risky_enable_confirm_text: String,
     pub pending_trusted_addition: Option<String>,
     pub trusted_add_confirm_text: String,
+}
+
+fn derived_lockdown_schedule(
+    enabled: bool,
+    start_hour: u8,
+    start_minute: u8,
+    end_hour: u8,
+    end_minute: u8,
+) -> Option<LockdownSchedule> {
+    if !enabled {
+        return None;
+    }
+    Some(LockdownSchedule {
+        days: vec![1, 2, 3, 4, 5, 6, 7],
+        start_minute: start_hour.min(23) as u16 * 60 + start_minute.min(59) as u16,
+        end_minute: end_hour.min(23) as u16 * 60 + end_minute.min(59) as u16,
+    })
 }
 
 impl SettingsDraft {
@@ -219,6 +236,16 @@ impl SettingsDraft {
                 scheduled_lockdown_end_minute,
                 self.scheduled_lockdown_end_minute.min(59)
             );
+            set_if_changed!(
+                lockdown_schedule,
+                derived_lockdown_schedule(
+                    self.scheduled_lockdown_enabled,
+                    self.scheduled_lockdown_start_hour,
+                    self.scheduled_lockdown_start_minute,
+                    self.scheduled_lockdown_end_hour,
+                    self.scheduled_lockdown_end_minute,
+                )
+            );
             set_if_changed!(process_dump_on_alert, self.process_dump_on_alert);
             set_if_changed!(process_dump_min_score, self.process_dump_min_score);
             set_if_changed!(process_dump_cooldown_secs, self.process_dump_cooldown_secs);
@@ -271,6 +298,13 @@ impl SettingsDraft {
             || self.scheduled_lockdown_start_minute.min(59) != cfg.scheduled_lockdown_start_minute
             || self.scheduled_lockdown_end_hour.min(23) != cfg.scheduled_lockdown_end_hour
             || self.scheduled_lockdown_end_minute.min(59) != cfg.scheduled_lockdown_end_minute
+            || derived_lockdown_schedule(
+                self.scheduled_lockdown_enabled,
+                self.scheduled_lockdown_start_hour,
+                self.scheduled_lockdown_start_minute,
+                self.scheduled_lockdown_end_hour,
+                self.scheduled_lockdown_end_minute,
+            ) != cfg.lockdown_schedule
             || self.process_dump_on_alert != cfg.process_dump_on_alert
             || self.process_dump_min_score != cfg.process_dump_min_score
             || self.process_dump_cooldown_secs != cfg.process_dump_cooldown_secs

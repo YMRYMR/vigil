@@ -403,6 +403,8 @@ fn persist_scan_result(key: &ScanTargetKey, verdict: &CachedScanVerdict) -> Resu
         } else {
             "matched"
         };
+        let scanned_unix = i64::try_from(verdict.scanned_unix).unwrap_or(i64::MAX);
+        let match_count = i64::try_from(verdict.matched_rules.len()).unwrap_or(i64::MAX);
 
         conn.execute(
             "INSERT INTO yara_scan_result
@@ -418,9 +420,9 @@ fn persist_scan_result(key: &ScanTargetKey, verdict: &CachedScanVerdict) -> Resu
                 key.path.as_str(),
                 verdict.target_sha256.as_str(),
                 verdict.ruleset_digest.as_str(),
-                verdict.scanned_unix,
+                scanned_unix,
                 verdict_name,
-                verdict.matched_rules.len(),
+                match_count,
                 payload.to_string(),
             ],
         )

@@ -278,7 +278,7 @@ fn ensure_catalog_tables(db: &StorageDb) -> Result<(), String> {
 
 fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<PersistSummary, String> {
     let conn = db.conn()?;
-    let fetched_unix = unix_now();
+    let fetched_unix = i64::try_from(unix_now()).unwrap_or(i64::MAX);
     conn.execute(
         "INSERT INTO yara_source
          (source_key, source_kind, source_url, fetched_unix, expires_unix, status, last_error)
@@ -295,7 +295,7 @@ fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<Persi
             LOCAL_SOURCE_KIND,
             "",
             fetched_unix,
-            0u64,
+            0i64,
             if report.failures > 0 { "error" } else { "ok" },
             report.errors.join(" | "),
         ],
@@ -348,14 +348,16 @@ fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<Persi
                 .map(|rule| rule.rule_name.clone())
                 .collect::<Vec<_>>(),
         });
+        let size_bytes = i64::try_from(file.size_bytes).unwrap_or(i64::MAX);
+        let rule_count = i64::try_from(file.parsed_rules.len()).unwrap_or(i64::MAX);
         file_stmt
             .execute(params![
                 file_key,
                 LOCAL_SOURCE_KEY,
                 file.relative_path,
                 file.sha256,
-                file.size_bytes,
-                file.parsed_rules.len(),
+                size_bytes,
+                rule_count,
                 1i64,
                 observation_label(&file.observation),
                 file_payload.to_string(),
@@ -371,6 +373,7 @@ fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<Persi
                 "metadata": rule.metadata,
                 "tags": rule.tags,
             });
+            let strings_count = i64::try_from(rule.strings_count).unwrap_or(i64::MAX);
             rule_stmt
                 .execute(params![
                     rule_key,
@@ -382,7 +385,7 @@ fn replace_catalog_rows(db: &StorageDb, report: &RuleLoadReport) -> Result<Persi
                     rule.description.clone().unwrap_or_default(),
                     rule.reference.clone().unwrap_or_default(),
                     serde_json::to_string(&rule.tags).unwrap_or_else(|_| "[]".to_string()),
-                    rule.strings_count,
+                    strings_count,
                     payload.to_string(),
                 ])
                 .map_err(|e| format!("insert YARA rule {}: {e}", rule.rule_name))?;
