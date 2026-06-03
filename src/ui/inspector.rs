@@ -367,7 +367,7 @@ fn show_detail(
                         None => "Unban remote".to_string(),
                     };
                     action_cells.push(ActionCell {
-                        action: Action::UnblockRemote(target.clone()),
+                        action: Action::UnblockRemote(target.to_string()),
                         label,
                         hover: format!("Remove temporary firewall rule for {target}."),
                         tone: ActionTone::Accent,
@@ -375,7 +375,7 @@ fn show_detail(
                 } else {
                     action_cells.push(ActionCell {
                         action: Action::BlockRemote {
-                            target: target.clone(),
+                            target: target.to_string(),
                             preset: active_response::DurationPreset::OneHour,
                         },
                         label: "Ban remote 1h".into(),
@@ -389,7 +389,7 @@ fn show_detail(
                 if let Some(domain) = domain_target.as_ref() {
                     if domain_blocked {
                         action_cells.push(ActionCell {
-                            action: Action::UnblockDomain(domain.clone()),
+                            action: Action::UnblockDomain(domain.to_string()),
                             label: "Unban domain".into(),
                             hover: format!("Remove local hosts-file block for {domain}."),
                             tone: ActionTone::Accent,
@@ -397,7 +397,7 @@ fn show_detail(
                     } else {
                         action_cells.push(ActionCell {
                             action: Action::BlockDomain {
-                                domain: domain.clone(),
+                                domain: domain.to_string(),
                             },
                             label: "Ban domain".into(),
                             hover: format!("Redirect {domain} to localhost through the hosts file."),
