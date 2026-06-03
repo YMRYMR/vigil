@@ -258,3 +258,55 @@ Pairs naturally with the tamper-evident logging already in the OPEN tier.
 - [ ] **Retention policy controls** — configurable 90-day / 1-year / 7-year log retention per tenant.
 - [ ] **Exportable hash manifest** — tie reports to the tamper-evident chain so auditors can verify integrity.
 - [ ] **Evidence bundle export** — one-click packaging of alerts, PCAPs, memory dumps, and audit log for a given incident window.
+
+---
+
+## Phase 29 — Identity & User Context (PRO backlog)
+
+Modern detections hinge on who, not just what. Adds identity attribution so alerts can differentiate privileged accounts from standard users.
+
+- [ ] **Local-user attribution** — attach the local OS user and session id to every connection record.
+- [ ] **Directory linkage** — resolve local users to directory identities via per-tenant connector.
+- [ ] **Privileged-account differentiation** — raise alerts on privileged users and service accounts more aggressively than standard users.
+- [ ] **Lateral-movement signal** — detect "this endpoint authenticated to N new internal hosts in a short window" as a first-class scoring input.
+- [ ] **Identity surface in UI and reports** — show user context in inspector, alerts, and compliance reports.
+
+---
+
+## Phase 30 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+
+Two differentiators bundled together because each alone is narrow, but together they round out the modern endpoint story.
+
+### Low-code response playbooks
+
+- [ ] **GUI rule builder** in the fleet console on top of the existing response-rule engine.
+- [ ] **Pre-built playbooks** — ransomware-like behaviour → isolate + capture PCAP + memory-dump + page; LoLBAS + new country → require approval before block.
+- [ ] **Dry-run and rollback window** — every action has a reversible TTL and an operator undo button before commitment.
+
+### Browser / SaaS-session visibility
+
+- [ ] **Tab / SaaS-app attribution** — correlate connections to browser tab identity and known SaaS destinations where possible.
+- [ ] **OAuth token exfil signal** — detect anomalous cross-origin token flows.
+- [ ] **Per-SaaS data-volume anomaly** — baseline typical outbound volume per SaaS destination and flag deviations.
+
+---
+
+## Version Plan
+
+| Version | Phase | Description | Status |
+|---|---|---|---|
+| 6.x | 16 | Public vulnerability intelligence & advisory feeds | ✅ Complete |
+| 7.x | 17 | Protocol expansion | ✅ Complete |
+| 8.x | 18 | Windows/Linux detection and response parity | 🚧 Foundations in place |
+| 9.x | 19 | Native OS firewall engine | 🚧 Foundations in place |
+| 10.x | 20 | YARA signature integration | 🚧 Foundations in place |
+| 11.x | 21 | Security posture dashboard | 🚧 Foundations in place |
+| 12.x | 22 | Jitter-aware C2 beaconing detection | 🔲 Backlog |
+| 13.x | 23 | Signed auto-update channel | 🔲 Backlog |
+| 14.x | 24 | File integrity monitoring | 🔲 Backlog |
+| PRO 1.x | 25 | Cloud fleet console & integrations | 🔲 Backlog |
+| PRO 1.x | 26 | MSP multi-tenant & white-label | 🔲 Backlog |
+| PRO 1.x | 27 | Managed threat intel feed | 🔲 Backlog |
+| PRO 1.x | 28 | Compliance reporting pack | 🔲 Backlog |
+| PRO 1.x | 29 | Identity & user context | 🔲 Backlog |
+| PRO 1.x | 30 | Playbook builder & SaaS-session visibility | 🔲 Backlog |
