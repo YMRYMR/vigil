@@ -4,15 +4,67 @@
 //! high-confidence alerts. The feature is opt-in, Windows-only, audited, and
 //! rate-limited per PID so a noisy process does not flood disk with dumps.
 
-use crate::{artifact_provenance, audit, config::Config, types::ConnInfo};
+use crate::{artifact_provenance, audit, config::Config, storage::db::StorageDb, types::ConnInfo};
+use rusqlite::params;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use yara_x::{Compiler, Scanner, SourceCode};
 
 static LAST_DUMP_AT: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
 static LAST_GLOBAL_DUMP_AT: OnceLock<Mutex<u64>> = OnceLock::new();
 const GLOBAL_COOLDOWN_SECS: u64 = 30;
+const MAX_PROCESS_DUMP_SCAN_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_MEMORY_MATCHED_RULES_RECORDED: usize = 8;
+const BUNDLED_PACK_MANIFEST_JSON: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_manifest.json"));
+
+#[derive(Debug, Clone, Copy)]
+struct EmbeddedBundledRuleFile {
+    relative_path: &'static str,
+    source_text: &'static str,
+}
+
+include!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_files.rs"));
+
+#[derive(Debug, Clone)]
+struct MemoryDumpScanTarget {
+    path: PathBuf,
+    size_bytes: u64,
+    modified_unix_nanos: u64,
+    created_unix_nanos: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryDumpMatchedRule {
+    identifier: String,
+    attack_tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryDumpScanVerdict {
+    matched_rules: Vec<MemoryDumpMatchedRule>,
+    ruleset_digest: String,
+    scanned_unix: u64,
+    target_sha256: String,
+}
+
+#[derive(Debug, Clone)]
+struct MemoryRuntimeRuleSource {
+    namespace: String,
+    relative_path: String,
+    source_text: String,
+}
+
+struct MemoryCompiledRuleSet {
+    digest: String,
+    rules: yara_x::Rules,
+}
 
 pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
     if !cfg.process_dump_on_alert || info.score < cfg.process_dump_min_score || info.pid == 0 {
@@ -85,6 +137,7 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
                 }),
             );
             tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %path.display(), manifest = ?manifest.as_ref().map(|p| p.display().to_string()), "captured process dump on alert");
+            enqueue_process_dump_yara_scan(path, info.clone(), manifest);
         }
         Err(err) => {
             audit::record(
@@ -100,6 +153,454 @@ pub fn maybe_capture_process_dump(info: &ConnInfo, cfg: &Config) {
             tracing::warn!(pid = info.pid, proc = %info.proc_name, %err, "failed to capture process dump on alert");
         }
     }
+}
+
+fn enqueue_process_dump_yara_scan(path: PathBuf, info: ConnInfo, manifest: Option<PathBuf>) {
+    if let Err(err) = std::thread::Builder::new()
+        .name("vigil-yara-dump-scan".into())
+        .spawn(move || run_process_dump_yara_scan(path, info, manifest))
+    {
+        audit::record(
+            "process_dump_yara_scan",
+            "error",
+            json!({ "error": format!("failed to spawn process dump YARA scan worker: {err}") }),
+        );
+    }
+}
+
+fn run_process_dump_yara_scan(path: PathBuf, info: ConnInfo, manifest: Option<PathBuf>) {
+    let target = match memory_dump_scan_target(&path) {
+        Ok(target) => target,
+        Err(err) => {
+            audit::record(
+                "process_dump_yara_scan",
+                "skipped",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                    "error": err,
+                }),
+            );
+            tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %path.display(), "skipped process dump YARA scan: {err}");
+            return;
+        }
+    };
+
+    let compiled = match compile_memory_runtime_rules() {
+        Ok(Some(compiled)) => compiled,
+        Ok(None) => {
+            audit::record(
+                "process_dump_yara_scan",
+                "skipped",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": target.path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                    "error": "no compiled YARA rules available",
+                }),
+            );
+            return;
+        }
+        Err(err) => {
+            audit::record(
+                "process_dump_yara_scan",
+                "error",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": target.path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                    "error": err,
+                }),
+            );
+            tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %target.path.display(), "failed to compile YARA rules for process dump scan: {err}");
+            return;
+        }
+    };
+
+    match scan_memory_dump_target(&compiled, &target) {
+        Ok(verdict) => {
+            if let Err(err) = persist_memory_dump_scan_result(&target, &verdict, &info, manifest.as_deref()) {
+                audit::record(
+                    "process_dump_yara_scan",
+                    "error",
+                    json!({
+                        "pid": info.pid,
+                        "proc_name": info.proc_name,
+                        "path": target.path.display().to_string(),
+                        "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                        "ruleset_digest": verdict.ruleset_digest,
+                        "error": err,
+                    }),
+                );
+                return;
+            }
+
+            let status = if verdict.matched_rules.is_empty() {
+                "clean"
+            } else {
+                "matched"
+            };
+            audit::record(
+                "process_dump_yara_scan",
+                status,
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": target.path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                    "ruleset_digest": verdict.ruleset_digest,
+                    "target_sha256": verdict.target_sha256,
+                    "matched_rules": verdict.matched_rules.iter().map(|rule| json!({
+                        "identifier": rule.identifier,
+                        "attack_tags": rule.attack_tags,
+                    })).collect::<Vec<_>>(),
+                }),
+            );
+            if !verdict.matched_rules.is_empty() {
+                tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %target.path.display(), matches = verdict.matched_rules.len(), "process dump YARA scan matched rules");
+            }
+        }
+        Err(err) => {
+            audit::record(
+                "process_dump_yara_scan",
+                "error",
+                json!({
+                    "pid": info.pid,
+                    "proc_name": info.proc_name,
+                    "path": target.path.display().to_string(),
+                    "manifest": manifest.as_ref().map(|p| p.display().to_string()),
+                    "error": err,
+                }),
+            );
+            tracing::warn!(pid = info.pid, proc = %info.proc_name, dump = %target.path.display(), "process dump YARA scan failed: {err}");
+        }
+    }
+}
+
+fn compile_memory_runtime_rules() -> Result<Option<MemoryCompiledRuleSet>, String> {
+    let mut compiler = Compiler::new();
+    let mut hasher = Sha256::new();
+    let mut compiled_sources = 0usize;
+
+    for source in memory_runtime_rule_sources()? {
+        compiler.new_namespace(&source.namespace);
+        let source_code =
+            SourceCode::from(source.source_text.as_str()).with_origin(&source.relative_path);
+        match compiler.add_source(source_code) {
+            Ok(_) => {
+                hasher.update(source.relative_path.as_bytes());
+                hasher.update(b"\n");
+                hasher.update(source.source_text.as_bytes());
+                hasher.update(b"\n");
+                compiled_sources += 1;
+            }
+            Err(err) => {
+                tracing::warn!(
+                    origin = %source.relative_path,
+                    error = %err,
+                    "skipping YARA source that failed compilation for process dump scan"
+                );
+            }
+        }
+    }
+
+    if compiled_sources == 0 {
+        return Ok(None);
+    }
+
+    let digest = hasher.finalize();
+    Ok(Some(MemoryCompiledRuleSet {
+        digest: hex_encode(digest.as_ref()),
+        rules: compiler.build(),
+    }))
+}
+
+fn memory_runtime_rule_sources() -> Result<Vec<MemoryRuntimeRuleSource>, String> {
+    validate_bundled_manifest_shape(BUNDLED_PACK_MANIFEST_JSON)?;
+
+    let mut sources = Vec::new();
+    for file in EMBEDDED_BUNDLED_RULE_FILES {
+        let relative_path = format!("bundled/{}", file.relative_path);
+        sources.push(MemoryRuntimeRuleSource {
+            namespace: namespace_for_relative_path(&relative_path),
+            relative_path,
+            source_text: file.source_text.to_string(),
+        });
+    }
+
+    let report = crate::yara_rules::load_verified_rules()?;
+    for file in report.files {
+        let relative_path = format!("local/{}", file.relative_path);
+        sources.push(MemoryRuntimeRuleSource {
+            namespace: namespace_for_relative_path(&relative_path),
+            relative_path,
+            source_text: file.source_text,
+        });
+    }
+
+    Ok(sources)
+}
+
+fn validate_bundled_manifest_shape(manifest_json: &str) -> Result<(), String> {
+    let value: serde_json::Value = serde_json::from_str(manifest_json)
+        .map_err(|e| format!("parse bundled YARA manifest: {e}"))?;
+    let schema_version = value
+        .get("schema_version")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| "bundled YARA manifest missing schema_version".to_string())?;
+    if schema_version != 1 {
+        return Err(format!(
+            "unsupported bundled YARA manifest schema version {schema_version}; expected 1"
+        ));
+    }
+    Ok(())
+}
+
+fn memory_dump_scan_target(path: &Path) -> Result<MemoryDumpScanTarget, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|e| format!("read metadata for process dump {}: {e}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!("process dump target is not a file: {}", path.display()));
+    }
+    if metadata.len() > MAX_PROCESS_DUMP_SCAN_BYTES {
+        return Err(format!(
+            "process dump target {} is {} bytes, above the {} byte scan limit",
+            path.display(),
+            metadata.len(),
+            MAX_PROCESS_DUMP_SCAN_BYTES
+        ));
+    }
+
+    Ok(MemoryDumpScanTarget {
+        path: path.to_path_buf(),
+        size_bytes: metadata.len(),
+        modified_unix_nanos: metadata
+            .modified()
+            .ok()
+            .and_then(system_time_to_unix_nanos)
+            .unwrap_or_default(),
+        created_unix_nanos: metadata
+            .created()
+            .ok()
+            .and_then(system_time_to_unix_nanos)
+            .unwrap_or_default(),
+    })
+}
+
+fn scan_memory_dump_target(
+    compiled: &MemoryCompiledRuleSet,
+    target: &MemoryDumpScanTarget,
+) -> Result<MemoryDumpScanVerdict, String> {
+    let target_sha256 = sha256_file(&target.path)?;
+    let mut scanner = Scanner::new(&compiled.rules);
+    scanner.use_mmap(false);
+    scanner.set_timeout(Duration::from_secs(10));
+    let results = scanner
+        .scan_file(&target.path)
+        .map_err(|e| format!("scan process dump {}: {e}", target.path.display()))?;
+
+    let mut matched_rules = Vec::new();
+    for rule in results.matching_rules().take(MAX_MEMORY_MATCHED_RULES_RECORDED) {
+        let attack_tags = rule
+            .tags()
+            .map(|tag| tag.identifier().to_string())
+            .filter(|tag| looks_like_attack_tag(tag))
+            .collect::<Vec<_>>();
+        matched_rules.push(MemoryDumpMatchedRule {
+            identifier: rule.identifier().to_string(),
+            attack_tags,
+        });
+    }
+
+    Ok(MemoryDumpScanVerdict {
+        matched_rules,
+        ruleset_digest: compiled.digest.clone(),
+        scanned_unix: unix_now(),
+        target_sha256,
+    })
+}
+
+fn persist_memory_dump_scan_result(
+    target: &MemoryDumpScanTarget,
+    verdict: &MemoryDumpScanVerdict,
+    info: &ConnInfo,
+    manifest: Option<&Path>,
+) -> Result<(), String> {
+    let db = StorageDb::global()?;
+    ensure_scan_result_table(&db)?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        let target_identity = target.path.to_string_lossy().to_string();
+        let conn = db.conn()?;
+        conn.execute(
+            "DELETE FROM yara_scan_result WHERE target_kind = ?1 AND target_identity = ?2",
+            params!["process_dump", target_identity.as_str()],
+        )
+        .map_err(|e| format!("clear prior process dump YARA scan result: {e}"))?;
+
+        let payload = json!({
+            "pid": info.pid,
+            "proc_name": info.proc_name,
+            "proc_path": info.proc_path,
+            "score": info.score,
+            "manifest": manifest.map(|p| p.display().to_string()),
+            "size_bytes": target.size_bytes,
+            "modified_unix_nanos": target.modified_unix_nanos,
+            "created_unix_nanos": target.created_unix_nanos,
+            "matched_rules": verdict
+                .matched_rules
+                .iter()
+                .map(|rule| {
+                    json!({
+                        "identifier": rule.identifier,
+                        "attack_tags": rule.attack_tags,
+                    })
+                })
+                .collect::<Vec<_>>(),
+        });
+        let verdict_name = if verdict.matched_rules.is_empty() {
+            "clean"
+        } else {
+            "matched"
+        };
+        let scanned_unix = i64::try_from(verdict.scanned_unix).unwrap_or(i64::MAX);
+        let match_count = i64::try_from(verdict.matched_rules.len()).unwrap_or(i64::MAX);
+
+        conn.execute(
+            "INSERT INTO yara_scan_result
+             (result_key, target_kind, target_identity, target_sha256, ruleset_digest,
+              scanned_unix, verdict, match_count, payload_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                stable_key(
+                    "yara_scan_result",
+                    &format!("process_dump:{target_identity}:{}", verdict.ruleset_digest)
+                ),
+                "process_dump",
+                target_identity.as_str(),
+                verdict.target_sha256.as_str(),
+                verdict.ruleset_digest.as_str(),
+                scanned_unix,
+                verdict_name,
+                match_count,
+                payload.to_string(),
+            ],
+        )
+        .map_err(|e| format!("insert process dump YARA scan result: {e}"))?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint()?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn ensure_scan_result_table(db: &StorageDb) -> Result<(), String> {
+    let conn = db.conn()?;
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS yara_scan_result (
+            result_key      TEXT PRIMARY KEY NOT NULL,
+            target_kind     TEXT NOT NULL DEFAULT '',
+            target_identity TEXT NOT NULL DEFAULT '',
+            target_sha256   TEXT NOT NULL DEFAULT '',
+            ruleset_digest  TEXT NOT NULL DEFAULT '',
+            scanned_unix    INTEGER NOT NULL DEFAULT 0,
+            verdict         TEXT NOT NULL DEFAULT '',
+            match_count     INTEGER NOT NULL DEFAULT 0,
+            payload_json    TEXT NOT NULL DEFAULT '{}'
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_yara_scan_target
+            ON yara_scan_result(target_kind, target_identity);
+        CREATE INDEX IF NOT EXISTS idx_yara_scan_ruleset
+            ON yara_scan_result(ruleset_digest);
+        CREATE INDEX IF NOT EXISTS idx_yara_scan_verdict
+            ON yara_scan_result(verdict, scanned_unix);
+        ",
+    )
+    .map_err(|e| format!("bootstrap YARA scan result table: {e}"))?;
+    Ok(())
+}
+
+fn namespace_for_relative_path(relative_path: &str) -> String {
+    Path::new(relative_path)
+        .parent()
+        .map(|parent| parent.to_string_lossy().replace('\\', "/"))
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "default".to_string())
+}
+
+fn looks_like_attack_tag(tag: &str) -> bool {
+    let normalized = tag.trim();
+    if normalized.is_empty() {
+        return false;
+    }
+    let candidate = normalized
+        .strip_prefix("ATT&CK:")
+        .or_else(|| normalized.strip_prefix("ATTACK:"))
+        .unwrap_or(normalized);
+    let Some(rest) = candidate.strip_prefix('T') else {
+        return false;
+    };
+    let (head, tail) = rest.split_once('.').unwrap_or((rest, ""));
+    if head.len() != 4 || !head.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    if tail.is_empty() {
+        return true;
+    }
+    tail.len() == 3 && tail.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|e| format!("open {} for sha256: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 8192];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|e| format!("read {} for sha256: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest = hasher.finalize();
+    Ok(hex_encode(digest.as_ref()))
+}
+
+fn stable_key(kind: &str, value: &str) -> String {
+    sha256_digest_hex(format!("{kind}:{value}").as_bytes())
+}
+
+fn sha256_digest_hex(data: &[u8]) -> String {
+    let digest = Sha256::digest(data);
+    hex_encode(digest.as_ref())
+}
+
+fn hex_encode(data: &[u8]) -> String {
+    data.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+}
+
+fn system_time_to_unix_nanos(time: SystemTime) -> Option<u64> {
+    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(duration.as_nanos()).ok()
 }
 
 fn unix_now() -> u64 {
