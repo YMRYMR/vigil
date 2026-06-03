@@ -1039,8 +1039,10 @@ impl VigilApp {
             ConnEvent::New(info) => {
                 self.add_conn_to_activity(info);
                 self.trim_history_buffers();
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
-                self.cached_alerts_process_count = process_list::process_count(&self.alerts);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
+                self.cached_alerts_process_count =
+                    process_list::count_distinct_processes(&self.alerts);
             }
             ConnEvent::Alert(info) => {
                 self.add_conn_to_activity(info.clone());
@@ -1050,15 +1052,18 @@ impl VigilApp {
                     .tray_tx
                     .try_send(TrayCmd::AlertCount(self.unseen_alerts));
                 self.trim_history_buffers();
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
-                self.cached_alerts_process_count = process_list::process_count(&self.alerts);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
+                self.cached_alerts_process_count =
+                    process_list::count_distinct_processes(&self.alerts);
             }
             ConnEvent::Closed {
                 pid,
-                proc_name,
-                local_addr,
-                remote_addr,
+                local: local_addr,
+                remote: remote_addr,
+                snapshot,
             } => {
+                let proc_name = snapshot.proc_name.clone();
                 self.activity.retain(|info| {
                     !(info.pid == pid
                         && info.proc_name == proc_name
@@ -1066,7 +1071,8 @@ impl VigilApp {
                         && info.remote_addr == remote_addr)
                 });
                 self.activity_cache = None;
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
                 let mut selected_activity_pid = None;
                 if self.selected_activity.as_ref().is_some_and(|sel| {
                     sel.pid == pid
@@ -1615,8 +1621,9 @@ impl VigilApp {
             };
             self.activity_cache = None;
             self.alerts_cache = None;
-            self.cached_activity_process_count = process_list::process_count(&self.activity);
-            self.cached_alerts_process_count = process_list::process_count(&self.alerts);
+            self.cached_activity_process_count =
+                process_list::count_distinct_processes(&self.activity);
+            self.cached_alerts_process_count = process_list::count_distinct_processes(&self.alerts);
             self.kill_confirm = false;
             self.push_notification(NotificationKind::Success, "Process terminated.");
         }
