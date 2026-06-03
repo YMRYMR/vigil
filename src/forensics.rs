@@ -223,7 +223,9 @@ fn run_process_dump_yara_scan(path: PathBuf, info: ConnInfo, manifest: Option<Pa
 
     match scan_memory_dump_target(&compiled, &target) {
         Ok(verdict) => {
-            if let Err(err) = persist_memory_dump_scan_result(&target, &verdict, &info, manifest.as_deref()) {
+            if let Err(err) =
+                persist_memory_dump_scan_result(&target, &verdict, &info, manifest.as_deref())
+            {
                 audit::record(
                     "process_dump_yara_scan",
                     "error",
@@ -364,7 +366,10 @@ fn memory_dump_scan_target(path: &Path) -> Result<MemoryDumpScanTarget, String> 
     let metadata = fs::metadata(path)
         .map_err(|e| format!("read metadata for process dump {}: {e}", path.display()))?;
     if !metadata.is_file() {
-        return Err(format!("process dump target is not a file: {}", path.display()));
+        return Err(format!(
+            "process dump target is not a file: {}",
+            path.display()
+        ));
     }
     if metadata.len() > MAX_PROCESS_DUMP_SCAN_BYTES {
         return Err(format!(
@@ -404,7 +409,10 @@ fn scan_memory_dump_target(
         .map_err(|e| format!("scan process dump {}: {e}", target.path.display()))?;
 
     let mut matched_rules = Vec::new();
-    for rule in results.matching_rules().take(MAX_MEMORY_MATCHED_RULES_RECORDED) {
+    for rule in results
+        .matching_rules()
+        .take(MAX_MEMORY_MATCHED_RULES_RECORDED)
+    {
         let attack_tags = rule
             .tags()
             .map(|tag| tag.identifier().to_string())
