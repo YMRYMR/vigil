@@ -677,12 +677,13 @@ mod imp {
                         apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::ResetOk => {
-                        if alert_since.is_none_or(|t| t.elapsed() >= ALERT_HOLD) {
+                        let keep_alert_icon = alert_since.is_some_and(|t| t.elapsed() < ALERT_HOLD);
+                        latest_alert = None;
+                        if !keep_alert_icon {
                             in_alert = false;
-                            latest_alert = None;
                             alert_since = None;
-                            apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                         }
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::SetLockdown(active) => {
                         in_lockdown = active;
