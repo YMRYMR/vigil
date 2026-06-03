@@ -22,7 +22,7 @@ use crate::config::Config;
 use crate::response_rules;
 use crate::tray::TrayCmd;
 use crate::types::{ConnEvent, ConnInfo};
-use chrono::{Local, Timelike};
+use chrono::{Datelike, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::path::Path;
@@ -532,6 +532,56 @@ fn admin_btn(text: &str) -> egui::Button<'_> {
         .corner_radius(4.0)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConfiguredLockdownSchedule {
+    window: active_response::LockdownSchedule,
+    days: Option<Vec<u8>>,
+}
+
+impl ConfiguredLockdownSchedule {
+    fn from_config(cfg: &Config) -> Option<Self> {
+        if let Some(schedule) = &cfg.lockdown_schedule {
+            let start_hour = (schedule.start_minute / 60).min(23) as u8;
+            let start_minute = (schedule.start_minute % 60).min(59) as u8;
+            let end_hour = (schedule.end_minute / 60).min(23) as u8;
+            let end_minute = (schedule.end_minute % 60).min(59) as u8;
+            return Some(Self {
+                window: active_response::LockdownSchedule {
+                    start_hour,
+                    start_minute,
+                    end_hour,
+                    end_minute,
+                },
+                days: Some(schedule.days.clone()),
+            });
+        }
+
+        cfg.scheduled_lockdown_enabled.then_some(Self {
+            window: active_response::LockdownSchedule {
+                start_hour: cfg.scheduled_lockdown_start_hour.min(23),
+                start_minute: cfg.scheduled_lockdown_start_minute.min(59),
+                end_hour: cfg.scheduled_lockdown_end_hour.min(23),
+                end_minute: cfg.scheduled_lockdown_end_minute.min(59),
+            },
+            days: None,
+        })
+    }
+
+    fn contains(&self, local: chrono::DateTime<Local>) -> bool {
+        let today = local.weekday().number_from_monday() as u8;
+        let day_enabled = self
+            .days
+            .as_ref()
+            .is_none_or(|days| days.iter().any(|day| *day == today));
+        day_enabled
+            && active_response::schedule_contains(
+                &self.window,
+                local.hour() as u8,
+                local.minute() as u8,
+            )
+    }
+}
+
 impl VigilApp {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -908,16 +958,7 @@ impl VigilApp {
     fn refresh_active_response_state(&mut self) {
         let schedule = {
             let cfg = self.cfg.read().unwrap();
-            cfg.lockdown_schedule.clone().or_else(|| {
-                cfg.scheduled_lockdown_start_hour.map(|start_hour| {
-                    active_response::LockdownSchedule {
-                        start_hour,
-                        start_minute: cfg.scheduled_lockdown_start_minute.unwrap_or(0),
-                        end_hour: cfg.scheduled_lockdown_end_hour.unwrap_or(start_hour),
-                        end_minute: cfg.scheduled_lockdown_end_minute.unwrap_or(0),
-                    }
-                })
-            })
+            ConfiguredLockdownSchedule::from_config(&cfg)
         };
         let now = std::time::Instant::now();
         let mut state_dirty = false;
@@ -949,10 +990,9 @@ impl VigilApp {
             self.spawn_reconcile_worker();
             self.last_response_reconcile = now;
         }
-        let scheduled_target = schedule.as_ref().map(|window| {
-            let local = Local::now();
-            active_response::schedule_contains(window, local.hour() as u8, local.minute() as u8)
-        });
+        let scheduled_target = schedule
+            .as_ref()
+            .map(|schedule| schedule.contains(Local::now()));
         self.scheduled_target = scheduled_target;
         if let Some(target) = scheduled_target {
             if target && self.response_status.isolated {
