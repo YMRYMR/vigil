@@ -20,3 +20,14 @@ pub mod tamper;
 pub mod update;
 #[cfg(windows)]
 pub mod windows_wfp;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn active_response_facade_exports_remain_available() {
+        let _: fn(u32, &str, &str) -> Result<String, String> =
+            crate::security::active_response::apply_quarantine_profile;
+        let _: fn() -> Result<String, String> =
+            crate::security::active_response::revert_frozen_autoruns;
+    }
+}

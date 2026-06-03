@@ -5,15 +5,16 @@ const ISOLATE_RULE_IN: &str = "Vigil Isolate In";
 const ISOLATE_RULE_OUT: &str = "Vigil Isolate Out";
 
 pub use imp::{
-    block_domain, block_process, block_remote, can_apply_quarantine_profile, can_block_domain,
-    can_isolate_network, can_kill_connection, can_modify_firewall, can_suspend_process,
-    extract_domain_target, extract_remote_target, freeze_autoruns, has_frozen_autoruns, is_blocked,
-    is_domain_blocked, is_process_blocked, is_process_suspended, isolate_machine, kill_connection,
-    list_rules, process_block_remaining, reconcile, reconcile_firewall_rules_once,
-    remote_block_remaining, restore_machine, resume_process, status, unblock_domain,
-    unblock_process, unblock_remote, BlockedDomainEntry, BlockedIpEntry, BlockedProcessEntry,
-    DurationPreset, FirewallProfileEntry, FirewallRuleList, InspectorSnapshot, SocketKillError,
-    Status, SuspendedProcessEntry,
+    apply_quarantine_profile, block_domain, block_process, block_remote,
+    can_apply_quarantine_profile, can_block_domain, can_isolate_network, can_kill_connection,
+    can_modify_firewall, can_suspend_process, extract_domain_target, extract_remote_target,
+    freeze_autoruns, has_frozen_autoruns, is_blocked, is_domain_blocked, is_process_blocked,
+    is_process_suspended, isolate_machine, kill_connection, list_rules, process_block_remaining,
+    reconcile, reconcile_firewall_rules_once, remote_block_remaining, restore_machine,
+    resume_process, revert_frozen_autoruns, status, unblock_domain, unblock_process,
+    unblock_remote, BlockedDomainEntry, BlockedIpEntry, BlockedProcessEntry, DurationPreset,
+    FirewallProfileEntry, FirewallRuleList, InspectorSnapshot, SocketKillError, Status,
+    SuspendedProcessEntry,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
