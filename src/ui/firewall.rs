@@ -185,6 +185,95 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
     action
 }
 
+/// Return true when a connection still matches the currently selected process row.
+pub fn firewall_matches_selection(
+    info: &crate::types::ConnInfo,
+    selected: Option<&crate::types::ConnInfo>,
+) -> bool {
+    crate::ui::conn_matches_selection(info, selected)
+}
+
+/// Build the currently actionable firewall selections for selection refresh.
+pub fn current_entries(
+    _activity: &std::collections::VecDeque<crate::types::ConnInfo>,
+    _selected_activity: Option<&super::ProcessSelection>,
+    _selected_alert: Option<&super::ProcessSelection>,
+    _status: &active_response::Status,
+) -> Vec<FirewallSelection> {
+    let rules = active_response::list_rules();
+    let mut entries = Vec::new();
+
+    if rules.isolated {
+        entries.push(FirewallSelection {
+            rule_name: "Network Isolation".into(),
+            target: "Entire machine".into(),
+            rule_type: "isolation".into(),
+            direction: "both".into(),
+            pid: 0,
+            path: String::new(),
+        });
+    }
+
+    entries.extend(
+        rules
+            .blocked_ips
+            .into_iter()
+            .map(|entry| FirewallSelection {
+                rule_name: entry.rule_name,
+                target: entry.target,
+                rule_type: "ip".into(),
+                direction: "out".into(),
+                pid: 0,
+                path: String::new(),
+            }),
+    );
+    entries.extend(rules.blocked_processes.into_iter().map(|entry| {
+        let target = if entry.path.is_empty() {
+            format!("PID {}", entry.pid)
+        } else {
+            entry.path.clone()
+        };
+        FirewallSelection {
+            rule_name: entry.outbound_rule_name,
+            target,
+            rule_type: "process".into(),
+            direction: "out".into(),
+            pid: entry.pid,
+            path: entry.path,
+        }
+    }));
+    entries.extend(
+        rules
+            .blocked_domains
+            .into_iter()
+            .map(|entry| FirewallSelection {
+                rule_name: format!("domain-{}", entry.domain),
+                target: entry.domain,
+                rule_type: "domain".into(),
+                direction: "out".into(),
+                pid: 0,
+                path: String::new(),
+            }),
+    );
+    entries.extend(rules.suspended_processes.into_iter().map(|entry| {
+        let target = if !entry.proc_name.is_empty() {
+            format!("{} (PID {})", entry.proc_name, entry.pid)
+        } else {
+            format!("PID {}", entry.pid)
+        };
+        FirewallSelection {
+            rule_name: format!("suspend-{}", entry.pid),
+            target,
+            rule_type: "process".into(),
+            direction: "both".into(),
+            pid: entry.pid,
+            path: entry.path,
+        }
+    }));
+
+    entries
+}
+
 // ── Sections ─────────────────────────────────────────────────────────────────
 
 fn backend_badge(ui: &mut Ui) {

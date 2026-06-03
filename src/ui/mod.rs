@@ -1039,8 +1039,10 @@ impl VigilApp {
             ConnEvent::New(info) => {
                 self.add_conn_to_activity(info);
                 self.trim_history_buffers();
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
-                self.cached_alerts_process_count = process_list::process_count(&self.alerts);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
+                self.cached_alerts_process_count =
+                    process_list::count_distinct_processes(&self.alerts);
             }
             ConnEvent::Alert(info) => {
                 self.add_conn_to_activity(info.clone());
@@ -1050,15 +1052,18 @@ impl VigilApp {
                     .tray_tx
                     .try_send(TrayCmd::AlertCount(self.unseen_alerts));
                 self.trim_history_buffers();
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
-                self.cached_alerts_process_count = process_list::process_count(&self.alerts);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
+                self.cached_alerts_process_count =
+                    process_list::count_distinct_processes(&self.alerts);
             }
             ConnEvent::Closed {
                 pid,
-                proc_name,
-                local_addr,
-                remote_addr,
+                local: local_addr,
+                remote: remote_addr,
+                snapshot,
             } => {
+                let proc_name = snapshot.proc_name.clone();
                 self.activity.retain(|info| {
                     !(info.pid == pid
                         && info.proc_name == proc_name
@@ -1066,7 +1071,8 @@ impl VigilApp {
                         && info.remote_addr == remote_addr)
                 });
                 self.activity_cache = None;
-                self.cached_activity_process_count = process_list::process_count(&self.activity);
+                self.cached_activity_process_count =
+                    process_list::count_distinct_processes(&self.activity);
                 let mut selected_activity_pid = None;
                 if self.selected_activity.as_ref().is_some_and(|sel| {
                     sel.pid == pid
@@ -1445,6 +1451,63 @@ impl VigilApp {
                 ctx.copy_text(value);
                 self.push_notification(NotificationKind::Info, "Copied to clipboard");
             }
+            inspector::Action::Trust => {
+                let proc_name = match self.active_tab {
+                    Tab::Activity => self.selected_activity.as_ref(),
+                    Tab::Alerts => self.selected_alert.as_ref(),
+                    _ => None,
+                }
+                .map(|sel| sel.proc_name.clone());
+                if let Some(proc_name) = proc_name {
+                    let added = {
+                        let mut cfg = self.cfg.write().unwrap();
+                        let added = cfg.add_trusted(&proc_name);
+                        if added {
+                            cfg.save();
+                        }
+                        added
+                    };
+                    if added {
+                        self.push_notification(
+                            NotificationKind::Success,
+                            format!("Trusted {proc_name}."),
+                        );
+                    } else {
+                        self.push_notification(
+                            NotificationKind::Info,
+                            format!("{proc_name} is already trusted."),
+                        );
+                    }
+                }
+            }
+            inspector::Action::OpenLocation => {
+                let selected = match self.active_tab {
+                    Tab::Activity => self.selected_activity.as_ref(),
+                    Tab::Alerts => self.selected_alert.as_ref(),
+                    _ => None,
+                };
+                if let Some(sel) = selected {
+                    let target = Path::new(&sel.proc_path)
+                        .parent()
+                        .unwrap_or_else(|| Path::new(&sel.proc_path))
+                        .to_path_buf();
+                    match open::that(target) {
+                        Ok(()) => {
+                            self.push_notification(NotificationKind::Info, "Opened location.")
+                        }
+                        Err(err) => self.push_notification(
+                            NotificationKind::Error,
+                            format!("Could not open location: {err}"),
+                        ),
+                    }
+                }
+            }
+            inspector::Action::KillConfirmed => {
+                self.execute_selected_kill();
+            }
+            inspector::Action::KillCancelled => {
+                self.kill_confirm = false;
+            }
             inspector::Action::RequestAdmin => match crate::autostart::relaunch_as_admin() {
                 Ok(()) => {
                     std::process::exit(0);
@@ -1558,6 +1621,34 @@ impl VigilApp {
             self.execute_pending_response();
         }
     }
+    fn execute_selected_kill(&mut self) {
+        let sel = match self.active_tab {
+            Tab::Activity => self.selected_activity.as_ref(),
+            Tab::Alerts => self.selected_alert.as_ref(),
+            _ => None,
+        };
+        let Some(sel) = sel else {
+            self.kill_confirm = false;
+            return;
+        };
+        kill_process(sel.pid);
+        remove_pid(&mut self.activity, sel.pid);
+        remove_pid(&mut self.alerts, sel.pid);
+        self.selected_activity = None;
+        self.selected_alert = None;
+        self.inspector_snapshot_key = None;
+        self.inspector_snapshot_rx = None;
+        self.inspector_snapshot = active_response::InspectorSnapshot {
+            status: self.response_status,
+            ..Default::default()
+        };
+        self.activity_cache = None;
+        self.alerts_cache = None;
+        self.cached_activity_process_count = process_list::count_distinct_processes(&self.activity);
+        self.cached_alerts_process_count = process_list::count_distinct_processes(&self.alerts);
+        self.kill_confirm = false;
+        self.push_notification(NotificationKind::Success, "Process terminated.");
+    }
     fn show_kill_confirm_window(&mut self, ctx: &egui::Context) {
         if !self.kill_confirm {
             return;
@@ -1602,23 +1693,7 @@ impl VigilApp {
         if close {
             self.kill_confirm = false;
         } else if execute {
-            kill_process(sel.pid);
-            remove_pid(&mut self.activity, sel.pid);
-            remove_pid(&mut self.alerts, sel.pid);
-            self.selected_activity = None;
-            self.selected_alert = None;
-            self.inspector_snapshot_key = None;
-            self.inspector_snapshot_rx = None;
-            self.inspector_snapshot = active_response::InspectorSnapshot {
-                status: self.response_status,
-                ..Default::default()
-            };
-            self.activity_cache = None;
-            self.alerts_cache = None;
-            self.cached_activity_process_count = process_list::process_count(&self.activity);
-            self.cached_alerts_process_count = process_list::process_count(&self.alerts);
-            self.kill_confirm = false;
-            self.push_notification(NotificationKind::Success, "Process terminated.");
+            self.execute_selected_kill();
         }
     }
     fn drain_events(&mut self, max_events: usize) -> bool {
