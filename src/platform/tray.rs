@@ -59,19 +59,46 @@ const TRAY_RED_ICO: &[u8] = include_bytes!(concat!(
 
 // ── Shared fallback loop for environments without a usable tray ──────────────
 
+fn open_window_from_tray(
+    show_window: &AtomicBool,
+    pending_nav: &Mutex<Option<ConnInfo>>,
+    latest_alert: &Option<ConnInfo>,
+) {
+    if let Some(info) = latest_alert {
+        *pending_nav.lock().unwrap() = Some(info.clone());
+    }
+    show_window.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn notification_only_loop(
     cmd_rx: Receiver<TrayCmd>,
     _show_window: Arc<AtomicBool>,
     _pending_nav: Arc<Mutex<Option<ConnInfo>>>,
 ) {
+    let mut _in_alert = false;
+    let mut _in_lockdown = false;
+    let mut _latest_alert: Option<ConnInfo> = None;
+
     loop {
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
-                TrayCmd::Alert(_) | TrayCmd::AlertCount(_) => {}
-                TrayCmd::ResetOk
-                | TrayCmd::SetLockdown(_)
-                | TrayCmd::LockdownOn
-                | TrayCmd::LockdownOff => {}
+                TrayCmd::Alert(info) => {
+                    _latest_alert = Some(*info);
+                    _in_alert = true;
+                }
+                TrayCmd::AlertCount(count) => {
+                    _in_alert = count > 0;
+                    if !_in_alert {
+                        _latest_alert = None;
+                    }
+                }
+                TrayCmd::ResetOk => {
+                    _in_alert = false;
+                    _latest_alert = None;
+                }
+                TrayCmd::SetLockdown(active) => _in_lockdown = active,
+                TrayCmd::LockdownOn => _in_lockdown = true,
+                TrayCmd::LockdownOff => _in_lockdown = false,
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -85,7 +112,6 @@ fn notification_only_loop(
 #[cfg(not(target_os = "linux"))]
 mod imp {
     use super::*;
-    use std::sync::atomic::Ordering;
     use tray_icon::{
         menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem},
         MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent,
@@ -238,7 +264,7 @@ mod imp {
         logs_id: tray_icon::menu::MenuId,
         log_dir: PathBuf,
         show_window: Arc<AtomicBool>,
-        _pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+        pending_nav: Arc<Mutex<Option<ConnInfo>>>,
         _egui_ctx: Arc<OnceLock<egui::Context>>,
     ) {
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -248,6 +274,7 @@ mod imp {
         let mut msg = MSG::default();
         let mut in_alert = false;
         let mut in_lockdown = false;
+        let mut latest_alert: Option<ConnInfo> = None;
 
         loop {
             unsafe {
@@ -267,7 +294,7 @@ mod imp {
                     ..
                 } = ev
                 {
-                    show_window.store(true, Ordering::Relaxed);
+                    open_window_from_tray(&show_window, &pending_nav, &latest_alert);
                 }
             }
 
@@ -275,7 +302,7 @@ mod imp {
                 if ev.id == quit_id {
                     std::process::exit(0);
                 } else if ev.id == open_id {
-                    show_window.store(true, Ordering::Relaxed);
+                    open_window_from_tray(&show_window, &pending_nav, &latest_alert);
                 } else if ev.id == logs_id {
                     let _ = open::that(&log_dir);
                 }
@@ -284,16 +311,20 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        let _ = info;
+                        latest_alert = Some(*info);
                         in_alert = true;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::AlertCount(count) => {
                         in_alert = count > 0;
+                        if !in_alert {
+                            latest_alert = None;
+                        }
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::ResetOk => {
                         in_alert = false;
+                        latest_alert = None;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::SetLockdown(active) => {
@@ -331,7 +362,7 @@ mod imp {
     ) {
         let mut in_alert = false;
         let mut in_lockdown = false;
-        let _ = pending_nav;
+        let mut latest_alert: Option<ConnInfo> = None;
 
         loop {
             while let Ok(ev) = TrayIconEvent::receiver().try_recv() {
@@ -341,7 +372,7 @@ mod imp {
                     ..
                 } = ev
                 {
-                    show_window.store(true, Ordering::Relaxed);
+                    open_window_from_tray(&show_window, &pending_nav, &latest_alert);
                 }
             }
 
@@ -349,7 +380,7 @@ mod imp {
                 if ev.id == quit_id {
                     std::process::exit(0);
                 } else if ev.id == open_id {
-                    show_window.store(true, Ordering::Relaxed);
+                    open_window_from_tray(&show_window, &pending_nav, &latest_alert);
                 } else if ev.id == logs_id {
                     let _ = open::that(&log_dir);
                 }
@@ -358,16 +389,20 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        let _ = info;
+                        latest_alert = Some(*info);
                         in_alert = true;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::AlertCount(count) => {
                         in_alert = count > 0;
+                        if !in_alert {
+                            latest_alert = None;
+                        }
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::ResetOk => {
                         in_alert = false;
+                        latest_alert = None;
                         apply_tray_visual_state(&tray, &icons, in_alert, in_lockdown);
                     }
                     TrayCmd::SetLockdown(active) => {
@@ -408,7 +443,6 @@ mod imp {
     use ksni::blocking::{Handle, TrayMethods};
     use ksni::menu::{MenuItem as KsniMenuItem, StandardItem};
     use ksni::Tray;
-    use std::sync::atomic::Ordering;
 
     #[derive(Clone, Copy, Debug, PartialEq)]
     enum IconState {
@@ -438,13 +472,15 @@ mod imp {
     struct VigilTray {
         state: IconState,
         show_window: Arc<AtomicBool>,
+        pending_nav: Arc<Mutex<Option<ConnInfo>>>,
+        latest_alert: Option<ConnInfo>,
         log_dir: PathBuf,
         egui_ctx: Arc<OnceLock<egui::Context>>,
     }
 
     impl VigilTray {
         fn wake_ui(&self) {
-            self.show_window.store(true, Ordering::Relaxed);
+            open_window_from_tray(&self.show_window, &self.pending_nav, &self.latest_alert);
             if let Some(ec) = self.egui_ctx.get() {
                 // Queue the restore commands from the tray callback itself so
                 // Wayland/GNOME can wake a minimized window reliably.
@@ -585,6 +621,8 @@ mod imp {
         let tray = VigilTray {
             state: IconState::Ok,
             show_window: show_window.clone(),
+            pending_nav: pending_nav.clone(),
+            latest_alert: None,
             log_dir,
             egui_ctx,
         };
@@ -600,10 +638,14 @@ mod imp {
 
         let mut in_alert = false;
         let mut in_lockdown = false;
+        let mut latest_alert: Option<ConnInfo> = None;
         let mut alert_since: Option<std::time::Instant> = None;
         const ALERT_HOLD: std::time::Duration = std::time::Duration::from_secs(5);
 
-        let apply = |handle: &Handle<VigilTray>, in_alert: bool, in_lockdown: bool| {
+        let apply = |handle: &Handle<VigilTray>,
+                     in_alert: bool,
+                     in_lockdown: bool,
+                     latest_alert: Option<ConnInfo>| {
             let state = if in_lockdown {
                 IconState::Lockdown
             } else if in_alert {
@@ -613,6 +655,7 @@ mod imp {
             };
             handle.update(move |t: &mut VigilTray| {
                 t.state = state;
+                t.latest_alert = latest_alert;
             });
         };
 
@@ -620,36 +663,39 @@ mod imp {
             while let Ok(cmd) = cmd_rx.try_recv() {
                 match cmd {
                     TrayCmd::Alert(info) => {
-                        let _ = info;
+                        latest_alert = Some(*info);
                         in_alert = true;
                         alert_since = Some(std::time::Instant::now());
-                        apply(&handle, in_alert, in_lockdown);
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::AlertCount(count) => {
                         in_alert = count > 0;
                         if !in_alert {
+                            latest_alert = None;
                             alert_since = None;
                         }
-                        apply(&handle, in_alert, in_lockdown);
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::ResetOk => {
-                        if alert_since.is_none_or(|t| t.elapsed() >= ALERT_HOLD) {
+                        let keep_alert_icon = alert_since.is_some_and(|t| t.elapsed() < ALERT_HOLD);
+                        latest_alert = None;
+                        if !keep_alert_icon {
                             in_alert = false;
                             alert_since = None;
-                            apply(&handle, in_alert, in_lockdown);
                         }
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::SetLockdown(active) => {
                         in_lockdown = active;
-                        apply(&handle, in_alert, in_lockdown);
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::LockdownOn => {
                         in_lockdown = true;
-                        apply(&handle, in_alert, in_lockdown);
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                     TrayCmd::LockdownOff => {
                         in_lockdown = false;
-                        apply(&handle, in_alert, in_lockdown);
+                        apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                     }
                 }
             }
@@ -658,7 +704,7 @@ mod imp {
                 if t.elapsed() >= ALERT_HOLD && in_alert {
                     in_alert = false;
                     alert_since = None;
-                    apply(&handle, in_alert, in_lockdown);
+                    apply(&handle, in_alert, in_lockdown, latest_alert.clone());
                 }
             }
 
