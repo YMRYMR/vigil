@@ -6,12 +6,13 @@
 
 use crate::{artifact_provenance, audit, config::Config, storage::db::StorageDb, types::ConnInfo};
 use rusqlite::params;
+use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use yara_x::{Compiler, Scanner, SourceCode};
@@ -21,6 +22,7 @@ static LAST_GLOBAL_DUMP_AT: OnceLock<Mutex<u64>> = OnceLock::new();
 const GLOBAL_COOLDOWN_SECS: u64 = 30;
 const MAX_PROCESS_DUMP_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_MEMORY_MATCHED_RULES_RECORDED: usize = 8;
+const PACK_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const BUNDLED_PACK_MANIFEST_JSON: &str =
     include_str!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_manifest.json"));
 
@@ -31,6 +33,29 @@ struct EmbeddedBundledRuleFile {
 }
 
 include!(concat!(env!("OUT_DIR"), "/bundled_yara_pack_files.rs"));
+
+#[derive(Debug, Clone, Deserialize)]
+struct BundledPackManifest {
+    schema_version: u32,
+    pack_name: String,
+    pack_version: String,
+    generated_at: String,
+    upstream_name: String,
+    upstream_source_url: String,
+    upstream_reference: String,
+    license: String,
+    files: Vec<BundledPackManifestFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct BundledPackManifestFile {
+    relative_path: String,
+    sha256: String,
+    rule_count: usize,
+    source_url: String,
+    source_reference: String,
+    category: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 struct MemoryDumpScanTarget {
@@ -322,7 +347,7 @@ fn compile_memory_runtime_rules() -> Result<Option<MemoryCompiledRuleSet>, Strin
 }
 
 fn memory_runtime_rule_sources() -> Result<Vec<MemoryRuntimeRuleSource>, String> {
-    validate_bundled_manifest_shape(BUNDLED_PACK_MANIFEST_JSON)?;
+    validate_bundled_pack(BUNDLED_PACK_MANIFEST_JSON, EMBEDDED_BUNDLED_RULE_FILES)?;
 
     let mut sources = Vec::new();
     for file in EMBEDDED_BUNDLED_RULE_FILES {
@@ -347,17 +372,108 @@ fn memory_runtime_rule_sources() -> Result<Vec<MemoryRuntimeRuleSource>, String>
     Ok(sources)
 }
 
-fn validate_bundled_manifest_shape(manifest_json: &str) -> Result<(), String> {
-    let value: serde_json::Value = serde_json::from_str(manifest_json)
-        .map_err(|e| format!("parse bundled YARA manifest: {e}"))?;
-    let schema_version = value
-        .get("schema_version")
-        .and_then(|value| value.as_u64())
-        .ok_or_else(|| "bundled YARA manifest missing schema_version".to_string())?;
-    if schema_version != 1 {
+fn validate_bundled_pack(
+    manifest_json: &str,
+    embedded_files: &[EmbeddedBundledRuleFile],
+) -> Result<(), String> {
+    let manifest: BundledPackManifest = serde_json::from_str(manifest_json)
+        .map_err(|e| format!("failed to parse bundled YARA pack manifest: {e}"))?;
+    validate_bundled_pack_manifest(&manifest, embedded_files)
+}
+
+fn validate_bundled_pack_manifest(
+    manifest: &BundledPackManifest,
+    embedded_files: &[EmbeddedBundledRuleFile],
+) -> Result<(), String> {
+    if manifest.schema_version != PACK_MANIFEST_SCHEMA_VERSION {
         return Err(format!(
-            "unsupported bundled YARA manifest schema version {schema_version}; expected 1"
+            "unsupported bundled YARA manifest schema version {}; expected {}",
+            manifest.schema_version, PACK_MANIFEST_SCHEMA_VERSION
         ));
+    }
+    ensure_non_empty(&manifest.pack_name, "pack_name")?;
+    ensure_non_empty(&manifest.pack_version, "pack_version")?;
+    ensure_non_empty(&manifest.generated_at, "generated_at")?;
+    ensure_non_empty(&manifest.upstream_name, "upstream_name")?;
+    ensure_non_empty(&manifest.upstream_source_url, "upstream_source_url")?;
+    ensure_non_empty(&manifest.upstream_reference, "upstream_reference")?;
+    ensure_non_empty(&manifest.license, "license")?;
+    if manifest.files.is_empty() {
+        return Err("YARA pack manifest must include at least one file entry".into());
+    }
+
+    let mut embedded_by_path = HashMap::with_capacity(embedded_files.len());
+    for file in embedded_files {
+        if embedded_by_path
+            .insert(file.relative_path, file.source_text)
+            .is_some()
+        {
+            return Err(format!(
+                "bundled YARA pack embeds duplicate relative path {}",
+                file.relative_path
+            ));
+        }
+    }
+
+    let mut seen_paths = HashSet::with_capacity(manifest.files.len());
+    for (idx, file) in manifest.files.iter().enumerate() {
+        validate_bundled_pack_manifest_file(idx, file)?;
+        if !seen_paths.insert(file.relative_path.clone()) {
+            return Err(format!(
+                "YARA pack manifest files[{idx}] reuses duplicate relative_path {}",
+                file.relative_path
+            ));
+        }
+
+        let Some(source_text) = embedded_by_path.get(file.relative_path.as_str()) else {
+            return Err(format!(
+                "bundled YARA pack file {} is listed in the manifest but missing from the embedded file index",
+                file.relative_path
+            ));
+        };
+        let actual_sha = sha256_digest_hex(source_text.as_bytes());
+        if actual_sha != file.sha256 {
+            return Err(format!(
+                "bundled YARA pack file {} failed SHA-256 verification",
+                file.relative_path
+            ));
+        }
+        let actual_rule_count = count_rule_definitions(source_text);
+        if actual_rule_count != file.rule_count {
+            return Err(format!(
+                "bundled YARA pack file {} advertises {} rules but contains {}",
+                file.relative_path, file.rule_count, actual_rule_count
+            ));
+        }
+    }
+
+    if embedded_by_path.len() != manifest.files.len() {
+        return Err(
+            "bundled YARA embedded file index contains files that are missing from the manifest"
+                .into(),
+        );
+    }
+
+    Ok(())
+}
+
+fn validate_bundled_pack_manifest_file(
+    idx: usize,
+    file: &BundledPackManifestFile,
+) -> Result<(), String> {
+    ensure_non_empty(&file.relative_path, &format!("files[{idx}].relative_path"))?;
+    ensure_normalized_relative_path(&file.relative_path, &format!("files[{idx}].relative_path"))?;
+    ensure_lower_hex_sha256(&file.sha256, &format!("files[{idx}].sha256"))?;
+    if file.rule_count == 0 {
+        return Err(format!("files[{idx}].rule_count must be greater than zero"));
+    }
+    ensure_non_empty(&file.source_url, &format!("files[{idx}].source_url"))?;
+    ensure_non_empty(
+        &file.source_reference,
+        &format!("files[{idx}].source_reference"),
+    )?;
+    if let Some(category) = &file.category {
+        ensure_non_empty(category, &format!("files[{idx}].category"))?;
     }
     Ok(())
 }
@@ -571,6 +687,64 @@ fn looks_like_attack_tag(tag: &str) -> bool {
         return true;
     }
     tail.len() == 3 && tail.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn ensure_non_empty(value: &str, field_name: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Err(format!("{field_name} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_lower_hex_sha256(value: &str, field_name: &str) -> Result<(), String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(format!(
+            "{field_name} must be exactly 64 lowercase hex characters"
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_normalized_relative_path(path: &str, field_name: &str) -> Result<(), String> {
+    if path.contains('\\') {
+        return Err(format!(
+            "{field_name} must use slash-separated relative paths: {path}"
+        ));
+    }
+    let candidate = Path::new(path);
+    for component in candidate.components() {
+        match component {
+            Component::Normal(_) => {}
+            Component::CurDir
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(format!(
+                    "{field_name} must stay normalized and relative: {path}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn count_rule_definitions(source_text: &str) -> usize {
+    source_text
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            trimmed.starts_with("rule ")
+                || trimmed.starts_with("private rule ")
+                || trimmed.starts_with("global rule ")
+                || trimmed.starts_with("private global rule ")
+                || trimmed.starts_with("global private rule ")
+        })
+        .count()
 }
 
 fn sha256_file(path: &Path) -> Result<String, String> {
