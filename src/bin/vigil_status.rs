@@ -4,6 +4,9 @@
 //! CLI process can check without attaching to the live GUI/service runtime. Live
 //! runtime health will be layered on top of the same JSON contract later.
 
+#![allow(dead_code)]
+#![allow(clippy::needless_return)]
+
 #[path = "../status_report.rs"]
 mod status_report;
 
