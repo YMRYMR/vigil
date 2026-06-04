@@ -1,11 +1,17 @@
 # Vigil Protection Status
 
-`vigil_status` is the first status-reporting foundation for Vigil's production endpoint-protection track.
+`vigil status --json` is the primary status-reporting entrypoint for Vigil's production endpoint-protection track. The standalone `vigil_status` helper exposes the same JSON report for environments that package helper binaries separately.
 
 It prints a conservative JSON report about local Vigil state without attaching to the live GUI or service runtime. Facts that cannot be checked safely from a standalone CLI process are reported as `unknown` rather than guessed.
 
 ```bash
-vigil_status --json
+vigil status --json
+```
+
+The status command also accepts the normal data-directory override when an operator needs to inspect a non-default Vigil state directory:
+
+```bash
+vigil status --json --data-dir PATH
 ```
 
 ## Current scope
@@ -17,7 +23,7 @@ The schema reports:
 - `health_summary`, a compact single-panel view of the key Phase 21 protection signals
 - subsystem entries for configuration, runtime monitor, blocklist engine, firewall backend, response policy, active-response state, protected storage, YARA rules, advisory cache, and update trust
 
-The first implementation can inspect files and static policy. It intentionally does **not** claim live protection health yet.
+The current implementation can inspect files and static policy. It intentionally does **not** claim live protection health yet.
 
 ## Health summary
 
@@ -45,6 +51,6 @@ Subsystem states use these lowercase JSON values:
 
 ## Production direction
 
-This is the base contract for the future GUI dashboard, tray health indicator, and `vigil status --json` command. The next slices should move runtime-only checks out of `unknown` by publishing live health from the GUI/service monitor into protected local state.
+This is the base contract for the future GUI dashboard and tray health indicator. The next slices should move runtime-only checks out of `unknown` by publishing live health from the GUI/service monitor into protected local state.
 
 The status surface must stay honest: it must never report the machine as protected unless the required protection subsystems are actually healthy.
