@@ -273,7 +273,7 @@ Modern detections hinge on who, not just what. Adds identity attribution so aler
 
 ---
 
-## Phase 30 — Playbook Builder & SaaS-session Visibility
+## Phase 30 — Playbook Builder & SaaS-session Visibility (PRO backlog)
 
 Two differentiators bundled together because each alone is narrow, but together they round out the modern endpoint story.
 
