@@ -24,7 +24,7 @@ pub mod win {
 
     const POLL_SECS: u64 = 30;
 
-    /// Read all `(hive_label, value_name)` → `value_data` pairs from every
+    /// Read all `(hive_label, value_name)` -> `value_data` pairs from every
     /// watched autorun key.  Keys that do not exist (e.g. RunOnce when empty)
     /// are silently skipped.
     fn snapshot() -> HashMap<(String, String), String> {
@@ -114,8 +114,11 @@ pub mod win {
                     );
                     tracing::warn!("{}", reason);
 
+                    let now = Local::now();
+                    let first_seen_unix = u64::try_from(now.timestamp()).unwrap_or_default();
+
                     let info = ConnInfo {
-                        timestamp: Local::now().format("%H:%M:%S").to_string(),
+                        timestamp: now.format("%H:%M:%S").to_string(),
                         proc_name: format!("[Registry] {}", name),
                         pid: 0,
                         proc_path: data.clone(),
@@ -130,6 +133,9 @@ pub mod win {
                         remote_addr: "REGISTRY".to_string(),
                         status: "AUTORUN".to_string(),
                         protocol: crate::types::TransportProtocol::Tcp,
+                        first_seen_unix,
+                        closed_unix: None,
+                        duration_secs: None,
                         score: alert_threshold.max(8),
                         reasons: vec![reason],
                         pre_login: crate::session::is_pre_login(),
@@ -158,7 +164,7 @@ pub mod win {
     }
 }
 
-/// Public API stub — registry monitoring is Windows-only.
+/// Public API stub - registry monitoring is Windows-only.
 #[cfg(not(windows))]
 pub mod win {
     use crate::types::ConnEvent;
