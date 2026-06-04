@@ -227,7 +227,7 @@ Extends Vigil with a hosted console for multi-endpoint fleet management, alert a
 
 ## Phase 26 — MSP Multi-tenant & White-label (PRO backlog)
 
-Multi-tenant architecture for managed service providers. Depends on Phase 20 (YARA) and Phase 19 (Firewall Engine).
+Multi-tenant architecture for managed service providers managing multiple customer fleets. Depends on Phase 20 (YARA) and Phase 19 (Firewall Engine).
 
 - [ ] **Tenant hierarchy** — MSP → customer → site → endpoint, with inherited policy and override rules.
 - [ ] **White-label branding** — per-tenant logo, product name, custom domain, branded alert emails.
@@ -273,7 +273,7 @@ Modern detections hinge on who, not just what. Adds identity attribution so aler
 
 ---
 
-## Phase 30 — Playbook Builder & SaaS-session Visibility (PRO backlog)
+## Phase 30 — Playbook Builder & SaaS-session Visibility
 
 Two differentiators bundled together because each alone is narrow, but together they round out the modern endpoint story.
 
