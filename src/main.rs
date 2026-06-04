@@ -11,6 +11,8 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
+#![allow(dead_code)]
+#![allow(clippy::if_same_then_else, clippy::large_enum_variant, clippy::manual_contains)]
 
 #[allow(clippy::redundant_closure)]
 mod advisory;
