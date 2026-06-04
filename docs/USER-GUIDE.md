@@ -200,6 +200,8 @@ Vigil now uses the reviewed bundled rules plus any verified operator-local rules
 
 `vigil --yara-rule-status` remains the operator-facing intake command. The command itself does not run scans. It verifies which local rules under `yara-rules/` are trusted enough to join the runtime ruleset and records their provenance.
 
+The first YARA rule-management UI slice is intentionally read-only: it may display trusted rule metadata and matched rule names, but it must not expose category toggles, rule editing, rule deletion, remote downloads, or auto-enable behavior until those flows have protected policy storage, reload semantics, recovery behavior, and audit coverage. See [YARA rule management UI contract](YARA-RULE-MANAGEMENT-UI.md) for the current UI boundary.
+
 1. Run `vigil --yara-rule-status` if you want Vigil to print the exact `yara-rules/` directory path it expects on your machine.
 2. Place each `.yar` or `.yara` file under that directory with a matching `.sha256` sidecar beside it. For example, `sample.yar` should have `sample.yar.sha256`.
 3. Re-run the status command:
