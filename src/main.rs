@@ -58,6 +58,7 @@ mod session;
 #[allow(clippy::type_complexity)]
 mod software_inventory;
 mod startup_integrity;
+#[allow(clippy::duplicate_mod, clippy::needless_return)]
 mod status_report;
 mod storage;
 mod tls;
