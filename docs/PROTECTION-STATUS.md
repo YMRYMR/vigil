@@ -14,9 +14,23 @@ The schema reports:
 
 - app version, target OS, target architecture, and Vigil data directory
 - overall state and summary
-- subsystem entries for configuration, runtime monitor, firewall backend, response policy, active-response state, protected storage, YARA rules, advisory cache, and update trust
+- `health_summary`, a compact single-panel view of the key Phase 21 protection signals
+- subsystem entries for configuration, runtime monitor, blocklist engine, firewall backend, response policy, active-response state, protected storage, YARA rules, advisory cache, and update trust
 
 The first implementation can inspect files and static policy. It intentionally does **not** claim live protection health yet.
+
+## Health summary
+
+`health_summary` repeats selected subsystem states in a stable dashboard-friendly shape:
+
+- `runtime_monitor` — current monitor backend health; remains `unknown` until live runtime health is published
+- `blocklist_engine` — standalone preflight for configured blocklist paths and required `.sha256` sidecars
+- `advisory_cache` — advisory cache freshness; remains `unknown` until storage-backed cache inspection is available
+- `response_rules` — response policy state from protected configuration
+- `firewall_isolation` — persisted active-response/isolation state; live reconciliation still requires runtime health
+- `native_firewall_engine` — WFP/nftables/iptables backend availability or live-health placeholder
+
+The blocklist preflight is intentionally conservative. It reports `healthy` only when every configured blocklist file can be read, its `<filename>.sha256` sidecar matches the file digest, and at least one active non-comment entry is present. Missing paths, unreadable sidecars, or digest mismatches report `degraded`; no configured blocklists or verified empty lists report `disabled_by_policy`.
 
 ## State values
 
