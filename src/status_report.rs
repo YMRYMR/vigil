@@ -9,6 +9,7 @@ mod policy;
 
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -37,6 +38,16 @@ pub struct SubsystemStatus {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HealthSummary {
+    pub runtime_monitor: HealthState,
+    pub blocklist_engine: HealthState,
+    pub advisory_cache: HealthState,
+    pub response_rules: HealthState,
+    pub firewall_isolation: HealthState,
+    pub native_firewall_engine: HealthState,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct ProtectionStatusReport {
     pub schema_version: u32,
     pub generated_unix: u64,
@@ -46,6 +57,7 @@ pub struct ProtectionStatusReport {
     pub data_dir: String,
     pub overall_state: HealthState,
     pub overall_summary: String,
+    pub health_summary: HealthSummary,
     pub subsystems: Vec<SubsystemStatus>,
 }
 
@@ -88,6 +100,7 @@ pub fn build_report() -> ProtectionStatusReport {
         config_status(&config_path, &config),
         runtime_monitor_status(),
         firewall_status(),
+        blocklist_status(config.json(), &data_dir),
         response_policy_status(config.json(), &data_dir),
         active_response_status(&data_dir),
         storage_status(&data_dir),
@@ -107,6 +120,7 @@ pub fn build_report() -> ProtectionStatusReport {
     }
     .to_string();
 
+    let health_summary = build_health_summary(&subsystems);
     subsystems.sort_by_key(|status| status.name);
 
     ProtectionStatusReport {
@@ -118,6 +132,7 @@ pub fn build_report() -> ProtectionStatusReport {
         data_dir: data_dir.display().to_string(),
         overall_state,
         overall_summary,
+        health_summary,
         subsystems,
     }
 }
@@ -226,6 +241,72 @@ fn firewall_status() -> SubsystemStatus {
             name: "firewall_backend",
             state: HealthState::Degraded,
             summary: "this platform is outside Vigil's active Windows/Linux support scope".into(),
+            details,
+        }
+    }
+}
+
+fn blocklist_status(config: Option<&Value>, data_dir: &Path) -> SubsystemStatus {
+    let Some(config) = config else {
+        return SubsystemStatus {
+            name: "blocklist_engine",
+            state: HealthState::DisabledByPolicy,
+            summary: "no readable protected config; blocklist paths are treated as empty defaults"
+                .into(),
+            details: Vec::new(),
+        };
+    };
+
+    let paths = string_array_field(config, "blocklist_paths");
+    if paths.is_empty() {
+        return SubsystemStatus {
+            name: "blocklist_engine",
+            state: HealthState::DisabledByPolicy,
+            summary: "no blocklist paths are configured".into(),
+            details: vec!["configured_paths=0".into()],
+        };
+    }
+
+    let mut details = vec![format!("configured_paths={}", paths.len())];
+    let mut total_entries = 0usize;
+
+    for configured in &paths {
+        let path = expand_data_relative(data_dir, configured);
+        details.push(format!("path={}", path.display()));
+        match verify_blocklist_file(&path) {
+            Ok(entries) => {
+                total_entries += entries;
+                details.push(format!("{}:entries={entries}", path.display()));
+            }
+            Err(err) => {
+                details.push(format!("{}:{err}", path.display()));
+                return SubsystemStatus {
+                    name: "blocklist_engine",
+                    state: HealthState::Degraded,
+                    summary: "one or more configured blocklists failed the standalone integrity preflight"
+                        .into(),
+                    details,
+                };
+            }
+        }
+    }
+
+    if total_entries == 0 {
+        SubsystemStatus {
+            name: "blocklist_engine",
+            state: HealthState::DisabledByPolicy,
+            summary: "configured blocklists verified successfully but contain no active entries"
+                .into(),
+            details,
+        }
+    } else {
+        details.push(format!("verified_entries={total_entries}"));
+        SubsystemStatus {
+            name: "blocklist_engine",
+            state: HealthState::Healthy,
+            summary: format!(
+                "configured blocklists passed integrity preflight with {total_entries} active entries"
+            ),
             details,
         }
     }
@@ -472,6 +553,25 @@ fn summarize_overall_state(subsystems: &[SubsystemStatus]) -> HealthState {
     HealthState::Healthy
 }
 
+fn build_health_summary(subsystems: &[SubsystemStatus]) -> HealthSummary {
+    HealthSummary {
+        runtime_monitor: subsystem_state(subsystems, "runtime_monitor"),
+        blocklist_engine: subsystem_state(subsystems, "blocklist_engine"),
+        advisory_cache: subsystem_state(subsystems, "advisory_cache"),
+        response_rules: subsystem_state(subsystems, "response_policy"),
+        firewall_isolation: subsystem_state(subsystems, "active_response_state"),
+        native_firewall_engine: subsystem_state(subsystems, "firewall_backend"),
+    }
+}
+
+fn subsystem_state(subsystems: &[SubsystemStatus], name: &str) -> HealthState {
+    subsystems
+        .iter()
+        .find(|status| status.name == name)
+        .map(|status| status.state)
+        .unwrap_or(HealthState::Unknown)
+}
+
 fn data_dir() -> PathBuf {
     if let Some(dir) = env::var_os("VIGIL_DATA_DIR") {
         return PathBuf::from(dir);
@@ -511,6 +611,21 @@ fn string_field(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
 }
 
+fn string_array_field(value: &Value, key: &str) -> Vec<String> {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|item| !item.trim().is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn expand_data_relative(data_dir: &Path, configured: &str) -> PathBuf {
     let path = PathBuf::from(configured);
     if path.is_absolute() {
@@ -518,6 +633,53 @@ fn expand_data_relative(data_dir: &Path, configured: &str) -> PathBuf {
     } else {
         data_dir.join(path)
     }
+}
+
+fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
+    let contents = fs::read(path).map_err(|err| format!("failed_to_read_blocklist={err}"))?;
+    let sidecar_path = sha256_sidecar_path(path);
+    let sidecar = fs::read_to_string(&sidecar_path).map_err(|err| {
+        format!(
+            "failed_to_read_sidecar={} error={err}",
+            sidecar_path.display()
+        )
+    })?;
+    let expected = sidecar
+        .split_whitespace()
+        .next()
+        .ok_or_else(|| format!("empty_sidecar={}", sidecar_path.display()))?;
+    let actual = format!("{:x}", Sha256::digest(&contents));
+    if !expected.eq_ignore_ascii_case(&actual) {
+        return Err(format!(
+            "sha256_mismatch_sidecar={}",
+            sidecar_path.display()
+        ));
+    }
+    Ok(count_blocklist_entries(&String::from_utf8_lossy(&contents)))
+}
+
+fn count_blocklist_entries(contents: &str) -> usize {
+    contents
+        .lines()
+        .filter(|raw_line| {
+            let line = raw_line
+                .split_once('#')
+                .map(|(before_comment, _)| before_comment)
+                .unwrap_or(raw_line)
+                .trim();
+            !line.is_empty()
+        })
+        .count()
+}
+
+fn sha256_sidecar_path(path: &Path) -> PathBuf {
+    let mut file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default()
+        .to_string();
+    file_name.push_str(".sha256");
+    path.with_file_name(file_name)
 }
 
 fn count_extension(dir: &Path, extension: &str) -> usize {
@@ -625,6 +787,86 @@ mod tests {
         assert_eq!(
             expand_data_relative(Path::new("/tmp/vigil"), "rules.yaml"),
             PathBuf::from("/tmp/vigil/rules.yaml")
+        );
+    }
+
+    #[test]
+    fn health_summary_reuses_subsystem_states() {
+        let subsystems = vec![
+            SubsystemStatus {
+                name: "runtime_monitor",
+                state: HealthState::Unknown,
+                summary: String::new(),
+                details: Vec::new(),
+            },
+            SubsystemStatus {
+                name: "blocklist_engine",
+                state: HealthState::Healthy,
+                summary: String::new(),
+                details: Vec::new(),
+            },
+        ];
+
+        let summary = build_health_summary(&subsystems);
+
+        assert_eq!(summary.runtime_monitor, HealthState::Unknown);
+        assert_eq!(summary.blocklist_engine, HealthState::Healthy);
+        assert_eq!(summary.advisory_cache, HealthState::Unknown);
+    }
+
+    #[test]
+    fn blocklist_entry_count_ignores_comments_and_blank_lines() {
+        let contents = "\n# comment\n1.2.3.4\nexample.test # trailing\n\n";
+
+        assert_eq!(count_blocklist_entries(contents), 2);
+    }
+
+    #[test]
+    fn verified_blocklist_reports_active_entries() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("threats.txt");
+        let contents = b"1.2.3.4\nexample.test\n";
+        fs::write(&path, contents).unwrap();
+        fs::write(
+            sha256_sidecar_path(&path),
+            format!("{:x}  threats.txt\n", Sha256::digest(contents)),
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "blocklist_paths": [path.to_string_lossy()]
+        });
+
+        let status = blocklist_status(Some(&config), &dir);
+
+        assert_eq!(status.state, HealthState::Healthy);
+        assert!(status.summary.contains("2 active entries"));
+    }
+
+    #[test]
+    fn blocklist_with_missing_sidecar_is_degraded() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("threats.txt");
+        fs::write(&path, b"1.2.3.4\n").unwrap();
+        let config = serde_json::json!({
+            "blocklist_paths": [path.to_string_lossy()]
+        });
+
+        let status = blocklist_status(Some(&config), &dir);
+
+        assert_eq!(status.state, HealthState::Degraded);
+    }
+
+    #[test]
+    fn sha256_sidecar_path_appends_to_full_file_name() {
+        assert_eq!(
+            sha256_sidecar_path(Path::new("/tmp/blocklist")),
+            PathBuf::from("/tmp/blocklist.sha256")
+        );
+        assert_eq!(
+            sha256_sidecar_path(Path::new("/tmp/blocklist.txt")),
+            PathBuf::from("/tmp/blocklist.txt.sha256")
         );
     }
 
