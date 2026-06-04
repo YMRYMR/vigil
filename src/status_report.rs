@@ -7,11 +7,13 @@
 #[path = "security/policy.rs"]
 mod policy;
 
+use ipnetwork::IpNetwork;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
+use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -246,7 +248,7 @@ fn firewall_status() -> SubsystemStatus {
     }
 }
 
-fn blocklist_status(config: Option<&Value>, data_dir: &Path) -> SubsystemStatus {
+fn blocklist_status(config: Option<&Value>, _data_dir: &Path) -> SubsystemStatus {
     let Some(config) = config else {
         return SubsystemStatus {
             name: "blocklist_engine",
@@ -271,7 +273,7 @@ fn blocklist_status(config: Option<&Value>, data_dir: &Path) -> SubsystemStatus 
     let mut total_entries = 0usize;
 
     for configured in &paths {
-        let path = expand_data_relative(data_dir, configured);
+        let path = configured_blocklist_path(configured);
         details.push(format!("path={}", path.display()));
         match verify_blocklist_file(&path) {
             Ok(entries) => {
@@ -635,6 +637,10 @@ fn expand_data_relative(data_dir: &Path, configured: &str) -> PathBuf {
     }
 }
 
+fn configured_blocklist_path(configured: &str) -> PathBuf {
+    PathBuf::from(configured.trim())
+}
+
 fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
     let contents = fs::read(path).map_err(|err| format!("failed_to_read_blocklist={err}"))?;
     let sidecar_path = sha256_sidecar_path(path);
@@ -661,15 +667,44 @@ fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
 fn count_blocklist_entries(contents: &str) -> usize {
     contents
         .lines()
-        .filter(|raw_line| {
-            let line = raw_line
-                .split_once('#')
-                .map(|(before_comment, _)| before_comment)
-                .unwrap_or(raw_line)
-                .trim();
-            !line.is_empty()
-        })
+        .filter_map(normalized_blocklist_line)
+        .filter(|line| is_active_blocklist_entry(line))
         .count()
+}
+
+fn normalized_blocklist_line(raw_line: &str) -> Option<&str> {
+    let line = raw_line
+        .split_once('#')
+        .map(|(before_comment, _)| before_comment)
+        .unwrap_or(raw_line)
+        .trim();
+    if line.is_empty() {
+        None
+    } else {
+        Some(line)
+    }
+}
+
+fn is_active_blocklist_entry(line: &str) -> bool {
+    if line.contains('/') {
+        line.parse::<IpNetwork>().is_ok()
+    } else {
+        line.parse::<IpAddr>().is_ok() || is_hash(line) || is_domain(line)
+    }
+}
+
+fn is_hash(s: &str) -> bool {
+    let lower = s.as_bytes();
+    (lower.len() == 64 || lower.len() == 40 || lower.len() == 32)
+        && lower.iter().all(|&b| b.is_ascii_hexdigit())
+}
+
+fn is_domain(s: &str) -> bool {
+    s.contains('.')
+        && !s.contains(':')
+        && !s.contains('/')
+        && s.chars()
+            .all(|c| c.is_ascii() && (c.is_ascii_alphanumeric() || c == '.' || c == '-'))
 }
 
 fn sha256_sidecar_path(path: &Path) -> PathBuf {
@@ -791,6 +826,14 @@ mod tests {
     }
 
     #[test]
+    fn relative_blocklist_path_matches_runtime_loader() {
+        assert_eq!(
+            configured_blocklist_path("blocklists/threats.txt"),
+            PathBuf::from("blocklists/threats.txt")
+        );
+    }
+
+    #[test]
     fn health_summary_reuses_subsystem_states() {
         let subsystems = vec![
             SubsystemStatus {
@@ -822,6 +865,13 @@ mod tests {
     }
 
     #[test]
+    fn blocklist_entry_count_ignores_unrecognized_indicators() {
+        let contents = "\n# comment\nnot an indicator\nbad/cidr\nlocalhost\nexample\n";
+
+        assert_eq!(count_blocklist_entries(contents), 0);
+    }
+
+    #[test]
     fn verified_blocklist_reports_active_entries() {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
@@ -841,6 +891,28 @@ mod tests {
 
         assert_eq!(status.state, HealthState::Healthy);
         assert!(status.summary.contains("2 active entries"));
+    }
+
+    #[test]
+    fn signed_blocklist_with_only_invalid_entries_is_not_healthy() {
+        let dir = unique_temp_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("invalid-only.txt");
+        let contents = b"not an indicator\nbad/cidr\nlocalhost\nexample\nhttp://bad.example\n";
+        fs::write(&path, contents).unwrap();
+        fs::write(
+            sha256_sidecar_path(&path),
+            format!("{:x}  invalid-only.txt\n", Sha256::digest(contents)),
+        )
+        .unwrap();
+        let config = serde_json::json!({
+            "blocklist_paths": [path.to_string_lossy()]
+        });
+
+        let status = blocklist_status(Some(&config), &dir);
+
+        assert_eq!(status.state, HealthState::DisabledByPolicy);
+        assert!(status.summary.contains("no active entries"));
     }
 
     #[test]
