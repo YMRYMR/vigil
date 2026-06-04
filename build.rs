@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -164,6 +165,8 @@ fn generate_bundled_yara_pack() {
         );
     }
 
+    let mut seen_relative_paths = HashSet::with_capacity(metadata.files.len());
+    let mut seen_source_paths = HashSet::with_capacity(metadata.files.len());
     let mut manifest_files = Vec::with_capacity(metadata.files.len());
     let mut embedded_files = Vec::with_capacity(metadata.files.len());
     for file in &metadata.files {
@@ -176,6 +179,20 @@ fn generate_bundled_yara_pack() {
         }
         ensure_normalized_relative_path(&file.relative_path, "files[].relative_path");
         ensure_normalized_relative_path(&file.source_path, "files[].source_path");
+        if !seen_relative_paths.insert(file.relative_path.clone()) {
+            panic!(
+                "{} lists duplicate bundled YARA relative_path {}",
+                metadata_path.display(),
+                file.relative_path
+            );
+        }
+        if !seen_source_paths.insert(file.source_path.clone()) {
+            panic!(
+                "{} lists duplicate bundled YARA source_path {}",
+                metadata_path.display(),
+                file.source_path
+            );
+        }
 
         let source_fs_path = pack_root.join(&file.source_path);
         let source_text = fs::read_to_string(&source_fs_path)
