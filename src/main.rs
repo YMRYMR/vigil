@@ -11,8 +11,6 @@
     all(not(debug_assertions), target_os = "windows"),
     windows_subsystem = "windows"
 )]
-#![allow(dead_code)]
-#![allow(clippy::if_same_then_else, clippy::large_enum_variant, clippy::manual_contains)]
 
 #[allow(clippy::redundant_closure)]
 mod advisory;
@@ -27,6 +25,7 @@ mod advisory_runtime_score;
 mod advisory_status;
 mod artifact_provenance;
 mod audit;
+#[allow(dead_code)]
 mod autoruns;
 mod baseline;
 mod beacon;
@@ -58,6 +57,10 @@ mod storage;
 mod tls;
 mod tls_artifacts;
 mod types;
+#[allow(dead_code)]
+#[allow(clippy::if_same_then_else)]
+#[allow(clippy::large_enum_variant)]
+#[allow(clippy::manual_contains)]
 mod ui;
 mod version_compare;
 mod yara_rules;
