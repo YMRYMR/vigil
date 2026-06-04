@@ -654,7 +654,7 @@ fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
         .split_whitespace()
         .next()
         .ok_or_else(|| format!("empty_sidecar={}", sidecar_path.display()))?;
-    let actual = format!("{:x}", Sha256::digest(&contents));
+    let actual = sha256_hex(&contents);
     if !expected.eq_ignore_ascii_case(&actual) {
         return Err(format!(
             "sha256_mismatch_sidecar={}",
@@ -662,6 +662,21 @@ fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
         ));
     }
     Ok(count_blocklist_entries(&String::from_utf8_lossy(&contents)))
+}
+
+fn sha256_hex(contents: &[u8]) -> String {
+    let digest = Sha256::digest(contents);
+    encode_hex(digest.as_ref())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn count_blocklist_entries(contents: &str) -> usize {
@@ -795,7 +810,7 @@ mod tests {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("vigil.json");
-        fs::write(&path, br#"{"auto_response_enabled":true}"#).unwrap();
+        fs::write(&path, br#"{\"auto_response_enabled\":true}"#).unwrap();
 
         let probe = probe_config(&path);
         let status = config_status(&path, &probe);
@@ -809,7 +824,7 @@ mod tests {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("vigil.json");
-        policy::save_json_with_integrity(&path, br#"{"auto_response_enabled":true}"#).unwrap();
+        policy::save_json_with_integrity(&path, br#"{\"auto_response_enabled\":true}"#).unwrap();
 
         let probe = probe_config(&path);
         let status = config_status(&path, &probe);
@@ -880,7 +895,7 @@ mod tests {
         fs::write(&path, contents).unwrap();
         fs::write(
             sha256_sidecar_path(&path),
-            format!("{:x}  threats.txt\n", Sha256::digest(contents)),
+            format!("{}  threats.txt\n", sha256_hex(contents)),
         )
         .unwrap();
         let config = serde_json::json!({
@@ -902,7 +917,7 @@ mod tests {
         fs::write(&path, contents).unwrap();
         fs::write(
             sha256_sidecar_path(&path),
-            format!("{:x}  invalid-only.txt\n", Sha256::digest(contents)),
+            format!("{}  invalid-only.txt\n", sha256_hex(contents)),
         )
         .unwrap();
         let config = serde_json::json!({
