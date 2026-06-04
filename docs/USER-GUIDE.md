@@ -219,3 +219,44 @@ vigil --yara-rule-status
 Warnings on first load or after an intentional rule edit are expected because Vigil records provenance instead of silently treating every local change as corruption.
 
 The next YARA roadmap slice is still narrower than broad live-memory scanning. The safest follow-up remains selected-memory targets such as operator-visible or already-captured process dumps on supported platforms, while preserving the same fail-open behavior as the shipped executable scan path.
+
+## Advisory snapshot imports
+
+Vigil can also extend its protected local advisory cache with operator-supplied public-source snapshots. This is useful when you want advisory context to stay available offline from the last trusted local cache.
+
+Use the CLI importer that matches the source material you have:
+
+```bash
+vigil --import-nvd-snapshot nvdcve-page-1.json nvdcve-page-2.json
+vigil --import-nvd-change-history nvdcvehistory-page-1.json
+vigil --import-euvd euvd-export.json
+vigil --import-jvn jvn-export.json jvndbrss.xml
+vigil --import-ncsc ncsc-feed.xml ncsc-mirror.json
+vigil --import-bsi certbund-feed.xml bsi-advisories.json
+```
+
+The NCSC and BSI/CERT-Bund importers accept either RSS snapshots or mirrored JSON, then preserve source links, identifiers, timestamps, and other provenance fields in the same protected advisory cache as the other Phase 16 sources.
+
+Once Vigil has both the protected advisory cache and a local software inventory snapshot, you can also use those matches as conservative inputs for operator-managed response rules. The dedicated [Response rules](RESPONSE-RULES.md) guide and `response-rules.example.yaml` show how to keep that automation explainable and fail-open.
+
+## Local software inventory
+
+The standalone `vigil_inventory` helper prints local Windows/Linux software inventory metadata as JSON without touching Vigil's startup path.
+
+```bash
+vigil_inventory
+```
+
+Each row includes conservative normalized identity hints so later matching can stay explainable:
+
+- `product_key` for the primary normalized product identity
+- `product_aliases` for alternate normalized product forms derived from names and executable stems
+- `vendor_key` for the primary normalized publisher or vendor identity
+- `vendor_aliases` for alternate normalized vendor forms, including suffix-stripped aliases
+
+Current inventory sources:
+
+- Windows uninstall registry
+- Linux dpkg status database
+- Linux RPM database
+- Linux Alpine apk installed database
