@@ -7,7 +7,9 @@ use windows::Win32::Foundation::{HANDLE, HMODULE};
 use windows::Win32::NetworkManagement::WindowsFilteringPlatform::{
     FWPM_DISPLAY_DATA0, FWPM_PROVIDER0, FWPM_SESSION0, FWPM_SUBLAYER0,
 };
-use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
+};
 
 const FWP_E_ALREADY_EXISTS_STATUS: u32 = 0x8032_0009;
 const VIGIL_WFP_PROVIDER_KEY: GUID = GUID::from_u128(0x3b6f3d34_6150_4e3c_9169_7df0c5f1cb52);
@@ -59,8 +61,8 @@ struct WfpApi {
 
 impl WfpApi {
     unsafe fn load() -> Result<Self, String> {
-        let module =
-            LoadLibraryW(w!("Fwpuclnt.dll")).map_err(|err| format!("load Fwpuclnt.dll: {err}"))?;
+        let module = LoadLibraryExW(w!("Fwpuclnt.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32)
+            .map_err(|err| format!("load Fwpuclnt.dll: {err}"))?;
         Ok(Self {
             module,
             engine_open: load_symbol(module, b"FwpmEngineOpen0\0")?,
