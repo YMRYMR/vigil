@@ -1352,3 +1352,54 @@ fn pill(
         egui::StrokeKind::Outside,
     );
 }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(pid: u32) -> ConnInfo {
+        ConnInfo {
+            timestamp: String::new(),
+            proc_name: format!("proc-{pid}"),
+            pid,
+            proc_path: String::new(),
+            proc_user: String::new(),
+            parent_user: String::new(),
+            parent_name: String::new(),
+            parent_pid: 0,
+            service_name: String::new(),
+            publisher: String::new(),
+            command_line: String::new(),
+            local_addr: String::new(),
+            remote_addr: String::new(),
+            status: String::new(),
+            protocol: crate::types::TransportProtocol::Tcp,
+            first_seen_unix: 0,
+            closed_unix: None,
+            duration_secs: None,
+            score: 0,
+            reasons: Vec::new(),
+            attack_tags: Vec::new(),
+            ancestor_chain: Vec::new(),
+            pre_login: false,
+            hostname: None,
+            country: None,
+            asn: None,
+            asn_org: None,
+            reputation_hit: None,
+            recently_dropped: false,
+            long_lived: false,
+            dga_like: false,
+            baseline_deviation: false,
+            script_host_suspicious: false,
+            tls_sni: None,
+            tls_ja3: None,
+        }
+    }
+
+    #[test]
+    fn count_distinct_processes_tracks_unique_pids() {
+        let rows = VecDeque::from([row(42), row(7), row(42)]);
+
+        assert_eq!(count_distinct_processes(&rows), 2);
+    }
+}

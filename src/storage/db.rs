@@ -288,11 +288,11 @@ impl StorageDb {
                 src.source_key,
                 src.source_kind,
                 src.source_url,
-                src.fetched_unix,
-                src.expires_unix,
+                src.fetched_unix as i64,
+                src.expires_unix as i64,
                 status,
                 src.last_error.as_deref().unwrap_or(""),
-                src.retry_after_unix,
+                src.retry_after_unix as i64,
             ])
             .map_err(|e| format!("insert source {}: {e}", src.source_key))?;
         }
@@ -315,11 +315,11 @@ impl StorageDb {
                 let source_key: String = row.get(0)?;
                 let source_kind: String = row.get(1)?;
                 let source_url: String = row.get(2)?;
-                let fetched_unix: u64 = row.get(3)?;
-                let expires_unix: u64 = row.get(4)?;
+                let fetched_unix: i64 = row.get(3)?;
+                let expires_unix: i64 = row.get(4)?;
                 let status_str: String = row.get(5)?;
                 let last_error: String = row.get(6)?;
-                let retry_after_unix: u64 = row.get(7)?;
+                let retry_after_unix: i64 = row.get(7)?;
                 let status = match status_str.as_str() {
                     "stale" => crate::advisory::SourceHealth::Stale,
                     "error" => crate::advisory::SourceHealth::Error,
@@ -331,8 +331,8 @@ impl StorageDb {
                     source_url,
                     imported_from: None,
                     imported_from_batch: Vec::new(),
-                    fetched_unix,
-                    expires_unix,
+                    fetched_unix: fetched_unix.max(0) as u64,
+                    expires_unix: expires_unix.max(0) as u64,
                     snapshot_sha256: String::new(),
                     total_results: 0,
                     status,
@@ -342,7 +342,7 @@ impl StorageDb {
                     } else {
                         Some(last_error)
                     },
-                    retry_after_unix,
+                    retry_after_unix: retry_after_unix.max(0) as u64,
                 })
             })
             .map_err(|e| format!("query sources: {e}"))?;
@@ -390,8 +390,8 @@ impl StorageDb {
                 rec.primary_id,
                 source_key,
                 source_kind,
-                published_unix,
-                updated_unix,
+                published_unix as i64,
+                updated_unix as i64,
                 severity,
                 rec.known_exploited as i64,
                 payload,
@@ -423,7 +423,7 @@ impl StorageDb {
             )
             .map_err(|e| format!("prepare records-since query: {e}"))?;
         let rows = stmt
-            .query_map(rusqlite::params![since_unix], |row| {
+            .query_map(rusqlite::params![since_unix as i64], |row| {
                 let payload: String = row.get(0)?;
                 Ok(payload)
             })
@@ -443,13 +443,13 @@ impl StorageDb {
     /// or `None` when the table is empty.
     pub fn max_advisory_updated_unix(&self) -> Result<Option<u64>, String> {
         let conn = self.conn()?;
-        let max: Option<Option<u64>> = conn
+        let max: Option<Option<i64>> = conn
             .query_row("SELECT MAX(updated_unix) FROM advisory_record", [], |row| {
                 row.get(0)
             })
             .optional()
             .map_err(|e| format!("max updated_unix: {e}"))?;
-        Ok(max.unwrap_or(None))
+        Ok(max.unwrap_or(None).map(|value| value.max(0) as u64))
     }
 
     pub fn load_advisory_cache(&self) -> Result<Option<crate::advisory::AdvisoryCache>, String> {
@@ -521,7 +521,7 @@ impl StorageDb {
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs(),
+                    .as_secs() as i64,
                 payload,
             ])
             .map_err(|e| format!("insert inventory {}: {e}", entry.product_key))?;
@@ -599,8 +599,8 @@ impl StorageDb {
                     rule.direction,
                     rule.pid,
                     rule.path,
-                    rule.created_unix,
-                    rule.expires_unix,
+                    rule.created_unix as i64,
+                    rule.expires_unix.map(|value| value as i64),
                     0i32,
                 ])
                 .map_err(|e| format!("insert firewall rule {}: {e}", rule.rule_name))?;
@@ -638,8 +638,10 @@ impl StorageDb {
                     direction: row.get(3)?,
                     pid: row.get(4)?,
                     path: row.get(5)?,
-                    created_unix: row.get(6)?,
-                    expires_unix: row.get(7)?,
+                    created_unix: row.get::<_, i64>(6)?.max(0) as u64,
+                    expires_unix: row
+                        .get::<_, Option<i64>>(7)?
+                        .map(|value| value.max(0) as u64),
                 })
             })
             .map_err(|e| format!("query firewall rules: {e}"))?;
@@ -674,7 +676,7 @@ impl StorageDb {
                     evt.change_id,
                     evt.cve_id,
                     source_key,
-                    change_unix,
+                    change_unix as i64,
                     evt.event_name,
                     details,
                 ],
