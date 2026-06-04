@@ -638,7 +638,7 @@ fn expand_data_relative(data_dir: &Path, configured: &str) -> PathBuf {
 }
 
 fn configured_blocklist_path(configured: &str) -> PathBuf {
-    PathBuf::from(configured.trim())
+    PathBuf::from(configured)
 }
 
 fn verify_blocklist_file(path: &Path) -> Result<usize, String> {
@@ -845,6 +845,10 @@ mod tests {
         assert_eq!(
             configured_blocklist_path("blocklists/threats.txt"),
             PathBuf::from("blocklists/threats.txt")
+        );
+        assert_eq!(
+            configured_blocklist_path(" blocklists/threats.txt "),
+            PathBuf::from(" blocklists/threats.txt ")
         );
     }
 
