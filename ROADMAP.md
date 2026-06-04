@@ -162,7 +162,7 @@ A single-panel view that answers "is Vigil actually protecting me?" without digg
 - [ ] **Health summary** — real-time monitoring status (ETW/eBPF/polling), blocklist engine state (loaded entries / empty / degraded), advisory cache freshness, response rules loaded, firewall isolation status, native firewall engine health.
 - [ ] **Threat dashboard** — current connection score distribution, top blocked targets, recent alerts over time, YARA matches summary, firewall rule hit counts.
 - [ ] **Tray indicator integration** — tray icon colour and tooltip reflects current protection status (green = healthy, yellow = degraded, red = stopped / no real-time).
-- [ ] **CLI status command** — `vigil status --json` reuses the shared health model, adds live-runtime health once protected publishing lands, and becomes the main scripting entrypoint.
+- [x] **CLI status command** — `vigil status --json` reuses the shared health model and is the main scripting entrypoint. Live-runtime health remains a follow-up under health-summary publishing.
 
 ---
 
