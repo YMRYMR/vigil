@@ -7,40 +7,6 @@
 #![allow(dead_code)]
 #![allow(clippy::needless_return)]
 
-extern crate sha2 as sha2_crate;
-
-mod sha2 {
-    use std::fmt;
-
-    pub trait Digest {
-        fn digest(data: impl AsRef<[u8]>) -> HexDigest;
-    }
-
-    pub struct Sha256;
-
-    pub struct HexDigest([u8; 32]);
-
-    impl Digest for Sha256 {
-        fn digest(data: impl AsRef<[u8]>) -> HexDigest {
-            use crate::sha2_crate::Digest as _;
-
-            let digest = crate::sha2_crate::Sha256::digest(data.as_ref());
-            let mut bytes = [0u8; 32];
-            bytes.copy_from_slice(digest.as_ref());
-            HexDigest(bytes)
-        }
-    }
-
-    impl fmt::LowerHex for HexDigest {
-        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            for byte in &self.0 {
-                write!(formatter, "{byte:02x}")?;
-            }
-            Ok(())
-        }
-    }
-}
-
 #[path = "../status_report.rs"]
 mod status_report;
 
