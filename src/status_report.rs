@@ -810,7 +810,7 @@ mod tests {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("vigil.json");
-        fs::write(&path, br#"{\"auto_response_enabled\":true}"#).unwrap();
+        fs::write(&path, br#"{"auto_response_enabled":true}"#).unwrap();
 
         let probe = probe_config(&path);
         let status = config_status(&path, &probe);
@@ -824,7 +824,7 @@ mod tests {
         let dir = unique_temp_dir();
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("vigil.json");
-        policy::save_json_with_integrity(&path, br#"{\"auto_response_enabled\":true}"#).unwrap();
+        policy::save_json_with_integrity(&path, br#"{"auto_response_enabled":true}"#).unwrap();
 
         let probe = probe_config(&path);
         let status = config_status(&path, &probe);
