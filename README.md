@@ -260,3 +260,53 @@ Common settings include:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `alert_threshold` | 3 | Minimum score to trigger an alert |
+| `poll_interval_secs` | 5 | Seconds between full connection polls |
+| `log_all_connections` | false | Log every connection, not just suspicious ones |
+| `autostart` | true | Launch Vigil at login |
+| `trusted_processes` | shipped defaults | Process names exempt from low-level scoring |
+
+---
+
+## Running before login
+
+Vigil can install a boot-time monitor so monitoring starts before any user logs
+in. This is useful for detecting early persistence and pre-user activity.
+
+| OS | Install | Remove |
+|---|---|---|
+| Windows | `vigil.exe --install-service` | `vigil.exe --uninstall-service` |
+| Linux | `sudo vigil --install-service` | `sudo vigil --uninstall-service` |
+
+Under the hood:
+
+- Windows uses Task Scheduler with an `ONSTART` task that runs Vigil as `SYSTEM`.
+- Linux writes a systemd unit at `/etc/systemd/system/vigil.service` and enables it with `systemctl enable --now vigil.service`.
+
+Startup safety rule: Vigil must fail open. A Vigil bug, hang, network failure,
+advisory-cache failure, package-inventory failure, or service-mode error must
+not repeatedly prevent the machine from reaching a usable login/session state.
+
+---
+
+## Logs
+
+Log files land in the Vigil data directory and rotate daily. Open the log folder
+from the tray icon context menu with **Open Logs Folder**.
+
+Audit events include active response actions, integrity scan summaries,
+uninstall attempts, and other security-relevant changes.
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on bug reports, feature
+requests, and pull requests.
+
+---
+
+## License
+
+[MIT](LICENSE)
+
+[latest release]: https://github.com/YMRYMR/vigil/releases/latest
