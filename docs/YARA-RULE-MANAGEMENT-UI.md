@@ -1,158 +1,110 @@
-# YARA Rule Management UI Contract
+# Phase 20 YARA Rule Management UI Contract
 
-This document defines the first safe UI slice for Phase 20 YARA rule management.
-It is intentionally narrow: the UI may surface trusted rule metadata that Vigil
-already verifies and mirrors into protected local state, but it must not add new
-rule-download, rule-editing, or auto-enable behavior until those flows have their
-own integrity and rollback design.
+This document defines the smallest safe UI slice for the remaining Phase 20
+roadmap item: showing YARA rule context in the Inspector and, later, letting
+operators manage rule categories.
 
-## Roadmap decomposition
+The scanner, local rule intake, bundled pack validation, and process-dump scan
+paths already exist. This contract keeps the UI work narrow and auditable so a
+future implementation does not accidentally widen trust in rule text, hide
+integrity failures, or imply security guarantees that the scanner did not
+verify.
 
-The Phase 20 roadmap item is intentionally broader than the first safe code
-change. Treat the work as these ordered slices:
+## Current trusted data sources
 
-1. Read-only Inspector display of existing `YARA rule: <name>` score reasons.
-2. Read-only trusted catalog display from the protected YARA rule catalog.
-3. Category toggle policy, protected persistence, audited operator actions, and
-   last-known-good scanner reload behavior.
+The Inspector may display YARA information only when it comes from one of these
+existing protected paths:
 
-Only the first slice is concrete enough to implement without new product or
-security-policy decisions. The second slice depends on catalog read paths that
-keep provenance and source identity explicit. The third slice must remain out of
-scope until toggle storage, scanner reload, rollback, and audit behavior are
-specified and tested.
+- runtime match reasons already attached to a `ConnInfo` as `YARA rule: <name>`
+- persisted scan results written by `src/yara_scan.rs` for executable scans
+- persisted process-dump scan results written by `src/forensics.rs`
+- the mirrored local rule catalog populated by `vigil --yara-rule-status`
+- bundled-pack metadata generated at build time and validated by
+  `vigil --yara-rule-status`
 
-## Current data boundary
+The UI must not parse arbitrary `.yar` files directly, compile rules, trust a
+rule directory listing, or infer that an unverified local rule is active. Rule
+text remains untrusted until the existing sidecar and provenance intake accepts
+it.
 
-Vigil already records two trusted YARA rule sources:
+## First Inspector slice
 
-- Bundled community rules generated into the binary from the reviewed bundled
-  pack manifest.
-- Operator-local `.yar` and `.yara` files under the Vigil data directory's
-  `yara-rules/` folder, verified by matching `.sha256` sidecars.
+The first code slice should be display-only:
 
-The local-rule intake command validates the files, records operator provenance,
-parses rule metadata, and mirrors the catalog into the protected SQLite state
-catalog. The UI should treat this catalog as read-only display data unless a
-future task explicitly adds write support.
+- group existing `YARA rule: <name>` score reasons into a dedicated Inspector
+  section named `YARA matches`
+- deduplicate rule names per selected process group
+- cap the number of visible rule names to protect UI responsiveness
+- leave the original score reasons visible in `Why it scored` for backwards
+  compatibility and auditability
+- show a clear empty state when no YARA match reason is present
 
-The UI should reuse trusted scanner outputs. It must not compile rules, trust
-unverified local files, or reinterpret scanner failures as clean results.
+This advances the roadmap item without adding rule toggles, changing response
+rules, or changing scan behavior.
 
-## Inspector surface
+## Rule metadata display
 
-When a process or captured process-dump scan has matched YARA rules, the
-inspector may show a `YARA matches` section with:
+After the first slice, the Inspector may enrich matched rule names with metadata
+from the protected rule catalog:
 
-- Matched rule name.
-- Source label, such as `bundled` or `operator-local`, when available.
-- Category, tags, author, description, and reference, when present in trusted
-  parsed metadata and when the persisted scan result carries enough rule identity
-  to disambiguate the catalog entry, such as namespace/source-qualified
-  provenance.
-- Target kind, scan verdict, scan time, and match count, when those fields are
-  available from persisted scan results.
-- Rule-authored ATT&CK tags only when they come from trusted YARA scan payloads
-  or parsed rule metadata with namespace/source-qualified provenance, not from
-  the selected process group's flat `attack_tags` collection.
+- source kind: bundled pack or operator-local
+- category, when present
+- author, description, reference, and tags, when present
+- file or pack provenance summary
+- enabled state, once category toggles exist
 
-If a YARA reason is present but metadata is not available, the inspector should
-still show the rule name from the scored reason and clearly omit unknown fields.
-It must not infer author, category, severity, malware family, source trust, or
-ATT&CK tags from the rule name alone.
+Metadata must stay best-effort. Missing metadata should never suppress a real
+match reason, and missing catalog rows should be shown as `metadata unavailable`
+rather than being treated as a clean or inactive result.
 
-If no YARA matches are available for the selected process group, the inspector
-may say no matches are recorded. It must not say the process is clean, safe, or
-free of malware.
+## Category toggles
 
-Executable-file matches and process-dump matches should remain visibly distinct
-when the target kind is available. A memory-derived match is evidence for triage,
-not proof that every live memory region was scanned.
+Category controls are a later slice. They should follow these rules:
 
-## Rule catalog surface
+- categories are disabled or enabled by operator choice, not by remote source
+  text alone
+- default state preserves current scanning behavior for already trusted rules
+- changes are stored in protected local state with the same integrity guarantees
+  used for other operator-managed policy
+- toggles affect future scans only unless the implementation explicitly and
+  safely re-evaluates cached results
+- every change is recorded in the audit trail with category name, source kind,
+  previous state, and new state
 
-A future Settings or dedicated YARA panel may list trusted rule files and parsed
-rules from the protected catalog. The first read-only catalog view should show:
+A category toggle must not silently disable operator-local rules outside the
+chosen category, and it must not mark a failed or unverified rule file as safe.
 
-- File path relative to the trusted rule root.
-- SHA-256 digest and sidecar/provenance status.
-- Enabled state from the catalog, currently informational because runtime toggle
-  support is not implemented.
-- Parsed rule count.
-- Per-rule name, namespace, category, author, description, reference, tags, and
-  string count.
+## Safety and failure handling
 
-The UI should cap long lists, wrap long metadata values, and avoid loading raw
-rule source text into the main frame. Full rule-source viewing should be a
-separate explicit operator action if it is added later.
+YARA UI failure must fail open for monitoring:
 
-## Toggle behavior not yet implemented
+- Inspector rendering errors must not stop connection monitoring or active
+  response controls
+- catalog load failures should show a degraded metadata state, not block the
+  process summary
+- stale scan results should be labelled as cached when timestamps are available
+- scan subsystem failures should not create synthetic `clean` results
+- UI copy must avoid claiming that no YARA detection exists unless a trusted scan
+  result explicitly supports that statement
 
-The roadmap asks for category toggles, but the current safe slice is display
-only. Category toggles require a separate implementation that defines:
+## Explicit non-goals for this UI contract
 
-- Where toggle policy is stored and how it is protected.
-- Whether toggles affect bundled rules, operator-local rules, or both.
-- How the scan worker reloads compiled rules without weakening fail-closed
-  behavior.
-- How operators can recover from a bad toggle state.
-- How audit records capture rule-management changes.
+The following remain outside this roadmap slice:
 
-Until that exists, the UI should not present interactive controls that appear to
-enable or disable YARA categories.
+- editing rule text in the GUI
+- importing unverified rules from the GUI
+- remote rule-pack download or signed auto-update delivery
+- automatic containment based only on YARA subsystem health
+- live memory acquisition beyond already captured, operator-visible artifacts
 
-When toggles do land, they should apply to future scans only after a trusted
-ruleset rebuild or reload succeeds. A failed rebuild should keep the last
-known-good scanner state active and report the failure instead of silently
-disabling protection.
+## Recommended implementation order
 
-## Failure handling
+1. Add the display-only Inspector `YARA matches` section from existing score
+   reasons.
+2. Add protected catalog lookup for matched rule metadata.
+3. Add read-only rule source and category summaries.
+4. Add protected category toggle state and audit events.
+5. Wire category toggle state into future scan compilation or scan selection.
 
-YARA UI surfaces should fail closed and stay explicit:
-
-- Missing local rule directory: show that only bundled/runtime validation may be
-  available.
-- Missing protected state database: show that the catalog has not been mirrored
-  yet and point operators to `vigil --yara-rule-status`.
-- Catalog read error: keep the rest of the inspector usable and show the YARA
-  metadata as unavailable for this refresh.
-- Integrity or provenance failure: rely on the intake command's failed status;
-  do not show untrusted rule metadata as if it were verified.
-- Scanner unavailable: show that scanning could not run or compile trusted
-  rules, without creating a synthetic clean result.
-- Stale result: when a persisted result no longer matches the current executable
-  identity or ruleset digest, do not present it as current without that caveat.
-
-Any future action buttons or toggles should stay disabled while their backing
-state is unavailable, stale, or ambiguous.
-
-## Privacy and evidence boundaries
-
-YARA UI work may surface sensitive process paths, rule references, and scan
-results. It should follow existing Inspector conventions:
-
-- Keep process paths bounded and wrapped.
-- Do not expose memory dump contents in the UI.
-- Do not turn private operator-local rule text into a public-looking bundled
-  source.
-- Keep scan target kind, target digest, and ruleset digest available for audit
-  paths without overloading the main Inspector view.
-
-## Out of scope for this slice
-
-The first UI slice does not include remote rule-pack downloads, rule editing,
-rule deletion, category toggles, signed refresh, automatic rule updates, or live
-memory acquisition. Those remain future Phase 20/23 work and need their own
-security review before UI controls are exposed.
-
-## Safest next code change
-
-The safest next code change is a read-only Inspector block that extracts
-`YARA rule: <name>` entries from the selected process group's existing score
-reasons and displays the rule names as YARA matches. It should not attach
-ATT&CK tags or other rule metadata unless persisted YARA scan payloads provide
-namespace/source-qualified provenance for the matched catalog entry.
-
-That change should not add category toggles yet. Toggle controls should wait
-until the scanner has protected enabled-category policy and a last-known-good
-ruleset reload path.
+This order keeps each step reviewable and preserves Vigil's existing fail-open
+runtime behavior while making YARA findings easier for operators to understand.
