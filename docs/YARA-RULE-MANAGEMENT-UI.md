@@ -34,13 +34,14 @@ inspector may show a `YARA matches` section with:
   parsed metadata.
 - Target kind, scan verdict, scan time, and match count, when those fields are
   available from persisted scan results.
-- Rule-authored ATT&CK tags that are already attached to the selected process or
-  selected connection.
+- Rule-authored ATT&CK tags only when they come from trusted YARA scan payloads
+  or parsed rule metadata, not from the selected process group's flat
+  `attack_tags` collection.
 
 If a YARA reason is present but metadata is not available, the inspector should
 still show the rule name from the scored reason and clearly omit unknown fields.
-It must not infer author, category, severity, malware family, or source trust
-from the rule name alone.
+It must not infer author, category, severity, malware family, source trust, or
+ATT&CK tags from the rule name alone.
 
 If no YARA matches are available for the selected process group, the inspector
 may say no matches are recorded. It must not say the process is clean, safe, or
@@ -130,8 +131,8 @@ security review before UI controls are exposed.
 
 The safest next code change is a read-only Inspector block that extracts
 `YARA rule: <name>` entries from the selected process group's existing score
-reasons and displays them as YARA matches, alongside any already attached
-ATT&CK tags.
+reasons and displays them as YARA matches without ATT&CK tags unless persisted
+YARA scan payloads or parsed rule metadata provide rule-derived tag provenance.
 
 That change should not add category toggles yet. Toggle controls should wait
 until the scanner has protected enabled-category policy and a last-known-good
