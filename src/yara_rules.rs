@@ -746,12 +746,13 @@ fn parse_rule_definitions(source_text: &str, relative_path: &str) -> Vec<ParsedR
                 brace_depth = line.chars().filter(|ch| *ch == '{').count() as i32
                     - line.chars().filter(|ch| *ch == '}').count() as i32;
                 current_body.clear();
-                if brace_depth <= 0 {
+                if line.contains('{') && brace_depth <= 0 {
                     if let Some(rule) =
                         parse_rule_from_header_and_body(&current_header, &current_body, &namespace)
                     {
                         rules.push(rule);
                     }
+                    current_header.clear();
                     inside_rule = false;
                 }
             }
@@ -1214,6 +1215,34 @@ private rule suspicious_sample : malware c2 {
             rule.reference.as_deref(),
             Some("https://example.invalid/rule")
         );
+        assert_eq!(rule.tags, vec!["malware".to_string(), "c2".to_string()]);
+        assert_eq!(rule.strings_count, 2);
+    }
+
+    #[test]
+    fn parser_extracts_split_header_rule_metadata_and_tags() {
+        let source = r#"
+rule split_header_sample : malware c2
+{
+    meta:
+        author = "analyst"
+        description = "split header sample"
+        category = "research"
+    strings:
+        $a = "alpha"
+        $b = "beta"
+    condition:
+        any of them
+}
+"#;
+        let rules = parse_rule_definitions(source, "research/split.yar");
+        assert_eq!(rules.len(), 1);
+        let rule = &rules[0];
+        assert_eq!(rule.rule_name, "split_header_sample");
+        assert_eq!(rule.namespace, "research");
+        assert_eq!(rule.category.as_deref(), Some("research"));
+        assert_eq!(rule.author.as_deref(), Some("analyst"));
+        assert_eq!(rule.description.as_deref(), Some("split header sample"));
         assert_eq!(rule.tags, vec!["malware".to_string(), "c2".to_string()]);
         assert_eq!(rule.strings_count, 2);
     }
