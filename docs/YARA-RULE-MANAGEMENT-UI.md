@@ -20,6 +20,9 @@ parses rule metadata, and mirrors the catalog into the protected SQLite state
 catalog. The UI should treat this catalog as read-only display data unless a
 future task explicitly adds write support.
 
+The UI should reuse trusted scanner outputs. It must not compile rules, trust
+unverified local files, or reinterpret scanner failures as clean results.
+
 ## Inspector surface
 
 When a process or captured process-dump scan has matched YARA rules, the
@@ -31,11 +34,21 @@ inspector may show a `YARA matches` section with:
   parsed metadata.
 - Target kind, scan verdict, scan time, and match count, when those fields are
   available from persisted scan results.
+- Rule-authored ATT&CK tags that are already attached to the selected process or
+  selected connection.
 
 If a YARA reason is present but metadata is not available, the inspector should
 still show the rule name from the scored reason and clearly omit unknown fields.
 It must not infer author, category, severity, malware family, or source trust
 from the rule name alone.
+
+If no YARA matches are available for the selected process group, the inspector
+may say no matches are recorded. It must not say the process is clean, safe, or
+free of malware.
+
+Executable-file matches and process-dump matches should remain visibly distinct
+when the target kind is available. A memory-derived match is evidence for triage,
+not proof that every live memory region was scanned.
 
 ## Rule catalog surface
 
@@ -69,6 +82,11 @@ only. Category toggles require a separate implementation that defines:
 Until that exists, the UI should not present interactive controls that appear to
 enable or disable YARA categories.
 
+When toggles do land, they should apply to future scans only after a trusted
+ruleset rebuild or reload succeeds. A failed rebuild should keep the last
+known-good scanner state active and report the failure instead of silently
+disabling protection.
+
 ## Failure handling
 
 YARA UI surfaces should fail closed and stay explicit:
@@ -81,6 +99,25 @@ YARA UI surfaces should fail closed and stay explicit:
   metadata as unavailable for this refresh.
 - Integrity or provenance failure: rely on the intake command's failed status;
   do not show untrusted rule metadata as if it were verified.
+- Scanner unavailable: show that scanning could not run or compile trusted
+  rules, without creating a synthetic clean result.
+- Stale result: when a persisted result no longer matches the current executable
+  identity or ruleset digest, do not present it as current without that caveat.
+
+Any future action buttons or toggles should stay disabled while their backing
+state is unavailable, stale, or ambiguous.
+
+## Privacy and evidence boundaries
+
+YARA UI work may surface sensitive process paths, rule references, and scan
+results. It should follow existing Inspector conventions:
+
+- Keep process paths bounded and wrapped.
+- Do not expose memory dump contents in the UI.
+- Do not turn private operator-local rule text into a public-looking bundled
+  source.
+- Keep scan target kind, target digest, and ruleset digest available for audit
+  paths without overloading the main Inspector view.
 
 ## Out of scope for this slice
 
@@ -88,3 +125,14 @@ The first UI slice does not include remote rule-pack downloads, rule editing,
 rule deletion, category toggles, signed refresh, automatic rule updates, or live
 memory acquisition. Those remain future Phase 20/23 work and need their own
 security review before UI controls are exposed.
+
+## Safest next code change
+
+The safest next code change is a read-only Inspector block that extracts
+`YARA rule: <name>` entries from the selected process group's existing score
+reasons and displays them as YARA matches, alongside any already attached
+ATT&CK tags.
+
+That change should not add category toggles yet. Toggle controls should wait
+until the scanner has protected enabled-category policy and a last-known-good
+ruleset reload path.
