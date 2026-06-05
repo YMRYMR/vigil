@@ -31,12 +31,14 @@ inspector may show a `YARA matches` section with:
 - Matched rule name.
 - Source label, such as `bundled` or `operator-local`, when available.
 - Category, tags, author, description, and reference, when present in trusted
-  parsed metadata.
+  parsed metadata and when the persisted scan result carries enough rule identity
+  to disambiguate the catalog entry, such as namespace/source-qualified
+  provenance.
 - Target kind, scan verdict, scan time, and match count, when those fields are
   available from persisted scan results.
 - Rule-authored ATT&CK tags only when they come from trusted YARA scan payloads
-  or parsed rule metadata, not from the selected process group's flat
-  `attack_tags` collection.
+  or parsed rule metadata with namespace/source-qualified provenance, not from
+  the selected process group's flat `attack_tags` collection.
 
 If a YARA reason is present but metadata is not available, the inspector should
 still show the rule name from the scored reason and clearly omit unknown fields.
@@ -131,8 +133,9 @@ security review before UI controls are exposed.
 
 The safest next code change is a read-only Inspector block that extracts
 `YARA rule: <name>` entries from the selected process group's existing score
-reasons and displays them as YARA matches without ATT&CK tags unless persisted
-YARA scan payloads or parsed rule metadata provide rule-derived tag provenance.
+reasons and displays the rule names as YARA matches. It should not attach
+ATT&CK tags or other rule metadata unless persisted YARA scan payloads provide
+namespace/source-qualified provenance for the matched catalog entry.
 
 That change should not add category toggles yet. Toggle controls should wait
 until the scanner has protected enabled-category policy and a last-known-good
