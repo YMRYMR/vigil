@@ -6,6 +6,22 @@ already verifies and mirrors into protected local state, but it must not add new
 rule-download, rule-editing, or auto-enable behavior until those flows have their
 own integrity and rollback design.
 
+## Roadmap decomposition
+
+The Phase 20 roadmap item is intentionally broader than the first safe code
+change. Treat the work as these ordered slices:
+
+1. Read-only Inspector display of existing `YARA rule: <name>` score reasons.
+2. Read-only trusted catalog display from the protected YARA rule catalog.
+3. Category toggle policy, protected persistence, audited operator actions, and
+   last-known-good scanner reload behavior.
+
+Only the first slice is concrete enough to implement without new product or
+security-policy decisions. The second slice depends on catalog read paths that
+keep provenance and source identity explicit. The third slice must remain out of
+scope until toggle storage, scanner reload, rollback, and audit behavior are
+specified and tested.
+
 ## Current data boundary
 
 Vigil already records two trusted YARA rule sources:
