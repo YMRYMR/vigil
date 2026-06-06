@@ -109,7 +109,8 @@ The following remain later work after the first memory-dump scanning milestone:
 The dump-backed memory scan foundation is complete according to `ROADMAP.md`.
 The next unfinished Phase 20 roadmap item is **YARA rule management UI**.
 
-The safest next UI change should not widen YARA's trust or runtime scanning
-boundary. It should start by surfacing existing matched rule names and already
-mirrored rule metadata in the Inspector, then leave category toggles and policy
-controls for a later, explicit UI contract.
+The safest first UI slice is documented in `docs/YARA-INSPECTOR-SURFACING.md`.
+It should not widen YARA's trust or runtime scanning boundary. It should start by
+surfacing existing matched rule names and already mirrored rule metadata in the
+Inspector, then leave category toggles and policy controls for a later, explicit
+UI contract.
