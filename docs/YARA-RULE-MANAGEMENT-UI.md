@@ -22,6 +22,29 @@ keep provenance and source identity explicit. The third slice must remain out of
 scope until toggle storage, scanner reload, rollback, and audit behavior are
 specified and tested.
 
+## First-slice acceptance criteria
+
+A read-only Inspector implementation of the first slice is complete only when it
+meets all of these conditions:
+
+- The Inspector derives the displayed YARA match list only from existing scored
+  reasons that exactly use the `YARA rule: <name>` prefix.
+- Duplicate rule names are collapsed for readability without changing the
+  original score reasons or the selected connection detail.
+- The display says no YARA matches are recorded when no matching reason exists;
+  it does not say the process is clean, safe, or malware-free.
+- The display labels the data as score-derived and metadata-limited until a
+  provenance-qualified catalog lookup is available.
+- The display does not infer source, author, category, severity, malware family,
+  ATT&CK technique, or target kind from the rule name alone.
+- The UI adds no rule toggles, enable/disable buttons, import actions, source
+  viewers, downloads, or scanner reload controls.
+- The existing `Why it scored` section continues to show the original score
+  reasons so operator auditability is not reduced.
+
+These criteria intentionally allow a useful first Inspector block without making
+new trust claims about bundled or operator-local rule metadata.
+
 ## Current data boundary
 
 Vigil already records two trusted YARA rule sources:
@@ -55,6 +78,10 @@ inspector may show a `YARA matches` section with:
 - Rule-authored ATT&CK tags only when they come from trusted YARA scan payloads
   or parsed rule metadata with namespace/source-qualified provenance, not from
   the selected process group's flat `attack_tags` collection.
+
+For the first slice, the only available source is the selected process group's
+score reasons. In that mode, the Inspector should show the rule name and clearly
+omit metadata that is not backed by provenance-qualified scan or catalog data.
 
 If a YARA reason is present but metadata is not available, the inspector should
 still show the rule name from the scored reason and clearly omit unknown fields.
