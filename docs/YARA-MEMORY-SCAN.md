@@ -94,6 +94,7 @@ current implementation:
 
 ## Follow-up work
 
-The next safe follow-up is operator-visible surfacing for `process_dump` scan
-results in status or Inspector views, still keeping executable and memory-derived
-results clearly separated.
+The next safe follow-up is operator-visible surfacing for YARA results in the
+Inspector, still keeping executable and memory-derived results clearly
+separated. The UI boundary for that work is documented in
+`docs/YARA-INSPECTOR-SURFACING.md`.
