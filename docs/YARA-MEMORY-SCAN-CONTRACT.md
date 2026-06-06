@@ -1,21 +1,21 @@
 # Phase 20 Memory-Region YARA Scan Contract
 
-This document defines the smallest safe next slice for Phase 20's next unchecked item: memory-region scanning.
+This document defines the smallest safe memory-region scanning slice for Phase 20: scanning selected process-dump artifacts with Vigil's trusted YARA rules.
 
-The repository already ships trusted YARA rule intake and bounded background executable scans. The next step should extend that work without pretending Vigil already has a safe, cross-platform live-memory acquisition engine.
+The repository already ships trusted YARA rule intake and bounded background executable scans. This contract extends that work without pretending Vigil already has a safe, cross-platform live-memory acquisition engine.
 
 ## Why this contract exists
 
-`ROADMAP.md` still lists **Memory region scan** as the next unfinished Phase 20 item.
+`ROADMAP.md` now marks **Memory region scan foundations** complete and keeps this document as the contract for that shipped slice.
 
-That item is broad enough to hide multiple risky product decisions:
+The original roadmap item was broad enough to hide multiple risky product decisions:
 
 - whether Vigil reads live process memory directly or scans a captured dump
 - which platforms get the first implementation
 - how much memory can be read before the feature becomes disruptive
 - how scan failures are surfaced without creating false negatives or unsafe containment behavior
 
-This contract narrows that roadmap item into one reviewable implementation path.
+This contract narrowed that roadmap item into one reviewable implementation path.
 
 ## Current foundations the repo already has
 
@@ -27,18 +27,18 @@ Vigil already has these building blocks on `master`:
 - protected provenance manifests for captured artifacts
 - existing score reasons and ATT&CK-tag surfaces in the monitor and Inspector paths
 
-Those pieces make a dump-backed first memory-scan slice safer than jumping straight to unrestricted live-memory reads.
+Those pieces made a dump-backed first memory-scan slice safer than jumping straight to unrestricted live-memory reads.
 
-## Narrow initial scope
+## Narrow implemented scope
 
-The first memory-region scanning slice should do only the following:
+The first memory-region scanning slice does only the following:
 
 - scan a **selected process dump artifact** with the same trusted YARA rules Vigil already executes for executable scans
 - treat the dump file as the memory-scanning target instead of opening arbitrary live process memory directly
 - preserve fail-open behavior when dump capture or YARA scanning cannot run
 - keep result surfacing explainable and bounded
 
-The first memory-region scanning slice should not do the following:
+The first memory-region scanning slice does not do the following:
 
 - read arbitrary live process memory on Windows or Linux
 - scan every running process opportunistically
@@ -48,7 +48,7 @@ The first memory-region scanning slice should not do the following:
 
 ## Safest acquisition model for the first slice
 
-For the first implementation, the scan target should be a process dump file that Vigil already captured intentionally.
+For the first implementation, the scan target is a process dump file that Vigil already captured intentionally.
 
 Why this is the safest first step:
 
@@ -104,13 +104,12 @@ The following remain later work after the first memory-dump scanning milestone:
 - rule-category toggles or deep per-rule UI management
 - automatic quarantine decisions based solely on dump-scan subsystem state
 
-## Safest next code change
+## Current follow-up boundary
 
-The safest next code change after this contract is:
+The dump-backed memory scan foundation is complete according to `ROADMAP.md`.
+The next unfinished Phase 20 roadmap item is **YARA rule management UI**.
 
-1. add a dump-target result kind alongside the existing executable-scan persistence model
-2. scan a captured dump artifact with the existing runtime YARA ruleset
-3. persist and surface those matches distinctly from executable-path results
-4. keep all failures fail-open and auditable
-
-That gives Phase 20 a concrete memory-scanning milestone without bundling cross-platform live-memory acquisition, new privilege rules, and new UI semantics into one risky change.
+The safest next UI change should not widen YARA's trust or runtime scanning
+boundary. It should start by surfacing existing matched rule names and already
+mirrored rule metadata in the Inspector, then leave category toggles and policy
+controls for a later, explicit UI contract.
