@@ -155,13 +155,16 @@ process-scan implementation:
 - signed community-rule refresh and remote pack updates
 - automated action policy that triggers directly from raw YARA subsystem health
 
-## Safest next code change after this document
+## Current follow-up boundary
 
 The executable-scan wiring described here now lives in `src/yara_scan.rs` and
-`src/monitor/mod.rs::process_conn()`.
+`src/monitor/mod.rs::process_conn()`. The dump-backed memory scanning milestone
+has also landed and is tracked separately in `docs/YARA-MEMORY-SCAN.md`.
 
-The safest next code change is therefore the next unchecked roadmap item:
-selected-memory scanning that starts from operator-visible, already-captured
-process-dump targets on supported platforms, while preserving the same trust
-boundary, explainable match surfacing, and fail-open runtime behavior used by
-the shipped executable scan slice.
+The next unfinished Phase 20 roadmap item is **YARA rule management UI**. The
+safest first UI slice is documented in `docs/YARA-INSPECTOR-SURFACING.md` and
+starts from existing trusted data that Vigil already records: matched rule names
+in score reasons and parsed rule metadata mirrored by `vigil --yara-rule-status`.
+Category toggles, richer provenance browsing, and policy-affecting controls
+should remain separate follow-up changes until the UI contract is explicit
+enough to review safely.
