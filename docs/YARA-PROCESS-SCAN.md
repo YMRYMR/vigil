@@ -159,11 +159,12 @@ process-scan implementation:
 
 The executable-scan wiring described here now lives in `src/yara_scan.rs` and
 `src/monitor/mod.rs::process_conn()`. The dump-backed memory scanning milestone
-has also landed and is tracked separately in `docs/YARA-MEMORY-SCAN-CONTRACT.md`.
+has also landed and is tracked separately in `docs/YARA-MEMORY-SCAN.md`.
 
 The next unfinished Phase 20 roadmap item is **YARA rule management UI**. The
-safest first UI slice should start from existing trusted data that Vigil already
-records: matched rule names in score reasons and parsed rule metadata mirrored by
-`vigil --yara-rule-status`. Category toggles, richer provenance browsing, and
-policy-affecting controls should remain separate follow-up changes until the UI
-contract is explicit enough to review safely.
+safest first UI slice is documented in `docs/YARA-INSPECTOR-SURFACING.md` and
+starts from existing trusted data that Vigil already records: matched rule names
+in score reasons and parsed rule metadata mirrored by `vigil --yara-rule-status`.
+Category toggles, richer provenance browsing, and policy-affecting controls
+should remain separate follow-up changes until the UI contract is explicit
+enough to review safely.
