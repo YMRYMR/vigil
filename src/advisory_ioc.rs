@@ -70,10 +70,8 @@ fn extract_domain_from_url(url: &str) -> Option<String> {
     // Extract hostname from URL using simple parsing.
     let after_scheme = if let Some(rest) = url_str.strip_prefix("https://") {
         rest
-    } else if let Some(rest) = url_str.strip_prefix("http://") {
-        rest
     } else {
-        return None;
+        url_str.strip_prefix("http://")?
     };
 
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);
@@ -90,10 +88,8 @@ fn extract_ip_from_url(url: &str) -> Option<IpAddr> {
     let url_str = url.trim();
     let after_scheme = if let Some(rest) = url_str.strip_prefix("https://") {
         rest
-    } else if let Some(rest) = url_str.strip_prefix("http://") {
-        rest
     } else {
-        return None;
+        url_str.strip_prefix("http://")?
     };
 
     let host = after_scheme.split('/').next().unwrap_or(after_scheme);

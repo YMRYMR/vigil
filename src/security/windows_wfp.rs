@@ -1,4 +1,5 @@
 #![cfg(windows)]
+#![allow(clippy::field_reassign_with_default)]
 
 use std::ffi::c_void;
 use std::sync::OnceLock;
