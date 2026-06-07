@@ -6,6 +6,14 @@
 //! app-container filtering requires complex SID setup). Profile snapshot/restore
 //! uses Powershell (profiles are a Windows Firewall concept, not a WFP concept).
 
+#![allow(
+    clippy::manual_c_str_literals,
+    clippy::missing_transmute_annotations,
+    clippy::needless_borrows_for_generic_args,
+    clippy::upper_case_acronyms,
+    non_snake_case
+)]
+
 use super::{FirewallBackend, FirewallProfileState, FirewallSnapshot};
 use std::collections::HashMap;
 use std::ffi::OsString;

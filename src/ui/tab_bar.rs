@@ -15,26 +15,25 @@ pub enum Tab {
     Activity,
     Alerts,
     Firewall,
+    Advisories,
     Settings,
     Help,
 }
 
 impl Tab {
     /// Human-readable label with live row counts.
-    pub fn label(self, activity_count: usize, alerts_count: usize) -> String {
+    pub fn label(
+        self,
+        activity_count: usize,
+        alerts_count: usize,
+        firewall_count: usize,
+    ) -> String {
         match self {
             Tab::Activity => format!("Activity ({activity_count})"),
             Tab::Alerts => format!("Alerts ({alerts_count})"),
-            Tab::Firewall => {
-                let status = crate::security::active_response::status();
-                let total =
-                    status.blocked_rules + status.blocked_domains + status.suspended_processes;
-                if total > 0 {
-                    format!("Firewall ({})", total)
-                } else {
-                    "Firewall".into()
-                }
-            }
+            Tab::Firewall if firewall_count > 0 => format!("Firewall ({firewall_count})"),
+            Tab::Firewall => "Firewall".into(),
+            Tab::Advisories => "Advisories".into(),
             Tab::Settings => "Settings".into(),
             Tab::Help => "Help".into(),
         }
@@ -45,11 +44,18 @@ impl Tab {
 
 /// Draw the tab bar and return the newly-active tab (same as `active` if
 /// no tab was clicked).
-pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: usize) -> Tab {
+pub fn tab_bar(
+    ui: &mut Ui,
+    active: Tab,
+    activity_count: usize,
+    alerts_count: usize,
+    firewall_count: usize,
+) -> Tab {
     let all = [
         Tab::Activity,
         Tab::Alerts,
         Tab::Firewall,
+        Tab::Advisories,
         Tab::Settings,
         Tab::Help,
     ];
@@ -68,11 +74,12 @@ pub fn tab_bar(ui: &mut Ui, active: Tab, activity_count: usize, alerts_count: us
 
         for tab in all {
             let is_active = tab == active;
-            let label_str = tab.label(activity_count, alerts_count);
+            let label_str = tab.label(activity_count, alerts_count, firewall_count);
             let hover = match tab {
                 Tab::Activity => "View all observed process traffic.",
                 Tab::Alerts => "View high-signal alerting processes.",
                 Tab::Firewall => "View firewall status and managed rules.",
+                Tab::Advisories => "Browse and filter local advisory records.",
                 Tab::Settings => "Open settings.",
                 Tab::Help => "Open help and operator guidance.",
             };

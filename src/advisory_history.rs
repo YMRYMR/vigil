@@ -477,6 +477,7 @@ fn save_cache(cache: &ChangeHistoryCache) -> Result<(), String> {
     db.begin()?;
     let result = (|| -> Result<(), String> {
         for source in &cache.sources {
+            db.upsert_advisory_source(source)?;
             let source_changes: Vec<_> = cache
                 .changes
                 .iter()

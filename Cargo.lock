@@ -5764,6 +5764,7 @@ dependencies = [
  "ed25519-dalek",
  "eframe",
  "egui",
+ "flate2",
  "getrandom 0.4.2",
  "hmac 0.13.0",
  "image",

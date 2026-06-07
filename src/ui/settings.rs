@@ -153,6 +153,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             "allow Vigil to take automated containment actions",
         );
     });
+    render_risky_enable_confirm_for(ui, draft, changed, RiskyEnableTarget::AutoResponse);
     setting_row(ui, label_w, "Dry run", |ui| {
         *changed |= ui
             .checkbox(
@@ -208,6 +209,7 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
             "enforce network allowlisting for processes",
         );
     });
+    render_risky_enable_confirm_for(ui, draft, changed, RiskyEnableTarget::AllowlistMode);
     setting_row(ui, label_w, "Allowlist dry run", |ui| {
         *changed |= ui
             .checkbox(
@@ -498,7 +500,8 @@ fn inner(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
         .size(10.8),
     );
 
-    render_risky_enable_confirm(ui, draft, changed);
+    render_risky_enable_confirm_for(ui, draft, changed, RiskyEnableTarget::ScheduledLockdown);
+    render_risky_enable_confirm_for(ui, draft, changed, RiskyEnableTarget::HoneypotAutoIsolate);
 
     ui.add_space(16.0);
     section_header(ui, "Startup");
@@ -1065,10 +1068,18 @@ fn set_risky_enable_value(draft: &mut SettingsDraft, target: RiskyEnableTarget, 
     }
 }
 
-fn render_risky_enable_confirm(ui: &mut egui::Ui, draft: &mut SettingsDraft, changed: &mut bool) {
+fn render_risky_enable_confirm_for(
+    ui: &mut egui::Ui,
+    draft: &mut SettingsDraft,
+    changed: &mut bool,
+    target_filter: RiskyEnableTarget,
+) {
     let Some(target) = draft.pending_risky_enable else {
         return;
     };
+    if target != target_filter {
+        return;
+    }
     ui.add_space(14.0);
     egui::Frame::NONE
         .fill(theme::WARN_BG)

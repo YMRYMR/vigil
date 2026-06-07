@@ -63,7 +63,6 @@ Name: "desktopicon"; \
 Name: "bootservice"; \
   Description: "Start Vigil before login (boot-time monitor service)"; \
   GroupDescription: "Startup"; \
-  Flags: checked; \
   Check: IsAdminInstallMode and IsProtectedAdminInstallPath
 
 [Files]

@@ -6,10 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 const STATE_FILE: &str = "vigil-behaviour-baselines.json";
+const DB_STATE_KEY: &str = "behaviour_baselines";
 const MATURITY_THRESHOLD: u64 = 8;
 const MAX_REMOTES: usize = 64;
 const MAX_PORTS: usize = 32;
@@ -192,21 +193,47 @@ fn state_path() -> PathBuf {
 }
 
 fn load_state() -> Result<BaselineState, String> {
-    let path = state_path();
-    load_state_from_path(&path)
+    load_state_from_db_or_legacy_file()
 }
 
 fn save_state(state: &BaselineState) -> Result<(), String> {
-    let path = state_path();
-    save_state_to_path(&path, state).map_err(|e| {
-        format!(
-            "failed to save behavioural baselines {}: {e}",
-            path.display()
-        )
-    })
+    save_state_to_db(state)
 }
 
-fn load_state_from_path(path: &std::path::Path) -> Result<BaselineState, String> {
+fn load_state_from_db_or_legacy_file() -> Result<BaselineState, String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    if let Some(payload) = db.load_runtime_state_json(DB_STATE_KEY)? {
+        return serde_json::from_str(&payload)
+            .map_err(|e| format!("failed to parse behavioural baselines from SQLite: {e}"));
+    }
+    drop(db);
+
+    let path = state_path();
+    if !path.exists() {
+        return Ok(BaselineState::default());
+    }
+
+    let state = load_state_from_path(&path)?;
+    save_state_to_db(&state)?;
+    if let Err(err) = crate::security::policy::remove_json_with_integrity(&path) {
+        tracing::warn!(
+            %err,
+            path = %path.display(),
+            "failed to remove migrated behavioural baseline JSON store"
+        );
+    }
+    Ok(state)
+}
+
+fn save_state_to_db(state: &BaselineState) -> Result<(), String> {
+    let payload = serde_json::to_string(state)
+        .map_err(|e| format!("failed to encode behavioural baselines for SQLite: {e}"))?;
+    crate::storage::db::StorageDb::global()?
+        .save_runtime_state_json(DB_STATE_KEY, &payload)
+        .map_err(|e| format!("failed to save behavioural baselines to SQLite: {e}"))
+}
+
+fn load_state_from_path(path: &Path) -> Result<BaselineState, String> {
     if !path.exists() {
         return Ok(BaselineState::default());
     }
@@ -225,7 +252,7 @@ fn load_state_from_path(path: &std::path::Path) -> Result<BaselineState, String>
         })
 }
 
-fn save_state_to_path(path: &std::path::Path, state: &BaselineState) -> Result<(), String> {
+fn save_state_to_path(path: &Path, state: &BaselineState) -> Result<(), String> {
     crate::security::policy::save_struct_with_integrity(path, state)
 }
 

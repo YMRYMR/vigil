@@ -1,18 +1,7 @@
 //! NCSC and BSI public advisory ingestion foundations.
 //!
-//! This module intentionally starts with offline/operator-supplied snapshots so
-//! Vigil can ingest public RSS or mirrored JSON without depending on unstable
-//! page scraping or closed feeds. The safe first slice is therefore:
-//!
-//! - normalize NCSC and BSI/CERT-Bund RSS or JSON snapshots into
-//!   `VulnerabilityRecord`
-//! - preserve source-specific identifiers, CVE aliases, references,
-//!   timestamps, severity hints, and provenance
-//! - merge imported records into the same protected advisory cache used by NVD,
-//!   EUVD, and JVN
-//!
-//! Live scheduled fetching can build on these parsers once the exact official
-//! feed shapes are pinned down conservatively.
+//! Parsing stays independent from transport so offline imports, live
+//! background sync, and tests share the same normalization path.
 
 use crate::advisory::{
     AdvisoryCache, AdvisorySourceCache, AffectedProduct, SourceHealth, VulnerabilityProvenance,
@@ -22,16 +11,20 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
-const CACHE_FILE: &str = "vigil-advisory-cache.json";
 const CACHE_SCHEMA_VERSION: u32 = 1;
 const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
+const LIVE_SYNC_RETRY_SECS: u64 = 15 * 60;
+const HTTP_TIMEOUT_SECS: u64 = 20;
 const NCSC_SOURCE_KEY: &str = "ncsc-advisories";
 const NCSC_SOURCE_KIND: &str = "ncsc";
-const NCSC_SOURCE_URL: &str = "https://www.ncsc.gov.uk/";
+const NCSC_SOURCE_URL: &str = "https://advisories.ncsc.nl/";
+const NCSC_RSS_URL: &str = "https://advisories.ncsc.nl/rss/advisories";
 const BSI_SOURCE_KEY: &str = "bsi-advisories";
 const BSI_SOURCE_KIND: &str = "bsi";
 const BSI_SOURCE_URL: &str = "https://www.bsi.bund.de/";
+const BSI_RSS_URL: &str = "https://wid.cert-bund.de/content/public/securityAdvisory/rss";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NationalAdvisorySourceKind {
@@ -48,6 +41,22 @@ pub struct NationalAdvisoryImportSummary {
     pub total_sources: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NationalAdvisorySyncSummary {
+    pub requested_sources: usize,
+    pub requested_feeds: usize,
+    pub imported_records: usize,
+    pub failed_sources: usize,
+    pub total_records: usize,
+    pub total_sources: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NationalAdvisorySyncOutcome {
+    Updated(NationalAdvisorySyncSummary),
+    SkippedFresh { remaining_secs: u64 },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct RecordKey {
     primary_id: String,
@@ -55,10 +64,59 @@ struct RecordKey {
     source_key: String,
 }
 
+trait NationalAdvisoryFetcher {
+    fn fetch_url(&self, url: &str) -> Result<Vec<u8>, String>;
+}
+
+struct HttpNationalAdvisoryFetcher {
+    client: reqwest::blocking::Client,
+}
+
+impl HttpNationalAdvisoryFetcher {
+    fn new() -> Result<Self, String> {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS))
+            .build()
+            .map_err(|err| format!("failed to build national advisory HTTP client: {err}"))?;
+        Ok(Self { client })
+    }
+}
+
+impl NationalAdvisoryFetcher for HttpNationalAdvisoryFetcher {
+    fn fetch_url(&self, url: &str) -> Result<Vec<u8>, String> {
+        let response = self
+            .client
+            .get(url)
+            .header(
+                reqwest::header::USER_AGENT,
+                format!("Vigil/{}", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .map_err(|err| format!("failed to fetch {url}: {err}"))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(format!(
+                "request to {url} failed with HTTP {}{}",
+                status.as_u16(),
+                if body.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", body.chars().take(200).collect::<String>())
+                }
+            ));
+        }
+        response
+            .bytes()
+            .map(|bytes| bytes.to_vec())
+            .map_err(|err| format!("failed to read {url} response body: {err}"))
+    }
+}
+
 pub fn run_import_ncsc_cli(paths: &[PathBuf]) -> Result<(), String> {
     let summary = import_snapshots(NationalAdvisorySourceKind::Ncsc, paths)?;
     println!(
-        "Merged {} NCSC advisory record(s) from {} snapshot file(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+        "Merged {} NCSC advisory record(s) from {} snapshot file(s) into the advisory database. Database now holds {} records across {} sources.",
         summary.imported_records,
         summary.imported_files,
         summary.total_records,
@@ -70,13 +128,97 @@ pub fn run_import_ncsc_cli(paths: &[PathBuf]) -> Result<(), String> {
 pub fn run_import_bsi_cli(paths: &[PathBuf]) -> Result<(), String> {
     let summary = import_snapshots(NationalAdvisorySourceKind::Bsi, paths)?;
     println!(
-        "Merged {} BSI/CERT-Bund advisory record(s) from {} snapshot file(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+        "Merged {} BSI/CERT-Bund advisory record(s) from {} snapshot file(s) into the advisory database. Database now holds {} records across {} sources.",
         summary.imported_records,
         summary.imported_files,
         summary.total_records,
         summary.total_sources,
     );
     Ok(())
+}
+
+pub fn run_sync_national_sources_cli(force: bool) -> Result<(), String> {
+    match sync_national_sources(force)? {
+        NationalAdvisorySyncOutcome::Updated(summary) => {
+            println!(
+                "Fetched {} NCSC/BSI feed(s) across {} source(s), merged {} record(s), and recorded {} source failure(s). Database now holds {} records across {} sources.",
+                summary.requested_feeds,
+                summary.requested_sources,
+                summary.imported_records,
+                summary.failed_sources,
+                summary.total_records,
+                summary.total_sources,
+            );
+        }
+        NationalAdvisorySyncOutcome::SkippedFresh { remaining_secs } => {
+            println!(
+                "Skipped NCSC/BSI advisory refresh because sources are fresh for another {} second(s). Use --force to refresh now.",
+                remaining_secs
+            );
+        }
+    }
+    Ok(())
+}
+
+pub fn sync_national_sources(force: bool) -> Result<NationalAdvisorySyncOutcome, String> {
+    let now = unix_now();
+    let sources = load_source_metadata()?;
+    let due = [
+        NationalAdvisorySourceKind::Ncsc,
+        NationalAdvisorySourceKind::Bsi,
+    ]
+    .into_iter()
+    .filter(|source_kind| {
+        force
+            || source_refresh_due(
+                sources
+                    .iter()
+                    .find(|source| source.source_key == source_kind.source_key()),
+                now,
+            )
+    })
+    .collect::<Vec<_>>();
+
+    if due.is_empty() {
+        let remaining_secs = sources
+            .iter()
+            .filter(|source| {
+                source.source_key == NationalAdvisorySourceKind::Ncsc.source_key()
+                    || source.source_key == NationalAdvisorySourceKind::Bsi.source_key()
+            })
+            .filter_map(|source| source.expires_unix.checked_sub(now))
+            .min()
+            .unwrap_or(DEFAULT_SOURCE_TTL_SECS);
+        return Ok(NationalAdvisorySyncOutcome::SkippedFresh { remaining_secs });
+    }
+
+    let fetcher = HttpNationalAdvisoryFetcher::new()?;
+    sync_national_sources_with_fetcher(&due, &fetcher, now)
+}
+
+#[allow(dead_code)]
+pub fn refresh_national_sources_in_background_if_due() {
+    match sync_national_sources(false) {
+        Ok(NationalAdvisorySyncOutcome::Updated(summary)) => {
+            tracing::info!(
+                requested_feeds = summary.requested_feeds,
+                imported_records = summary.imported_records,
+                failed_sources = summary.failed_sources,
+                total_records = summary.total_records,
+                total_sources = summary.total_sources,
+                "refreshed NCSC/BSI advisory feeds"
+            );
+        }
+        Ok(NationalAdvisorySyncOutcome::SkippedFresh { remaining_secs }) => {
+            tracing::debug!(
+                remaining_secs,
+                "skipped NCSC/BSI advisory refresh because sources are still fresh"
+            );
+        }
+        Err(err) => {
+            tracing::warn!(%err, "failed to refresh NCSC/BSI advisory feeds");
+        }
+    }
 }
 
 pub fn import_snapshots(
@@ -107,6 +249,69 @@ pub fn import_snapshots(
     };
     save_cache(&cache)?;
     Ok(summary)
+}
+
+fn sync_national_sources_with_fetcher(
+    source_kinds: &[NationalAdvisorySourceKind],
+    fetcher: &dyn NationalAdvisoryFetcher,
+    now: u64,
+) -> Result<NationalAdvisorySyncOutcome, String> {
+    let mut requested_feeds = 0usize;
+    let mut imported_records = 0usize;
+    let mut failed_sources = 0usize;
+    let mut errors = Vec::new();
+
+    for source_kind in source_kinds {
+        match fetch_live_source_batch(*source_kind, fetcher, now) {
+            Ok((cache, feeds)) => {
+                requested_feeds += feeds;
+                imported_records += cache.records.len();
+                let update_started = Instant::now();
+                save_live_cache_increment(&cache)?;
+                tracing::info!(
+                    source = source_kind.label(),
+                    records = cache.records.len(),
+                    feeds,
+                    elapsed_ms = update_started.elapsed().as_millis() as u64,
+                    "updated national advisory database source"
+                );
+            }
+            Err(err) => {
+                failed_sources += 1;
+                errors.push(format!("{}: {err}", source_kind.label()));
+                let existing = load_source_metadata().ok().and_then(|sources| {
+                    sources
+                        .into_iter()
+                        .find(|source| source.source_key == source_kind.source_key())
+                });
+                save_live_source_status(&source_failure_cache(
+                    *source_kind,
+                    existing.as_ref(),
+                    &err,
+                    now,
+                ))?;
+            }
+        }
+    }
+
+    let db = crate::storage::db::StorageDb::global()?;
+    let total_records = db.count_advisory_records()?;
+    let total_sources = db.load_advisory_sources()?.len();
+
+    if requested_feeds == 0 && !errors.is_empty() {
+        return Err(errors.join("; "));
+    }
+
+    Ok(NationalAdvisorySyncOutcome::Updated(
+        NationalAdvisorySyncSummary {
+            requested_sources: source_kinds.len(),
+            requested_feeds,
+            imported_records,
+            failed_sources,
+            total_records,
+            total_sources,
+        },
+    ))
 }
 
 fn load_snapshot_batch(
@@ -153,6 +358,56 @@ fn parse_snapshot(
     } else {
         parse_json_snapshot(source_kind, bytes, path)
     }
+}
+
+fn fetch_live_source_batch(
+    source_kind: NationalAdvisorySourceKind,
+    fetcher: &dyn NationalAdvisoryFetcher,
+    now: u64,
+) -> Result<(AdvisoryCache, usize), String> {
+    let batch_started = Instant::now();
+    let mut imported = empty_cache(now);
+    let mut page_hashes = Vec::new();
+    let mut imported_from_batch = Vec::new();
+    let mut fetched_feeds = 0usize;
+
+    for url in source_kind.live_urls() {
+        let fetch_started = Instant::now();
+        let bytes = fetcher.fetch_url(url)?;
+        let fetch_elapsed = fetch_started.elapsed();
+        let byte_count = bytes.len();
+        page_hashes.push(sha256_hex(&bytes));
+        imported_from_batch.push((*url).to_string());
+        let page = parse_snapshot(source_kind, &bytes, None)?;
+        tracing::info!(
+            source = source_kind.label(),
+            url,
+            bytes = byte_count,
+            records = page.records.len(),
+            elapsed_ms = fetch_elapsed.as_millis() as u64,
+            "fetched national advisory feed"
+        );
+        imported = merge_cache(Some(imported), page);
+        fetched_feeds += 1;
+    }
+
+    let source = source_cache(
+        source_kind,
+        now,
+        Some(imported_from_batch),
+        page_hashes.join(","),
+        imported.records.len(),
+    );
+    replace_source(&mut imported.sources, source);
+    imported.generated_unix = now;
+    tracing::info!(
+        source = source_kind.label(),
+        feeds = fetched_feeds,
+        records = imported.records.len(),
+        elapsed_ms = batch_started.elapsed().as_millis() as u64,
+        "fetched national advisory source from internet"
+    );
+    Ok((imported, fetched_feeds))
 }
 
 fn parse_json_snapshot(
@@ -384,6 +639,7 @@ fn parse_rss_item(
         aliases.push(cve);
     }
     aliases.push(identifier.clone());
+    let severities = severities_from_rss_item(source_kind.source_name(), item, &title);
 
     let mut references = vec![VulnerabilityReference {
         url: source_url.clone(),
@@ -416,7 +672,7 @@ fn parse_rss_item(
             .or_else(|| xml_tag(item, "updated"))
             .or_else(|| xml_tag(item, "modified")),
         known_exploited: false,
-        severities: Vec::new(),
+        severities,
         affected_products: Vec::new(),
         references,
         mitigations: Vec::new(),
@@ -433,23 +689,13 @@ fn parse_rss_item(
 }
 
 fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
-    let path = cache_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|err| {
-            format!(
-                "failed to load protected advisory cache {}: {err}",
-                path.display()
-            )
-        })?;
-    match loaded {
+    let db = crate::storage::db::StorageDb::global()?;
+    match db.load_advisory_cache()? {
         Some(cache) if cache.schema_version == CACHE_SCHEMA_VERSION => Ok(Some(cache)),
         Some(cache) => {
             tracing::warn!(
                 schema_version = cache.schema_version,
-                "ignoring incompatible advisory cache during NCSC/BSI import"
+                "ignoring incompatible advisory database during NCSC/BSI import"
             );
             Ok(None)
         }
@@ -458,17 +704,95 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
 }
 
 fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
-    let path = cache_path();
-    crate::security::policy::save_struct_with_integrity(&path, cache).map_err(|err| {
-        format!(
-            "failed to save protected advisory cache {}: {err}",
-            path.display()
-        )
-    })
+    let update_started = Instant::now();
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        db.replace_advisory_sources(&cache.sources)?;
+        for source in &cache.sources {
+            let source_records = cache
+                .records
+                .iter()
+                .filter(|record| record.provenance.source_key == source.source_key)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !source_records.is_empty() {
+                db.replace_advisory_records(
+                    &source_records,
+                    &source.source_key,
+                    &source.source_kind,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint()?;
+            tracing::info!(
+                sources = cache.sources.len(),
+                records = cache.records.len(),
+                elapsed_ms = update_started.elapsed().as_millis() as u64,
+                "updated national advisory database"
+            );
+            Ok(())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
 }
 
-fn cache_path() -> PathBuf {
-    crate::config::data_dir().join(CACHE_FILE)
+fn save_live_cache_increment(cache: &AdvisoryCache) -> Result<(), String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        for source in &cache.sources {
+            db.upsert_advisory_source(source)?;
+            let source_records = cache
+                .records
+                .iter()
+                .filter(|record| record.provenance.source_key == source.source_key)
+                .cloned()
+                .collect::<Vec<_>>();
+            if !source_records.is_empty() {
+                db.replace_advisory_records(
+                    &source_records,
+                    &source.source_key,
+                    &source.source_kind,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint().map(|_| ())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn save_live_source_status(source: &AdvisorySourceCache) -> Result<(), String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = db.upsert_advisory_source(source);
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint().map(|_| ())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
 }
 
 fn merge_cache(existing: Option<AdvisoryCache>, incoming: AdvisoryCache) -> AdvisoryCache {
@@ -576,6 +900,62 @@ fn empty_cache(now: u64) -> AdvisoryCache {
     }
 }
 
+fn source_failure_cache(
+    source_kind: NationalAdvisorySourceKind,
+    existing: Option<&AdvisorySourceCache>,
+    err: &str,
+    now: u64,
+) -> AdvisorySourceCache {
+    let imported_from_batch = existing
+        .map(|source| source.imported_from_batch.clone())
+        .filter(|batch| !batch.is_empty())
+        .unwrap_or_else(|| {
+            source_kind
+                .live_urls()
+                .iter()
+                .map(|url| (*url).to_string())
+                .collect()
+        });
+    let expires_unix = existing.map(|source| source.expires_unix).unwrap_or(0);
+    AdvisorySourceCache {
+        source_key: source_kind.source_key().into(),
+        source_kind: source_kind.source_kind().into(),
+        source_url: source_kind.source_url().into(),
+        imported_from: existing.and_then(|source| source.imported_from.clone()),
+        imported_from_batch,
+        fetched_unix: existing.map(|source| source.fetched_unix).unwrap_or(0),
+        expires_unix,
+        snapshot_sha256: existing
+            .map(|source| source.snapshot_sha256.clone())
+            .unwrap_or_default(),
+        total_results: existing.map(|source| source.total_results).unwrap_or(0),
+        status: if expires_unix > now {
+            SourceHealth::Error
+        } else {
+            SourceHealth::Stale
+        },
+        last_attempt_unix: now,
+        last_error: Some(err.to_string()),
+        retry_after_unix: now.saturating_add(LIVE_SYNC_RETRY_SECS),
+    }
+}
+
+fn load_source_metadata() -> Result<Vec<AdvisorySourceCache>, String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    db.load_advisory_sources()
+}
+
+fn source_refresh_due(source: Option<&AdvisorySourceCache>, now: u64) -> bool {
+    let Some(source) = source else {
+        return true;
+    };
+    let retry_due = source.retry_after_unix > 0 && source.retry_after_unix <= now;
+    let stale_or_error = matches!(source.status, SourceHealth::Error | SourceHealth::Stale);
+    source.expires_unix <= now
+        || retry_due
+        || (stale_or_error && (source.retry_after_unix == 0 || source.retry_after_unix <= now))
+}
+
 impl NationalAdvisorySourceKind {
     fn label(self) -> &'static str {
         match self {
@@ -609,6 +989,13 @@ impl NationalAdvisorySourceKind {
         match self {
             NationalAdvisorySourceKind::Ncsc => NCSC_SOURCE_URL,
             NationalAdvisorySourceKind::Bsi => BSI_SOURCE_URL,
+        }
+    }
+
+    fn live_urls(self) -> &'static [&'static str] {
+        match self {
+            NationalAdvisorySourceKind::Ncsc => &[NCSC_RSS_URL],
+            NationalAdvisorySourceKind::Bsi => &[BSI_RSS_URL],
         }
     }
 }
@@ -862,17 +1249,27 @@ fn urls_from_keys(value: &Value, keys: &[&str]) -> Vec<String> {
 
 fn severities_from_value(value: &Value, source: &str) -> Vec<VulnerabilitySeverity> {
     let mut severities = Vec::new();
-    if let Some(severity) = first_string(value, &["severity", "cvssSeverity", "baseSeverity"]) {
-        severities.push(VulnerabilitySeverity {
-            source: source.into(),
-            scheme: first_string(value, &["severityScheme", "cvssVersion"])
-                .unwrap_or_else(|| "source".into()),
-            severity,
-            score: first_string(value, &["score", "baseScore", "cvssScore"])
-                .and_then(|score| score.parse::<f32>().ok()),
-            vector: first_string(value, &["vector", "vectorString", "cvssVector"]),
-        });
-    }
+    push_severity_from_parts(
+        &mut severities,
+        source,
+        first_string(
+            value,
+            &[
+                "severityScheme",
+                "cvssVersion",
+                "baseScoreVersion",
+                "version",
+            ],
+        )
+        .unwrap_or_else(|| "source".into()),
+        first_string(value, &["severity", "cvssSeverity", "baseSeverity"]),
+        first_string(value, &["score", "baseScore", "cvssScore"])
+            .and_then(|score| parse_score(&score)),
+        first_string(
+            value,
+            &["vector", "vectorString", "cvssVector", "baseScoreVector"],
+        ),
+    );
     for key in ["cvss", "cvssV3", "cvssV31", "metrics"] {
         if let Some(found) = value.get(key) {
             collect_severities(found, source, &mut severities);
@@ -889,33 +1286,142 @@ fn collect_severities(value: &Value, source: &str, out: &mut Vec<VulnerabilitySe
             }
         }
         Value::Object(map) => {
-            if let Some(severity) = map
-                .get("severity")
-                .or_else(|| map.get("baseSeverity"))
-                .and_then(value_to_string)
-            {
-                out.push(VulnerabilitySeverity {
-                    source: source.into(),
-                    scheme: map
-                        .get("version")
-                        .or_else(|| map.get("scheme"))
-                        .and_then(value_to_string)
-                        .unwrap_or_else(|| "cvss".into()),
-                    severity,
-                    score: map
-                        .get("score")
-                        .or_else(|| map.get("baseScore"))
-                        .and_then(value_to_string)
-                        .and_then(|score| score.parse::<f32>().ok()),
-                    vector: map
-                        .get("vector")
-                        .or_else(|| map.get("vectorString"))
-                        .and_then(value_to_string),
-                });
+            push_severity_from_parts(
+                out,
+                source,
+                map.get("version")
+                    .or_else(|| map.get("scheme"))
+                    .or_else(|| map.get("cvssVersion"))
+                    .or_else(|| map.get("baseScoreVersion"))
+                    .and_then(value_to_string)
+                    .unwrap_or_else(|| "cvss".into()),
+                map.get("severity")
+                    .or_else(|| map.get("baseSeverity"))
+                    .or_else(|| map.get("cvssSeverity"))
+                    .and_then(value_to_string),
+                map.get("score")
+                    .or_else(|| map.get("baseScore"))
+                    .or_else(|| map.get("cvssScore"))
+                    .and_then(value_to_string)
+                    .and_then(|score| parse_score(&score)),
+                map.get("vector")
+                    .or_else(|| map.get("vectorString"))
+                    .or_else(|| map.get("cvssVector"))
+                    .or_else(|| map.get("baseScoreVector"))
+                    .and_then(value_to_string),
+            );
+            for nested in map.values() {
+                collect_severities(nested, source, out);
             }
         }
         _ => {}
     }
+}
+
+fn severities_from_rss_item(source: &str, item: &str, title: &str) -> Vec<VulnerabilitySeverity> {
+    let mut severities = Vec::new();
+    for category in xml_tags(item, "category") {
+        push_severity_from_parts(
+            &mut severities,
+            source,
+            "source".into(),
+            xml_tag(&category, "category"),
+            None,
+            None,
+        );
+    }
+    if severities.is_empty() {
+        if let Some(label) = severity_from_bracketed_title(title) {
+            push_severity_from_parts(
+                &mut severities,
+                source,
+                "source".into(),
+                Some(label),
+                None,
+                None,
+            );
+        }
+    }
+    severities
+}
+
+fn severity_from_bracketed_title(title: &str) -> Option<String> {
+    for part in title.split('[').skip(1) {
+        let Some((label, _)) = part.split_once(']') else {
+            continue;
+        };
+        if canonical_severity(label).is_some() {
+            return Some(label.to_string());
+        }
+    }
+    None
+}
+
+fn push_severity_from_parts(
+    out: &mut Vec<VulnerabilitySeverity>,
+    source: &str,
+    scheme: String,
+    severity: Option<String>,
+    score: Option<f32>,
+    vector: Option<String>,
+) {
+    let severity = severity
+        .as_deref()
+        .and_then(canonical_severity)
+        .or_else(|| score.and_then(cvss_severity_from_score).map(str::to_string));
+    let Some(severity) = severity else {
+        return;
+    };
+    let scheme = if scheme.trim().is_empty() {
+        "cvss".into()
+    } else {
+        scheme.trim().to_string()
+    };
+    let vector = vector.filter(|value| !value.trim().is_empty());
+    let duplicate = out.iter().any(|existing| {
+        existing.source == source
+            && existing.scheme == scheme
+            && existing.severity == severity
+            && existing.score == score
+            && existing.vector == vector
+    });
+    if !duplicate {
+        out.push(VulnerabilitySeverity {
+            source: source.into(),
+            scheme,
+            severity,
+            score,
+            vector,
+        });
+    }
+}
+
+fn canonical_severity(severity: &str) -> Option<String> {
+    match severity.trim().to_ascii_lowercase().as_str() {
+        "critical" | "crit" | "kritisch" => Some("CRITICAL".into()),
+        "high" | "hoch" => Some("HIGH".into()),
+        "medium" | "moderate" | "mittel" => Some("MEDIUM".into()),
+        "low" | "niedrig" => Some("LOW".into()),
+        _ => None,
+    }
+}
+
+fn cvss_severity_from_score(score: f32) -> Option<&'static str> {
+    if score >= 9.0 {
+        Some("CRITICAL")
+    } else if score >= 7.0 {
+        Some("HIGH")
+    } else if score >= 4.0 {
+        Some("MEDIUM")
+    } else if score > 0.0 {
+        Some("LOW")
+    } else {
+        None
+    }
+}
+
+fn parse_score(score: &str) -> Option<f32> {
+    score.trim().parse::<f32>().ok()
 }
 
 fn products_from_value(value: &Value) -> Vec<AffectedProduct> {
@@ -1144,6 +1650,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    struct FakeFetcher {
+        responses: HashMap<&'static str, Vec<u8>>,
+    }
+
+    impl NationalAdvisoryFetcher for FakeFetcher {
+        fn fetch_url(&self, url: &str) -> Result<Vec<u8>, String> {
+            self.responses
+                .get(url)
+                .cloned()
+                .ok_or_else(|| format!("unexpected URL {url}"))
+        }
+    }
 
     #[test]
     fn parses_ncsc_rss_item_with_guid_and_cve_alias() {
@@ -1166,6 +1686,94 @@ mod tests {
         assert!(record.aliases.iter().any(|alias| alias == "CVE-2026-1234"));
         assert_eq!(record.references[0].source.as_deref(), Some("NCSC"));
         assert_eq!(record.provenance.source_kind, NCSC_SOURCE_KIND);
+    }
+
+    #[test]
+    fn live_national_fetch_normalizes_ncsc_and_bsi_rss() {
+        let ncsc_xml = r#"<rss><channel><item>
+            <title>NCSC-2026-0001 CVE-2026-1234 voorbeeld</title>
+            <link>https://advisories.ncsc.nl/2026/ncsc-2026-0001-1</link>
+            <description>NCSC advisory.</description>
+            <guid>NCSC-2026-0001</guid>
+        </item></channel></rss>"#;
+        let bsi_xml = r#"<rss><channel><item>
+            <title>[NEU] [hoch] WID-SEC-2026-0001 CVE-2026-1234 Beispiel</title>
+            <link>https://wid.cert-bund.de/portal/wid/securityadvisory?name=WID-SEC-2026-0001</link>
+            <description>BSI advisory.</description>
+            <category>hoch</category>
+            <guid>WID-SEC-2026-0001</guid>
+        </item></channel></rss>"#;
+        let fetcher = FakeFetcher {
+            responses: HashMap::from([
+                (NCSC_RSS_URL, ncsc_xml.as_bytes().to_vec()),
+                (BSI_RSS_URL, bsi_xml.as_bytes().to_vec()),
+            ]),
+        };
+
+        let (ncsc, ncsc_feeds) =
+            fetch_live_source_batch(NationalAdvisorySourceKind::Ncsc, &fetcher, 42).unwrap();
+        let (bsi, bsi_feeds) =
+            fetch_live_source_batch(NationalAdvisorySourceKind::Bsi, &fetcher, 42).unwrap();
+
+        assert_eq!(ncsc_feeds, 1);
+        assert_eq!(bsi_feeds, 1);
+        assert_eq!(ncsc.records[0].primary_id, "NCSC-2026-0001");
+        assert_eq!(bsi.records[0].primary_id, "WID-SEC-2026-0001");
+        assert_eq!(bsi.records[0].severities[0].severity, "HIGH");
+        assert_eq!(
+            ncsc.sources[0].imported_from_batch,
+            vec![NCSC_RSS_URL.to_string()]
+        );
+        assert_eq!(
+            bsi.sources[0].imported_from_batch,
+            vec![BSI_RSS_URL.to_string()]
+        );
+    }
+
+    #[test]
+    fn national_source_refresh_due_honors_fresh_retry_and_stale_states() {
+        let mut source = source_cache(
+            NationalAdvisorySourceKind::Ncsc,
+            100,
+            None,
+            String::new(),
+            0,
+        );
+        source.expires_unix = 200;
+        assert!(!source_refresh_due(Some(&source), 150));
+        assert!(source_refresh_due(Some(&source), 201));
+
+        source.status = SourceHealth::Stale;
+        source.expires_unix = 400;
+        source.retry_after_unix = 300;
+        assert!(!source_refresh_due(Some(&source), 250));
+        assert!(source_refresh_due(Some(&source), 300));
+    }
+
+    #[test]
+    fn national_source_failure_preserves_last_good_metadata() {
+        let mut existing = source_cache(
+            NationalAdvisorySourceKind::Bsi,
+            100,
+            Some(vec![BSI_RSS_URL.to_string()]),
+            "abc".into(),
+            12,
+        );
+        existing.expires_unix = 500;
+
+        let failed = source_failure_cache(
+            NationalAdvisorySourceKind::Bsi,
+            Some(&existing),
+            "boom",
+            200,
+        );
+
+        assert_eq!(failed.fetched_unix, 100);
+        assert_eq!(failed.expires_unix, 500);
+        assert_eq!(failed.snapshot_sha256, "abc");
+        assert_eq!(failed.total_results, 12);
+        assert_eq!(failed.status, SourceHealth::Error);
+        assert_eq!(failed.last_error.as_deref(), Some("boom"));
     }
 
     #[test]

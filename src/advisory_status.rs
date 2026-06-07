@@ -1,54 +1,30 @@
-use crate::advisory::{AdvisoryCache, AdvisorySourceCache, SourceHealth};
-use std::path::PathBuf;
-
-const CACHE_FILE: &str = "vigil-advisory-cache.json";
-const CACHE_SCHEMA_VERSION: u32 = 1;
+use crate::advisory::{AdvisorySourceCache, SourceHealth};
 const NVD_API_ATTRIBUTION_NOTICE: &str =
     "This product uses the NVD API but is not endorsed or certified by the NVD.";
 
 pub fn run_cli() -> Result<(), String> {
-    let path = cache_path();
-    if !path.exists() {
-        println!("Advisory cache: empty (no protected cache found).");
+    let db = crate::storage::db::StorageDb::global()?;
+    let sources = db.load_advisory_sources()?;
+    let record_count = db.count_advisory_records()?;
+    if sources.is_empty() && record_count == 0 {
+        println!("Advisory database: empty.");
         return Ok(());
-    }
-
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|e| {
-            format!(
-                "failed to load protected advisory cache {}: {e}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        println!(
-            "Advisory cache: unavailable (protected cache could not be verified or restored)."
-        );
-        return Ok(());
-    };
-    if cache.schema_version != CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected advisory cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
     }
 
     let now = unix_now();
-    let attention_sources = cache
-        .sources
+    let attention_sources = sources
         .iter()
         .filter(|source| source_needs_attention(source, now))
         .count();
 
     println!(
-        "Advisory cache: {} records, {} sources ({} stale/error)",
-        cache.records.len(),
-        cache.sources.len(),
+        "Advisory database: {} records, {} sources ({} stale/error)",
+        record_count,
+        sources.len(),
         attention_sources
     );
 
-    for source in &cache.sources {
+    for source in &sources {
         println!(
             "- {} ({}) [{}] results={} fetched={} expires={} sha256={}",
             source.source_key,
@@ -85,10 +61,6 @@ pub fn run_cli() -> Result<(), String> {
     }
 
     Ok(())
-}
-
-fn cache_path() -> PathBuf {
-    crate::config::data_dir().join(CACHE_FILE)
 }
 
 fn source_state(source: &AdvisorySourceCache, now: u64) -> &'static str {
