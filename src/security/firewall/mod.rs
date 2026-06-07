@@ -183,6 +183,28 @@ pub fn get_backend() -> &'static dyn FirewallBackend {
         .as_ref()
 }
 
+const FIREWALL_USAGE: &str = "Usage: vigil --firewall <status|list|export|panic|help>";
+const FIREWALL_HELP_TEXT: &str = concat!(
+    "Vigil firewall commands:\n",
+    "  status    Show backend, profiles, isolation state\n",
+    "  list      Show active rules summary (IPs, processes, domains)\n",
+    "  export    Dump full firewall state as JSON\n",
+    "  panic     Emergency restore - drop all Vigil rules\n",
+    "\n",
+    "Common permanent containment templates:\n",
+    "  Block remote IP    Inspector -> Block remote on the selected connection\n",
+    "  Block process      Inspector -> Block process on the selected executable\n",
+    "  Block domain       Inspector -> Block domain on the selected hostname\n",
+    "  Isolate machine    Inspector -> Isolate machine\n",
+    "  Restore machine    Inspector -> Restore machine\n",
+    "  Panic              vigil --firewall panic\n",
+    "\n",
+    "These templates keep permanent containment entries until you restore or remove them.\n",
+    "Firewall rules are managed through the GUI Inspector tab or the auto-response\n",
+    "engine (block_remote, block_process, isolate_machine, etc.). Use\n",
+    "--uninstall-firewall before removing Vigil to clean up all managed rules.\n",
+);
+
 /// Remove all Vigil-owned firewall rules during uninstall.
 /// Called from --uninstall-service and the GUI uninstall flow.
 /// Best-effort: logs failures but does not block the uninstall.
@@ -353,22 +375,42 @@ pub fn run_cli(args: &[String]) -> i32 {
             }
         }
         Some("help") => {
-            println!("Vigil firewall commands:");
-            println!("  status    Show backend, profiles, isolation state");
-            println!("  list      Show active rules summary (IPs, processes, domains)");
-            println!("  export    Dump full firewall state as JSON");
-            println!("  panic     Emergency restore — drop all Vigil rules");
-            println!();
-            println!("Firewall rules are managed through the GUI Inspector tab");
-            println!("or the auto-response engine (block_remote, block_process,");
-            println!("isolate_machine, etc.). Use --uninstall-firewall to");
-            println!("clean up all rules before removing Vigil.");
+            print!("{FIREWALL_HELP_TEXT}");
             0
         }
         Some(other) => {
             eprintln!("Unknown firewall subcommand: {other}");
-            eprintln!("Usage: vigil --firewall <status|list|export|panic|help>");
+            eprintln!("{FIREWALL_USAGE}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FIREWALL_HELP_TEXT, FIREWALL_USAGE};
+
+    #[test]
+    fn firewall_help_lists_permanent_templates() {
+        for expected in [
+            "Common permanent containment templates:",
+            "Block remote IP",
+            "Block process",
+            "Block domain",
+            "Isolate machine",
+            "Restore machine",
+            "vigil --firewall panic",
+            "permanent containment entries",
+        ] {
+            assert!(
+                FIREWALL_HELP_TEXT.contains(expected),
+                "{expected} missing from firewall help text"
+            );
+        }
+    }
+
+    #[test]
+    fn firewall_usage_lists_supported_subcommands() {
+        assert_eq!(FIREWALL_USAGE, "Usage: vigil --firewall <status|list|export|panic|help>");
     }
 }
