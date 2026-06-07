@@ -19,7 +19,8 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const QUERY_LIMIT: usize = 300;
-const RELOAD_AFTER: Duration = Duration::from_secs(60);
+const RELOAD_AFTER: Duration = Duration::from_secs(300);
+const FILTER_DEBOUNCE: Duration = Duration::from_millis(350);
 const HEADER_H: f32 = 28.0;
 const ROW_H: f32 = 58.0;
 
@@ -37,6 +38,7 @@ pub struct AdvisoriesState {
     query_rx: Option<mpsc::Receiver<Result<AdvisoryQueryResult, String>>>,
     loading_since: Option<Instant>,
     last_loaded: Option<Instant>,
+    filter_changed_at: Option<Instant>,
 }
 
 impl Default for AdvisoriesState {
@@ -55,6 +57,7 @@ impl Default for AdvisoriesState {
             query_rx: None,
             loading_since: None,
             last_loaded: None,
+            filter_changed_at: None,
         }
     }
 }
@@ -89,6 +92,8 @@ pub fn show(ui: &mut Ui, state: &mut AdvisoriesState) {
 
     if state.query_rx.is_some() {
         ui.ctx().request_repaint_after(Duration::from_millis(100));
+    } else if state.filter_changed_at.is_some() {
+        ui.ctx().request_repaint_after(FILTER_DEBOUNCE);
     }
 
     ui.add_space(4.0);
@@ -153,6 +158,15 @@ impl AdvisoriesState {
     fn ensure_query(&mut self) {
         let filter = self.filter.trim().to_string();
         let filter_changed = self.requested_filter.as_deref() != Some(filter.as_str());
+        if filter_changed
+            && !self.records.is_empty()
+            && self
+                .filter_changed_at
+                .map(|changed| changed.elapsed() < FILTER_DEBOUNCE)
+                .unwrap_or(false)
+        {
+            return;
+        }
         let stale = self
             .last_loaded
             .map(|loaded| loaded.elapsed() >= RELOAD_AFTER)
@@ -168,6 +182,7 @@ impl AdvisoriesState {
         self.requested_filter = Some(filter.clone());
         self.query_rx = Some(rx);
         self.loading_since = Some(Instant::now());
+        self.filter_changed_at = None;
         self.error = None;
 
         let spawned = std::thread::Builder::new()
@@ -309,6 +324,7 @@ fn filter_row(ui: &mut Ui, state: &mut AdvisoriesState) {
                     .on_hover_text("Search the local advisory database.");
                 if search_response.changed() {
                     state.last_loaded = None;
+                    state.filter_changed_at = Some(Instant::now());
                 }
                 if !state.filter.is_empty()
                     && ui
@@ -323,6 +339,7 @@ fn filter_row(ui: &mut Ui, state: &mut AdvisoriesState) {
                 {
                     state.filter.clear();
                     state.last_loaded = None;
+                    state.filter_changed_at = Some(Instant::now());
                 }
                 if state.query_rx.is_some() {
                     ui.add(egui::Spinner::new().size(14.0));
@@ -343,6 +360,7 @@ fn filter_row(ui: &mut Ui, state: &mut AdvisoriesState) {
                     .clicked()
                 {
                     state.last_loaded = None;
+                    state.filter_changed_at = None;
                     state.requested_filter = None;
                 }
             });

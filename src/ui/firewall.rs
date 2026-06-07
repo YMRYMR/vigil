@@ -18,13 +18,16 @@ const RULE_ROW_H: f32 = 54.0;
 /// the right panel.
 pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<FirewallAction> {
     let rules = active_response::list_rules();
-    let model = firewall::state::current_model();
+    let model = firewall::state::build_firewall_status_model(
+        firewall::state::FirewallBackendState::from_backend(firewall::get_backend()),
+        firewall::state::ActiveResponseState::from(&rules),
+    );
     refresh_selection(selected, &rules);
 
     let available_w = ui.available_width();
     let available_h = ui.available_height().max(260.0);
-    let right_w = RIGHT_W.min((available_w * 0.42).max(260.0));
-    let left_w = (available_w - right_w - GAP).max(360.0);
+    let right_w = RIGHT_W.min((available_w * 0.34).clamp(240.0, RIGHT_W));
+    let left_w = (available_w - right_w - GAP).max(260.0);
     let mut action = None;
 
     ui.horizontal_top(|ui| {
@@ -56,7 +59,7 @@ pub fn show(ui: &mut Ui, selected: &mut Option<FirewallSelection>) -> Option<Fir
             .stroke(egui::Stroke::new(1.0, theme::BORDER))
             .inner_margin(egui::Margin::symmetric(12, 12))
             .show(ui, |ui| {
-                ui.set_width(right_w - 24.0);
+                ui.set_width((right_w - 24.0).max(220.0));
                 ui.set_height(available_h - 24.0);
                 egui::ScrollArea::vertical()
                     .id_salt("firewall-detail-scroll")
@@ -344,6 +347,20 @@ fn overview_detail(
     if let Some(secs) = rules.isolation_remaining_secs.filter(|secs| *secs > 0) {
         detail_kv(ui, "Isolation timeout", duration_label(secs));
     }
+    if !model.warnings.is_empty() {
+        ui.separator();
+        ui.add_space(8.0);
+        section_header(ui, "Warnings");
+        for warning in &model.warnings {
+            ui.label(
+                RichText::new(warning)
+                    .color(theme::WARN)
+                    .size(11.0)
+                    .monospace(),
+            );
+            ui.add_space(4.0);
+        }
+    }
     ui.separator();
     ui.add_space(8.0);
     section_header(ui, "Active Entries");
@@ -402,6 +419,7 @@ fn selected_detail(
     if !sel.rule_name.is_empty() {
         detail_kv(ui, "Rule", &sel.rule_name);
     }
+    detail_kv(ui, "State", rule_detail(sel, rules));
     ui.add_space(8.0);
 
     match sel.rule_type.as_str() {

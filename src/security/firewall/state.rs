@@ -52,6 +52,12 @@ impl From<crate::security::active_response::Status> for ActiveResponseState {
 
 impl From<crate::security::active_response::FirewallRuleList> for ActiveResponseState {
     fn from(rules: crate::security::active_response::FirewallRuleList) -> Self {
+        Self::from(&rules)
+    }
+}
+
+impl From<&crate::security::active_response::FirewallRuleList> for ActiveResponseState {
+    fn from(rules: &crate::security::active_response::FirewallRuleList) -> Self {
         Self {
             isolated: rules.isolated,
             blocked_ip_count: rules.blocked_ips.len(),

@@ -975,7 +975,8 @@ fn endpoint_line(
                                     .background_color(theme::SURFACE3)
                                     .monospace()
                                     .size(9.0),
-                            );
+                            )
+                            .on_hover_text("Repeated sockets collapsed into this endpoint row.");
                         }
                     });
                 });
@@ -1042,38 +1043,71 @@ fn empty_state(ui: &mut egui::Ui, kind: Kind) {
 }
 
 fn badge_row(ui: &mut egui::Ui, endpoint: &EndpointRow<'_>) {
-    fn badge(ui: &mut egui::Ui, text: &str) {
+    fn badge(ui: &mut egui::Ui, text: &str, hover: &str) {
         ui.label(
             RichText::new(text)
                 .color(theme::DANGER)
                 .background_color(theme::DANGER_BG)
                 .monospace()
                 .size(9.0),
-        );
+        )
+        .on_hover_text(hover);
     }
     if endpoint.pre_login {
-        badge(ui, "PL");
+        badge(
+            ui,
+            "PL",
+            "Pre-login connection: observed before the user logged in.",
+        );
     }
     if endpoint.reputation_hit {
-        badge(ui, "REP");
+        badge(
+            ui,
+            "REP",
+            "Reputation hit: remote, host, or certificate matched a known indicator.",
+        );
     }
     if endpoint.recently_dropped {
-        badge(ui, "DRP");
+        badge(
+            ui,
+            "DRP",
+            "Recently dropped executable: process file appeared recently.",
+        );
     }
     if endpoint.long_lived {
-        badge(ui, "LL");
+        badge(
+            ui,
+            "LL",
+            "Long-lived connection: socket has stayed open longer than usual.",
+        );
     }
     if endpoint.dga_like {
-        badge(ui, "DGA");
+        badge(
+            ui,
+            "DGA",
+            "DGA-like name: destination hostname or TLS SNI looks algorithmically generated.",
+        );
     }
     if endpoint.script_host_suspicious {
-        badge(ui, "SCR");
+        badge(
+            ui,
+            "SCR",
+            "Script-host signal: command line or ancestry looks suspicious.",
+        );
     }
     if endpoint.baseline_deviation {
-        badge(ui, "BASE");
+        badge(
+            ui,
+            "BASE",
+            "Baseline drift: mature process profile saw a new remote, port, or country.",
+        );
     }
     if endpoint.tls_enriched {
-        badge(ui, "TLS");
+        badge(
+            ui,
+            "TLS",
+            "TLS metadata available: SNI or JA3 fingerprint contributed context.",
+        );
     }
 }
 
