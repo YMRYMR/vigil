@@ -78,7 +78,6 @@ inspector may show a `YARA matches` section with:
 - Rule-authored ATT&CK tags only when they come from trusted YARA scan payloads
   or parsed rule metadata with namespace/source-qualified provenance, not from
   the selected process group's flat `attack_tags` collection.
-
 For the first slice, the only available source is the selected process group's
 score reasons. In that mode, the Inspector should show the rule name and clearly
 omit metadata that is not backed by provenance-qualified scan or catalog data.
