@@ -846,7 +846,6 @@ mod tests {
             configured_blocklist_path("blocklists/threats.txt"),
             PathBuf::from("blocklists/threats.txt")
         );
-<<<<<<< HEAD
         assert_eq!(
             configured_blocklist_path(" blocklists/threats.txt "),
             PathBuf::from(" blocklists/threats.txt ")
