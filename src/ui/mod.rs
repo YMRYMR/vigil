@@ -5,6 +5,7 @@
 //! are added with `show_inside(ui, …)` instead of `show(ctx, …)`.
 
 pub mod activity;
+pub mod advisories;
 pub mod alerts;
 pub mod firewall;
 pub mod help;
@@ -419,6 +420,7 @@ pub struct VigilApp {
     selected_activity: Option<ProcessSelection>,
     selected_alert: Option<ProcessSelection>,
     selected_firewall: Option<FirewallSelection>,
+    advisories: advisories::AdvisoriesState,
     active_tab: Tab,
     unseen_alerts: usize,
     ui_rx: mpsc::Receiver<UiMessage>,
@@ -664,6 +666,7 @@ impl VigilApp {
             selected_activity: None,
             selected_alert: None,
             selected_firewall: None,
+            advisories: advisories::AdvisoriesState::default(),
             active_tab: persisted.active_tab,
             unseen_alerts: 0,
             ui_rx,
@@ -2063,6 +2066,9 @@ impl eframe::App for VigilApp {
                     self.active_tab,
                     self.cached_activity_process_count,
                     self.cached_alerts_process_count,
+                    self.response_status.blocked_rules
+                        + self.response_status.blocked_domains
+                        + self.response_status.suspended_processes,
                 )
             })
             .inner;
@@ -2093,6 +2099,17 @@ impl eframe::App for VigilApp {
                     inspector::show(ui, selected_info, kill_confirm, &self.inspector_snapshot)
                 })
                 .inner;
+        } else if self.active_tab == Tab::Advisories {
+            egui::Panel::right("advisory_inspector")
+                .exact_size(320.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::SURFACE)
+                        .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                        .inner_margin(egui::Margin::symmetric(12, 0)),
+                )
+                .show_inside(ui, |ui| advisories::show_detail(ui, &self.advisories));
         }
         if let Some(action) = inspector_action {
             self.handle_inspector_action(action, &ctx);
@@ -2241,6 +2258,7 @@ impl eframe::App for VigilApp {
                         }
                     }
                 }
+                Tab::Advisories => advisories::show(ui, &mut self.advisories),
                 Tab::Help => help::show(ui),
             });
         self.show_notifications_overlay(&ctx);

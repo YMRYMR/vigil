@@ -14,10 +14,14 @@
 //!   last-modified windows
 //! - startup status logging so the cache state is visible to operators
 
+use chrono::Datelike;
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -27,6 +31,8 @@ const DEFAULT_SOURCE_TTL_SECS: u64 = 24 * 60 * 60;
 const NVD_SOURCE_KEY: &str = "nvd-cve";
 const NVD_SOURCE_KIND: &str = "nvd";
 const NVD_API_URL: &str = "https://services.nvd.nist.gov/rest/json/cves/2.0";
+const NVD_FEED_BASE_URL: &str = "https://nvd.nist.gov/feeds/json/cve/2.0";
+const NVD_FIRST_FEED_YEAR: i32 = 2002;
 const NVD_RESULTS_PER_PAGE: usize = 2_000;
 const NVD_MIN_SYNC_INTERVAL_SECS: u64 = 2 * 60 * 60;
 const NVD_MAX_INCREMENTAL_WINDOW_DAYS: i64 = 120;
@@ -168,6 +174,26 @@ struct NvdSyncRequest {
     last_mod_end_date: Option<String>,
 }
 
+#[derive(Debug)]
+struct FetchedNvdPage {
+    path: PathBuf,
+    sha256: String,
+}
+
+#[derive(Debug)]
+struct FetchedNvdBatch {
+    temp_dir: PathBuf,
+    pages: Vec<FetchedNvdPage>,
+    imported_records: usize,
+    total_results: usize,
+}
+
+struct NvdFeed {
+    label: String,
+    url: String,
+    counts_toward_full_total: bool,
+}
+
 trait NvdFetcher {
     fn fetch_page(&self, request: &NvdSyncRequest) -> Result<Vec<u8>, String>;
 }
@@ -251,12 +277,20 @@ impl NvdFetcher for HttpNvdFetcher {
             })?;
             let status = response.status();
             if status.is_success() {
-                return response.bytes().map(|bytes| bytes.to_vec()).map_err(|err| {
-                    format!(
-                        "failed to read NVD response body at startIndex {}: {err}",
-                        request.start_index
-                    )
-                });
+                match response.bytes().map(|bytes| bytes.to_vec()) {
+                    Ok(bytes) => return Ok(bytes),
+                    Err(_) if attempt + 1 < MAX_RETRY_ATTEMPTS => {
+                        std::thread::sleep(self.request_delay().max(Duration::from_secs(1)));
+                        attempt += 1;
+                        continue;
+                    }
+                    Err(err) => {
+                        return Err(format!(
+                            "failed to read NVD response body at startIndex {}: {err}",
+                            request.start_index
+                        ));
+                    }
+                }
             }
 
             if (status.as_u16() == 429 || status.as_u16() == 503)
@@ -306,7 +340,7 @@ pub fn run_import_cli(paths: &[PathBuf]) -> Result<(), String> {
         import_nvd_snapshots(paths)?
     };
     println!(
-        "Merged {} NVD CVE records from {} snapshot file(s) into the protected advisory cache ({} marked known exploited in this import set). Cache now holds {} records across {} sources.",
+        "Merged {} NVD CVE records from {} snapshot file(s) into the advisory database ({} marked known exploited in this import set). Database now holds {} records across {} sources.",
         summary.imported_records,
         summary.imported_files,
         summary.known_exploited,
@@ -321,7 +355,7 @@ pub fn run_sync_cli(force: bool) -> Result<SyncOutcome, String> {
     match &outcome {
         SyncOutcome::Updated(summary) => {
             println!(
-                "Fetched {} NVD page(s) and merged {} CVE record(s) into the protected advisory cache. Cache now holds {} records across {} sources.",
+                "Fetched {} NVD page(s) and merged {} CVE record(s) into the advisory database. Database now holds {} records across {} sources.",
                 summary.requested_pages,
                 summary.imported_records,
                 summary.total_records,
@@ -367,34 +401,56 @@ pub fn import_nvd_snapshots(paths: &[PathBuf]) -> Result<ImportSummary, String> 
 }
 
 pub fn sync_nvd(force: bool) -> Result<SyncOutcome, String> {
-    let existing = load_cache_for_import()?;
     let now = unix_now();
+    let existing_source = load_nvd_source_metadata()?;
     if !force {
-        if let Some(remaining_secs) = nvd_rate_limit_remaining(existing.as_ref(), now) {
+        if let Some(remaining_secs) = nvd_source_rate_limit_remaining(existing_source.as_ref(), now)
+        {
             return Ok(SyncOutcome::SkippedRateLimit { remaining_secs });
         }
     }
 
-    let fetcher = HttpNvdFetcher::new()?;
-    let (cache, fetched_pages, imported_records) =
-        match sync_nvd_with_fetcher(existing.clone(), &fetcher, now) {
-            Ok(result) => result,
-            Err(err) => {
-                let failed_cache =
-                    stamp_nvd_sync_failure(existing.unwrap_or_else(|| empty_cache(now)), &err, now);
-                if let Err(save_err) = save_cache(&failed_cache) {
-                    tracing::warn!(%save_err, "failed to persist NVD sync failure state");
-                }
-                return Err(err);
+    let latest_modified = load_latest_nvd_last_modified_from_db(existing_source.as_ref())?;
+    let fetched_result = match latest_modified.as_ref() {
+        Some(_) => {
+            let fetcher = HttpNvdFetcher::new()?;
+            fetch_nvd_increment(latest_modified.clone(), &fetcher, now)
+        }
+        None => fetch_nvd_initial_feeds(now),
+    };
+    let mut fetched = match fetched_result {
+        Ok(fetched) => fetched,
+        Err(err) => {
+            let failed_source = nvd_sync_failure_source(existing_source.as_ref(), &err, now);
+            if let Err(save_err) = save_nvd_source_status(&failed_source) {
+                tracing::warn!(%save_err, "failed to persist NVD sync failure state");
             }
-        };
+            return Err(err);
+        }
+    };
+    if latest_modified.is_some() {
+        if let Some(source) = existing_source.as_ref() {
+            fetched.total_results = fetched.total_results.max(source.total_results);
+        }
+    }
+    let fetched_pages = fetched.pages.len();
+    let imported_records = fetched.imported_records;
+    if let Err(err) = save_fetched_nvd_batch(&fetched, now) {
+        let failed_source = nvd_sync_failure_source(existing_source.as_ref(), &err, now);
+        if let Err(save_err) = save_nvd_source_status(&failed_source) {
+            tracing::warn!(%save_err, "failed to persist NVD sync failure state");
+        }
+        let _ = fs::remove_dir_all(&fetched.temp_dir);
+        return Err(err);
+    }
+    let _ = fs::remove_dir_all(&fetched.temp_dir);
+    let db = crate::storage::db::StorageDb::global()?;
     let summary = SyncSummary {
         requested_pages: fetched_pages,
         imported_records,
-        total_records: cache.records.len(),
-        total_sources: cache.sources.len(),
+        total_records: db.count_advisory_records()?,
+        total_sources: db.load_advisory_sources()?.len(),
     };
-    save_cache(&cache)?;
     Ok(SyncOutcome::Updated(summary))
 }
 
@@ -415,6 +471,7 @@ pub fn log_cache_status() {
     }
 }
 
+#[allow(dead_code)]
 pub fn refresh_nvd_in_background_if_due() {
     if !nvd_refresh_due() {
         return;
@@ -475,6 +532,7 @@ fn load_cache_for_import() -> Result<Option<AdvisoryCache>, String> {
 }
 
 fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
+    let update_started = Instant::now();
     let db = crate::storage::db::StorageDb::global()?;
     db.begin()?;
     let result = (|| -> Result<(), String> {
@@ -500,6 +558,12 @@ fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
         Ok(()) => {
             db.commit()?;
             db.checkpoint()?;
+            tracing::info!(
+                sources = cache.sources.len(),
+                records = cache.records.len(),
+                elapsed_ms = update_started.elapsed().as_millis() as u64,
+                "updated advisory database"
+            );
             // Extract IOCs from advisory records and feed into blocklist engine.
             let iocs = crate::advisory_ioc::extract_iocs(&cache.records);
             if !iocs.is_empty() {
@@ -511,6 +575,22 @@ fn save_cache(cache: &AdvisoryCache) -> Result<(), String> {
                 );
             }
             Ok(())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn save_nvd_source_status(source: &AdvisorySourceCache) -> Result<(), String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = db.upsert_advisory_source(source);
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint().map(|_| ())
         }
         Err(err) => {
             let _ = db.rollback();
@@ -539,61 +619,325 @@ fn load_nvd_snapshot_batch(paths: &[PathBuf]) -> Result<AdvisoryCache, String> {
     Ok(imported)
 }
 
-fn sync_nvd_with_fetcher(
-    existing: Option<AdvisoryCache>,
+fn fetch_nvd_increment(
+    latest_modified: Option<String>,
     fetcher: &dyn NvdFetcher,
     now: u64,
-) -> Result<(AdvisoryCache, usize, usize), String> {
-    let mut imported = None;
-    let mut page_hashes = Vec::new();
-    let mut page_count = 0usize;
-    let mut imported_records = 0usize;
-    for (last_mod_start_date, last_mod_end_date) in nvd_sync_windows(existing.as_ref(), now) {
-        let request_template = NvdSyncRequest {
-            start_index: 0,
-            results_per_page: NVD_RESULTS_PER_PAGE,
-            last_mod_start_date,
-            last_mod_end_date,
-        };
-
-        let mut start_index = 0usize;
-        loop {
-            let request = NvdSyncRequest {
-                start_index,
-                ..request_template.clone()
+) -> Result<FetchedNvdBatch, String> {
+    let sync_started = Instant::now();
+    let temp_dir = nvd_sync_temp_dir(now)?;
+    let result = (|| -> Result<FetchedNvdBatch, String> {
+        let mut pages = Vec::new();
+        let mut imported_records = 0usize;
+        let mut batch_total_results = 0usize;
+        for (last_mod_start_date, last_mod_end_date) in
+            nvd_sync_windows_from_latest(latest_modified.as_deref(), now)
+        {
+            let request_template = NvdSyncRequest {
+                start_index: 0,
+                results_per_page: NVD_RESULTS_PER_PAGE,
+                last_mod_start_date,
+                last_mod_end_date,
             };
-            let bytes = fetcher.fetch_page(&request)?;
-            page_hashes.push(sha256_hex(&bytes));
-            let page = parse_nvd_snapshot(&bytes, None)?;
-            let total_results = page
-                .sources
-                .first()
-                .map(|source| source.total_results)
-                .unwrap_or(page.records.len());
-            let page_records = page.records.len();
-            imported_records += page_records;
-            imported = Some(match imported {
-                Some(existing_pages) => merge_import_batch_cache(existing_pages, page),
-                None => page,
-            });
-            page_count += 1;
 
-            if page_records == 0
-                || start_index.saturating_add(request.results_per_page) >= total_results
-            {
-                break;
+            let mut start_index = 0usize;
+            loop {
+                let request = NvdSyncRequest {
+                    start_index,
+                    ..request_template.clone()
+                };
+                let fetch_started = Instant::now();
+                let bytes = fetcher.fetch_page(&request)?;
+                let fetch_elapsed = fetch_started.elapsed();
+                let byte_count = bytes.len();
+                let page_sha256 = sha256_hex(&bytes);
+                let page = parse_nvd_snapshot(&bytes, None)?;
+                let total_results = page
+                    .sources
+                    .first()
+                    .map(|source| source.total_results)
+                    .unwrap_or(page.records.len());
+                batch_total_results = batch_total_results.max(total_results);
+                let page_records = page.records.len();
+                let path = temp_dir.join(format!("nvd-page-{}.json", pages.len()));
+                fs::write(&path, &bytes)
+                    .map_err(|err| format!("failed to spool NVD page {}: {err}", pages.len()))?;
+                tracing::info!(
+                    source = NVD_SOURCE_KIND,
+                    start_index = request.start_index,
+                    results_per_page = request.results_per_page,
+                    bytes = byte_count,
+                    records = page_records,
+                    elapsed_ms = fetch_elapsed.as_millis() as u64,
+                    "fetched NVD advisory page"
+                );
+                imported_records += page_records;
+                pages.push(FetchedNvdPage {
+                    path,
+                    sha256: page_sha256,
+                });
+
+                if page_records == 0
+                    || start_index.saturating_add(request.results_per_page) >= total_results
+                {
+                    break;
+                }
+                start_index = start_index.saturating_add(request.results_per_page);
             }
-            start_index = start_index.saturating_add(request.results_per_page);
         }
-    }
 
-    let mut imported = imported.unwrap_or_else(|| empty_cache(now));
-    finalize_import_batch_metadata(&mut imported, &page_hashes);
-    let mut merged = merge_cache(existing, imported);
-    stamp_nvd_sync_success(&mut merged, page_count, now);
-    Ok((merged, page_count, imported_records))
+        tracing::info!(
+            source = NVD_SOURCE_KIND,
+            pages = pages.len(),
+            records = imported_records,
+            elapsed_ms = sync_started.elapsed().as_millis() as u64,
+            "fetched NVD advisories from internet"
+        );
+        Ok(FetchedNvdBatch {
+            temp_dir: temp_dir.clone(),
+            pages,
+            imported_records,
+            total_results: batch_total_results,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    result
 }
 
+fn nvd_sync_temp_dir(now: u64) -> Result<PathBuf, String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "vigil-nvd-sync-{}-{now}-{nanos}",
+        std::process::id()
+    ));
+    fs::create_dir_all(&temp_dir)
+        .map_err(|err| format!("failed to create NVD sync temp dir: {err}"))?;
+    Ok(temp_dir)
+}
+
+fn fetch_nvd_initial_feeds(now: u64) -> Result<FetchedNvdBatch, String> {
+    let sync_started = Instant::now();
+    let temp_dir = nvd_sync_temp_dir(now)?;
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECS * 6))
+        .build()
+        .map_err(|err| format!("failed to build NVD feed HTTP client: {err}"))?;
+    let result = (|| -> Result<FetchedNvdBatch, String> {
+        let feeds = nvd_initial_feed_list();
+        let mut pages = Vec::with_capacity(feeds.len());
+        let mut imported_records = 0usize;
+        let mut full_total_results = 0usize;
+        for feed in feeds {
+            let fetch_started = Instant::now();
+            let compressed = fetch_nvd_feed_bytes(&client, &feed)?;
+            let compressed_bytes = compressed.len();
+            let bytes = decompress_gzip(&compressed)
+                .map_err(|err| format!("failed to decompress {}: {err}", feed.label))?;
+            let page_sha256 = sha256_hex(&bytes);
+            let page = parse_nvd_snapshot(&bytes, None)?;
+            let page_records = page.records.len();
+            if feed.counts_toward_full_total {
+                full_total_results = full_total_results.saturating_add(page_records);
+            }
+            let path = temp_dir.join(format!("nvd-feed-{}.json", pages.len()));
+            fs::write(&path, &bytes)
+                .map_err(|err| format!("failed to spool NVD feed {}: {err}", feed.label))?;
+            tracing::info!(
+                source = NVD_SOURCE_KIND,
+                feed = feed.label,
+                bytes = compressed_bytes,
+                records = page_records,
+                elapsed_ms = fetch_started.elapsed().as_millis() as u64,
+                "fetched NVD advisory feed"
+            );
+            imported_records += page_records;
+            pages.push(FetchedNvdPage {
+                path,
+                sha256: page_sha256,
+            });
+        }
+        tracing::info!(
+            source = NVD_SOURCE_KIND,
+            feeds = pages.len(),
+            records = imported_records,
+            full_total_results,
+            elapsed_ms = sync_started.elapsed().as_millis() as u64,
+            "fetched initial NVD advisory feeds from internet"
+        );
+        Ok(FetchedNvdBatch {
+            temp_dir: temp_dir.clone(),
+            pages,
+            imported_records,
+            total_results: full_total_results,
+        })
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+    result
+}
+
+fn nvd_initial_feed_list() -> Vec<NvdFeed> {
+    let current_year = chrono::Utc::now().year();
+    let mut feeds = (NVD_FIRST_FEED_YEAR..=current_year)
+        .map(|year| NvdFeed {
+            label: year.to_string(),
+            url: format!("{NVD_FEED_BASE_URL}/nvdcve-2.0-{year}.json.gz"),
+            counts_toward_full_total: true,
+        })
+        .collect::<Vec<_>>();
+    feeds.push(NvdFeed {
+        label: "modified".into(),
+        url: format!("{NVD_FEED_BASE_URL}/nvdcve-2.0-modified.json.gz"),
+        counts_toward_full_total: false,
+    });
+    feeds
+}
+
+fn fetch_nvd_feed_bytes(
+    client: &reqwest::blocking::Client,
+    feed: &NvdFeed,
+) -> Result<Vec<u8>, String> {
+    let mut attempt = 0usize;
+    loop {
+        let response = client
+            .get(&feed.url)
+            .header(
+                reqwest::header::USER_AGENT,
+                format!("Vigil/{}", env!("CARGO_PKG_VERSION")),
+            )
+            .send()
+            .map_err(|err| format!("failed to fetch NVD feed {}: {err}", feed.label))?;
+        let status = response.status();
+        if status.is_success() {
+            match response.bytes().map(|bytes| bytes.to_vec()) {
+                Ok(bytes) => return Ok(bytes),
+                Err(_) if attempt + 1 < MAX_RETRY_ATTEMPTS => {
+                    std::thread::sleep(Duration::from_secs(2));
+                    attempt += 1;
+                    continue;
+                }
+                Err(err) => {
+                    return Err(format!(
+                        "failed to read NVD feed {} response body: {err}",
+                        feed.label
+                    ));
+                }
+            }
+        }
+        if (status.as_u16() == 429 || status.as_u16() == 503) && attempt + 1 < MAX_RETRY_ATTEMPTS {
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(2);
+            std::thread::sleep(Duration::from_secs(retry_after.max(1)));
+            attempt += 1;
+            continue;
+        }
+        let body = response.text().unwrap_or_default();
+        return Err(format!(
+            "NVD feed {} failed with HTTP {}{}",
+            feed.label,
+            status.as_u16(),
+            if body.trim().is_empty() {
+                String::new()
+            } else {
+                format!(": {}", body.trim())
+            }
+        ));
+    }
+}
+
+fn decompress_gzip(bytes: &[u8]) -> std::io::Result<Vec<u8>> {
+    let mut decoder = GzDecoder::new(bytes);
+    let mut out = Vec::new();
+    decoder.read_to_end(&mut out)?;
+    Ok(out)
+}
+
+fn save_fetched_nvd_batch(batch: &FetchedNvdBatch, now: u64) -> Result<(), String> {
+    let update_started = Instant::now();
+    let snapshot_sha256 = combined_page_hash(&batch.pages);
+    let source = nvd_sync_success_source(batch.total_results, snapshot_sha256, now);
+    let db = crate::storage::db::StorageDb::global()?;
+    db.begin()?;
+    let result = (|| -> Result<(), String> {
+        db.upsert_advisory_source(&source)?;
+        for page in &batch.pages {
+            let bytes = fs::read(&page.path).map_err(|err| {
+                format!(
+                    "failed to read spooled NVD page {}: {err}",
+                    page.path.display()
+                )
+            })?;
+            let cache = parse_nvd_snapshot(&bytes, None)?;
+            db.replace_advisory_records(&cache.records, NVD_SOURCE_KEY, NVD_SOURCE_KIND)?;
+        }
+        Ok(())
+    })();
+    match result {
+        Ok(()) => {
+            db.commit()?;
+            db.checkpoint()?;
+            tracing::info!(
+                source = NVD_SOURCE_KIND,
+                pages = batch.pages.len(),
+                records = batch.imported_records,
+                total_results = batch.total_results,
+                elapsed_ms = update_started.elapsed().as_millis() as u64,
+                "updated NVD advisory database from spooled pages"
+            );
+            Ok(())
+        }
+        Err(err) => {
+            let _ = db.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn combined_page_hash(pages: &[FetchedNvdPage]) -> String {
+    if pages.len() == 1 {
+        return pages[0].sha256.clone();
+    }
+    let joined = pages
+        .iter()
+        .map(|page| page.sha256.as_str())
+        .collect::<Vec<_>>()
+        .join(":");
+    sha256_hex(joined.as_bytes())
+}
+
+fn nvd_sync_success_source(
+    total_results: usize,
+    snapshot_sha256: String,
+    now: u64,
+) -> AdvisorySourceCache {
+    AdvisorySourceCache {
+        source_key: NVD_SOURCE_KEY.into(),
+        source_kind: NVD_SOURCE_KIND.into(),
+        source_url: NVD_API_URL.into(),
+        imported_from: None,
+        imported_from_batch: vec![],
+        fetched_unix: now,
+        expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
+        snapshot_sha256,
+        total_results,
+        status: SourceHealth::Fresh,
+        last_attempt_unix: now,
+        last_error: None,
+        retry_after_unix: 0,
+    }
+}
+
+#[cfg(test)]
 fn empty_cache(now: u64) -> AdvisoryCache {
     AdvisoryCache {
         schema_version: DB_SCHEMA_VERSION,
@@ -605,34 +949,24 @@ fn empty_cache(now: u64) -> AdvisoryCache {
 
 fn nvd_refresh_due() -> bool {
     let now = unix_now();
-    match load_cache() {
-        Ok(Some(cache)) => cache
-            .sources
-            .iter()
-            .find(|source| {
-                source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
-            })
-            .is_none_or(|source| {
-                let retry_due = source.retry_after_unix > 0 && source.retry_after_unix <= now;
-                let stale_or_error =
-                    matches!(source.status, SourceHealth::Error | SourceHealth::Stale);
-                source.expires_unix <= now
-                    || retry_due
-                    || (stale_or_error
-                        && (source.retry_after_unix == 0 || source.retry_after_unix <= now))
-            }),
-        Ok(None) => true,
+    match load_nvd_source_metadata() {
+        Ok(source) => source.as_ref().is_none_or(|source| {
+            let retry_due = source.retry_after_unix > 0 && source.retry_after_unix <= now;
+            let stale_or_error = matches!(source.status, SourceHealth::Error | SourceHealth::Stale);
+            source.expires_unix <= now
+                || retry_due
+                || (stale_or_error
+                    && (source.retry_after_unix == 0 || source.retry_after_unix <= now))
+        }),
         Err(err) => {
-            tracing::warn!(%err, "assuming NVD refresh is due because the cache could not be read");
+            tracing::warn!(%err, "assuming NVD refresh is due because source metadata could not be read");
             true
         }
     }
 }
 
-fn nvd_rate_limit_remaining(existing: Option<&AdvisoryCache>, now: u64) -> Option<u64> {
-    let source = existing?.sources.iter().find(|source| {
-        source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
-    })?;
+fn nvd_source_rate_limit_remaining(source: Option<&AdvisorySourceCache>, now: u64) -> Option<u64> {
+    let source = source?;
     let last_request_unix = source.last_attempt_unix.max(source.fetched_unix);
     let next_allowed = last_request_unix.saturating_add(NVD_MIN_SYNC_INTERVAL_SECS);
     if next_allowed > now {
@@ -642,6 +976,44 @@ fn nvd_rate_limit_remaining(existing: Option<&AdvisoryCache>, now: u64) -> Optio
     }
 }
 
+fn load_nvd_source_metadata() -> Result<Option<AdvisorySourceCache>, String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    Ok(db.load_advisory_sources()?.into_iter().find(|source| {
+        source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY
+    }))
+}
+
+fn load_latest_nvd_last_modified_from_db(
+    source: Option<&AdvisorySourceCache>,
+) -> Result<Option<String>, String> {
+    if !nvd_source_has_complete_records(source)? {
+        return Ok(None);
+    }
+    let db = crate::storage::db::StorageDb::global()?;
+    Ok(db
+        .max_advisory_updated_unix_for_source(NVD_SOURCE_KEY, NVD_SOURCE_KIND)?
+        .map(|unix| format_datetime(unix_timestamp(unix))))
+}
+
+fn nvd_source_has_complete_records(source: Option<&AdvisorySourceCache>) -> Result<bool, String> {
+    let Some(source) = source else {
+        return Ok(false);
+    };
+    if source.source_kind != NVD_SOURCE_KIND || source.source_key != NVD_SOURCE_KEY {
+        return Ok(false);
+    }
+    if source.fetched_unix == 0
+        || source.total_results == 0
+        || matches!(source.status, SourceHealth::Error)
+    {
+        return Ok(false);
+    }
+    let db = crate::storage::db::StorageDb::global()?;
+    let stored = db.count_advisory_records_for_source(NVD_SOURCE_KEY, NVD_SOURCE_KIND)?;
+    Ok(stored >= source.total_results)
+}
+
+#[cfg(test)]
 fn latest_nvd_last_modified(existing: Option<&AdvisoryCache>) -> Option<String> {
     existing?
         .records
@@ -656,12 +1028,21 @@ fn latest_nvd_last_modified(existing: Option<&AdvisoryCache>) -> Option<String> 
         .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
+#[cfg(test)]
 fn nvd_sync_windows(
     existing: Option<&AdvisoryCache>,
     now: u64,
 ) -> Vec<(Option<String>, Option<String>)> {
+    let latest = latest_nvd_last_modified(existing);
+    nvd_sync_windows_from_latest(latest.as_deref(), now)
+}
+
+fn nvd_sync_windows_from_latest(
+    latest: Option<&str>,
+    now: u64,
+) -> Vec<(Option<String>, Option<String>)> {
     let now = unix_timestamp(now);
-    let latest = latest_nvd_last_modified(existing).and_then(|value| parse_timestamp(&value));
+    let latest = latest.and_then(parse_timestamp);
     let Some(mut start) = latest else {
         return vec![(None, None)];
     };
@@ -689,40 +1070,7 @@ fn format_datetime(timestamp: chrono::DateTime<chrono::Utc>) -> String {
     timestamp.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-fn stamp_nvd_sync_success(cache: &mut AdvisoryCache, requested_pages: usize, now: u64) {
-    if let Some(source) = cache
-        .sources
-        .iter_mut()
-        .find(|source| source.source_kind == NVD_SOURCE_KIND && source.source_key == NVD_SOURCE_KEY)
-    {
-        source.fetched_unix = now;
-        source.last_attempt_unix = now;
-        source.expires_unix = now.saturating_add(DEFAULT_SOURCE_TTL_SECS);
-        source.status = SourceHealth::Fresh;
-        source.last_error = None;
-        source.retry_after_unix = 0;
-        if requested_pages > 1 {
-            source.imported_from = None;
-        }
-    } else {
-        cache.sources.push(AdvisorySourceCache {
-            source_key: NVD_SOURCE_KEY.into(),
-            source_kind: NVD_SOURCE_KIND.into(),
-            source_url: NVD_API_URL.into(),
-            imported_from: None,
-            imported_from_batch: vec![],
-            fetched_unix: now,
-            expires_unix: now.saturating_add(DEFAULT_SOURCE_TTL_SECS),
-            snapshot_sha256: String::new(),
-            total_results: 0,
-            status: SourceHealth::Fresh,
-            last_attempt_unix: now,
-            last_error: None,
-            retry_after_unix: 0,
-        });
-    }
-}
-
+#[cfg(test)]
 fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> AdvisoryCache {
     if let Some(source) = cache
         .sources
@@ -764,6 +1112,45 @@ fn stamp_nvd_sync_failure(mut cache: AdvisoryCache, err: &str, now: u64) -> Advi
         });
     }
     cache
+}
+
+fn nvd_sync_failure_source(
+    existing: Option<&AdvisorySourceCache>,
+    err: &str,
+    now: u64,
+) -> AdvisorySourceCache {
+    let mut source = existing.cloned().unwrap_or_else(|| AdvisorySourceCache {
+        source_key: NVD_SOURCE_KEY.into(),
+        source_kind: NVD_SOURCE_KIND.into(),
+        source_url: NVD_API_URL.into(),
+        imported_from: None,
+        imported_from_batch: vec![],
+        fetched_unix: 0,
+        expires_unix: 0,
+        snapshot_sha256: String::new(),
+        total_results: 0,
+        status: SourceHealth::Stale,
+        last_attempt_unix: 0,
+        last_error: None,
+        retry_after_unix: 0,
+    });
+    source.status = if source.expires_unix <= now {
+        SourceHealth::Stale
+    } else {
+        SourceHealth::Error
+    };
+    source.last_error = Some(err.to_string());
+    let prev_delay = source
+        .retry_after_unix
+        .saturating_sub(source.last_attempt_unix);
+    source.last_attempt_unix = now;
+    let next_delay = if prev_delay == 0 || prev_delay > 86400 {
+        300
+    } else {
+        (prev_delay * 2).min(86400)
+    };
+    source.retry_after_unix = now.saturating_add(next_delay);
+    source
 }
 
 fn parse_nvd_snapshot(bytes: &[u8], imported_from: Option<&Path>) -> Result<AdvisoryCache, String> {
@@ -1111,11 +1498,7 @@ where
             let Some(tags) = reference.get("tags").and_then(Value::as_array) else {
                 continue;
             };
-            if tags
-                .iter()
-                .filter_map(Value::as_str)
-                .any(|tag| matcher(tag))
-            {
+            if tags.iter().filter_map(Value::as_str).any(&matcher) {
                 push_unique(&mut result, url.to_string());
             }
         }

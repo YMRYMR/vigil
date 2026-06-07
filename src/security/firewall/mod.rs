@@ -6,6 +6,8 @@
 
 use std::net::IpAddr;
 
+pub mod state;
+
 /// A single firewall rule managed by Vigil.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FirewallRule {
@@ -356,7 +358,7 @@ pub fn run_cli(args: &[String]) -> i32 {
             println!("  list      Show active rules summary (IPs, processes, domains)");
             println!("  export    Dump full firewall state as JSON");
             println!("  panic     Emergency restore — drop all Vigil rules");
-            println!("");
+            println!();
             println!("Firewall rules are managed through the GUI Inspector tab");
             println!("or the auto-response engine (block_remote, block_process,");
             println!("isolate_machine, etc.). Use --uninstall-firewall to");

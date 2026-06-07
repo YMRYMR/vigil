@@ -6,10 +6,6 @@ use crate::advisory_match::{
 use crate::software_inventory::{InstalledSoftware, InventorySource};
 use crate::storage::{DbInventoryStore, InventoryStore};
 use crate::version_compare::VersionSource;
-use std::path::PathBuf;
-
-const ADVISORY_CACHE_FILE: &str = "vigil-advisory-cache.json";
-const ADVISORY_CACHE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProductAdvisoryMatch {
@@ -45,7 +41,7 @@ pub fn run_cli() -> Result<(), String> {
     }
 
     let Some(cache) = load_advisory_cache()? else {
-        println!("Advisory match status: unavailable (no protected advisory cache found).");
+        println!("Advisory match status: unavailable (no advisory database records found).");
         return Ok(());
     };
 
@@ -301,33 +297,8 @@ fn version_source_for_inventory(source: InventorySource) -> VersionSource {
 }
 
 fn load_advisory_cache() -> Result<Option<AdvisoryCache>, String> {
-    let path = advisory_cache_path();
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|err| {
-            format!(
-                "failed to load protected advisory cache {}: {err}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        return Ok(None);
-    };
-    if cache.schema_version != ADVISORY_CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected advisory cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
-    Ok(Some(cache))
-}
-
-fn advisory_cache_path() -> PathBuf {
-    crate::config::data_dir().join(ADVISORY_CACHE_FILE)
+    let db = crate::storage::db::StorageDb::global()?;
+    db.load_advisory_cache()
 }
 
 fn inventory_source_label(source: InventorySource) -> &'static str {

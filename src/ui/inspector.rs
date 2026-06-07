@@ -6,10 +6,10 @@
 
 use crate::{
     active_response,
-    advisory::{AdvisoryCache, AffectedProduct, VulnerabilityRecord, VulnerabilitySeverity},
+    advisory::{AffectedProduct, VulnerabilityRecord, VulnerabilitySeverity},
     advisory_match::{
-        evaluate_affected_product_match, AffectedProductMatch, AffectedProductRef,
-        InstalledProductRef, MatchConfidence, VersionMatchStatus,
+        evaluate_affected_product_match, installed_product_identity_keys, AffectedProductMatch,
+        AffectedProductRef, InstalledProductRef, MatchConfidence, VersionMatchStatus,
     },
     config::Config,
     software_inventory::{
@@ -22,8 +22,8 @@ use crate::{
     version_compare::VersionSource,
 };
 use egui::{RichText, Ui};
-use std::collections::BTreeSet;
-use std::sync::{OnceLock, RwLock};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 const MAX_REASON_SCAN: usize = 1_200;
@@ -39,9 +39,11 @@ const HIGH_RISK_TRUST_PATH_FRAGMENTS: &[&str] = &[
     "/var/tmp/",
     "/downloads/",
 ];
-const ADVISORY_CACHE_FILE: &str = "vigil-advisory-cache.json";
-const ADVISORY_CACHE_SCHEMA_VERSION: u32 = 1;
-const ADVISORY_LOOKUP_CACHE_TTL: Duration = Duration::from_secs(2);
+const ADVISORY_LOOKUP_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
+const ADVISORY_RESOURCE_CACHE_TTL: Duration = Duration::from_secs(5 * 60);
+const MAX_ADVISORY_LOOKUP_CACHE_ENTRIES: usize = 128;
+const MAX_ADVISORY_IN_FLIGHT: usize = 2;
+const MAX_ADVISORY_CANDIDATE_RECORDS: usize = 512;
 const MAX_INSPECTOR_ADVISORIES: usize = 3;
 
 #[derive(Debug, Clone)]
@@ -98,6 +100,7 @@ pub enum Action {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum AdvisoryAvailability {
+    Loading,
     Matched,
     #[default]
     NoRuntimeMatch,
@@ -137,7 +140,7 @@ struct AdvisorySummary {
     version_status: VersionMatchStatus,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct AdvisoryLookupKey {
     process_name: String,
     process_path: String,
@@ -147,12 +150,26 @@ struct AdvisoryLookupKey {
 
 #[derive(Debug, Clone)]
 struct CachedAdvisoryLookup {
-    key: AdvisoryLookupKey,
     loaded_at: Instant,
     snapshot: AdvisoryInspectorSnapshot,
 }
 
-static ADVISORY_LOOKUP_CACHE: OnceLock<RwLock<Option<CachedAdvisoryLookup>>> = OnceLock::new();
+#[derive(Debug, Clone)]
+struct AdvisoryInspectorResources {
+    inventory: Arc<Vec<InstalledSoftware>>,
+    advisory_records_available: bool,
+}
+
+#[derive(Debug, Clone)]
+struct CachedAdvisoryResources {
+    loaded_at: Instant,
+    resources: Result<AdvisoryInspectorResources, String>,
+}
+
+static ADVISORY_LOOKUP_CACHE: OnceLock<RwLock<HashMap<AdvisoryLookupKey, CachedAdvisoryLookup>>> =
+    OnceLock::new();
+static ADVISORY_LOOKUP_IN_FLIGHT: OnceLock<Mutex<HashSet<AdvisoryLookupKey>>> = OnceLock::new();
+static ADVISORY_RESOURCE_CACHE: OnceLock<RwLock<Option<CachedAdvisoryResources>>> = OnceLock::new();
 
 pub fn show(
     ui: &mut Ui,
@@ -625,6 +642,17 @@ fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
                 .size(10.6),
             );
         }
+        AdvisoryAvailability::Loading => {
+            ui.horizontal(|ui| {
+                ui.add(egui::Spinner::new().size(16.0).color(theme::ACCENT));
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new("Loading advisory context...")
+                        .color(theme::TEXT2)
+                        .size(11.0),
+                );
+            });
+        }
         AdvisoryAvailability::NoRuntimeMatch => {
             ui.label(
                 RichText::new(
@@ -637,7 +665,7 @@ fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
         AdvisoryAvailability::CacheUnavailable => {
             ui.label(
                 RichText::new(
-                    "The local advisory cache is not available yet. Import or sync advisory data to see matched CVEs here.",
+                    "The advisory database is not available yet. Import or sync advisory data to see matched CVEs here.",
                 )
                 .color(theme::TEXT3)
                 .size(10.6),
@@ -667,7 +695,7 @@ fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
                 ui.add_space(4.0);
                 ui.label(
                     RichText::new(
-                        "This product correlated cleanly, but the current local advisory cache has no matching records for it.",
+                        "This product correlated cleanly, but the current advisory database has no matching records for it.",
                     )
                     .color(theme::TEXT3)
                     .size(10.6),
@@ -716,25 +744,87 @@ fn render_advisory_block(ui: &mut Ui, snapshot: &AdvisoryInspectorSnapshot) {
 
 fn advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspectorSnapshot {
     let key = advisory_lookup_key(sel);
-    let cache_lock = ADVISORY_LOOKUP_CACHE.get_or_init(|| RwLock::new(None));
+    let cache_lock = ADVISORY_LOOKUP_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
 
     {
         let cache = cache_lock.read().unwrap();
-        if let Some(cached) = cache.as_ref() {
-            if cached.key == key && cached.loaded_at.elapsed() <= ADVISORY_LOOKUP_CACHE_TTL {
+        if let Some(cached) = cache.get(&key) {
+            if cached.loaded_at.elapsed() <= ADVISORY_LOOKUP_CACHE_TTL {
                 return cached.snapshot.clone();
             }
         }
     }
 
-    let snapshot = load_advisory_snapshot_for_selection(sel);
-    let mut cache = cache_lock.write().unwrap();
-    *cache = Some(CachedAdvisoryLookup {
-        key,
-        loaded_at: Instant::now(),
-        snapshot: snapshot.clone(),
-    });
-    snapshot
+    let in_flight_lock = ADVISORY_LOOKUP_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+    {
+        let mut in_flight = in_flight_lock.lock().unwrap();
+        if !in_flight.contains(&key) {
+            if in_flight.len() >= MAX_ADVISORY_IN_FLIGHT {
+                return advisory_loading_snapshot();
+            }
+            in_flight.insert(key.clone());
+            let worker_key = key.clone();
+            let selection = sel.clone();
+            if std::thread::Builder::new()
+                .name("vigil-advisory-inspector".into())
+                .spawn(move || {
+                    let snapshot = load_advisory_snapshot_for_selection(&selection);
+                    let cache_lock =
+                        ADVISORY_LOOKUP_CACHE.get_or_init(|| RwLock::new(HashMap::new()));
+                    {
+                        let mut cache = cache_lock.write().unwrap();
+                        prune_advisory_lookup_cache(&mut cache);
+                        cache.insert(
+                            worker_key.clone(),
+                            CachedAdvisoryLookup {
+                                loaded_at: Instant::now(),
+                                snapshot,
+                            },
+                        );
+                    }
+                    let in_flight_lock =
+                        ADVISORY_LOOKUP_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()));
+                    let mut in_flight = in_flight_lock.lock().unwrap();
+                    in_flight.remove(&worker_key);
+                })
+                .is_err()
+            {
+                in_flight.remove(&key);
+                return AdvisoryInspectorSnapshot {
+                    availability: AdvisoryAvailability::Unavailable,
+                    ..AdvisoryInspectorSnapshot::default()
+                };
+            }
+        }
+    }
+
+    advisory_loading_snapshot()
+}
+
+fn prune_advisory_lookup_cache(cache: &mut HashMap<AdvisoryLookupKey, CachedAdvisoryLookup>) {
+    cache.retain(|_, cached| cached.loaded_at.elapsed() <= ADVISORY_LOOKUP_CACHE_TTL);
+    if cache.len() < MAX_ADVISORY_LOOKUP_CACHE_ENTRIES {
+        return;
+    }
+
+    let mut entries = cache
+        .iter()
+        .map(|(key, cached)| (key.clone(), cached.loaded_at))
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|(_, loaded_at)| *loaded_at);
+    let excess = cache
+        .len()
+        .saturating_sub(MAX_ADVISORY_LOOKUP_CACHE_ENTRIES - 1);
+    for (key, _) in entries.into_iter().take(excess) {
+        cache.remove(&key);
+    }
+}
+
+fn advisory_loading_snapshot() -> AdvisoryInspectorSnapshot {
+    AdvisoryInspectorSnapshot {
+        availability: AdvisoryAvailability::Loading,
+        ..AdvisoryInspectorSnapshot::default()
+    }
 }
 
 fn advisory_lookup_key(sel: &ProcessSelection) -> AdvisoryLookupKey {
@@ -747,8 +837,8 @@ fn advisory_lookup_key(sel: &ProcessSelection) -> AdvisoryLookupKey {
 }
 
 fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspectorSnapshot {
-    let inventory = match DbInventoryStore::new().load_inventory() {
-        Ok(inventory) => inventory,
+    let resources = match load_advisory_resources_for_inspector() {
+        Ok(resources) => resources,
         Err(_) => {
             return AdvisoryInspectorSnapshot {
                 availability: AdvisoryAvailability::Unavailable,
@@ -756,7 +846,7 @@ fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspe
             };
         }
     };
-    if inventory.is_empty() {
+    if resources.inventory.is_empty() {
         return AdvisoryInspectorSnapshot {
             availability: AdvisoryAvailability::InventoryUnavailable,
             ..AdvisoryInspectorSnapshot::default()
@@ -770,20 +860,49 @@ fn load_advisory_snapshot_for_selection(sel: &ProcessSelection) -> AdvisoryInspe
         publisher: &sel.publisher,
         exposed: false,
     };
-    let cache = match load_advisory_cache_for_inspector() {
-        Ok(cache) => cache,
-        Err(_) => {
-            return build_advisory_snapshot_for_target(&target, &inventory, None)
-                .with_unavailable();
+    build_advisory_snapshot_for_target(
+        &target,
+        &resources.inventory,
+        resources.advisory_records_available,
+    )
+}
+
+fn load_advisory_resources_for_inspector() -> Result<AdvisoryInspectorResources, String> {
+    let cache_lock = ADVISORY_RESOURCE_CACHE.get_or_init(|| RwLock::new(None));
+    {
+        let cache = cache_lock.read().unwrap();
+        if let Some(cached) = cache.as_ref() {
+            if cached.loaded_at.elapsed() <= ADVISORY_RESOURCE_CACHE_TTL {
+                return cached.resources.clone();
+            }
         }
-    };
-    build_advisory_snapshot_for_target(&target, &inventory, cache.as_ref())
+    }
+
+    let resources = load_advisory_resources_uncached();
+    let mut cache = cache_lock.write().unwrap();
+    *cache = Some(CachedAdvisoryResources {
+        loaded_at: Instant::now(),
+        resources: resources.clone(),
+    });
+    resources
+}
+
+fn load_advisory_resources_uncached() -> Result<AdvisoryInspectorResources, String> {
+    let inventory = Arc::new(DbInventoryStore::new().load_inventory()?);
+    let advisory_records_available = crate::storage::db::StorageDb::global()
+        .and_then(|db| db.count_advisory_records())
+        .map(|count| count > 0)
+        .unwrap_or(false);
+    Ok(AdvisoryInspectorResources {
+        inventory,
+        advisory_records_available,
+    })
 }
 
 fn build_advisory_snapshot_for_target(
     target: &RuntimeInventoryTarget<'_>,
     inventory: &[InstalledSoftware],
-    cache: Option<&AdvisoryCache>,
+    advisory_records_available: bool,
 ) -> AdvisoryInspectorSnapshot {
     let Some(runtime_match) = correlate_runtime_inventory(target, inventory) else {
         return AdvisoryInspectorSnapshot {
@@ -793,15 +912,24 @@ fn build_advisory_snapshot_for_target(
     };
 
     let correlated_product = Some(correlated_product_summary(&runtime_match));
-    let Some(cache) = cache else {
+    if !advisory_records_available {
         return AdvisoryInspectorSnapshot {
             availability: AdvisoryAvailability::CacheUnavailable,
             correlated_product,
             ..AdvisoryInspectorSnapshot::default()
         };
-    };
+    }
 
-    let advisories = collect_advisory_summaries(&runtime_match.installed, cache);
+    let advisories = match collect_advisory_summaries(&runtime_match.installed) {
+        Ok(advisories) => advisories,
+        Err(_) => {
+            return AdvisoryInspectorSnapshot {
+                availability: AdvisoryAvailability::Unavailable,
+                correlated_product,
+                ..AdvisoryInspectorSnapshot::default()
+            };
+        }
+    };
     AdvisoryInspectorSnapshot {
         availability: AdvisoryAvailability::Matched,
         correlated_product,
@@ -821,13 +949,6 @@ fn build_advisory_snapshot_for_target(
     }
 }
 
-impl AdvisoryInspectorSnapshot {
-    fn with_unavailable(mut self) -> Self {
-        self.availability = AdvisoryAvailability::Unavailable;
-        self
-    }
-}
-
 fn correlated_product_summary(runtime_match: &RuntimeInventoryMatch) -> CorrelatedProductSummary {
     CorrelatedProductSummary {
         display_name: runtime_match.installed.display_name.clone(),
@@ -840,25 +961,31 @@ fn correlated_product_summary(runtime_match: &RuntimeInventoryMatch) -> Correlat
 
 fn collect_advisory_summaries(
     installed: &InstalledSoftware,
-    cache: &AdvisoryCache,
+) -> Result<Vec<AdvisorySummary>, String> {
+    let records = advisory_candidate_records(installed)?;
+    Ok(collect_advisory_summaries_from_records(installed, &records))
+}
+
+fn collect_advisory_summaries_from_records(
+    installed: &InstalledSoftware,
+    records: &[VulnerabilityRecord],
 ) -> Vec<AdvisorySummary> {
-    let mut advisories = cache
-        .records
-        .iter()
-        .filter_map(|record| {
-            let matched = best_record_match(installed, record)?;
-            Some(AdvisorySummary {
-                primary_id: record.primary_id.clone(),
-                summary: condense_summary(&record.summary),
-                severity_label: advisory_severity_label(&record.severities),
-                source_kind: record.provenance.source_kind.clone(),
-                known_exploited: record.known_exploited,
-                applies: matched.applies,
-                confidence: matched.confidence,
-                version_status: matched.version_status,
-            })
-        })
-        .collect::<Vec<_>>();
+    let mut advisories = Vec::new();
+    for record in records {
+        let Some(matched) = best_record_match(installed, record) else {
+            continue;
+        };
+        advisories.push(AdvisorySummary {
+            primary_id: record.primary_id.clone(),
+            summary: condense_summary(&record.summary),
+            severity_label: advisory_severity_label(&record.severities),
+            source_kind: record.provenance.source_kind.clone(),
+            known_exploited: record.known_exploited,
+            applies: matched.applies,
+            confidence: matched.confidence,
+            version_status: matched.version_status,
+        });
+    }
 
     advisories.sort_by(|left, right| {
         right
@@ -878,17 +1005,34 @@ fn collect_advisory_summaries(
     advisories
 }
 
+fn advisory_candidate_records(
+    installed: &InstalledSoftware,
+) -> Result<Vec<VulnerabilityRecord>, String> {
+    let query_started = Instant::now();
+    let installed_ref = installed_product_ref(installed);
+    let identity_keys = installed_product_identity_keys(&installed_ref)
+        .into_iter()
+        .collect::<Vec<_>>();
+    let db = crate::storage::db::StorageDb::global()?;
+    let records =
+        db.load_advisory_records_for_identity_keys(&identity_keys, MAX_ADVISORY_CANDIDATE_RECORDS)?;
+    tracing::info!(
+        product_key = installed.product_key.as_str(),
+        display_name = installed.display_name.as_str(),
+        identity_keys = identity_keys.len(),
+        records = records.len(),
+        limit = MAX_ADVISORY_CANDIDATE_RECORDS,
+        elapsed_ms = query_started.elapsed().as_millis() as u64,
+        "queried advisory database for selected process"
+    );
+    Ok(records)
+}
+
 fn best_record_match(
     installed: &InstalledSoftware,
     record: &VulnerabilityRecord,
 ) -> Option<AffectedProductMatch> {
-    let installed_ref = InstalledProductRef {
-        product_key: &installed.product_key,
-        product_aliases: &installed.product_aliases,
-        vendor_key: installed.vendor_key.as_deref(),
-        version_hint: installed.version_hint.as_deref(),
-        version_source: version_source_for_inventory(installed.source),
-    };
+    let installed_ref = installed_product_ref(installed);
 
     record
         .affected_products
@@ -902,6 +1046,16 @@ fn best_record_match(
                 source_explainability_rank(matched),
             )
         })
+}
+
+fn installed_product_ref(installed: &InstalledSoftware) -> InstalledProductRef<'_> {
+    InstalledProductRef {
+        product_key: &installed.product_key,
+        product_aliases: &installed.product_aliases,
+        vendor_key: installed.vendor_key.as_deref(),
+        version_hint: installed.version_hint.as_deref(),
+        version_source: version_source_for_inventory(installed.source),
+    }
 }
 
 fn affected_product_ref<'a>(affected: &'a AffectedProduct) -> AffectedProductRef<'a> {
@@ -1021,32 +1175,6 @@ fn version_source_for_inventory(source: InventorySource) -> VersionSource {
         | InventorySource::WindowsUninstallRegistry
         | InventorySource::RunningService => VersionSource::Default,
     }
-}
-
-fn load_advisory_cache_for_inspector() -> Result<Option<AdvisoryCache>, String> {
-    let path = crate::config::data_dir().join(ADVISORY_CACHE_FILE);
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let loaded: Option<AdvisoryCache> = crate::security::policy::load_struct_with_integrity(&path)
-        .map_err(|err| {
-            format!(
-                "failed to load protected advisory cache {}: {err}",
-                path.display()
-            )
-        })?;
-    let Some(cache) = loaded else {
-        return Ok(None);
-    };
-    if cache.schema_version != ADVISORY_CACHE_SCHEMA_VERSION {
-        return Err(format!(
-            "protected advisory cache {} used unsupported schema version {}",
-            path.display(),
-            cache.schema_version
-        ));
-    }
-    Ok(Some(cache))
 }
 
 fn inventory_source_label(source: InventorySource) -> &'static str {
@@ -1470,5 +1598,93 @@ fn format_remaining(duration: std::time::Duration) -> String {
         format!("{hours:02}:{mins:02}:{secs:02}")
     } else {
         format!("{mins:02}:{secs:02}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        advisory::{VulnerabilityProvenance, VulnerabilityRecord},
+        software_inventory::InventorySource,
+    };
+
+    #[test]
+    fn advisory_collection_filters_non_matching_records() {
+        let records = vec![
+            advisory_record(
+                "CVE-1",
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                "Chrome issue",
+            ),
+            advisory_record(
+                "CVE-2",
+                "cpe:2.3:a:mozilla:firefox:*:*:*:*:*:*:*:*",
+                "Firefox issue",
+            ),
+        ];
+        let installed = installed_product("google-chrome", &["chrome", "google-chrome"]);
+
+        let advisories = collect_advisory_summaries_from_records(&installed, &records);
+
+        assert_eq!(advisories.len(), 1);
+        assert_eq!(advisories[0].primary_id, "CVE-1");
+    }
+
+    #[test]
+    fn advisory_collection_preserves_displayed_matches() {
+        let records = vec![
+            advisory_record(
+                "CVE-1",
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                "Chrome issue",
+            ),
+            advisory_record(
+                "CVE-2",
+                "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+                "Second Chrome issue",
+            ),
+        ];
+        let installed = installed_product("google-chrome", &["chrome", "google-chrome"]);
+
+        let advisories = collect_advisory_summaries_from_records(&installed, &records);
+
+        assert_eq!(advisories.len(), 2);
+        assert!(advisories
+            .iter()
+            .any(|advisory| advisory.primary_id == "CVE-1"));
+        assert!(advisories
+            .iter()
+            .any(|advisory| advisory.primary_id == "CVE-2"));
+    }
+
+    fn installed_product(product_key: &str, aliases: &[&str]) -> InstalledSoftware {
+        InstalledSoftware {
+            product_key: product_key.to_string(),
+            display_name: product_key.to_string(),
+            executable_path: String::new(),
+            publisher_hint: None,
+            version_hint: None,
+            product_aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+            vendor_key: Some("google".to_string()),
+            source: InventorySource::WindowsUninstallRegistry,
+        }
+    }
+
+    fn advisory_record(id: &str, criteria: &str, summary: &str) -> VulnerabilityRecord {
+        VulnerabilityRecord {
+            primary_id: id.to_string(),
+            summary: summary.to_string(),
+            affected_products: vec![AffectedProduct {
+                criteria: criteria.to_string(),
+                vulnerable: true,
+                ..AffectedProduct::default()
+            }],
+            provenance: VulnerabilityProvenance {
+                source_kind: "nvd".to_string(),
+                ..VulnerabilityProvenance::default()
+            },
+            ..VulnerabilityRecord::default()
+        }
     }
 }

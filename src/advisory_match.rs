@@ -147,6 +147,26 @@ pub fn evaluate_affected_product_match(
     })
 }
 
+pub fn installed_product_identity_keys(installed: &InstalledProductRef<'_>) -> BTreeSet<String> {
+    installed_identity_aliases(installed)
+}
+
+pub fn affected_product_identity_keys(affected: &AffectedProductRef<'_>) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    if !affected.vulnerable {
+        return keys;
+    }
+
+    let Some(parsed) = parse_affected_product_identifier(affected) else {
+        return keys;
+    };
+    keys.insert(parsed.product.clone());
+    if !parsed.vendor.is_empty() {
+        keys.insert(format!("{}-{}", parsed.vendor, parsed.product));
+    }
+    keys
+}
+
 fn parse_affected_product_identifier(
     affected: &AffectedProductRef<'_>,
 ) -> Option<ParsedAffectedProduct> {
@@ -561,6 +581,37 @@ mod tests {
             ..AffectedProductRef::default()
         };
         assert!(evaluate_affected_product_match(&installed, &hardware).is_none());
+    }
+
+    #[test]
+    fn installed_identity_keys_match_normalized_aliases() {
+        let aliases = vec!["Chrome.exe".to_string(), "Google Chrome".to_string()];
+        let installed = InstalledProductRef {
+            product_key: "google-chrome",
+            product_aliases: &aliases,
+            vendor_key: Some("google"),
+            version_hint: None,
+            version_source: VersionSource::Default,
+        };
+
+        let keys = installed_product_identity_keys(&installed);
+
+        assert!(keys.contains("google-chrome"));
+        assert!(keys.contains("chrome"));
+    }
+
+    #[test]
+    fn affected_identity_keys_include_product_and_vendor_qualified_product() {
+        let affected = AffectedProductRef {
+            criteria: "cpe:2.3:a:google:chrome:*:*:*:*:*:*:*:*",
+            vulnerable: true,
+            ..AffectedProductRef::default()
+        };
+
+        let keys = affected_product_identity_keys(&affected);
+
+        assert!(keys.contains("chrome"));
+        assert!(keys.contains("google-chrome"));
     }
 
     #[test]
