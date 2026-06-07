@@ -214,6 +214,12 @@ impl StorageDb {
 
             CREATE INDEX IF NOT EXISTS idx_firewall_rule_type
                 ON firewall_rule(rule_type, removed);
+
+            CREATE TABLE IF NOT EXISTS runtime_state (
+                state_key    TEXT PRIMARY KEY NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                updated_unix INTEGER NOT NULL DEFAULT 0
+            );
             ",
         )
         .map_err(|e| format!("bootstrap schema: {e}"))?;
@@ -280,6 +286,14 @@ impl StorageDb {
                 ON advisory_record_search(search_text);",
         )
         .map_err(|e| format!("ensure advisory search index: {e}"))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS runtime_state (
+                state_key    TEXT PRIMARY KEY NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                updated_unix INTEGER NOT NULL DEFAULT 0
+            );",
+        )
+        .map_err(|e| format!("ensure runtime state table: {e}"))?;
         ensure_advisory_product_index_populated(&conn)?;
         ensure_advisory_search_index_populated(&conn)?;
 
@@ -1024,6 +1038,33 @@ impl StorageDb {
         Ok(result)
     }
 
+    // ── Runtime state helpers ───────────────────────────────────────
+
+    pub fn save_runtime_state_json(&self, key: &str, payload_json: &str) -> Result<(), String> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO runtime_state (state_key, payload_json, updated_unix)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(state_key) DO UPDATE SET
+                payload_json = excluded.payload_json,
+                updated_unix = excluded.updated_unix",
+            rusqlite::params![key, payload_json, unix_now() as i64],
+        )
+        .map_err(|e| format!("save runtime state {key}: {e}"))?;
+        Ok(())
+    }
+
+    pub fn load_runtime_state_json(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn()?;
+        conn.query_row(
+            "SELECT payload_json FROM runtime_state WHERE state_key = ?1",
+            [key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("load runtime state {key}: {e}"))
+    }
+
     // ── Change-history helpers ─────────────────────────────────────
 
     pub fn replace_change_events(
@@ -1485,6 +1526,13 @@ fn parse_nvd_timestamp(ts: &Option<String>) -> Option<u64> {
     None
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1617,6 +1665,40 @@ mod tests {
 
         let verified = db.verify().unwrap();
         assert!(verified, "verify after checkpoint");
+    }
+
+    #[test]
+    fn runtime_state_json_round_trip() {
+        let db = test_db();
+
+        assert!(db
+            .load_runtime_state_json("active_response")
+            .unwrap()
+            .is_none());
+        db.save_runtime_state_json("active_response", r#"{"isolated":false}"#)
+            .unwrap();
+
+        let loaded = db
+            .load_runtime_state_json("active_response")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, r#"{"isolated":false}"#);
+    }
+
+    #[test]
+    fn runtime_state_json_replaces_existing_key() {
+        let db = test_db();
+
+        db.save_runtime_state_json("active_response", r#"{"old":true}"#)
+            .unwrap();
+        db.save_runtime_state_json("active_response", r#"{"new":true}"#)
+            .unwrap();
+
+        let loaded = db
+            .load_runtime_state_json("active_response")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, r#"{"new":true}"#);
     }
 
     #[test]

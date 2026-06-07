@@ -2,8 +2,9 @@
 //!
 //! Phase 11 starts with practical controls for blocking traffic, killing a
 //! live socket, suspending a suspicious process, blocking a suspicious domain,
-//! and isolating the machine. The module persists a tiny state file so rules
-//! can be reconciled and the UI can reflect the current status after restarts.
+//! and isolating the machine. The module persists state in the local SQLite
+//! store so rules can be reconciled and the UI can reflect current status after
+//! restarts without repeatedly reading protected JSON files.
 
 use crate::security::firewall::{self, FirewallBackend};
 use crate::{audit, quarantine, types::ConnInfo};
@@ -16,6 +17,7 @@ use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const STATE_FILE: &str = "vigil-active-response.json";
+const DB_STATE_KEY: &str = "active_response";
 const BLOCK_RULE_PREFIX: &str = "Vigil Block";
 const PROCESS_BLOCK_RULE_PREFIX: &str = "Vigil Proc Block";
 const DOMAIN_MARKER_PREFIX: &str = "# Vigil Domain Block";
@@ -1812,12 +1814,29 @@ fn state_path() -> PathBuf {
     }
     crate::config::data_dir().join(STATE_FILE)
 }
-fn load_state() -> Result<State, String> {
-    let path = state_path();
-    load_state_from_path(&path)
+
+fn state_path_override() -> Option<PathBuf> {
+    STATE_PATH_OVERRIDE
+        .get_or_init(|| RwLock::new(None))
+        .read()
+        .unwrap()
+        .clone()
 }
+
+fn load_state() -> Result<State, String> {
+    if let Some(path) = state_path_override() {
+        return load_state_from_path(&path);
+    }
+    load_state_from_db_or_legacy_file()
+}
+
 fn load_state_for_query(context: &str) -> Option<State> {
     let path = state_path();
+    let signature = if state_path_override().is_some() {
+        state_file_signature(&path)
+    } else {
+        None
+    };
     let cache_lock = QUERY_STATE_CACHE.get_or_init(|| RwLock::new(None));
     {
         let cache = cache_lock.read().unwrap();
@@ -1828,7 +1847,6 @@ fn load_state_for_query(context: &str) -> Option<State> {
         }
     }
 
-    let signature = state_file_signature(&path);
     {
         let mut cache = cache_lock.write().unwrap();
         if let Some(existing) = cache.as_mut() {
@@ -1839,7 +1857,7 @@ fn load_state_for_query(context: &str) -> Option<State> {
         }
     }
 
-    match load_state_from_path(&path) {
+    match load_state() {
         Ok(state) => Some(state),
         Err(err) => {
             note_state_load_error_once(context, &err);
@@ -1869,7 +1887,11 @@ fn update_query_state_cache(path: &Path, state: &State) {
     let mut cache = cache_lock.write().unwrap();
     *cache = Some(QueryStateCache {
         path: path.to_path_buf(),
-        signature: state_file_signature(path),
+        signature: if state_path_override().is_some() {
+            state_file_signature(path)
+        } else {
+            None
+        },
         loaded_at: Instant::now(),
         state: state.clone(),
     });
@@ -1882,10 +1904,13 @@ fn clear_query_state_cache() {
 }
 
 fn save_state(state: &State) -> Result<(), String> {
-    let data = serde_json::to_vec_pretty(state)
-        .map_err(|e| format!("serialize active response state: {e}"))?;
     let path = state_path();
-    match crate::security::policy::save_json_with_integrity(&path, &data) {
+    let result = if state_path_override().is_some() {
+        save_state_to_path(&path, state)
+    } else {
+        save_state_to_db(state)
+    };
+    match result {
         Ok(()) => {
             update_query_state_cache(&path, state);
             sync_firewall_rules_to_db(state);
@@ -1896,6 +1921,40 @@ fn save_state(state: &State) -> Result<(), String> {
             Err(err)
         }
     }
+}
+
+fn load_state_from_db_or_legacy_file() -> Result<State, String> {
+    let db = crate::storage::db::StorageDb::global()?;
+    if let Some(payload) = db.load_runtime_state_json(DB_STATE_KEY)? {
+        return serde_json::from_str(&payload)
+            .map_err(|e| format!("parse active-response state from database: {e}"));
+    }
+    drop(db);
+
+    let legacy_path = state_path();
+    if !legacy_path.exists() {
+        return Ok(State::default());
+    }
+    let state = load_state_from_path(&legacy_path)?;
+    if let Err(err) = save_state_to_db(&state) {
+        tracing::warn!(%err, "failed to migrate active-response state to database");
+    } else if let Err(err) = crate::security::policy::remove_json_with_integrity(&legacy_path) {
+        tracing::warn!(%err, "failed to remove migrated active-response JSON state");
+    }
+    Ok(state)
+}
+
+fn save_state_to_db(state: &State) -> Result<(), String> {
+    let payload = serde_json::to_string(state)
+        .map_err(|e| format!("serialize active-response state for database: {e}"))?;
+    let db = crate::storage::db::StorageDb::global()?;
+    db.save_runtime_state_json(DB_STATE_KEY, &payload)
+}
+
+fn save_state_to_path(path: &std::path::Path, state: &State) -> Result<(), String> {
+    let data = serde_json::to_vec_pretty(state)
+        .map_err(|e| format!("serialize active response state: {e}"))?;
+    crate::security::policy::save_json_with_integrity(path, &data)
 }
 
 fn sync_firewall_rules_to_db(state: &State) {
