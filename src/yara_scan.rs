@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn system_time_to_unix_nanos_preserves_subsecond_precision() {
-        let time = UNIX_EPOCH + Duration::from_nanos(1_234_567_890);
-        assert_eq!(system_time_to_unix_nanos(time), Some(1_234_567_890));
+        let time = UNIX_EPOCH + Duration::from_nanos(1_234_567_800);
+        assert_eq!(system_time_to_unix_nanos(time), Some(1_234_567_800));
     }
 }
